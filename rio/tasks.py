@@ -8,19 +8,15 @@ Implement of rio tasks based on celery.
 
 from os import environ
 
-from celery import Celery
+from celery import task
+from celery.task.http import URL
 
-from .conf import configure_app
-
-def register_tasks(app):
-    """Register tasks to application.
-    """
-    pass
+from .core import celery
 
 
-def create_app():
-    """Celery application factory function."""
-    app = Celery('rio')
-    configure_app(app)
-    register_tasks(app)
-    return app
+def get_webhook(url, payload):
+    return URL(url, app=celery, dispatcher=None).get_async(**payload)
+
+
+def post_webhook(url, payload):
+    return URL(url, app=celery, dispatcher=None).post_async(**payload)
