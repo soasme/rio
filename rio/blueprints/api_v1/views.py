@@ -20,7 +20,7 @@ from rio.tasks import post_webhook as apply_post_webhook
 from .core import bp
 
 
-@bp.route('/publish/<topic>')
+@bp.route('/publish/<topic>', methods=['GET', 'POST'])
 def publish(topic):
     """Publish message to topic."""
     topic = Topic.query.filter_by(title=topic).first()
