@@ -10,6 +10,8 @@ from os import environ
 from flask import Flask
 
 from .conf import configure_app
+from .core import db
+from .core import celery
 
 def register_blueprints(app):
     """Register blueprints to application.
@@ -25,11 +27,17 @@ def register_blueprints(app):
     from .blueprints.dashboard import bp as dashboard_bp
     app.register_blueprint(dashboard_bp, url_prefix='/dashboard')
 
+def init_core(app):
+    from rio import models # noqa
+    db.init_app(app)
+    celery.init_app(app)
+
 def create_app():
     """Flask application factory function."""
     app = Flask(__name__)
     app.config_from_envvar = app.config.from_envvar
     app.config_from_object = app.config.from_object
     configure_app(app)
+    init_core(app)
     register_blueprints(app)
     return app
