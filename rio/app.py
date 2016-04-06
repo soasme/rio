@@ -13,6 +13,39 @@ from .conf import configure_app
 from .core import db
 from .core import celery
 
+def configure_app(app):
+    """Configure Flask/Celery application.
+
+    * Rio will find environment variable `RIO_SETTINGS` first::
+
+        $ export RIO_SETTINGS=/path/to/settings.cfg
+        $ rio worker
+
+    * If `RIO_SETTINGS` is missing, Rio will try to load configuration
+      module in `rio.settings` according to another environment
+      variable `RIO_ENV`. Default load `rio.settings.dev`.
+
+        $ export RIO_ENV=prod
+        $ rio worker
+    """
+    app.config_from_object('rio.settings.default')
+
+    if environ.get('RIO_SETTINGS'):
+        app.config_from_envvar(environ.get('RIO_SETTINGS'))
+        return
+
+    config_map = {
+        'dev': 'rio.settings.dev',
+        'stag': 'rio.settings.stag',
+        'prod': 'rio.settings.prod',
+        'test': 'rio.settings.test',
+    }
+
+    rio_env = environ.get('RIO_ENV', 'dev')
+    config = config_map.get(rio_env, config_map['dev'])
+    app.config_from_object(config)
+
+
 def register_blueprints(app):
     """Register blueprints to application.
 
@@ -28,6 +61,7 @@ def register_blueprints(app):
     app.register_blueprint(dashboard_bp, url_prefix='/dashboard')
 
 def init_core(app):
+    """Init core objects."""
     from rio import models # noqa
     db.init_app(app)
     celery.init_app(app)

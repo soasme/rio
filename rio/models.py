@@ -1,12 +1,25 @@
 # -*- coding: utf-8 -*-
+"""
+rio.models
+~~~~~~~~~~~
+
+Definitions of rio models based on SQLAlchemy.
+"""
 
 from datetime import datetime
 
 from .core import db
 
 class Topic(db.Model):
+    """Topic Model.
+
+    Topics are published and subscribed as identity of event.
+    """
 
     __tablename__ = 'topic'
+    __table_args__ = (
+        db.UniqueConstraint('title', name='ux_topic_title'),
+    )
 
     id = db.Column(db.Integer(), primary_key=True)
     title = db.Column(db.String(64), nullable=False)
@@ -15,6 +28,11 @@ class Topic(db.Model):
     webhooks = db.relationship('Webhook', backref='topic', lazy='dynamic')
 
 class Webhook(db.Model):
+    """Webhook Model.
+
+    Webhook model defines the http method and url that will be triggered
+    on receiving event.
+    """
 
     __tablename__ = 'webhook'
     __table_args__ = (
@@ -23,19 +41,16 @@ class Webhook(db.Model):
     )
 
     class Method:
-        HEAD = 0
+        """HTTP Methods.
+
+        Currently, only GET/POST are supported.
+        For database effencity, this field will be stored as integer.
+        """
         GET = 1
         POST = 2
-        PUT = 3
-        DELETE = 4
-        PATCH = 5
         MAP = {
-            0: 'HEAD',
-            1: 'GET',
-            2: 'POST',
-            3: 'PUT',
-            4: 'DELETE',
-            5: 'PATCH',
+            GET: 'GET',
+            GET: 'POST',
         }
 
     id = db.Column(db.Integer(), primary_key=True)
