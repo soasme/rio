@@ -17,6 +17,8 @@ def configure_app(app):
         $ export RIO_ENV=prod
         $ rio worker
     """
+    app.config_from_object('rio.settings.default')
+
     if environ.get('RIO_SETTINGS'):
         app.config_from_envvar(environ.get('RIO_SETTINGS'))
         return
