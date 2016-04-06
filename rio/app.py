@@ -9,36 +9,7 @@ Implement of rio app factory based on Flask.
 from os import environ
 from flask import Flask
 
-def configure_app(app):
-    """Configure Flask application.
-
-    * Rio will find environment variable `RIO_SETTINGS` first::
-
-        $ export RIO_SETTINGS=/path/to/settings.cfg
-        $ rio start
-
-    * If `RIO_SETTINGS` is missing, Rio will try to load configuration
-      module in `rio.settings` according to another environment
-      variable `FLASK_ENV`. Default load `rio.settings.dev`.
-
-        $ export FLASK_ENV=prod
-        $ rio start
-    """
-    if environ.get('RIO_SETTINGS'):
-        app.config.from_envvar(environ.get('RIO_SETTINGS'))
-        return
-
-    config_map = {
-        'dev': 'rio.settings.dev',
-        'stag': 'rio.settings.stag',
-        'prod': 'rio.settings.prod',
-        'test': 'rio.settings.test',
-    }
-
-    flask_env = environ.get('FLASK_ENV', 'dev')
-    config = config_map.get(flask_env, config_map['dev'])
-    app.config.from_object(config)
-
+from .conf import configure_app
 
 def register_blueprints(app):
     """Register blueprints to application.
@@ -57,5 +28,8 @@ def register_blueprints(app):
 def create_app():
     """Flask application factory function."""
     app = Flask(__name__)
+    app.config_from_envvar = app.config.from_envvar
+    app.config_from_object = app.config.from_object
     configure_app(app)
+    register_blueprints(app)
     return app
