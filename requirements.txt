@@ -1,4 +1,6 @@
 flask
 flask-sqlalchemy
 flask-migrate
+Flask-Celery-Helper
 celery
+redis
