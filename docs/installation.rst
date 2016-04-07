@@ -80,8 +80,8 @@ later::
 
     $ export RIO_CONF=/etc/rio
 
-The `init` subcommand create a config.yml. Use your flavoured text editor
-to edit `config.yml` file to adjust to your infrastructure.
+The `init` subcommand create a config.py. Use your flavoured text editor
+to edit `config.py` file to adjust to your infrastructure.
 
 You need to configure:
 
