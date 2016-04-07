@@ -24,12 +24,23 @@ as broker and database as backend. It's all up to you.
 
 .. _configure_events_and_their_calling_webhooks:
 
-Configure events and their calling webhooks
---------------------------------------------
+Configure an Integration
+------------------------
 
+To send messages from your project to Rio you will need to use an SDK which
+support your platform. If you can not find platform listed below, you can
+simply use the JSON APIs to send messages.
 
+Below is a list of Rio SDKs:
+
+* Python SDK
 
 .. _configure_the_client:
 
-Configure The Client
---------------------------
+Configure The DSN
+-----------------
+
+After you have created a project in Rio, you will be given a DSN value.
+This is basically similar to Sentry DSN. It is a standard URL and a
+configuration parameter for Rio clients. The DSN can be found in Rio by
+navigation to project settings.
