@@ -4,3 +4,4 @@ flask-migrate
 Flask-Celery-Helper
 celery
 redis
+PyYAML
