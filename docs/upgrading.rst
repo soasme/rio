@@ -7,11 +7,16 @@ Upgrading
 Upgrading the Package
 ----------------------
 
+    $ pip install -U rio
+
 Running migrations
 -------------------
+
+    $ rio upgrade
+
 
 Restarting Services
 -------------------
 
-Reloading configurations
-------------------------
+    $ supervisorctl restart rio-web
+    $ supervisorctl restart rio-worker
