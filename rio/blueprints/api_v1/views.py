@@ -5,12 +5,14 @@ rio.blueprints.api_v1.views
 
 Implement of rio api v1 view functions.
 """
+import os
 
 from flask import jsonify
 from flask import request
 from flask import current_app
 
 from celery.result import AsyncResult
+from celery.task.http import RemoteExecuteError
 
 from rio.core import celery
 from rio.tasks import get_webhook as apply_get_webhook
@@ -20,14 +22,30 @@ from .core import bp
 
 AVAILABLE_METHODS = {'GET', 'POST'}
 
+def _load_yaml(rcfile, topic):
+    import yaml
+    try:
+        with open(rcfile) as f:
+            webhooks = yaml.load(f.read())
+            return webhooks.get(topic)
+    except IOError:
+        pass
+
 def _load_webhooks(topic):
     """Load webhooks by topic.
 
     * Load from application config `RIO_WEBHOOKS`
-    * Load from yaml file `.rio.yml` in cwd/home/etc. If `RIO_HOTRELOAD_WEBHOOKS`
-      is set to True, Rio will try to load file per request.
+    * Load from yaml file `.rio.yml` in cwd/home.
+    * If `RIO_HOTRELOAD_WEBHOOKS` is set to True, Rio will try to load file per request.
     """
-    return (current_app.config.get('RIO_WEBHOOKS') or {}).get(topic)
+    if 'RIO_WEBHOOKS' in current_app.config:
+        return (current_app.config.get('RIO_WEBHOOKS') or {}).get(topic)
+    elif os.path.exists(os.path.join(os.getcwd(), '.rio.yml')):
+        return _load_yaml((os.path.join(os.getcwd(), '.rio.yml')), topic)
+    elif os.path.exists(os.path.join(os.environ.get('HOME'), '.rio.yml')):
+        return _load_yaml(os.path.join(os.environ.get('HOME'), '.rio.yml'), topic)
+    else:
+        return []
 
 
 @bp.route('/publish/<topic>', methods=['GET', 'POST'])
@@ -57,8 +75,17 @@ def get_task(task_id):
     """Get task information.
     """
     job = AsyncResult(task_id, app=celery)
+    if job.successful():
+        result = job.get()
+    elif job.failed():
+        try:
+            job.get()
+        except RemoteExecuteError as exception:
+            result = exception.message
+    else:
+        result = None
     return jsonify(task=dict(
         id=task_id,
         status=job.status,
-        retval=job.get() if job.successful() else None,
+        retval=result,
     ))
