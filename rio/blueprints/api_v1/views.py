@@ -27,7 +27,11 @@ def _load_yaml(rcfile, topic):
     try:
         with open(rcfile) as f:
             webhooks = yaml.load(f.read())
-            return webhooks.get(topic)
+            webhooks = webhooks.get(topic) or []
+            return [
+                (w.get('method', 'GET'), w.get('url'))
+                for w in webhooks
+            ]
     except IOError:
         pass
 
