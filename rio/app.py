@@ -9,7 +9,6 @@ Implement of rio app factory based on Flask.
 from os import environ
 from flask import Flask
 
-from .conf import configure_app
 from .core import db
 from .core import celery
 
