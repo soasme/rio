@@ -16,10 +16,18 @@ Getting started with Rio is a three steps process:
 Installing the Rio server
 --------------------------
 
+For more details about how to install the Rio server, see :ref:`installation`.
+
+Basically, you need a Unix based OS, Python 2.7. You can use a database as
+broker and backend, or use redis as broker and backend, or mix using RabbitMQ
+as broker and database as backend. It's all up to you.
+
 .. _configure_events_and_their_calling_webhooks:
 
 Configure events and their calling webhooks
 --------------------------------------------
+
+
 
 .. _configure_the_client:
 

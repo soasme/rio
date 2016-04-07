@@ -25,6 +25,14 @@ Contents:
 
    quick_start
    introduction
+   installation
+   upgrading
+   configuration
+   broker
+   storage_backend
+   worker
+   cli
+   monitoring
    api_reference
 
 
