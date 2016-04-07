@@ -23,6 +23,12 @@ from .core import bp
 AVAILABLE_METHODS = {'GET', 'POST'}
 
 def _load_yaml(rcfile, topic):
+    """Load yaml config
+
+    :param rcfile: yaml file path
+    :param topic: as yaml file is actually a dict, topic is the key of this dict.
+    :return: return a list of tuple contained (method, url)
+    """
     import yaml
     try:
         with open(rcfile) as f:
