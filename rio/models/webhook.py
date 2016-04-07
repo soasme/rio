@@ -1,31 +1,8 @@
 # -*- coding: utf-8 -*-
-"""
-rio.models
-~~~~~~~~~~~
-
-Definitions of rio models based on SQLAlchemy.
-"""
 
 from datetime import datetime
 
-from .core import db
-
-class Topic(db.Model):
-    """Topic Model.
-
-    Topics are published and subscribed as identity of event.
-    """
-
-    __tablename__ = 'topic'
-    __table_args__ = (
-        db.UniqueConstraint('title', name='ux_topic_title'),
-    )
-
-    id = db.Column(db.Integer(), primary_key=True)
-    title = db.Column(db.String(64), nullable=False)
-    created_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
-    webhooks = db.relationship('Webhook', backref='topic', lazy='dynamic')
+from rio.core import db
 
 class Webhook(db.Model):
     """Webhook Model.
@@ -37,7 +14,9 @@ class Webhook(db.Model):
     __tablename__ = 'webhook'
     __table_args__ = (
         db.UniqueConstraint('topic_id', 'url', name='ux_webhook_subscribe'),
-        db.Index('ix_webhook_topic', 'topic_id'),
+        db.ForeignKeyConstraint(
+            ['topic_id'], ['topic.id'], ondelete='CASCADE', name='fk_webhook_topic'
+        ),
     )
 
     class Method:
@@ -55,7 +34,7 @@ class Webhook(db.Model):
 
     id = db.Column(db.Integer(), primary_key=True)
     method_id = db.Column(db.SmallInteger(), nullable=False, default=Method.GET)
-    topic_id = db.Column(db.Integer(), db.ForeignKey('topic.id'), nullable=False)
+    topic_id = db.Column(db.Integer(), nullable=False)
     url = db.Column(db.String(256), nullable=False)
     created_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
