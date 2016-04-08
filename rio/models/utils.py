@@ -7,6 +7,9 @@ rio.models.utils
 from time import mktime
 from datetime import datetime
 
+from werkzeug.utils import import_string
+from flask import abort
+
 
 def _formatted(value):
     if isinstance(value, (int, str, long, )):
@@ -18,7 +21,7 @@ def _formatted(value):
 
 def _turn_row_to_dict(row):
     return {
-        column.name: _formatted(getattr(row, column.name)),
+        column.name: _formatted(getattr(row, column.name))
         for column in row.__table__.columns
     }
 
@@ -52,7 +55,7 @@ def get_instance_by_slug(model, slug):
     :return: a SQLAlchemy Model instance.
     """
     try:
-        model = import_string('rio.models.%s.%s' % (model.upper(), model.capitalize()))
+        model = import_string('rio.models.%s.%s' % (model.lower(), model.capitalize()))
     except ImportError:
         return None
 
@@ -68,9 +71,10 @@ def get_data_by_slug_or_404(model, slug, kind=''):
     :param kind: a string specified which kind of dict tranformer should be called.
     :return: a dict.
     """
-    instance = get_instance_by_slug(model, slug, kind)
+
+    instance = get_instance_by_slug(model, slug)
 
     if not instance:
         return abort(404)
 
-    return row2dict(instance)
+    return ins2dict(instance, kind)
