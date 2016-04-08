@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from rio.core import db
+from .utils import ins2dict
 
 class Webhook(db.Model):
     """Webhook Model.
@@ -11,7 +12,7 @@ class Webhook(db.Model):
     on receiving event.
     """
 
-    __tablename__ = 'webhook'
+    __tablename__ = 'rio_webhook'
     __table_args__ = (
         db.UniqueConstraint('topic_id', 'url', name='ux_webhook_subscribe'),
         db.ForeignKeyConstraint(
@@ -43,10 +44,14 @@ class Webhook(db.Model):
     def method(self):
         return self.Method.MAP[self.method_id]
 
-    def to_dict(self):
+    def to_full_dict(self):
+        data = ins2dict(self)
+        data.pop('topic_id')
+        data['topic'] = ins2dict(self.topic, 'simple')
+        return data
+
+    def to_simple_dict(self):
         return dict(
-            id=self.id,
             method=self.method,
             url=self.url,
-            topic=self.topic.title,
         )

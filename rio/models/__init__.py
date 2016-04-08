@@ -4,7 +4,5 @@ rio.models
 ~~~~~~~~~~~~
 """
 
-from .user import User
-from .project import Project
-from .topic import Topic
-from .webhook import Webhook
+from .utils import get_data_by_slug_or_404
+from .sender import validate as validate_sender

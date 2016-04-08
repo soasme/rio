@@ -35,3 +35,10 @@ class Project(db.Model):
 
     def __unicode__(self):
         return u'%s (%s)' % (self.name, self.slug)
+
+    def to_simple_dict(self):
+        return dict(
+            slug=self.slug,
+            name=self.name,
+            status=self.status,
+        )
