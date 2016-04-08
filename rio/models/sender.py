@@ -14,6 +14,9 @@ class Sender(db.Model):
     """to validate trusted senders."""
 
     __table_name__ = 'rio_sender'
+    __table_args__ = (
+        db.UniqueConstraint('slug', name='ux_sender_slug'),
+    )
 
     id = db.Column(db.Integer(), primary_key=True)
     slug = db.Column(db.String(64), nullable=False)

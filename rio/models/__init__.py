@@ -5,7 +5,8 @@ rio.models
 """
 
 from .utils import get_data_by_slug_or_404
-from .sender import validate as validate_sender
+
+from .sender import Sender, validate as validate_sender
 
 from .project import Project
 from .user import User
