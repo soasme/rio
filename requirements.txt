@@ -2,6 +2,7 @@ flask
 flask-sqlalchemy
 flask-migrate
 Flask-Celery-Helper
+flask-user
 celery
 redis
 PyYAML
