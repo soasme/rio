@@ -15,8 +15,7 @@ from celery.result import AsyncResult
 from celery.task.http import RemoteExecuteError
 
 from rio.core import celery
-from rio.tasks import get_webhook as apply_get_webhook
-from rio.tasks import post_webhook as apply_post_webhook
+from rio.tasks import exec_webhook
 from rio.models  import get_data_by_slug_or_404
 from .core import bp
 from .utils import require_sender
@@ -48,23 +47,9 @@ def emit_topic(project_slug, topic_slug):
     tasks = []
     payload = dict(request.values)
     for webhook in webhooks:
-        method, url = webhook['method'], webhook['url']
+        tasks.append(exec_webhook(webhook, payload))
 
-        if method not in AVAILABLE_METHODS:
-            continue
-
-        if method == 'GET':
-            runner = apply_get_webhook
-        elif method == 'POST':
-            runner = apply_post_webhook
-
-        res = runner(url, payload)
-        tasks.append({
-            'task_id': res.id,
-            'url': url,
-            'method': method
-        })
-
+    #: response
     return jsonify(tasks=tasks)
 
 
