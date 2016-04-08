@@ -19,12 +19,14 @@ requirements = [
     'flask-sqlalchemy',
     'flask-migrate',
     'Flask-Celery-Helper',
+    'flask-user',
     'celery',
     'redis',
 ]
 
 test_requirements = [
     # TODO: put package test requirements here
+    'pytest',
 ]
 
 setup(
