@@ -34,6 +34,7 @@ def post_webhook(url, payload):
     """
     return URL(url, app=celery, dispatcher=None).post_async(**payload)
 
+
 def exec_webhook(webhook, payload):
     """Executing a webhook with payload.
 

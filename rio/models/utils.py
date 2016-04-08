@@ -31,6 +31,7 @@ def ins2dict(ins, kind=''):
 
     :param ins: a SQLAlchemy instance.
     :param kind: specify which kind of dict tranformer should be called.
+    :return: dict, instance data.
 
     If model has defined `to_xxx_dict`, then ins2dict(ins, 'xxx') will
     call `model.to_xxx_dict()`. Default kind is ''.
@@ -63,7 +64,7 @@ def get_instance_by_slug(model, slug):
 
 
 def get_data_by_slug_or_404(model, slug, kind=''):
-    """safty get a instance by slug.
+    """Get instance data by slug and kind. Raise 404 Not Found if there is no data.
 
     :param model: a string, model name in rio.models
     :param slug: a string used to query by `slug`. This requires there is a

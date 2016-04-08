@@ -20,13 +20,12 @@ from rio.models  import get_data_by_slug_or_404
 from .core import bp
 from .utils import require_sender
 
-AVAILABLE_METHODS = {'GET', 'POST'}
-
 
 @bp.route('/<project_slug>/emit/<topic_slug>', methods=['GET', 'POST'])
 @require_sender
 def emit_topic(project_slug, topic_slug):
-    """Publish message to topic."""
+    """Publish message to topic.
+    """
 
     #: fetch project and topic data
     project = get_data_by_slug_or_404('project', project_slug, 'simple')
