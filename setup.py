@@ -1,12 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-
-try:
-    from setuptools import setup
-except ImportError:
-    from distutils.core import setup
-
+from setuptools import setup, find_packages
 
 with open('README.rst') as readme_file:
     readme = readme_file.read()
@@ -15,13 +10,13 @@ with open('HISTORY.rst') as history_file:
     history = history_file.read()
 
 requirements = [
-    'flask',
-    'flask-sqlalchemy',
-    'flask-migrate',
-    'Flask-Celery-Helper',
-    'flask-user',
-    'celery',
-    'redis',
+    'flask==0.10.1',
+    'flask-sqlalchemy==2.1',
+    'flask-migrate==1.8.0',
+    'Flask-Celery-Helper==1.1.0',
+    'flask-user==0.6.8',
+    'celery==3.1.23',
+    'redis==2.10.5',
 ]
 
 test_requirements = [
@@ -37,11 +32,7 @@ setup(
     author="Ju Lin",
     author_email='soasme@gmail.com',
     url='https://github.com/soasme/rio',
-    packages=[
-        'rio',
-    ],
-    package_dir={'rio':
-                 'rio'},
+    packages=['rio'],
     include_package_data=True,
     install_requires=requirements,
     license="MIT",
