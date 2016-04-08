@@ -27,7 +27,7 @@ class Webhook(db.Model):
         POST = 2
         MAP = {
             GET: 'GET',
-            GET: 'POST',
+            POST: 'POST',
         }
 
     id = db.Column(db.Integer(), primary_key=True)
