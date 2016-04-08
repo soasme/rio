@@ -17,71 +17,60 @@ from celery.task.http import RemoteExecuteError
 from rio.core import celery
 from rio.tasks import get_webhook as apply_get_webhook
 from rio.tasks import post_webhook as apply_post_webhook
-
+from rio.models  import get_data_by_slug_or_404
 from .core import bp
+from .utils import require_sender
 
 AVAILABLE_METHODS = {'GET', 'POST'}
 
-def _load_yaml(rcfile, topic):
-    """Load yaml config
 
-    :param rcfile: yaml file path
-    :param topic: as yaml file is actually a dict, topic is the key of this dict.
-    :return: return a list of tuple contained (method, url)
-    """
-    import yaml
-    try:
-        with open(rcfile) as f:
-            webhooks = yaml.load(f.read())
-            webhooks = webhooks.get(topic) or []
-            return [
-                (w.get('method', 'GET'), w.get('url'))
-                for w in webhooks
-            ]
-    except IOError:
-        pass
-
-def _load_webhooks(topic):
-    """Load webhooks by topic.
-
-    * Load from application config `RIO_WEBHOOKS`
-    * Load from yaml file `.rio.yml` in cwd/home.
-    * If `RIO_HOTRELOAD_WEBHOOKS` is set to True, Rio will try to load file per request.
-    """
-    if 'RIO_WEBHOOKS' in current_app.config:
-        return (current_app.config.get('RIO_WEBHOOKS') or {}).get(topic)
-    elif os.path.exists(os.path.join(os.getcwd(), '.rio.yml')):
-        return _load_yaml((os.path.join(os.getcwd(), '.rio.yml')), topic)
-    elif os.path.exists(os.path.join(os.environ.get('HOME'), '.rio.yml')):
-        return _load_yaml(os.path.join(os.environ.get('HOME'), '.rio.yml'), topic)
-    else:
-        return []
-
-
-@bp.route('/publish/<topic>', methods=['GET', 'POST'])
-def publish(topic):
+@bp.route('/<project_slug>/emit/<topic_slug>', methods=['GET', 'POST'])
+@require_sender
+def emit_topic(project_slug, topic_slug):
     """Publish message to topic."""
-    #: detect whether topic is in app config
-    webhooks = _load_webhooks(topic)
+
+    #: fetch project and topic data
+    project = get_data_by_slug_or_404('project', project_slug, 'simple')
+    topic = get_data_by_slug_or_404('topic', topic_slug, 'full')
+
+    #: TODO: assert project belongs to sender
+
+    #: assert topic belongs to a project
+    if topic['project']['slug'] != project['slug']:
+        return jsonify(message='forbidden'), 403
+
+    #: run nothing if topic bound no webhook
+    webhooks = topic['webhooks']
     if not webhooks:
         return jsonify(tasks=[])
 
+    #: run topic webhooks
     tasks = []
     payload = dict(request.values)
-    for method, url in webhooks:
-        method = method.upper()
+    for webhook in webhooks:
+        method, url = webhook['method'], webhook['url']
+
         if method not in AVAILABLE_METHODS:
             continue
+
         if method == 'GET':
             runner = apply_get_webhook
         elif method == 'POST':
             runner = apply_post_webhook
+
         res = runner(url, payload)
-        tasks.append({'task_id': res.id, 'url': url})
+        tasks.append({
+            'task_id': res.id,
+            'url': url,
+            'method': method
+        })
+
     return jsonify(tasks=tasks)
 
-@bp.route('/tasks/<task_id>')
-def get_task(task_id):
+
+@bp.route('/<project_slug>/tasks/<task_id>')
+@require_sender
+def get_task(project_slug, task_id):
     """Get task information.
     """
     job = AsyncResult(task_id, app=celery)
