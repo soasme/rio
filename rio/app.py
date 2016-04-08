@@ -30,7 +30,7 @@ def configure_app(app):
     app.config_from_object('rio.settings.default')
 
     if environ.get('RIO_SETTINGS'):
-        app.config_from_envvar(environ.get('RIO_SETTINGS'))
+        app.config_from_envvar('RIO_SETTINGS')
         return
 
     config_map = {
