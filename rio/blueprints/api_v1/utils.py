@@ -16,11 +16,13 @@ def require_sender(f):
     @wraps(f)
     def decorator(*args, **kwargs):
         if not request.authorization:
-            return jsonify({message='unauthorized'}), 401
+            return jsonify({'message': 'unauthorized'}), 401
 
         username = request.authorization.username
         password = request.authorization.password
 
         if not validate_sender(username, password):
-            return jsonify({message='forbidden'}), 403
+            return jsonify({'message': 'forbidden'}), 403
+
+        return f(*args, **kwargs)
     return decorator
