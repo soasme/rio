@@ -22,7 +22,7 @@ from .core import bp
 from .utils import require_sender
 
 
-@bp.route('/emit/<project_slug>/<topic_slug>', methods=['GET', 'POST'])
+@bp.route('/<project_slug>/emit/<topic_slug>', methods=['GET', 'POST'])
 @require_sender
 def emit_topic(project_slug, topic_slug):
     """Publish message to topic.
@@ -53,7 +53,7 @@ def emit_topic(project_slug, topic_slug):
     return jsonify(tasks=tasks)
 
 
-@bp.route('/tasks/<project_slug>/<task_id>')
+@bp.route('/<project_slug>/tasks/<task_id>')
 @require_sender
 def get_task(project_slug, task_id):
     """Get task information.
