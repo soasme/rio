@@ -26,6 +26,8 @@ from .utils import require_sender
 @require_sender
 def emit_topic(project_slug, topic_slug):
     """Publish message to topic.
+
+    Rio will try to trigger registered webhooks, trace running process.
     """
 
     #: fetch project and topic data
