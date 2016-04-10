@@ -17,6 +17,8 @@ requirements = [
     'flask-user==0.6.8',
     'celery==3.1.23',
     'redis==2.10.5',
+    'rb==1.4',
+    'simplejson==3.8.2',
 ]
 
 test_requirements = [
