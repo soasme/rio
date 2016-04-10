@@ -55,8 +55,12 @@ def register_blueprints(app):
     * /api/1
     * /dashboard
     """
-    from .blueprints.api_v1 import bp as api_v1_bp
-    app.register_blueprint(api_v1_bp, url_prefix='/api/1')
+
+    from .blueprints.event import bp as event_bp
+    app.register_blueprint(event_bp, url_prefix='/event')
+
+    from .blueprints.api_1 import bp as api_1_bp
+    app.register_blueprint(api_1_bp, url_prefix='/api/1')
 
     from .blueprints.dashboard import bp as dashboard_bp
     app.register_blueprint(dashboard_bp, url_prefix='/dashboard')
