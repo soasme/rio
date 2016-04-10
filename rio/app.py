@@ -11,6 +11,7 @@ from flask import Flask
 
 from .core import db
 from .core import celery
+from .core import redis
 
 def configure_app(app):
     """Configure Flask/Celery application.
@@ -64,6 +65,7 @@ def init_core(app):
     from rio import models # noqa
     db.init_app(app)
     celery.init_app(app)
+    redis.init_app(app)
 
 def create_app():
     """Flask application factory function."""
