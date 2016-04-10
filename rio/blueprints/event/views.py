@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-rio.blueprints.event.views
+rio.blueprints.api_v1.views
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Implement of rio event view functions.
+Implement of rio api v1 view functions.
 """
-import os
+
 from urllib2 import URLError
 
 from flask import jsonify
 from flask import request
-from flask import current_app
 
 from celery.result import AsyncResult
 from celery.task.http import RemoteExecuteError
@@ -18,6 +17,7 @@ from celery.task.http import RemoteExecuteError
 from rio.core import celery
 from rio.tasks import exec_webhook
 from rio.models  import get_data_by_slug_or_404
+from rio.signals import event_received
 from .core import bp
 from .utils import require_sender
 
@@ -46,6 +46,9 @@ def emit_topic(project_slug, topic_slug):
     #: run topic webhooks
     webhooks = topic['webhooks']
     tasks = [exec_webhook(w, payload) for w in webhooks]
+
+    #: trigger event
+    event_received.send('bp.event', tasks=tasks, payload=payload)
 
     #: response
     return jsonify(tasks=tasks)
