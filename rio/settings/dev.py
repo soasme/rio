@@ -8,3 +8,10 @@ SQLALCHEMY_DATABASE_URI = 'sqlite:////tmp/rio.db'
 
 CELERY_BROKER_URL = 'redis://localhost/2'
 CELERY_RESULT_BACKEND = 'db+' + SQLALCHEMY_DATABASE_URI
+
+REDIS_DEFAULT_CLUSTERS = [
+    {
+        'host': 'localhost',
+        'port': '6379'
+    },
+]
