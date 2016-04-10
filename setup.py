@@ -19,6 +19,7 @@ requirements = [
     'redis==2.10.5',
     'rb==1.4',
     'simplejson==3.8.2',
+    'blinker==1.4',
 ]
 
 test_requirements = [
