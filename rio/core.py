@@ -9,6 +9,7 @@ Definition of rio core object.
 from flask_sqlalchemy import SQLAlchemy
 from flask_celery import Celery
 from rio.exts.flask_redis_cluster import RedisCluster
+from rio.exts.flask_redis_cache import RedisCache
 
 #: db: SQLAlchemy instance for database manipulation.
 db = SQLAlchemy()
@@ -18,3 +19,6 @@ celery = Celery()
 
 #: redis
 redis = RedisCluster()
+
+#: redis cache
+cache = RedisCache()
