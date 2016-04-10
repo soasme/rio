@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+"""
+rio.blueprints.event.utils
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+"""
 
 from functools import wraps
 

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-rio.blueprints.api_v1.views
+rio.blueprints.event.views
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Implement of rio api v1 view functions.
+Implement of rio event view functions.
 """
 import os
 from urllib2 import URLError
