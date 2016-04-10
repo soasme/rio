@@ -30,6 +30,9 @@ def emit_topic(project_slug, topic_slug):
     Rio will try to trigger registered webhooks, trace running process.
     """
 
+    #: get context data
+    payload = dict(request.values)
+
     #: fetch project and topic data
     project = get_data_by_slug_or_404('project', project_slug, 'simple')
     topic = get_data_by_slug_or_404('topic', topic_slug, 'full')
@@ -40,19 +43,13 @@ def emit_topic(project_slug, topic_slug):
     if topic['project']['slug'] != project['slug']:
         return jsonify(message='forbidden'), 403
 
-    #: run nothing if topic bound no webhook
-    webhooks = topic['webhooks']
-    if not webhooks:
-        return jsonify(tasks=[])
-
     #: run topic webhooks
-    tasks = []
-    payload = dict(request.values)
-    for webhook in webhooks:
-        tasks.append(exec_webhook(webhook, payload))
+    webhooks = topic['webhooks']
+    tasks = [exec_webhook(w, payload) for w in webhooks]
 
     #: response
     return jsonify(tasks=tasks)
+
 
 
 @bp.route('/<project_slug>/tasks/<task_id>')
