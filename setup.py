@@ -20,6 +20,7 @@ requirements = [
     'rb==1.4',
     'simplejson==3.8.2',
     'blinker==1.4',
+    'requests==2.9.1',
 ]
 
 test_requirements = [
