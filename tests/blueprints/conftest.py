@@ -29,9 +29,10 @@ def project(session, owner):
     return project_
 
 @fixture
-def sender(session):
+def sender(session, project):
     from rio.models.sender import Sender
     sender_ = Sender(
+        project_id=project.id,
         slug='example-sender',
         token='*',
     )

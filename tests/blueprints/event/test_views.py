@@ -19,13 +19,6 @@ def test_emit_topic_to_undefined_topic_slug(client, sender_basic_token, project)
     resp = client.get(url, headers=headers)
     assert resp.status_code == 404
 
-@pytest.mark.xfail
-def test_emit_topic_to_topic_slug_not_belongs_to_project(session):
-    raise NotImplementedError
-
-@pytest.mark.xfail
-def test_emit_topic_that_sender_has_no_permission(session):
-    raise NotImplementedError
 
 def test_emit_topic_but_sender_has_not_logined(client, project, topic):
     url = url_for('event.emit_topic', project_slug=project.slug, topic_slug=topic.slug)
@@ -55,8 +48,3 @@ def test_emit_topic_but_webhook_ran_failed(client, project, topic, webhook, send
     data = json.loads(resp.data)
     assert data['message'] == 'ok'
     assert data['event']['uuid']
-
-
-@pytest.mark.xfail
-def test_emit_topic_should_incr_metrics(client):
-    raise NotImplementedError
