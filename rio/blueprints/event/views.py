@@ -6,6 +6,7 @@ rio.blueprints.api_v1.views
 Implement of rio api v1 view functions.
 """
 
+from uuid import uuid4
 from urllib2 import URLError
 
 from flask import jsonify
@@ -48,32 +49,34 @@ def emit_topic(project_slug, topic_slug):
     tasks = [exec_webhook(w, payload) for w in webhooks]
 
     #: trigger event
-    event_received.send('bp.event', tasks=tasks, payload=payload)
+    event_id = uuid4()
+    event_received.send('bp-event-emittopic', event_id=event_id, tasks=tasks, payload=payload)
 
     #: response
-    return jsonify(tasks=tasks)
+    resp = jsonify(tasks=tasks)
+    resp.headers['X-RIO-EVENT-ID'] = event_id
+    return resp
 
 
 
-@bp.route('/<project_slug>/tasks/<task_id>')
+@bp.route('/<project_slug>/status/<event_id>')
 @require_sender
-def get_task(project_slug, task_id):
+def get_event(project_slug, event_id):
     """Get task information.
+    find from database first: is it an recorded event?
+      fetch from database
+    find from queue second: is it running?
+      inspect status
+    abort 404: non exist or expired.
     """
-    job = AsyncResult(task_id, app=celery)
-    if job.successful():
-        result = job.get()
-    elif job.failed():
-        try:
-            job.get()
-        except RemoteExecuteError as exception:
-            result = exception.message
-        except URLError as exception:
-            result = 'URLError: ' + str(exception)
-    else:
-        result = None
-    return jsonify(task=dict(
-        id=task_id,
-        status=job.status,
-        retval=result,
-    ))
+    return jsonify(
+        status='RAN',
+        payload={},
+        tasks=[
+            {
+                'status': 'FAILURE',
+                'method': 'GET',
+                'url': 'http://example.org'
+            }
+        ]
+    )
