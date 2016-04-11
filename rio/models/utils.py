@@ -30,6 +30,8 @@ def _turn_row_to_dict(row):
 def get_model(model):
     """Get a model class by model name.
 
+    if model does not exist, this function will throw ImportError.
+
     :param model: a string of model name.
     :return: a SQLAlchemy Model.
     """
@@ -57,13 +59,44 @@ def ins2dict(ins, kind=''):
         return _turn_row_to_dict(ins)
 
 
+def get_instance(model, instance_id):
+    """Get an instance by id.
+
+    :param model: a string, model name in rio.models
+    :param id: an integer, instance id.
+    :return: None or a SQLAlchemy Model instance.
+    """
+    try:
+        model = get_model(model)
+    except ImportError:
+        return None
+
+    return model.query.get(instance_id)
+
+
+def get_data_or_404(model, instance_id, kind=''):
+    """Get instance data by id.
+
+    :param model: a string, model name in rio.models
+    :param id: an integer, instance id.
+    :param kind: a string specified which kind of dict tranformer should be called.
+    :return: data.
+    """
+    instance = get_instance(model, instance_id)
+
+    if not instance:
+        return abort(404)
+
+    return ins2dict(instance, kind)
+
+
 def get_instance_by_slug(model, slug):
-    """Get a instance by slug.
+    """Get an instance by slug.
 
     :param model: a string, model name in rio.models
     :param slug: a string used to query by `slug`. This requires there is a
                  slug field in model definition.
-    :return: a SQLAlchemy Model instance.
+    :return: None or a SQLAlchemy Model instance.
     """
     try:
         model = get_model(model)
@@ -94,11 +127,11 @@ def get_data_by_slug_or_404(model, slug, kind=''):
 
 
 def get_instance_by_bin_uuid(model, bin_uuid):
-    """Get instance by binary uuid.
+    """Get an instance by binary uuid.
 
     :param model: a string, model name in rio.models.
     :param bin_uuid: a 16-bytes binary string.
-    :return: a SQLAlchemy instance.
+    :return: None or a SQLAlchemy instance.
     """
     try:
         model = get_model(model)
