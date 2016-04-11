@@ -15,14 +15,28 @@ class Sender(db.Model):
 
     __table_name__ = 'rio_sender'
     __table_args__ = (
-        db.UniqueConstraint('slug', name='ux_sender_slug'),
+        db.UniqueConstraint('project_id', 'slug', name='ux_sender_project_and_slug'),
     )
 
     id = db.Column(db.Integer(), primary_key=True)
+    project_id = db.Column(db.Integer(), db.ForeignKey('project.id'), nullable=False)
     slug = db.Column(db.String(64), nullable=False)
     token = db.Column(db.String(40), nullable=False)
     created_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
 
-def validate(slug, token):
-    return bool(Sender.query.filter_by(slug=slug, token=token).value(func.Count(Sender.id)))
+
+def validate(project_id, slug, token):
+    """Validate whether sender have authority to emit event to project.
+
+    :param project_id: integer, project id
+    :param slug: string, sender slug
+    :param token: string, token for sender
+    :return: Boolean.
+    """
+    return bool(
+        Sender.query.filter_by(
+            project_id=project_id,
+            slug=slug,
+            token=token
+        ).value(func.Count(Sender.id)))

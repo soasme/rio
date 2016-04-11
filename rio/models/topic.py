@@ -13,7 +13,7 @@ class Topic(db.Model):
 
     __tablename__ = 'rio_topic'
     __table_args__ = (
-        db.UniqueConstraint('slug', name='ux_topic_slug'),
+        db.UniqueConstraint('project_id', 'slug', name='ux_topic_project_slug'),
     )
 
     id = db.Column(db.Integer(), primary_key=True)

@@ -37,6 +37,7 @@ class Project(db.Model):
 
     def to_simple_dict(self):
         return dict(
+            id=self.id,
             slug=self.slug,
             name=self.name,
             status=self.status,
