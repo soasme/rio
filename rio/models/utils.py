@@ -4,6 +4,7 @@ rio.models.utils
 ~~~~~~~~~~~~~~~~
 """
 
+from uuid import UUID
 from time import mktime
 from datetime import datetime
 
@@ -24,6 +25,15 @@ def _turn_row_to_dict(row):
         column.name: _formatted(getattr(row, column.name))
         for column in row.__table__.columns
     }
+
+
+def get_model(model):
+    """Get a model class by model name.
+
+    :param model: a string of model name.
+    :return: a SQLAlchemy Model.
+    """
+    return import_string('rio.models.%s.%s' % (model.lower(), model.capitalize()))
 
 
 def ins2dict(ins, kind=''):
@@ -56,7 +66,7 @@ def get_instance_by_slug(model, slug):
     :return: a SQLAlchemy Model instance.
     """
     try:
-        model = import_string('rio.models.%s.%s' % (model.lower(), model.capitalize()))
+        model = get_model(model)
     except ImportError:
         return None
 
@@ -66,6 +76,8 @@ def get_instance_by_slug(model, slug):
 def get_data_by_slug_or_404(model, slug, kind=''):
     """Get instance data by slug and kind. Raise 404 Not Found if there is no data.
 
+    This function requires model has a `slug` column.
+
     :param model: a string, model name in rio.models
     :param slug: a string used to query by `slug`. This requires there is a
                  slug field in model definition.
@@ -74,6 +86,41 @@ def get_data_by_slug_or_404(model, slug, kind=''):
     """
 
     instance = get_instance_by_slug(model, slug)
+
+    if not instance:
+        return abort(404)
+
+    return ins2dict(instance, kind)
+
+
+def get_instance_by_bin_uuid(model, bin_uuid):
+    """Get instance by binary uuid.
+
+    :param model: a string, model name in rio.models.
+    :param bin_uuid: a 16-bytes binary string.
+    :return: a SQLAlchemy instance.
+    """
+    try:
+        model = get_model(model)
+    except ImportError:
+        return None
+
+    return model.query.filter_by(**{'bin_uuid': bin_uuid}).first()
+
+
+def get_data_by_hex_uuid_or_404(model, hex_uuid, kind=''):
+    """Get instance data by uuid and kind. Raise 404 Not Found if there is no data.
+
+    This requires model has a `bin_uuid` column.
+
+    :param model: a string, model name in rio.models
+    :param hex_uuid: a hex uuid string in 24-bytes human-readable representation.
+    :return: a dict.
+    """
+    uuid = UUID(hex_uuid)
+    bin_uuid = uuid.get_bytes()
+
+    instance = get_instance_by_bin_uuid(model, bin_uuid)
 
     if not instance:
         return abort(404)
