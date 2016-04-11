@@ -49,6 +49,7 @@ class Webhook(db.Model):
 
     def to_simple_dict(self):
         return dict(
+            id=self.id,
             method=self.method,
             url=self.url,
         )
