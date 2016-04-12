@@ -30,7 +30,7 @@ def test_emit_topic_success(client, project, topic, webhook, sender_basic_token)
     url = url_for('event.emit_topic', project_slug=project.slug, topic_slug=topic.slug)
     headers = {'Authorization': 'Basic %s' % sender_basic_token}
     with requests_mock.Mocker() as m:
-        m.get('http://example.org', text='data')
+        m.get('http://example.org?key=value', text='data')
         resp = client.get(url+'?key=value', headers=headers)
     assert resp.status_code == 200
     data = json.loads(resp.data)
@@ -42,7 +42,7 @@ def test_emit_topic_but_webhook_ran_failed(client, project, topic, webhook, send
     url = url_for('event.emit_topic', project_slug=project.slug, topic_slug=topic.slug)
     headers = {'Authorization': 'Basic %s' % sender_basic_token}
     with requests_mock.Mocker() as m:
-        m.get('http://example.org', text='failed', status_code=500)
+        m.get('http://example.org?key=value', text='failed', status_code=500)
         resp = client.get(url+'?key=value', headers=headers)
     assert resp.status_code == 200
     data = json.loads(resp.data)
