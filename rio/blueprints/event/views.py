@@ -29,9 +29,6 @@ def emit_topic(project_slug, topic_slug):
     Rio will trigger all registered webhooks related to this topic and
     trace running process.
     """
-    # load payload
-    payload = dict(request.values)
-
     # fetch project
     project = get_data_by_slug_or_404('project', project_slug, 'simple')
     project_id = project['id']
@@ -61,6 +58,7 @@ def emit_topic(project_slug, topic_slug):
 
     # execute event
     event = {'uuid': uuid4(), 'project': project['slug'], 'topic': topic['slug']}
+    payload = request.values.to_dict()
     res = exec_event(event, topic['webhooks'], payload)
 
     # response
