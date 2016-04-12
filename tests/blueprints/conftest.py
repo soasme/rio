@@ -20,7 +20,7 @@ def owner(session):
 def project(session, owner):
     from rio.models.project import Project
     project_ = Project(
-        user_id=owner.id,
+        owner_id=owner.id,
         slug='example-project',
         name='Example Project',
     )

@@ -25,10 +25,11 @@ class Project(db.Model):
 
     id = db.Column(db.Integer(), primary_key=True)
     slug = db.Column(db.String(64), nullable=False)
-    name = db.Column(db.String(200), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    name = db.Column(db.String(128), nullable=False)
+    owner_id = db.Column(db.Integer, db.ForeignKey('owner.id'), nullable=False)
     status = db.Column(db.SmallInteger(), nullable=False, default=Status.VISIBLE)
-    created_at = db.Column(db.DateTime(), default=datetime.utcnow)
+    created_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
 
     topics = db.relationship('Topic', backref=db.backref('project'), lazy='dynamic')
     senders = db.relationship('Sender', backref=db.backref('project'), lazy='dynamic')
@@ -41,5 +42,4 @@ class Project(db.Model):
             id=self.id,
             slug=self.slug,
             name=self.name,
-            status=self.status,
         )

@@ -33,7 +33,7 @@ class Webhook(db.Model):
     id = db.Column(db.Integer(), primary_key=True)
     method_id = db.Column(db.SmallInteger(), nullable=False, default=Method.GET)
     topic_id = db.Column(db.Integer(), db.ForeignKey('rio_topic.id'), nullable=False)
-    url = db.Column(db.String(256), nullable=False)
+    url = db.Column(db.String(1024), nullable=False)
     created_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
 

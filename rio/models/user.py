@@ -28,7 +28,7 @@ class User(db.Model, UserMixin):
     auth_token = db.Column(db.String(128))
     active = db.Column(db.Boolean(), nullable=False, server_default='0')
 
-    projects = db.relationship('Project', backref=db.backref('user'), lazy='dynamic')
+    projects = db.relationship('Project', backref=db.backref('owner'), lazy='dynamic')
 
     def __unicode__(self):
         return 'user (%s)' % self.username
