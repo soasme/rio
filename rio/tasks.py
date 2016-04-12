@@ -11,12 +11,16 @@ from time import time
 from celery import chord
 from requests import ConnectionError
 
+from celery.utils.log import get_task_logger
+
 from rio.core import celery
 from rio.core import sentry
 from rio.utils.http import dispatch_webhook_request
 from rio.utils.http import raven_context
 from rio.utils.http import FailureWebhookError
 
+
+logger = get_task_logger(__name__)
 
 
 @celery.task()
@@ -37,8 +41,10 @@ def call_webhook(event, webhook, payload):
 
     if webhook['method'] == 'GET':
         request['params'] = payload
-    else:
+    elif webhook['headers'].get('Content-Type') == 'application/json':
         request['json'] = payload
+    else:
+        request['data'] = payload
 
     try:
         content = dispatch_webhook_request(**request)
@@ -46,12 +52,14 @@ def call_webhook(event, webhook, payload):
         if sentry.client:
             http_context = raven_context(**request)
             sentry.captureException(data={'request': http_context})
-        return dict(
+        result = dict(
             parent=str(event['uuid']),
             error=exception.message,
             started_at=started_at,
             ended_at=time(),
         )
+        logger.error(request=request, result=result)
+        return result
     return dict(
         parent=str(event['uuid']),
         content=content,
