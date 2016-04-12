@@ -5,11 +5,13 @@ rio.utils.http
 
 """
 import warnings
+from urllib import urlencode
 
 import six
 import requests
 from requests.exceptions import SSLError
 from flask import current_app
+
 from rio.core import celery
 from rio.signals import webhook_ran
 # In case SSL is unavailable (light builds) we can't import this here.
@@ -18,6 +20,7 @@ try:
 except ImportError:
     class ZeroReturnError(Exception):
         pass
+
 
 def get_user_agent():
     return 'sentry/%s' % current_app.config.get('RIO_VERSION')
@@ -29,6 +32,37 @@ def build_session():
     session = requests.Session()
     session.headers.update({'User-Agent': get_user_agent()})
     return session
+
+
+def raven_context(url, method=None, params=None, data=None, json=None,
+                  headers=None, allow_redirects=False, timeout=30,
+                  verify_ssl=True, user_agent=None):
+    headers = {
+        'User-Agent': get_user_agent(),
+    }
+
+    if json:
+        headers.setdefault('Content-Type', 'application/json')
+
+    if params:
+        query_string = urlencode(params)
+    else:
+        query_string = None
+
+    if json:
+        data = json
+
+    if not method:
+        method = 'POST' if (data or json) else 'GET'
+
+    return {
+        'method': method,
+        'url': url,
+        'query_string': query_string,
+        'data': data,
+        'headers': headers,
+    }
+
 
 def urlopen(url, method=None, params=None, data=None, json=None,
             headers=None, allow_redirects=False, timeout=30,

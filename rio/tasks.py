@@ -12,7 +12,9 @@ from celery import chord
 from requests import ConnectionError
 
 from rio.core import celery
+from rio.core import sentry
 from rio.utils.http import dispatch_webhook_request
+from rio.utils.http import raven_context
 from rio.utils.http import FailureWebhookError
 
 
@@ -41,7 +43,8 @@ def call_webhook(event, webhook, payload):
     try:
         content = dispatch_webhook_request(**request)
     except (FailureWebhookError, ConnectionError) as exception:
-        # TODO: propagate to sentry if configured with request context.
+        if sentry.client:
+            sentry.captureException(data=raven_context(**request))
         return dict(
             parent=str(event['uuid']),
             error=exception.message,
@@ -88,4 +91,5 @@ def exec_event(event, webhooks, payload):
     callback = merge_webhooks_runset.s()
 
     call_promise = chord(calls)
-    return call_promise(callback)
+    promise = call_promise(callback)
+    return promise
