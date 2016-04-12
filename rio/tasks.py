@@ -44,7 +44,8 @@ def call_webhook(event, webhook, payload):
         content = dispatch_webhook_request(**request)
     except (FailureWebhookError, ConnectionError) as exception:
         if sentry.client:
-            sentry.captureException(data=raven_context(**request))
+            http_context = raven_context(**request)
+            sentry.captureException(data={'request': http_context})
         return dict(
             parent=str(event['uuid']),
             error=exception.message,
