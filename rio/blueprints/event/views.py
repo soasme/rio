@@ -48,6 +48,7 @@ def emit_topic(project_slug, topic_slug):
     if not sender:
         return jsonify({'message': 'no such sender'}), 401
 
+    # assert sender token
     if sender['token'] != password:
         return jsonify({'message': 'wrong token'}), 401
 
