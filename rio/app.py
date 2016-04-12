@@ -14,6 +14,7 @@ from .core import celery
 from .core import redis
 from .core import cache
 from .core import sentry
+from .core import migrate
 
 def configure_app(app):
     """Configure Flask/Celery application.
@@ -74,6 +75,7 @@ def init_core(app):
     redis.init_app(app)
     cache.init_app(app)
     sentry.init_app(app)
+    migrate.init_app(app, db, 'rio/migrations')
 
 def create_app():
     """Flask application factory function."""

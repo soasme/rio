@@ -10,6 +10,7 @@ import logging
 
 from flask_sqlalchemy import SQLAlchemy
 from flask_celery import Celery
+from flask_migrate import Migrate
 from raven.contrib.flask import Sentry
 from rio.exts.flask_redis_cluster import RedisCluster
 from rio.exts.flask_redis_cache import RedisCache
@@ -31,3 +32,6 @@ logger = logging.getLogger('rio')
 
 #: sentry: Sentry Official Client
 sentry = Sentry()
+
+#: migrate: Database migration object
+migrate = Migrate()
