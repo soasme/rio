@@ -18,7 +18,7 @@ class Project(db.Model):
         VISIBLE = 0
         HIDDEN = 1
 
-    __table_name__ = 'rio_project'
+    __table_name__ = 'project'
     __table_args__ = (
         db.UniqueConstraint('slug', name='ux_project_slug'),
     )

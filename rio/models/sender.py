@@ -13,7 +13,7 @@ from rio.core import db
 class Sender(db.Model):
     """to validate trusted senders."""
 
-    __table_name__ = 'rio_sender'
+    __table_name__ = 'sender'
     __table_args__ = (
         db.UniqueConstraint('project_id', 'slug', name='ux_sender_project_and_slug'),
     )

@@ -8,7 +8,7 @@ from rio.core import db
 
 class User(db.Model, UserMixin):
 
-    __table_name__ = 'rio_user'
+    __table_name__ = 'user'
     __table_args__ = (
         db.UniqueConstraint('username', name='ux_user_username'),
         db.UniqueConstraint('email', name='ux_user_email'),

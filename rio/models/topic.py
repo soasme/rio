@@ -11,7 +11,7 @@ class Topic(db.Model):
     Topics are published and subscribed as identity of event.
     """
 
-    __tablename__ = 'rio_topic'
+    __tablename__ = 'topic'
     __table_args__ = (
         db.UniqueConstraint('project_id', 'slug', name='ux_topic_project_slug'),
     )

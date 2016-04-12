@@ -12,7 +12,7 @@ class Webhook(db.Model):
     on receiving event.
     """
 
-    __tablename__ = 'rio_webhook'
+    __tablename__ = 'webhook'
     __table_args__ = (
         db.UniqueConstraint('topic_id', 'url', name='ux_webhook_subscribe'),
     )
@@ -32,7 +32,7 @@ class Webhook(db.Model):
 
     id = db.Column(db.Integer(), primary_key=True)
     method_id = db.Column(db.SmallInteger(), nullable=False, default=Method.GET)
-    topic_id = db.Column(db.Integer(), db.ForeignKey('rio_topic.id'), nullable=False)
+    topic_id = db.Column(db.Integer(), db.ForeignKey('topic.id'), nullable=False)
     url = db.Column(db.String(1024), nullable=False)
     created_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
