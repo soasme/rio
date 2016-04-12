@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
+"""
+rio.utils.http
+~~~~~~~~~~~~~~
 
+"""
 import warnings
 
 import six

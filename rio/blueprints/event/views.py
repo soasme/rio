@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-rio.blueprints.api_v1.views
+rio.blueprints.event.views
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Implement of rio api v1 view functions.
+Implement of rio event view functions.
 """
 
 from uuid import uuid4
@@ -26,7 +26,8 @@ def not_found(error):
 def emit_topic(project_slug, topic_slug):
     """Publish message to topic.
 
-    Rio will try to trigger registered webhooks, trace running process.
+    Rio will trigger all registered webhooks related to this topic and
+    trace running process.
     """
     # load payload
     payload = dict(request.values)
