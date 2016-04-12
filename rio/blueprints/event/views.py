@@ -13,8 +13,13 @@ from flask import request
 
 from rio.tasks import exec_event
 from rio.models  import get_data_by_slug_or_404
-from rio.models  import validate_sender
 from .core import bp
+
+
+@bp.errorhandler(404)
+def not_found(error):
+    """Error handler for 404."""
+    return jsonify({'message': 'not found'}), 404
 
 
 @bp.route('/<project_slug>/emit/<topic_slug>', methods=['GET', 'POST'])
@@ -28,6 +33,7 @@ def emit_topic(project_slug, topic_slug):
 
     # fetch project
     project = get_data_by_slug_or_404('project', project_slug, 'simple')
+    project_id = project['id']
 
     # assert authorization
     if not request.authorization:
@@ -36,11 +42,16 @@ def emit_topic(project_slug, topic_slug):
     username = request.authorization.username
     password = request.authorization.password
 
-    # assert permission
-    if not validate_sender(project['id'], username, password):
-        return jsonify({'message': 'forbidden'}), 403
+    # assert sender
+    sender = get_data_by_slug_or_404('sender', username, 'sensitive', project_id=project_id)
 
-    topic = get_data_by_slug_or_404('topic', topic_slug, 'full')
+    if not sender:
+        return jsonify({'message': 'no such sender'}), 401
+
+    if sender['token'] != password:
+        return jsonify({'message': 'wrong token'}), 401
+
+    topic = get_data_by_slug_or_404('topic', topic_slug, 'full', project_id=project_id)
 
     # assert topic belongs to a project
     if topic['project']['slug'] != project['slug']:

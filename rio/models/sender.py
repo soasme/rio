@@ -25,18 +25,10 @@ class Sender(db.Model):
     created_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
 
-
-def validate(project_id, slug, token):
-    """Validate whether sender have authority to emit event to project.
-
-    :param project_id: integer, project id
-    :param slug: string, sender slug
-    :param token: string, token for sender
-    :return: Boolean.
-    """
-    return bool(
-        Sender.query.filter_by(
-            project_id=project_id,
-            slug=slug,
-            token=token
-        ).value(func.Count(Sender.id)))
+    def to_sensitive_dict(self):
+        return dict(
+            id=self.id,
+            project_id=self.project_id,
+            slug=self.slug,
+            token=self.token,
+        )
