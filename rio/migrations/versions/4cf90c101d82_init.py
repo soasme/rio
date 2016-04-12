@@ -73,6 +73,7 @@ def upgrade():
     sa.Column('method_id', sa.SmallInteger(), nullable=False),
     sa.Column('topic_id', sa.Integer(), nullable=False),
     sa.Column('url', sa.String(length=1024), nullable=False),
+    sa.Column('json_headers', sa.String(length=2048)),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
     sa.ForeignKeyConstraint(['topic_id'], ['topic.id'], ),

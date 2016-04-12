@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from rio.core import db
+from rio._compat import json
 from .utils import ins2dict
 
 class Webhook(db.Model):
@@ -34,12 +35,27 @@ class Webhook(db.Model):
     method_id = db.Column(db.SmallInteger(), nullable=False, default=Method.GET)
     topic_id = db.Column(db.Integer(), db.ForeignKey('topic.id'), nullable=False)
     url = db.Column(db.String(1024), nullable=False)
+    json_headers = db.Column(db.String(2048))
     created_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
 
     @property
     def method(self):
         return self.Method.MAP[self.method_id]
+
+    @method.setter
+    def method(self, method):
+        self.method_id = getattr(self.Method, method.upper())
+
+    @property
+    def headers(self):
+        if not self.json_headers:
+            return {}
+        return json.loads(self.json_headers)
+
+    @headers.setter
+    def headers(self, headers):
+        self.json_headers = json.dumps(headers)
 
     def to_full_dict(self):
         data = ins2dict(self)
@@ -52,4 +68,5 @@ class Webhook(db.Model):
             id=self.id,
             method=self.method,
             url=self.url,
+            headers=self.headers or {},
         )
