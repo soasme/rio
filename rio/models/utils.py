@@ -90,7 +90,7 @@ def get_data_or_404(model, instance_id, kind=''):
     return ins2dict(instance, kind)
 
 
-def get_instance_by_slug(model, slug):
+def get_instance_by_slug(model, slug, **kwargs):
     """Get an instance by slug.
 
     :param model: a string, model name in rio.models
@@ -103,10 +103,13 @@ def get_instance_by_slug(model, slug):
     except ImportError:
         return None
 
-    return model.query.filter_by(slug=slug).first()
+    query_params = dict(kwargs)
+    query_params['slug'] = slug
+
+    return model.query.filter_by(**query_params).first()
 
 
-def get_data_by_slug_or_404(model, slug, kind=''):
+def get_data_by_slug_or_404(model, slug, kind='', **kwargs):
     """Get instance data by slug and kind. Raise 404 Not Found if there is no data.
 
     This function requires model has a `slug` column.
@@ -118,7 +121,7 @@ def get_data_by_slug_or_404(model, slug, kind=''):
     :return: a dict.
     """
 
-    instance = get_instance_by_slug(model, slug)
+    instance = get_instance_by_slug(model, slug, **kwargs)
 
     if not instance:
         return abort(404)
