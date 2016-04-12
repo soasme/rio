@@ -8,7 +8,7 @@ from rio.core import db
 
 class User(db.Model, UserMixin):
 
-    __tablename__ = 'rio_user'
+    __table_name__ = 'rio_user'
     __table_args__ = (
         db.UniqueConstraint('username', name='ux_user_username'),
         db.UniqueConstraint('email', name='ux_user_email'),
@@ -28,7 +28,7 @@ class User(db.Model, UserMixin):
     auth_token = db.Column(db.String(128))
     active = db.Column(db.Boolean(), nullable=False, server_default='0')
 
-    projects = db.relationship('Project', backref='projects', lazy='dynamic')
+    projects = db.relationship('Project', backref=db.backref('user'), lazy='dynamic')
 
     def __unicode__(self):
         return 'user (%s)' % self.username

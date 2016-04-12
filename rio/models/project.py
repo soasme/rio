@@ -24,13 +24,14 @@ class Project(db.Model):
     )
 
     id = db.Column(db.Integer(), primary_key=True)
-    slug = db.Column(db.String(32), nullable=False)
+    slug = db.Column(db.String(64), nullable=False)
     name = db.Column(db.String(200), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey('rio_user.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     status = db.Column(db.SmallInteger(), nullable=False, default=Status.VISIBLE)
     created_at = db.Column(db.DateTime(), default=datetime.utcnow)
 
     topics = db.relationship('Topic', backref=db.backref('project'), lazy='dynamic')
+    senders = db.relationship('Sender', backref=db.backref('project'), lazy='dynamic')
 
     def __unicode__(self):
         return u'%s (%s)' % (self.name, self.slug)
