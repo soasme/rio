@@ -21,14 +21,18 @@ from rio.utils.http import FailureWebhookError
 def call_webhook(event, webhook, payload):
     """Build request from event,webhook,payoad and parse response."""
     started_at = time()
-    request = {'url': webhook['url'], 'method': webhook['method']}
-    request['headers'] = {
-        'X-RIO-EVENT': 'uuid=%s,project=%s,topic=%s' % (
-            str(event['uuid']),
-            event['project'],
-            event['topic']
-        ),
+    event_identity = 'uuid=%s,project=%s,topic=%s' % (
+        str(event['uuid']), event['project'], event['topic']
+    )
+
+    request = {
+        'url': webhook['url'],
+        'method': webhook['method'],
+        'headers': {
+            'X-RIO-EVENT': event_identity,
+        }
     }
+
     if webhook['method'] == 'GET':
         request['params'] = payload
     else:
@@ -37,7 +41,7 @@ def call_webhook(event, webhook, payload):
     try:
         content = dispatch_webhook_request(**request)
     except (FailureWebhookError, ConnectionError) as exception:
-        # TODO: propagate to sentry if configured.
+        # TODO: propagate to sentry if configured with request context.
         return dict(
             parent=str(event['uuid']),
             error=exception.message,
