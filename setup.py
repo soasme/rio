@@ -21,6 +21,7 @@ requirements = [
     'simplejson==3.8.2',
     'blinker==1.4',
     'requests==2.9.1',
+    'raven==5.12.0',
 ]
 
 test_requirements = [
