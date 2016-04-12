@@ -24,9 +24,9 @@ project. These operation can be done via CLI tools or Dashboard.
 
 In sender side, you need to send message::
 
-    from rio.client import Client
-    client = Client(DSN='http://*********@rio.intra.example.org/project*)
-    client.send_message('comment.published', {'ip': 127.0.0.1, 'content': 'I am a spammer'})
+    from rio_client import Client
+    client = Client(DSN='http://sender:*********@rio.intra.example.org/1/project')
+    client.emit('comment-published', {'ip': 127.0.0.1, 'content': 'I am a spammer'})
 
 In receiver side, you need to define a simple webhook. For instance, this is a
 Flask view function::
@@ -48,7 +48,7 @@ cracker have no opportunity to attack.
 
 Communication between services is a tough problem for developers. There are two
 popular paradigm to complete asynchronous lightweight messaging tasks:
-Choreography and Orchestration. And Rio have a flavour of Choreography. As
+Choreography and Orchestration. And Rio has a flavour of Choreography. As
 producer of the message doesn’t have to know what other service supposed to do,
 it just provides an event, to which consumers may respond or no. On the other
 hand, as consumer of the message doesn't have to keep listening on message
