@@ -23,7 +23,7 @@ except ImportError:
 
 
 def get_user_agent():
-    return 'sentry/%s' % current_app.config.get('RIO_VERSION')
+    return 'rio/%s' % current_app.config.get('RIO_VERSION')
 
 def build_session():
     """
