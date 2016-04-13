@@ -45,15 +45,15 @@ def sender_basic_token(sender):
     return b64encode('%s:%s' % (sender.slug, sender.token))
 
 @fixture
-def topic(session, project):
-    from rio.models.topic import Topic
-    topic_ = Topic(
+def action(session, project):
+    from rio.models.action import Action
+    action_ = Action(
         project_id=project.id,
-        slug='example-topic',
+        slug='example-action',
     )
-    session.add(topic_)
+    session.add(action_)
     session.commit()
-    return topic_
+    return action_
 
 @fixture
 def builtin_webhook(app):
@@ -62,10 +62,10 @@ def builtin_webhook(app):
         return jsonify(status='success', retval=0)
 
 @fixture
-def webhook(session, topic):
+def webhook(session, action):
     from rio.models.webhook import Webhook
     webhook_ = Webhook(
-        topic_id=topic.id,
+        action_id=action.id,
         method_id=Webhook.Method.GET,
         url='http://example.org'
     )

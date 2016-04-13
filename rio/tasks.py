@@ -24,8 +24,8 @@ logger = get_task_logger(__name__)
 
 
 def _build_request_for_calling_webhook(event, webhook, payload):
-    event_identity = 'uuid=%s,project=%s,topic=%s' % (
-        str(event['uuid']), event['project'], event['topic']
+    event_identity = 'uuid=%s,project=%s,action=%s' % (
+        str(event['uuid']), event['project'], event['action']
     )
 
     request = {

@@ -5,15 +5,15 @@ from datetime import datetime
 from rio.core import db
 from .utils import ins2dict
 
-class Topic(db.Model):
-    """Topic Model.
+class Action(db.Model):
+    """Action Model.
 
     Topics are published and subscribed as identity of event.
     """
 
-    __tablename__ = 'topic'
+    __tablename__ = 'action'
     __table_args__ = (
-        db.UniqueConstraint('project_id', 'slug', name='ux_topic_project_slug'),
+        db.UniqueConstraint('project_id', 'slug', name='ux_action_project_slug'),
     )
 
     id = db.Column(db.Integer(), primary_key=True)
@@ -23,7 +23,7 @@ class Topic(db.Model):
     created_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
 
-    webhooks = db.relationship('Webhook', backref=db.backref('topic'), lazy='dynamic')
+    webhooks = db.relationship('Webhook', backref=db.backref('action'), lazy='dynamic')
 
     def to_full_dict(self):
         data = ins2dict(self)

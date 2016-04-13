@@ -23,11 +23,11 @@ def not_found(error):
     return jsonify({'message': 'not found'}), 404
 
 
-@bp.route('/<project_slug>/emit/<topic_slug>', methods=['GET', 'POST'])
-def emit_topic(project_slug, topic_slug):
-    """Publish message to topic.
+@bp.route('/<project_slug>/emit/<action_slug>', methods=['GET', 'POST'])
+def emit_action(project_slug, action_slug):
+    """Publish message to action.
 
-    Rio will trigger all registered webhooks related to this topic and
+    Rio will trigger all registered webhooks related to this action and
     trace running process.
     """
     # fetch project
@@ -58,20 +58,20 @@ def emit_topic(project_slug, topic_slug):
     if sender['token'] != password:
         return jsonify({'message': 'wrong token'}), 401
 
-    topic = cache.run(get_data_by_slug_or_404,
-                      model='topic',
-                      slug=topic_slug,
+    action = cache.run(get_data_by_slug_or_404,
+                      model='action',
+                      slug=action_slug,
                       kind='full',
                       project_id=project_id)
 
-    # assert topic belongs to a project
-    if topic['project']['slug'] != project['slug']:
+    # assert action belongs to a project
+    if action['project']['slug'] != project['slug']:
         return jsonify(message='forbidden'), 403
 
     # execute event
-    event = {'uuid': uuid4(), 'project': project['slug'], 'topic': topic['slug']}
+    event = {'uuid': uuid4(), 'project': project['slug'], 'action': action['slug']}
     payload = request.values.to_dict()
-    res = exec_event(event, topic['webhooks'], payload)
+    res = exec_event(event, action['webhooks'], payload)
 
     # response
     return jsonify(message='ok', task={'id': res.id}, event={'uuid': event['uuid']})

@@ -24,7 +24,7 @@ API References
 .. automodule:: rio.models.project
    :members:
 
-.. automodule:: rio.models.topic
+.. automodule:: rio.models.action
    :members:
 
 .. automodule:: rio.models.webhook

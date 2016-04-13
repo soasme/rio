@@ -31,7 +31,7 @@ class Project(db.Model):
     created_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
 
-    topics = db.relationship('Topic', backref=db.backref('project'), lazy='dynamic')
+    actions = db.relationship('Action', backref=db.backref('project'), lazy='dynamic')
     senders = db.relationship('Sender', backref=db.backref('project'), lazy='dynamic')
 
     def __unicode__(self):

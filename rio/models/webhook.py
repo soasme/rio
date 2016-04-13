@@ -15,7 +15,7 @@ class Webhook(db.Model):
 
     __tablename__ = 'webhook'
     __table_args__ = (
-        db.UniqueConstraint('topic_id', 'url', name='ux_webhook_subscribe'),
+        db.UniqueConstraint('action_id', 'url', name='ux_webhook_subscribe'),
     )
 
     class Method:
@@ -33,7 +33,7 @@ class Webhook(db.Model):
 
     id = db.Column(db.Integer(), primary_key=True)
     method_id = db.Column(db.SmallInteger(), nullable=False, default=Method.GET)
-    topic_id = db.Column(db.Integer(), db.ForeignKey('topic.id'), nullable=False)
+    action_id = db.Column(db.Integer(), db.ForeignKey('action.id'), nullable=False)
     url = db.Column(db.String(1024), nullable=False)
     json_headers = db.Column(db.String(2048))
     created_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
@@ -59,8 +59,8 @@ class Webhook(db.Model):
 
     def to_full_dict(self):
         data = ins2dict(self)
-        data.pop('topic_id')
-        data['topic'] = ins2dict(self.topic, 'simple')
+        data.pop('action_id')
+        data['action'] = ins2dict(getattr(self, 'action'), 'simple')
         return data
 
     def to_simple_dict(self):
