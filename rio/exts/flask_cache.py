@@ -3,7 +3,7 @@
 rio.exts.flask_redis_cache
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 """
-
+import logging
 from time import time
 
 from flask import current_app
@@ -12,7 +12,9 @@ from werkzeug.utils import import_string
 from rio._compat import json
 from .base import Extension
 
-class MemoryClient(object):
+logger = logging.getLogger('rio.exts.flask_cache')
+
+class MemoryBackend(object):
 
     TABLE = {}
     EXPIRES = {}
@@ -41,7 +43,7 @@ class MemoryClient(object):
         self.EXPIRES[key] = time() + timeout
 
 
-class RedisClient(object):
+class RedisBackend(object):
 
     def __init__(self, **kwargs):
         assert hasattr(current_app, 'extensions')
@@ -50,12 +52,15 @@ class RedisClient(object):
         self._client = cluster.default.get_routing_client()
 
     def get(self, key):
+        """Execute `GET key` in redis."""
         return self._client.get(key)
 
     def set(self, key, value):
+        """Execute `SET key value timeout` in redis. """
         return self._client.set(key, value)
 
     def delete(self, key):
+        """Execute `DEL key` in redis."""
         return self._client.delete(key)
 
     def setex(self, key, timeout, value):
@@ -68,16 +73,16 @@ class Cache(Extension):
         """Initialize cache instance."""
         app.config.setdefault('CACHE_VERSION', '0')
         app.config.setdefault('CACHE_PREFIX', 'r')
-        app.config.setdefault('CACHE_BACKEND', 'rio.exts.flask_cache.MemoryClient')
+        app.config.setdefault('CACHE_BACKEND', 'rio.exts.flask_cache.MemoryBackend')
         app.config.setdefault('CACHE_BACKEND_OPTIONS', {})
 
     @property
     def version(self):
-        return current_app.config.get('REDIS_CACHE_VERSION')
+        return current_app.config.get('CACHE_VERSION')
 
     @property
     def prefix(self):
-        return current_app.config.get('REDIS_CACHE_PREFIX')
+        return current_app.config.get('CACHE_PREFIX')
 
     def make_key(self, key, version=None):
         """RedisCache will set prefix+version as prefix for each key."""
@@ -110,20 +115,22 @@ class Cache(Extension):
         kwargs_key = ':'.join('%s:%s' % (
             k, str(kwargs[k]).replace(' ', '')) for k in sorted(kwargs.keys()))
         key = '%s:%s:%s' % (ns, fn.__name__, kwargs_key)
-        key = self.make_key(key, version)
 
         data = self.get(key, version)
         if data is not None:
+            logger.debug('HIT %s', self.make_key(key))
             return data
         else:
+            logger.debug('MISS %s', self.make_key(key))
             data = fn(**kwargs)
             if data is not None:
+                logger.debug('CACHE %s', self.make_key(key))
                 self.set(key, data, 86400, version)
+            else:
+                logger.debug('NIL %s', self.make_key(key))
             return data
 
     def set(self, key, value, timeout=None, version=None):
-        """Execute `SET key value timeout` in redis.
-        """
         key = self.make_key(key, version=version)
         v = json.dumps(value)
         if timeout:
@@ -132,12 +139,10 @@ class Cache(Extension):
             self.client.set(key, v)
 
     def delete(self, key, version=None):
-        """Execute `DEL key` in redis."""
         key = self.make_key(key, version=version)
         self.client.delete(key)
 
     def get(self, key, version=None):
-        """Execute `GET key` in redis."""
         key = self.make_key(key, version=version)
         result = self.client.get(key)
         if result is not None:
