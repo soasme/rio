@@ -24,7 +24,7 @@ def not_found(error):
 
 
 @bp.route('/<project_slug>/emit/<action_slug>', methods=['GET', 'POST'])
-def emit_action(project_slug, action_slug):
+def emit_event(project_slug, action_slug):
     """Publish message to action.
 
     Rio will trigger all registered webhooks related to this action and
