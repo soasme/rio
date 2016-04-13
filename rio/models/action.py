@@ -8,7 +8,7 @@ from .utils import ins2dict
 class Action(db.Model):
     """Action Model.
 
-    Topics are published and subscribed as identity of event.
+    Actions are emitted and subscribed as identity of event.
     """
 
     __tablename__ = 'action'
