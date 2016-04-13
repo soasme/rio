@@ -47,7 +47,8 @@ def call_webhook(event, webhook, payload):
     else:
         request['data'] = payload
 
-    logger.debug('REQUEST %(method)s %(url)s %(payload)s' % dict(
+    logger.debug('REQUEST %(uuid)s %(method)s %(url)s %(payload)s' % dict(
+        uuid=str(event['uuid']),
         url=webhook['url'],
         method=webhook['method'],
         payload=payload,
@@ -56,7 +57,8 @@ def call_webhook(event, webhook, payload):
     try:
         content = dispatch_webhook_request(**request)
 
-        logger.debug('RESPONSE %(method)s %(url)s %(data)s' % dict(
+        logger.debug('RESPONSE %(uuid)s %(method)s %(url)s %(data)s' % dict(
+            uuid=str(event['uuid']),
             url=webhook['url'],
             method=webhook['method'],
             data=content,
@@ -66,7 +68,8 @@ def call_webhook(event, webhook, payload):
             http_context = raven_context(**request)
             sentry.captureException(data={'request': http_context})
 
-        logger.error('RESPONSE %(method)s %(url)s\n%(error)s',
+        logger.error('RESPONSE %(uuid)s %(method)s %(url)s %(error)s',
+                     uuid=str(event['uuid']),
                      method=webhook['method'],
                      url=webhook['url'],
                      error=exception.message,)
