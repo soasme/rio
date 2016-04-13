@@ -5,7 +5,7 @@ rio.setup
 """
 
 from os import environ
-from flask import Flask
+from os import path
 
 from .core import db
 from .core import celery
@@ -65,6 +65,12 @@ def register_blueprints(app):
     from .blueprints.dashboard import bp as dashboard_bp
     app.register_blueprint(dashboard_bp, url_prefix='/dashboard')
 
+
+def get_migration_assets():
+    """Get absolute path of migration assets."""
+    return path.join(path.dirname(__file__), 'migrations')
+
+
 def init_core(app):
     """Init core objects."""
     from rio import models # noqa
@@ -73,14 +79,4 @@ def init_core(app):
     redis.init_app(app)
     cache.init_app(app)
     sentry.init_app(app)
-    migrate.init_app(app, db)
-
-def create_app():
-    """Flask application factory function."""
-    app = Flask(__name__)
-    app.config_from_envvar = app.config.from_envvar
-    app.config_from_object = app.config.from_object
-    configure_app(app)
-    init_core(app)
-    register_blueprints(app)
-    return app
+    migrate.init_app(app, db, directory=get_migration_assets())
