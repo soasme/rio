@@ -83,10 +83,10 @@ def call_webhook(event, webhook, payload):
             sentry.captureException(data={'request': http_context})
 
         logger.error('RESPONSE %(uuid)s %(method)s %(url)s %(error)s' % dict(
-                     uuid=str(event['uuid']),
-                     method=webhook['method'],
-                     url=webhook['url'],
-                     error=exception.message,))
+            uuid=str(event['uuid']),
+            method=webhook['method'],
+            url=webhook['url'],
+            error=exception.message,))
 
         return dict(
             parent=str(event['uuid']),
