@@ -99,6 +99,7 @@ def call_webhook(event, webhook, payload):
 @celery.task()
 def merge_webhooks_runset(runset):
     """Make some statistics on the run set.
+
     """
     min_started_at = min([w['started_at'] for w in runset])
     max_ended_at = max([w['ended_at'] for w in runset])
@@ -117,6 +118,23 @@ def exec_event(event, webhooks, payload):
 
     Merge webhooks run set to do some stats after all
     of the webhooks been responded successfully.
+
+    +---------+
+    |webhook-1+--------------------+
+    +---------+                    |
+                                   |
+    +---------+                    |
+    |webhook-2+-------------+      |
+    +---------+             +------+-----+
+                            |merge runset+------>
+    +---------+             +------+-----+
+    |webhook-3+-------------+      |
+    +---------+                    |
+                                   |
+    +---------+                    |
+    |...      +--------------------+
+    +---------+
+
 
     Error webhook will be propagated. Note that other webhook
     calls will still execute.
