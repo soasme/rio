@@ -23,10 +23,7 @@ from rio.utils.http import FailureWebhookError
 logger = get_task_logger(__name__)
 
 
-@celery.task()
-def call_webhook(event, webhook, payload):
-    """Build request from event,webhook,payoad and parse response."""
-    started_at = time()
+def _build_request_for_calling_webhook(event, webhook, payload):
     event_identity = 'uuid=%s,project=%s,topic=%s' % (
         str(event['uuid']), event['project'], event['topic']
     )
@@ -47,12 +44,22 @@ def call_webhook(event, webhook, payload):
     else:
         request['data'] = payload
 
+    return request
+
+
+@celery.task()
+def call_webhook(event, webhook, payload):
+    """Build request from event,webhook,payoad and parse response."""
+    started_at = time()
+
     logger.debug('REQUEST %(uuid)s %(method)s %(url)s %(payload)s' % dict(
         uuid=str(event['uuid']),
         url=webhook['url'],
         method=webhook['method'],
         payload=payload,
     ))
+
+    request = _build_request_for_calling_webhook(event, webhook, payload)
 
     try:
         content = dispatch_webhook_request(**request)
@@ -63,6 +70,13 @@ def call_webhook(event, webhook, payload):
             method=webhook['method'],
             data=content,
         ))
+
+        return dict(
+            parent=str(event['uuid']),
+            content=content,
+            started_at=started_at,
+            ended_at=time()
+        )
     except (FailureWebhookError, ConnectionError) as exception:
         if sentry.client:
             http_context = raven_context(**request)
@@ -74,20 +88,12 @@ def call_webhook(event, webhook, payload):
                      url=webhook['url'],
                      error=exception.message,)
 
-        result = dict(
+        return dict(
             parent=str(event['uuid']),
             error=exception.message,
             started_at=started_at,
             ended_at=time(),
         )
-        return result
-
-    return dict(
-        parent=str(event['uuid']),
-        content=content,
-        started_at=started_at,
-        ended_at=time()
-    )
 
 
 @celery.task()
