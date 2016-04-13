@@ -13,7 +13,7 @@ from flask_celery import Celery
 from flask_migrate import Migrate
 from raven.contrib.flask import Sentry
 from rio.exts.flask_redis_cluster import RedisCluster
-from rio.exts.flask_redis_cache import RedisCache
+from rio.exts.flask_cache import Cache
 
 #: db: SQLAlchemy instance for database manipulation.
 db = SQLAlchemy()
@@ -25,7 +25,7 @@ celery = Celery()
 redis = RedisCluster()
 
 #: redis cache
-cache = RedisCache()
+cache = Cache()
 
 #: logger instance
 logger = logging.getLogger('rio')
