@@ -39,6 +39,7 @@ def call_webhook(event, webhook, payload):
         }
     }
 
+
     if webhook['method'] == 'GET':
         request['params'] = payload
     elif webhook['headers'].get('Content-Type') == 'application/json':
@@ -46,20 +47,38 @@ def call_webhook(event, webhook, payload):
     else:
         request['data'] = payload
 
+    logger.debug('REQUEST %(method)s %(url)s %(payload)s' % dict(
+        url=webhook['url'],
+        method=webhook['method'],
+        payload=payload,
+    ))
+
     try:
         content = dispatch_webhook_request(**request)
+
+        logger.debug('RESPONSE %(method)s %(url)s %(data)s' % dict(
+            url=webhook['url'],
+            method=webhook['method'],
+            data=content,
+        ))
     except (FailureWebhookError, ConnectionError) as exception:
         if sentry.client:
             http_context = raven_context(**request)
             sentry.captureException(data={'request': http_context})
+
+        logger.error('RESPONSE %(method)s %(url)s\n%(error)s',
+                     method=webhook['method'],
+                     url=webhook['url'],
+                     error=exception.message,)
+
         result = dict(
             parent=str(event['uuid']),
             error=exception.message,
             started_at=started_at,
             ended_at=time(),
         )
-        logger.error(request=request, result=result)
         return result
+
     return dict(
         parent=str(event['uuid']),
         content=content,
