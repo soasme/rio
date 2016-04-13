@@ -11,6 +11,7 @@ from uuid import uuid4
 from flask import jsonify
 from flask import request
 
+from rio.core import cache
 from rio.tasks import exec_event
 from rio.models  import get_data_by_slug_or_404
 from .core import bp
@@ -30,7 +31,10 @@ def emit_topic(project_slug, topic_slug):
     trace running process.
     """
     # fetch project
-    project = get_data_by_slug_or_404('project', project_slug, 'simple')
+    project = cache.run(get_data_by_slug_or_404,
+                        model='project',
+                        slug=project_slug,
+                        kind='simple')
     project_id = project['id']
 
     # assert authorization
@@ -41,7 +45,11 @@ def emit_topic(project_slug, topic_slug):
     password = request.authorization.password
 
     # assert sender
-    sender = get_data_by_slug_or_404('sender', username, 'sensitive', project_id=project_id)
+    sender = cache.run(get_data_by_slug_or_404,
+                       model='sender',
+                       slug=username,
+                       kind='sensitive',
+                       project_id=project_id,)
 
     if not sender:
         return jsonify({'message': 'no such sender'}), 401
@@ -50,7 +58,11 @@ def emit_topic(project_slug, topic_slug):
     if sender['token'] != password:
         return jsonify({'message': 'wrong token'}), 401
 
-    topic = get_data_by_slug_or_404('topic', topic_slug, 'full', project_id=project_id)
+    topic = cache.run(get_data_by_slug_or_404,
+                      model='topic',
+                      slug=topic_slug,
+                      kind='full',
+                      project_id=project_id)
 
     # assert topic belongs to a project
     if topic['project']['slug'] != project['slug']:
