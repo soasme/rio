@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import logging
 from uuid import uuid4
 from os import environ
 
@@ -49,3 +50,21 @@ def client(app, request):
     ctx.push()
     request.addfinalizer(ctx.pop)
     return app.test_client()
+
+def pytest_addoption(parser):
+    '''
+    Add CLI options to py.test
+    '''
+    group = parser.getgroup('logging', 'Logging Configuration')
+    group.addoption('--logging-level',
+                    dest='logging_level',
+                    default='INFO',
+                    help='log format as used by the logging module')
+    parser.addini('logging_level',
+                  'log level as used by the logging module')
+
+def pytest_configure(config):
+    logging.root.addHandler(logging.StreamHandler())
+    logging.root.setLevel(
+        getattr(logging, config.getini('logging_level') or
+                config.getvalue('logging_level')))
