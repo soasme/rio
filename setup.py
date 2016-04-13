@@ -58,5 +58,9 @@ setup(
         'Programming Language :: Python :: 3.5',
     ],
     test_suite='tests',
-    tests_require=test_requirements
+    tests_require=test_requirements,
+    entry_points='''
+        [console_scripts]
+        rio=rio.manage:main
+    '''
 )
