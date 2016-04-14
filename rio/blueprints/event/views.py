@@ -70,7 +70,14 @@ def emit_event(project_slug, action_slug):
 
     # execute event
     event = {'uuid': uuid4(), 'project': project['slug'], 'action': action['slug']}
-    payload = request.values.to_dict()
+
+    if request.headers.get('Content-Type') == 'application/json':
+        payload = request.get_json()
+    elif request.method == 'POST':
+        payload = request.form.to_dict()
+    else:
+        payload = request.args.to_dict()
+
     res = exec_event(event, action['webhooks'], payload)
 
     # response
