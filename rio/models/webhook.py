@@ -49,6 +49,17 @@ class Webhook(db.Model):
         self.method = method
         self.headers = headers or {}
 
+    @classmethod
+    def query_filter_by(cls, **kwargs):
+        queries = {}
+        if 'method' in kwargs:
+            queries['method_id'] = getattr(cls.Method, kwargs['method'].upper())
+        if 'url' in kwargs:
+            queries['url_bin_digest'] = cls.generate_url_hash(kwargs['url'])
+        if 'action_id' in kwargs:
+            queries['action_id'] = kwargs['action_id']
+        return cls.query.filter_by(**queries)
+
     @staticmethod
     def generate_url_hash(url):
         return hashlib.md5(url).digest()
