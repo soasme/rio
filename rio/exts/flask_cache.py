@@ -36,7 +36,7 @@ class MemoryBackend(object):
         if key in self.TABLE:
             del self.TABLE[key]
         if key in self.EXPIRES:
-            del self.TABLE[key]
+            del self.EXPIRES[key]
 
     def setex(self, key, timeout, value):
         self.TABLE[key] = value
@@ -129,6 +129,12 @@ class Cache(Extension):
             else:
                 logger.debug('NIL %s', self.make_key(key))
             return data
+
+    def clean(self, fn, ns='', version=None, **kwargs):
+        kwargs_key = ':'.join('%s:%s' % (
+            k, str(kwargs[k]).replace(' ', '')) for k in sorted(kwargs.keys()))
+        key = '%s:%s:%s' % (ns, fn.__name__, kwargs_key)
+        self.delete(key, version)
 
     def set(self, key, value, timeout=None, version=None):
         key = self.make_key(key, version=version)
