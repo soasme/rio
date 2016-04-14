@@ -57,7 +57,7 @@ class Webhook(db.Model):
                 queries.pop('method'), queries.pop('url')
             )
         elif 'method_id' in queries and 'url' in queries:
-            method = self.Method.MAP[queries.pop('method_id')]
+            method = cls.Method.MAP[queries.pop('method_id')]
             queries['url_digest'] = cls.generate_url_hash(method, queries.pop('url'))
         return cls.query.filter_by(**queries)
 
