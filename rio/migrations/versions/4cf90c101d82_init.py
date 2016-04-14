@@ -73,13 +73,13 @@ def upgrade():
     sa.Column('method_id', sa.SmallInteger(), nullable=False),
     sa.Column('action_id', sa.Integer(), nullable=False),
     sa.Column('raw_url', sa.String(length=1024), nullable=False),
-    sa.Column('url_bin_digest', sa.BINARY(length=16), nullable=False),
+    sa.Column('url_digest', sa.String(length=32), nullable=False),
     sa.Column('json_headers', sa.String(length=2048)),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
     sa.ForeignKeyConstraint(['action_id'], ['action.id'], ),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('action_id', 'url_bin_digest', name='ux_webhook_subscribe')
+    sa.UniqueConstraint('action_id', 'url_digest', name='ux_webhook_subscribe')
     )
     ### end Alembic commands ###
 

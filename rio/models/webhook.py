@@ -18,7 +18,7 @@ class Webhook(db.Model):
 
     __tablename__ = 'webhook'
     __table_args__ = (
-        db.UniqueConstraint('action_id', 'url_bin_digest', name='ux_webhook_subscribe'),
+        db.UniqueConstraint('action_id', 'url_digest', name='ux_webhook_subscribe'),
     )
 
     class Method:
@@ -37,7 +37,7 @@ class Webhook(db.Model):
     id = db.Column(db.Integer(), primary_key=True)
     method_id = db.Column(db.SmallInteger(), nullable=False, default=Method.GET)
     action_id = db.Column(db.Integer(), db.ForeignKey('action.id'), nullable=False)
-    url_bin_digest = db.Column(BINARY(16), nullable=False)
+    url_digest = db.Column(db.String(32), nullable=False)
     raw_url = db.Column(db.String(1024), nullable=False)
     json_headers = db.Column(db.String(2048))
     created_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
@@ -51,18 +51,20 @@ class Webhook(db.Model):
 
     @classmethod
     def query_filter_by(cls, **kwargs):
-        queries = {}
-        if 'method' in kwargs:
-            queries['method_id'] = getattr(cls.Method, kwargs['method'].upper())
-        if 'url' in kwargs:
-            queries['url_bin_digest'] = cls.generate_url_hash(kwargs['url'])
-        if 'action_id' in kwargs:
-            queries['action_id'] = kwargs['action_id']
+        queries = dict(kwargs)
+        if 'method' in queries and 'url' in queries:
+            queries['url_digest'] = cls.generate_url_hash(
+                queries.pop('method'), queries.pop('url')
+            )
+        elif 'method_id' in queries and 'url' in queries:
+            method = self.Method.MAP[queries.pop('method_id')]
+            queries['url_digest'] = cls.generate_url_hash(method, queries.pop('url'))
         return cls.query.filter_by(**queries)
 
     @staticmethod
-    def generate_url_hash(url):
-        return hashlib.md5(url).digest()
+    def generate_url_hash(method, url):
+        content = method.lower() + '.' + url.lower()
+        return hashlib.md5(content).hexdigest()
 
     @property
     def url(self):
@@ -71,7 +73,9 @@ class Webhook(db.Model):
     @url.setter
     def url(self, value):
         self.raw_url = value
-        self.url_bin_digest = self.generate_url_hash(value)
+        if self.method_id:
+            method = self.Method.MAP[self.method_id]
+            self.url_digest = self.generate_url_hash(method, value)
 
     @property
     def method(self):
@@ -80,6 +84,8 @@ class Webhook(db.Model):
     @method.setter
     def method(self, method):
         self.method_id = getattr(self.Method, method.upper())
+        if self.raw_url:
+            self.url_digest = self.generate_url_hash(method, self.raw_url)
 
     @property
     def headers(self):
