@@ -66,7 +66,7 @@ def webhook(session, action):
     from rio.models.webhook import Webhook
     webhook_ = Webhook(
         action_id=action.id,
-        method_id=Webhook.Method.GET,
+        method='GET',
         url='http://example.org'
     )
     session.add(webhook_)
