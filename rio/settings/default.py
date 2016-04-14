@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-RIO_VERSION = '0.2.3'
+RIO_VERSION = '0.2.4'
 
 CELERY_IMPORTS = [
     'celery.task.http',
