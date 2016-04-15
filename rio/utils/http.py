@@ -169,7 +169,7 @@ def extract_response(raw_response):
         raise UnknownStatusError(data)
 
 def dispatch_webhook_request(url=None, method='GET', params=None,
-                             json=None, headers=None, timeout=5):
+                             json=None, data=None, headers=None, timeout=5):
     """Task dispatching to an URL.
 
     :param url: The URL location of the HTTP callback task.
@@ -182,7 +182,7 @@ def dispatch_webhook_request(url=None, method='GET', params=None,
     if method == 'GET':
         resp = urlopen(url, method, params=params, headers=headers)
     elif method == 'POST':
-        resp = urlopen(url, method, json=json, headers=headers)
+        resp = urlopen(url, method, json=json, data=data, headers=headers)
     else:
         raise NotImplementedError
 
