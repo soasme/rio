@@ -6,17 +6,16 @@
 Welcome to rio's documentation!
 ===============================
 
-Rio is a simple, scalable and reliable distributed system to
-handle cross system event-driven programming issues.
+Rio is a simple, scalable and reliable distributed event-driven
+system.
 
-Rio is a thin wrapper of Celery and Flask, allowing you to use
-multiple kinds of broker to run async webhooks, such as RabbitMQ,
-Redis, ZeroMQ, SQLAlchemy, etc. It receives messages via RESTful
-APIs and then triggers a bunch of user-defined webhooks
-asynchronously.
+Rio receives actions via RESTful APIs and then triggers a bunch
+of subscribed webhooks simultaneously and asynchronously.
 
-Rio is still working on progress. It is Open Source and licensed
-under BSD License.
+Rio is still working in progress. Rio is a thin wrapper of Celery
+and Flask, allowing you to use multiple kinds of broker to run
+async webhooks, such as RabbitMQ, Redis, ZeroMQ, SQLAlchemy, etc.
+It is Open Source and licensed under BSD License.
 
 Contents:
 
