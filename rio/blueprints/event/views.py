@@ -59,10 +59,10 @@ def emit_event(project_slug, action_slug):
         return jsonify({'message': 'wrong token'}), 401
 
     action = cache.run(get_data_by_slug_or_404,
-                      model='action',
-                      slug=action_slug,
-                      kind='full',
-                      project_id=project_id)
+                       model='action',
+                       slug=action_slug,
+                       kind='full',
+                       project_id=project_id)
 
     # assert action belongs to a project
     if action['project']['slug'] != project['slug']:
