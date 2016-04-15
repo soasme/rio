@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import json
 import logging
 from uuid import uuid4
 from os import environ
@@ -44,12 +45,32 @@ def session(request, database):
     request.addfinalizer(fin)
     return database.session
 
+class Client(object):
+    """
+    Utility class for tests
+    """
+    def __init__(self, client):
+        self.client = client
+
+    def post(self, *args, **kwargs):
+        resp = self.client.post(*args, **kwargs)
+        if resp.headers.get('Content-Type') == 'application/json':
+            resp.json = json.loads(resp.data)
+        else:
+            resp.json = None
+        return resp
+
+    def __getattr__(self, key):
+        return getattr(self.client, key)
+
+
 @fixture
 def client(app, request):
     ctx = app.test_request_context()
     ctx.push()
     request.addfinalizer(ctx.pop)
-    return app.test_client()
+    return Client(app.test_client())
+
 
 def pytest_addoption(parser):
     '''
