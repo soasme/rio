@@ -5,9 +5,7 @@ rio.utils.inject
 """
 
 from jinja2 import Template
-import re
 
-ENV_PLACEHODLER = re.compile(r'{{\s?(\w+)\s?}}')
 
 def format_template(string='', env=None):
     """
@@ -15,8 +13,8 @@ def format_template(string='', env=None):
 
     Example:
 
-        >>> format_template('http://{{ SERVICE_HOST }}/webhook/exec', {'SERVICE_HOST': 'app'})
-        http://app/webhook/exec
+        >>> format_template(u'http://{{ SERVICE_HOST }}/webhook/exec', {'SERVICE_HOST': 'app'})
+        u'http://app/webhook/exec'
 
     :param data: string with placeholder in it.
     :param env: a dictionary.
@@ -26,3 +24,8 @@ def format_template(string='', env=None):
     """
     env = env or {}
     return Template(string).render(**env)
+
+
+if __name__ == '__main__':
+    import doctest
+    doctest.testmod()
