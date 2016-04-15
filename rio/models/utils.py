@@ -10,7 +10,9 @@ from datetime import datetime
 
 from werkzeug.utils import import_string
 from flask import abort
+from sqlalchemy.exc import IntegrityError
 
+from rio.core import db
 
 def _formatted(value):
     if isinstance(value, (int, str, long, )):
@@ -162,3 +164,30 @@ def get_data_by_hex_uuid_or_404(model, hex_uuid, kind=''):
         return abort(404)
 
     return ins2dict(instance, kind)
+
+
+def add_instance(model, _commit=True, **kwargs):
+    """Add instance to database.
+
+    :param model: a string, model name in rio.models
+    :param _commit: control whether commit data to database or not. Default True.
+    :param \*\*kwargs: persisted data.
+    :return: instance id.
+    """
+    try:
+        model = get_model(model)
+    except ImportError:
+        return None
+
+    instance = model(**kwargs)
+    db.session.add(instance)
+
+    try:
+        if _commit:
+            db.session.flush()
+        else:
+            db.session.commit()
+        return instance.id
+    except IntegrityError:
+        db.session.rollback()
+        return
