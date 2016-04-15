@@ -13,6 +13,7 @@ from .core import redis
 from .core import cache
 from .core import sentry
 from .core import migrate
+from .core import user_manager
 
 def configure_app(app):
     """Configure Flask/Celery application.
@@ -66,9 +67,23 @@ def register_blueprints(app):
     app.register_blueprint(dashboard_bp, url_prefix='/dashboard')
 
 
-def get_migration_assets():
-    """Get absolute path of migration assets."""
-    return path.join(path.dirname(__file__), 'migrations')
+def setup_user_manager(app):
+    """Setup flask-user manager."""
+
+    from flask_user import SQLAlchemyAdapter
+
+    from rio.models import User
+
+    init = dict(
+        db_adapter=SQLAlchemyAdapter(db, User),
+    )
+    user_manager.init_app(app, **init)
+
+
+def setup_migrate(app):
+    """Setup flask-migrate."""
+    directory = path.join(path.dirname(__file__), 'migrations')
+    migrate.init_app(app, db, directory=directory)
 
 
 def init_core(app):
@@ -79,4 +94,5 @@ def init_core(app):
     redis.init_app(app)
     cache.init_app(app)
     sentry.init_app(app)
-    migrate.init_app(app, db, directory=get_migration_assets())
+    setup_migrate(app)
+    setup_user_manager(app)
