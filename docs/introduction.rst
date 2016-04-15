@@ -25,7 +25,7 @@ project. These operation can be done via CLI tools or Dashboard.
 In sender side, you need to send message::
 
     from rio_client import Client
-    client = Client(DSN='http://sender:*********@rio.intra.example.org/1/project')
+    client = Client(DSN='http://sender:*********@rio.intra.example.org/project')
     client.emit('comment-published', {'ip': 127.0.0.1, 'content': 'I am a spammer'})
 
 In receiver side, you need to define a simple webhook. For instance, this is a
