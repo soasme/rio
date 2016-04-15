@@ -23,6 +23,7 @@ requirements = [
     'requests==2.9.1',
     'raven==5.12.0',
     'MySQL-python==1.2.5', # fixme
+    'awesome-slugify==1.6.5',
 ]
 
 test_requirements = [
