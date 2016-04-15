@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from datetime import datetime
 from base64 import b64encode
 
 from flask import jsonify
@@ -7,10 +8,14 @@ from pytest import fixture
 
 @fixture
 def owner(session):
+    from rio.core import user_manager
     from rio.models.user import User
     user = User(
         username='owner',
         email='owner@example.org',
+        password=user_manager.hash_password('*'),
+        is_active=True,
+        confirmed_at=datetime.utcnow()
     )
     session.add(user)
     session.commit()
