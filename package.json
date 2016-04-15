@@ -1,0 +1,23 @@
+{
+  "name": "rio",
+  "version": "0.2.8",
+  "description": "Distributed event dispatcher service.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soasme/rio.git"
+  },
+  "author": "Ju Lin",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/soasme/rio/issues"
+  },
+  "homepage": "https://github.com/soasme/rio#readme"
+}
