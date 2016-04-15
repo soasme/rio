@@ -107,3 +107,5 @@ venv/
 =======
 # PyBuilder
 target/
+
+node_moduels/
