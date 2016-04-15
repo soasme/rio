@@ -3,8 +3,6 @@ rio(WIP)
 
 run::
 
-    $ python manage.py shell
-    >>> from rio.core import db
-    >>> db.create_all()
+    $ python manage.py db upgrade
     $ celery worker -A manage:celery
     $ python manage.py runserver
