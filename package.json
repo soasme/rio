@@ -8,7 +8,8 @@
     "test": "tests"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "cross-env NODE_ENV=test mocha --recursive --compilers js:babel-register rio/assets/tests",
+    "test:watch": "npm test -- --watch"
   },
   "repository": {
     "type": "git",
@@ -19,5 +20,27 @@
   "bugs": {
     "url": "https://github.com/soasme/rio/issues"
   },
-  "homepage": "https://github.com/soasme/rio#readme"
+  "homepage": "https://github.com/soasme/rio#readme",
+  "devDependencies": {
+    "redux": "^3.4.0",
+    "babel-polyfill": "^6.3.14",
+    "react": "^0.14.7",
+    "react-dom": "^0.14.7",
+    "react-redux": "^4.1.2",
+    "babel-core": "^6.3.15",
+    "babel-loader": "^6.2.0",
+    "babel-preset-es2015": "^6.3.13",
+    "babel-preset-react": "^6.3.13",
+    "babel-preset-react-hmre": "^1.1.1",
+    "babel-register": "^6.3.13",
+    "cross-env": "^1.0.7",
+    "expect": "^1.8.0",
+    "jsdom": "^5.6.1",
+    "mocha": "^2.2.5",
+    "node-libs-browser": "^0.5.2",
+    "react-addons-test-utils": "^0.14.7",
+    "webpack": "^1.9.11",
+    "webpack-dev-middleware": "^1.2.0",
+    "webpack-hot-middleware": "^2.9.1"
+  }
 }
