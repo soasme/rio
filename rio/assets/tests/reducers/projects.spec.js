@@ -9,8 +9,11 @@ import {
 describe('project reducer', () => {
 
   it('should attach new project into projects', () => {
-    let originState = new Map()
-    let action = {type: NEW_PROJECT_SUCCESS, payload: {id: 1, slug: 'new-project'}}
+    let originState = projects(undefined, {})
+    let action = {
+      type: NEW_PROJECT_SUCCESS,
+      payload: {id: 1, slug: 'new-project'}
+    }
 
     expect(
       projects(originState, action).get(1)
