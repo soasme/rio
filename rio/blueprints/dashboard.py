@@ -12,6 +12,7 @@ from rio.utils.user import get_current_user_id
 from rio.utils.user import login_required
 from rio.utils.slugify import slugify
 from rio.models  import add_instance
+from rio.models  import delete_instance
 from rio.models  import get_data_or_404
 
 bp = Blueprint('dashboard', __name__)
@@ -51,15 +52,15 @@ def new_project():
 @bp.route('/projects/<int:project_id>', methods=['DELETE'])
 @login_required
 def delete_project(project_id):
+    """Delete Project."""
     project = get_data_or_404('project', project_id)
 
     if project['owner_id'] != get_current_user_id():
         return jsonify(message='forbidden'), 403
 
-    # TODO: implement delete_project
-    task = delete_project.delay(project_id)
+    delete_instance('project', project_id)
 
-    return jsonify()
+    return jsonify({})
 
 @bp.route('/projects/<int:project_id>/transfer', methods=['POST'])
 def transfer_project(project_id):
