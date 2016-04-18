@@ -68,6 +68,7 @@ def delete_project(project_id):
 
 
 @bp.route('/projects/<int:project_id>/senders', methods=['POST'])
+@login_required
 def add_sender(project_id):
     """Add sender."""
 
@@ -89,10 +90,22 @@ def add_sender(project_id):
     if not id:
         return jsonify(errors={'name': ['duplicated slug.']}), 400
 
-    sender = get_data_or_404('sender', id)
+    sender = get_data_or_404('sender', id, 'sensitive')
 
     return jsonify(**sender)
 
+
+@bp.route('/senders/<int:sender_id>', methods=['DELETE'])
+@login_required
+def delete_sender(sender_id):
+    sender = get_data_or_404('sender', id)
+    project = get_data_or_404('project', sender['project_id'])
+
+    if project['owner_id'] != get_current_user_id():
+        return jsonify(message='forbidden'), 403
+
+    delete_instance('sender', sender['id'])
+    return jsonify({})
 
 
 @bp.route('/projects/<int:project_id>/transfer', methods=['POST'])
