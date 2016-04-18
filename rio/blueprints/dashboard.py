@@ -1,4 +1,10 @@
 # -*- coding: utf-8 -*-
+"""
+rio.blueprints.dashboard
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+TODO
+"""
 
 import json
 
@@ -193,6 +199,7 @@ def add_webhook(action_id):
     webhook = get_data_or_404('webhook', id)
 
     return jsonify(**webhook)
+
 
 @bp.route('/webhooks/<int:webhook_id>', methods=['DELETE'])
 @login_required
