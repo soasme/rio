@@ -194,6 +194,21 @@ def add_webhook(action_id):
 
     return jsonify(**webhook)
 
+@bp.route('/webhooks/<int:webhook_id>', methods=['DELETE'])
+@login_required
+def delete_webhook(webhook_id):
+    """Delete webhook."""
+    webhook = get_data_or_404('webhook', webhook_id)
+    action = get_data_or_404('action', webhook['action_id'])
+    project = get_data_or_404('project', action['project_id'])
+
+    if project['owner_id'] != get_current_user_id():
+        return jsonify(message='forbidden'), 403
+
+    delete_instance('webhook', action['id'])
+
+    return jsonify({})
+
 
 @bp.route('/projects/<int:project_id>/transfer', methods=['POST'])
 def transfer_project(project_id):
