@@ -184,10 +184,37 @@ def add_instance(model, _commit=True, **kwargs):
 
     try:
         if _commit:
-            db.session.flush()
-        else:
             db.session.commit()
+        else:
+            db.session.flush()
         return instance.id
     except IntegrityError:
         db.session.rollback()
         return
+
+
+def delete_instance(model, instance_id, _commit=True):
+    """Delete instance.
+
+    :param model: a string, model name in rio.models.
+    :param instance_id: integer, instance id.
+    :param _commit: control whether commit data to database or not. Default True.
+    """
+    try:
+        model = get_model(model)
+    except ImportError:
+        return
+
+    instance = model.query.get(instance_id)
+    if not instance:
+        return
+
+    db.session.delete(instance)
+    try:
+        if _commit:
+            db.session.commit()
+        else:
+            db.session.flush()
+    except Exception as exception:
+        db.session.rollback()
+        raise exception
