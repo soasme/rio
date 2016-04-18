@@ -1,0 +1,15 @@
+project: example
+
+senders:
+  - slug: srv1
+    token: '{{ SRV1_SENDER_TOKEN }}'
+
+actions:
+  - slug: post-published
+    webhooks:
+      - method: POST
+        url: http://{{ SRV2 }}/webhook
+      - method: POST
+        url: http://{{ SRV3 }}/webhook
+        headers:
+          Content-Type: application/json
