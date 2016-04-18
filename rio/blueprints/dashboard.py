@@ -11,6 +11,7 @@ from wtforms.validators import Length
 from rio.utils.user import get_current_user_id
 from rio.utils.user import login_required
 from rio.utils.slugify import slugify
+from rio.utils.token import password_generator
 from rio.models  import add_instance
 from rio.models  import delete_instance
 from rio.models  import get_data_or_404
@@ -22,6 +23,9 @@ class NewProjectForm(Form):
 
 class ConfirmDeleteProjectForm(Form):
     name = StringField('Name', validators=[DataRequired(), Length(max=64)])
+
+class NewSenderForm(Form):
+    slug = StringField('slug', validators=[DataRequired(), Length(max=64)])
 
 @bp.errorhandler(404)
 def handle_not_found(exception):
@@ -61,6 +65,35 @@ def delete_project(project_id):
     delete_instance('project', project_id)
 
     return jsonify({})
+
+
+@bp.route('/projects/<int:project_id>/senders', methods=['POST'])
+def add_sender(project_id):
+    """Add sender."""
+
+    project = get_data_or_404('project', project_id)
+
+    if project['owner_id'] != get_current_user_id():
+        return jsonify(message='forbidden'), 403
+
+    form = NewSenderForm()
+    if not form.validate_on_submit():
+        return jsonify(errors=form.errors), 400
+
+    data = form.data
+    data['project_id'] = project_id
+    data['token'] = password_generator(40)
+
+    id = add_instance('sender', **data)
+
+    if not id:
+        return jsonify(errors={'name': ['duplicated slug.']}), 400
+
+    sender = get_data_or_404('sender', id)
+
+    return jsonify(**sender)
+
+
 
 @bp.route('/projects/<int:project_id>/transfer', methods=['POST'])
 def transfer_project(project_id):
