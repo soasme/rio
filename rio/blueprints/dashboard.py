@@ -139,6 +139,22 @@ def new_action(project_id):
     return jsonify(**action)
 
 
+@bp.route('/actions/<int:action_id>', methods=['DELETE'])
+@login_required
+def delete_action(action_id):
+    """Delete action."""
+    action = get_data_or_404('action', id)
+    project = get_data_or_404('project', action['project_id'])
+
+    if project['owner_id'] != get_current_user_id():
+        return jsonify(message='forbidden'), 403
+
+    delete_instance('sender', action['id'])
+
+    return jsonify({})
+
+
+
 @bp.route('/projects/<int:project_id>/transfer', methods=['POST'])
 def transfer_project(project_id):
     pass
