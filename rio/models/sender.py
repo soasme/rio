@@ -9,6 +9,7 @@ from datetime import datetime
 from sqlalchemy import func
 
 from rio.core import db
+from .utils import ins2dict
 
 class Sender(db.Model):
     """to validate trusted senders."""
@@ -32,3 +33,9 @@ class Sender(db.Model):
             slug=self.slug,
             token=self.token,
         )
+
+    def to_full_dict(self):
+        data = ins2dict(self)
+        data.pop('project_id')
+        data['project'] = ins2dict(getattr(self, 'project'), 'simple')
+        return data
