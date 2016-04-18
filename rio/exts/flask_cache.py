@@ -111,7 +111,7 @@ class Cache(Extension):
         return backend
 
 
-    def run(self, fn, ns='', version=None, **kwargs):
+    def run(self, fn, ns='', version=None, timeout=300, **kwargs):
         kwargs_key = ':'.join('%s:%s' % (
             k, str(kwargs[k]).replace(' ', '')) for k in sorted(kwargs.keys()))
         key = '%s:%s:%s' % (ns, fn.__name__, kwargs_key)
@@ -125,7 +125,7 @@ class Cache(Extension):
             data = fn(**kwargs)
             if data is not None:
                 logger.debug('CACHE %s', self.make_key(key))
-                self.set(key, data, 86400, version)
+                self.set(key, data, timeout, version)
             else:
                 logger.debug('NIL %s', self.make_key(key))
             return data
