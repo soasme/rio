@@ -67,13 +67,31 @@ class RedisBackend(object):
         return self._client.setex(key, timeout, value)
 
 
+class NullBackend(object):
+
+    def __init__(self, **kwargs):
+        pass
+
+    def get(self, key):
+        return
+
+    def set(self, key, value):
+        return
+
+    def delete(self, key):
+        return
+
+    def setex(self, key, timeout, value):
+        return
+
+
 class Cache(Extension):
 
     def init_extension(self, app):
         """Initialize cache instance."""
         app.config.setdefault('CACHE_VERSION', '0')
         app.config.setdefault('CACHE_PREFIX', 'r')
-        app.config.setdefault('CACHE_BACKEND', 'rio.exts.flask_cache.MemoryBackend')
+        app.config.setdefault('CACHE_BACKEND', 'rio.exts.flask_cache.NullBackend')
         app.config.setdefault('CACHE_BACKEND_OPTIONS', {})
 
     @property
