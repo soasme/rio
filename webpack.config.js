@@ -8,9 +8,9 @@ module.exports = {
     './rio/assets/index'
   ],
   output: {
-    path: path.join(__dirname, 'rio/static'),
+    path: path.join(__dirname, 'rio/static/dashboard'),
     filename: 'bundle.js',
-    publicPath: '/static/'
+    publicPath: '/static/dashboard'
   },
   plugins: [
     new webpack.optimize.OccurenceOrderPlugin(),
