@@ -57,11 +57,7 @@ class NewWebhookForm(Form):
 def handle_not_found(exception):
     return jsonify(message='not found'), 404
 
-@bp.route('/')
-def index():
-    return render_template('index.html')
-
-@bp.route('/projects/new', methods=['POST'])
+@bp.route('/api/projects/new', methods=['POST'])
 @login_required
 def new_project():
     """New Project."""
@@ -83,7 +79,7 @@ def new_project():
     return jsonify(**project)
 
 
-@bp.route('/projects/<int:project_id>', methods=['DELETE'])
+@bp.route('/api/projects/<int:project_id>', methods=['DELETE'])
 @login_required
 def delete_project(project_id):
     """Delete Project."""
@@ -97,7 +93,7 @@ def delete_project(project_id):
     return jsonify({})
 
 
-@bp.route('/projects/<int:project_id>/senders', methods=['POST'])
+@bp.route('/api/projects/<int:project_id>/senders', methods=['POST'])
 @login_required
 def new_sender(project_id):
     """Add sender."""
@@ -125,7 +121,7 @@ def new_sender(project_id):
     return jsonify(**sender)
 
 
-@bp.route('/senders/<int:sender_id>', methods=['DELETE'])
+@bp.route('/api/senders/<int:sender_id>', methods=['DELETE'])
 @login_required
 def delete_sender(sender_id):
     sender = get_data_or_404('sender', sender_id)
@@ -138,7 +134,7 @@ def delete_sender(sender_id):
     return jsonify({})
 
 
-@bp.route('/projects/<int:project_id>/actions', methods=['POST'])
+@bp.route('/api/projects/<int:project_id>/actions', methods=['POST'])
 @login_required
 def new_action(project_id):
     """Add action."""
@@ -165,7 +161,7 @@ def new_action(project_id):
     return jsonify(**action)
 
 
-@bp.route('/actions/<int:action_id>', methods=['DELETE'])
+@bp.route('/api/actions/<int:action_id>', methods=['DELETE'])
 @login_required
 def delete_action(action_id):
     """Delete action."""
@@ -180,7 +176,7 @@ def delete_action(action_id):
     return jsonify({})
 
 
-@bp.route('/actions/<int:action_id>/webhooks', methods=['POST'])
+@bp.route('/api/actions/<int:action_id>/webhooks', methods=['POST'])
 @login_required
 def add_webhook(action_id):
     action = get_data_or_404('action', action_id)
@@ -206,7 +202,7 @@ def add_webhook(action_id):
     return jsonify(**webhook)
 
 
-@bp.route('/webhooks/<int:webhook_id>', methods=['DELETE'])
+@bp.route('/api/webhooks/<int:webhook_id>', methods=['DELETE'])
 @login_required
 def delete_webhook(webhook_id):
     """Delete webhook."""
@@ -222,6 +218,11 @@ def delete_webhook(webhook_id):
     return jsonify({})
 
 
-@bp.route('/projects/<int:project_id>/transfer', methods=['POST'])
+@bp.route('/api/projects/<int:project_id>/transfer', methods=['POST'])
 def transfer_project(project_id):
     pass
+
+@bp.route('/', defaults={'path': ''})
+@bp.route('/<path:path>')
+def index(path):
+    return render_template('index.html')
