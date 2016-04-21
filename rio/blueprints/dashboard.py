@@ -11,6 +11,7 @@ import json
 from slugify import slugify
 from flask import Blueprint
 from flask import jsonify
+from flask import render_template
 from flask_wtf import Form
 from wtforms import StringField
 from wtforms import SelectField
@@ -55,6 +56,10 @@ class NewWebhookForm(Form):
 @bp.errorhandler(404)
 def handle_not_found(exception):
     return jsonify(message='not found'), 404
+
+@bp.route('/')
+def index():
+    return render_template('index.html')
 
 @bp.route('/projects/new', methods=['POST'])
 @login_required
