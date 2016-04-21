@@ -1,9 +1,5 @@
-import { createStore } from 'redux'
-import rioReducer from './reducers/index'
 import { render } from './components/index'
-
-const store = createStore(rioReducer)
+import Store from './store/index'
 
 render()
-
-store.subscribe(render)
+Store.subscribe(render)
