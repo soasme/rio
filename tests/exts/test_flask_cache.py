@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 
-from pytest import fixture
+from pytest import fixture, mark
 
 from rio.core import cache
 
-
+@mark.xfail
 def test_cache_function_call(app):
     def hello_world(k1, k2):
         return {'k1': 'v1', 'k2': 'v2'}
