@@ -109,3 +109,4 @@ venv/
 target/
 
 node_modules/
+rio/static/
