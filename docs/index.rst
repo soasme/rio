@@ -27,6 +27,7 @@ Contents:
    installation
    upgrading
    configuration
+   webhook
    broker
    storage_backend
    worker
