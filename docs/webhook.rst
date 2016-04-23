@@ -2,6 +2,12 @@ Webhook
 =========
 
 
+Callback URL
+-------------
+
+This is the server endpoint that will receive the webhook payload.
+You can set your webhook callback URL in dashboard.
+
 Content-Type
 -------------
 
