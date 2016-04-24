@@ -2,6 +2,10 @@ Webhook
 =========
 
 
+Setting up a Webhook
+---------------------
+
+
 Callback URL
 -------------
 
@@ -20,3 +24,12 @@ Currently, Rio support two basic ways to send data:
 The default content type of `application/www-form-urlencoded`.
 The content type  depends on how you set your webhook `Content-Type` in Webhook headers.
 Choose the one that best fits your needs.
+
+Securing your webhooks
+----------------------
+
+Setting your secret token
+`````````````````````````
+
+Validating payloads from Rio
+````````````````````````````
