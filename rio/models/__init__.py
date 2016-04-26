@@ -15,3 +15,4 @@ from .project import Project
 from .sender import Sender
 from .action import Action
 from .webhook import Webhook
+from .service import Service
