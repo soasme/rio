@@ -13,7 +13,7 @@ class Service(db.Model):
     __tablename__ = 'service'
 
     __table_args__ = (
-        db.UniqueConstraint('project_id', 'host', 'port', name='ux_domain_host_port')
+        db.UniqueConstraint('project_id', 'host', 'port', name='ux_service_project_host_port'),
     )
 
     class Type(object):
