@@ -33,6 +33,7 @@ Contents:
    worker
    cli
    monitoring
+   logging
    api_reference
 
 
