@@ -4,12 +4,15 @@ rio.blueprints.event.controllers
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 """
 
+import json
+import logging
 from uuid import uuid4
 
 from rio.core import cache
 from rio.models import get_data_by_slug_or_404
 from rio.tasks import exec_event
 
+logger = logging.getLogger('rio.event')
 
 class MissingSender(Exception):
     pass
@@ -71,6 +74,9 @@ def emit_event(project_slug, action_slug, payload, sender_name, sender_secret):
     event = {'uuid': uuid4(), 'project': project['slug'], 'action': action['slug']}
 
     res = exec_event(event, action['webhooks'], payload)
+
+    logger.info('EMIT %s "%s" "%s" %s',
+                 event['uuid'], project_slug, action_slug, json.dumps(payload))
 
     return dict(
         task=dict(
