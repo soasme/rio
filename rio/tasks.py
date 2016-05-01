@@ -18,6 +18,7 @@ from rio.core import sentry
 from rio.utils.http import dispatch_webhook_request
 from rio.utils.http import raven_context
 from rio.utils.http import FailureWebhookError
+from rio.signals import webhook_ran
 
 
 logger = get_task_logger(__name__)
@@ -64,14 +65,14 @@ def call_webhook(event, webhook, payload):
     try:
         content = dispatch_webhook_request(**request)
 
-        logger.info('RESPONSE %(uuid)s %(method)s %(url)s %(data)s' % dict(
+        logger.debug('RESPONSE %(uuid)s %(method)s %(url)s %(data)s' % dict(
             uuid=str(event['uuid']),
             url=webhook['url'],
             method=webhook['method'],
             data=content,
         ))
 
-        return dict(
+        data = dict(
             parent=str(event['uuid']),
             content=content,
             started_at=started_at,
@@ -88,12 +89,16 @@ def call_webhook(event, webhook, payload):
             url=webhook['url'],
             error=exception.message,))
 
-        return dict(
+        data = dict(
             parent=str(event['uuid']),
             error=exception.message,
             started_at=started_at,
             ended_at=time(),
         )
+
+    webhook_ran.send(None, data=data)
+
+    return data
 
 
 @celery.task()
@@ -106,11 +111,14 @@ def merge_webhooks_runset(runset):
     ellapse = max_ended_at - min_started_at
     errors_count = sum(1 for w in runset if 'error' in w)
     total_count = len(runset)
-    return dict(
+
+    data = dict(
         ellapse=ellapse,
         errors_count=errors_count,
         total_count=total_count,
     )
+
+    return data
 
 
 def exec_event(event, webhooks, payload):
