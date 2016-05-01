@@ -15,6 +15,21 @@ a bunch of HTTP webhooks will be triggered simultaneously. Logging and
 monitoring are important task as well in Rio. You can easily find out
 latest bad behaviour webhook calling and retrigger it if possible.
 
+Communication between services is a tough problem for developers. There are two
+popular paradigm to complete asynchronous lightweight messaging tasks:
+Choreography and Orchestration. And Rio has a flavour of Choreography. As
+producer of the message doesn’t have to know what other service supposed to do,
+it just provides an event, to which consumers may respond or no. On the other
+hand, as consumer of the message doesn't have to keep listening on message
+queue, it just provides an handler, to which consumer may be called or no.
+As a result, both two kinds of system need only behave theirselves.
+
+It is recommended to put webhook under firewall protection so that villainous
+cracker have no opportunity to attack.
+
+Example Usage
+-------------
+
 Rio assumes you have a sender service with SDK integrated, and some
 receiver services which implement HTTP callback tasks.
 
@@ -25,7 +40,7 @@ project. These operation can be done via CLI tools or Dashboard.
 In sender side, you need to send message::
 
     from rio_client import Client
-    client = Client(DSN='http://sender:*********@rio.intra.example.org/project')
+    client = Client(dsn='http://sender:*********@rio.intra.example.org/project')
     client.emit('comment-published', {'ip': 127.0.0.1, 'content': 'I am a spammer'})
 
 In receiver side, you need to define a simple webhook. For instance, this is a
@@ -42,15 +57,3 @@ Or in Ruby on Rails::
     def antispam_comment
         ban_ip(params[:ip]) if is_spam_content(params[:content])
         render :json => {:status => 'success', :retval => 0}
-
-It is recommended to put webhook under firewall protection so that villainous
-cracker have no opportunity to attack.
-
-Communication between services is a tough problem for developers. There are two
-popular paradigm to complete asynchronous lightweight messaging tasks:
-Choreography and Orchestration. And Rio has a flavour of Choreography. As
-producer of the message doesn’t have to know what other service supposed to do,
-it just provides an event, to which consumers may respond or no. On the other
-hand, as consumer of the message doesn't have to keep listening on message
-queue, it just provides an handler, to which consumer may be called or no.
-As a result, both two kinds of system need only behave theirselves.
