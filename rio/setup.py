@@ -66,6 +66,9 @@ def register_blueprints(app):
     from .blueprints.dashboard import bp as dashboard_bp
     app.register_blueprint(dashboard_bp, url_prefix='/dashboard')
 
+    from .blueprints.health import bp as health_bp
+    app.register_blueprint(health_bp, url_prefix='/health')
+
 
 def setup_user_manager(app):
     """Setup flask-user manager."""
