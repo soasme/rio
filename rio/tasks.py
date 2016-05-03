@@ -18,6 +18,7 @@ from rio.core import sentry
 from rio.utils.http import dispatch_webhook_request
 from rio.utils.http import raven_context
 from rio.utils.http import FailureWebhookError
+from rio.utils.template import format_template
 from rio.signals import webhook_ran
 
 
@@ -29,8 +30,11 @@ def _build_request_for_calling_webhook(event, webhook, payload):
         str(event['uuid']), event['project'], event['action']
     )
 
+    raw_url = webhook['url']
+    url = format_template(raw_url, dict(payload=payload))
+
     request = {
-        'url': webhook['url'],
+        'url': url,
         'method': webhook['method'],
         'headers': {
             'X-RIO-EVENT': event_identity,
