@@ -53,22 +53,22 @@ def call_webhook(event, webhook, payload):
     """Build request from event,webhook,payoad and parse response."""
     started_at = time()
 
+    request = _build_request_for_calling_webhook(event, webhook, payload)
+
     logger.info('REQUEST %(uuid)s %(method)s %(url)s %(payload)s' % dict(
         uuid=str(event['uuid']),
-        url=webhook['url'],
-        method=webhook['method'],
+        url=request['url'],
+        method=request['method'],
         payload=payload,
     ))
-
-    request = _build_request_for_calling_webhook(event, webhook, payload)
 
     try:
         content = dispatch_webhook_request(**request)
 
         logger.debug('RESPONSE %(uuid)s %(method)s %(url)s %(data)s' % dict(
             uuid=str(event['uuid']),
-            url=webhook['url'],
-            method=webhook['method'],
+            url=request['url'],
+            method=request['method'],
             data=content,
         ))
 
@@ -85,8 +85,8 @@ def call_webhook(event, webhook, payload):
 
         logger.error('RESPONSE %(uuid)s %(method)s %(url)s %(error)s' % dict(
             uuid=str(event['uuid']),
-            method=webhook['method'],
-            url=webhook['url'],
+            method=request['method'],
+            url=request['url'],
             error=exception.message,))
 
         data = dict(
