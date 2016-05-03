@@ -33,7 +33,7 @@ test_requirements = [
 
 setup(
     name='rio',
-    version='0.2.9',
+    version='0.3.0',
     description="RESTful event dispatcher based on celery.",
     long_description=readme + '\n\n' + history,
     author="Ju Lin",
