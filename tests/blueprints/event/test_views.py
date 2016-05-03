@@ -37,6 +37,16 @@ def test_emit_event_success(client, project, action, webhook, sender_basic_token
     assert data['message'] == 'ok'
     assert data['event']['uuid']
 
+def test_emit_templated_webhook_event(client, project, action, tpl_webhook, sender_basic_token):
+    url = url_for('event.emit_event', project_slug=project.slug, action_slug=action.slug)
+    headers = {'Authorization': 'Basic %s' % sender_basic_token}
+    with requests_mock.Mocker() as m:
+        m.get('http://example.org/tpl/1', text='data')
+        resp = client.get(url+'?id=1', headers=headers)
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert data['message'] == 'ok'
+    assert data['event']['uuid']
 
 def test_emit_event_but_webhook_ran_failed(client, project, action, webhook, sender_basic_token):
     url = url_for('event.emit_event', project_slug=project.slug, action_slug=action.slug)
