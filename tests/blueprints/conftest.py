@@ -77,3 +77,15 @@ def webhook(session, action):
     session.add(webhook_)
     session.commit()
     return webhook_
+
+@fixture
+def tpl_webhook(session, action):
+    from rio.models.webhook import Webhook
+    webhook_ = Webhook(
+        action_id=action.id,
+        method='GET',
+        url='http://example.org/tpl/{{ payload.id }}'
+    )
+    session.add(webhook_)
+    session.commit()
+    return webhook_
