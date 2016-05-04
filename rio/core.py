@@ -16,6 +16,7 @@ from flask_user import UserManager
 from raven.contrib.flask import Sentry
 from rio.exts.flask_redis_cluster import RedisCluster
 from rio.exts.flask_cache import Cache
+from rio.graph.extension import Graph
 
 #: db: SQLAlchemy instance for database manipulation.
 db = SQLAlchemy()
@@ -40,3 +41,6 @@ migrate = Migrate()
 
 #: User manager
 user_manager = UserManager()
+
+#: Graph
+graph = Graph()

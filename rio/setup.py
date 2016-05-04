@@ -14,6 +14,7 @@ from .core import cache
 from .core import sentry
 from .core import migrate
 from .core import user_manager
+from .core import graph
 
 def configure_app(app):
     """Configure Flask/Celery application.
@@ -97,5 +98,6 @@ def init_core(app):
     redis.init_app(app)
     cache.init_app(app)
     sentry.init_app(app)
+    graph.init_app(app)
     setup_migrate(app)
     setup_user_manager(app)
