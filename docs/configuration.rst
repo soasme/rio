@@ -13,10 +13,10 @@ the secret key.
 
 DO NOT LEAK IT.
 
-EVENT_STREAM_DATA_BACKEND
+GRAPH_BACKEND
 ``````````````````````````
 
-This item specifies the event stream data backend.
+This item specifies the graph backend.
 Choices:
 
 * `directory`, default
