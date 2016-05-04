@@ -9,6 +9,7 @@ import logging
 from uuid import uuid4
 
 from rio.core import cache
+from rio.core import graph
 from rio.models import get_data_by_slug_or_404
 from rio.tasks import exec_event
 
@@ -40,35 +41,11 @@ def emit_event(project_slug, action_slug, payload, sender_name, sender_secret):
     raise WrongSenderSecret if sender_secret is wrong
     raise NotAllowed if sender is not allowed to emit action to project
     """
-    project = cache.run(get_data_by_slug_or_404,
-                        model='project',
-                        slug=project_slug,
-                        kind='simple')
-    project_id = project['id']
+    project_graph = graph.get_project_graph(project_slug)
 
-    # assert sender
-    sender = cache.run(get_data_by_slug_or_404,
-                       model='sender',
-                       slug=sender_name,
-                       kind='sensitive',
-                       project_id=project_id,)
-
-    if not sender:
-        raise MissingSender
-
-    # assert sender token
-    if sender['token'] != sender_secret:
-        raise WrongSenderSecret
-
-    action = cache.run(get_data_by_slug_or_404,
-                       model='action',
-                       slug=action_slug,
-                       kind='full',
-                       project_id=project_id)
-
-    # assert action belongs to a project
-    if action['project']['slug'] != project['slug']:
-        raise NotAllowed
+    project_graph.verify_sender(sender_name, sender_secret)
+    action = project_graph.get_action(action_slug)
+    project = project_graph.project
 
     # execute event
     event = {'uuid': uuid4(), 'project': project['slug'], 'action': action['slug']}
