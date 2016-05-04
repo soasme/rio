@@ -181,7 +181,7 @@ def dispatch_webhook_request(url=None, method='GET', params=None,
     """
     if method == 'GET':
         resp = urlopen(url, method, params=params, headers=headers)
-    elif method == 'POST':
+    elif method in ('POST', 'DELETE', 'PUT'):
         resp = urlopen(url, method, json=json, data=data, headers=headers)
     else:
         raise NotImplementedError
