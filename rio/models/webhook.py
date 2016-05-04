@@ -29,9 +29,13 @@ class Webhook(db.Model):
         """
         GET = 1
         POST = 2
+        PUT = 3
+        DELETE = 4
         MAP = {
             GET: 'GET',
             POST: 'POST',
+            PUT: 'PUT',
+            DELETE: 'DELETE',
         }
 
     id = db.Column(db.Integer(), primary_key=True)
