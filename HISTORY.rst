@@ -2,6 +2,11 @@ HISTORY
 ========
 
 
+v0.3.2
+------
+
+* support PUT && DELETE method
+
 v0.3.1
 ------
 
