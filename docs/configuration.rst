@@ -13,6 +13,15 @@ the secret key.
 
 DO NOT LEAK IT.
 
+EVENT_STREAM_DATA_BACKEND
+``````````````````````````
+
+This item specifies the event stream data backend.
+Choices:
+
+* `directory`, default
+* `sqlalchemy`
+
 SQLALCHEMY_DATABASE_URI
 ````````````````````````
 
