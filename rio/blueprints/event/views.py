@@ -10,13 +10,17 @@ from flask import jsonify
 from flask import request
 
 from rio.signals import event_received
+from rio.graph import MissingAction
+from rio.graph import MissingSender
+from rio.graph import WrongSenderSecret
+from rio.graph import MissingProject
+from rio.graph import NotAllowed
 from .core import bp
 from .controllers import emit_event as _emit_event
-from .controllers import MissingSender
-from .controllers import WrongSenderSecret
-from .controllers import NotAllowed
 
-@bp.errorhandler(404)
+@bp.errorhandler(MissingAction)
+@bp.errorhandler(MissingSender)
+@bp.errorhandler(MissingProject)
 def not_found(error):
     """Error handler for 404."""
     return jsonify({'message': 'not found'}), 404
