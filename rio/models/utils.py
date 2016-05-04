@@ -77,6 +77,16 @@ def get_instance(model, instance_id):
 
 
 def get_data_or_404(model, instance_id, kind=''):
+    """Wrap `get_data`, when missing data, raise BadRequest.
+    """
+    data = get_data(model, instance_id, kind)
+
+    if not data:
+        return abort(404)
+
+    return data
+
+def get_data(model, instance_id, kind=''):
     """Get instance data by id.
 
     :param model: a string, model name in rio.models
@@ -87,7 +97,7 @@ def get_data_or_404(model, instance_id, kind=''):
     instance = get_instance(model, instance_id)
 
     if not instance:
-        return abort(404)
+        return
 
     return ins2dict(instance, kind)
 
@@ -111,7 +121,7 @@ def get_instance_by_slug(model, slug, **kwargs):
     return model.query.filter_by(**query_params).first()
 
 
-def get_data_by_slug_or_404(model, slug, kind='', **kwargs):
+def get_data_by_slug(model, slug, kind='', **kwargs):
     """Get instance data by slug and kind. Raise 404 Not Found if there is no data.
 
     This function requires model has a `slug` column.
@@ -120,15 +130,24 @@ def get_data_by_slug_or_404(model, slug, kind='', **kwargs):
     :param slug: a string used to query by `slug`. This requires there is a
                  slug field in model definition.
     :param kind: a string specified which kind of dict tranformer should be called.
-    :return: a dict.
+    :return: a dict or None.
     """
 
     instance = get_instance_by_slug(model, slug, **kwargs)
 
     if not instance:
-        return abort(404)
+        return
 
     return ins2dict(instance, kind)
+
+def get_data_by_slug_or_404(model, slug, kind='', **kwargs):
+    """Wrap get_data_by_slug, abort 404 if missing data."""
+    data = get_data_by_slug(model, slug, kind, **kwargs)
+
+    if not data:
+        abort(404)
+
+    return data
 
 
 def get_instance_by_bin_uuid(model, bin_uuid):
