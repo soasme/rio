@@ -7,3 +7,6 @@ celery
 redis
 PyYAML
 flask-socketio
+Sphinx==1.3.5
+Sphinx-PyPI-upload==0.2.1
+sphinx-rtd-theme==0.1.9
