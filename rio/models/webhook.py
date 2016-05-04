@@ -24,7 +24,7 @@ class Webhook(db.Model):
     class Method:
         """HTTP Methods.
 
-        Currently, only GET/POST are supported.
+        Currently, only GET/POST/PUT/DELETE are supported.
         For database effencity, this field will be stored as integer.
         """
         GET = 1
