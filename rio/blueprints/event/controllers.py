@@ -27,7 +27,8 @@ class NotAllowed(Exception):
     pass
 
 
-def emit_event(project_slug, action_slug, payload, sender_name, sender_secret):
+def emit_event(project_slug, action_slug, payload, sender_name, sender_secret,
+               event_uuid=None):
     """Emit Event.
 
     :param project_slug: the slug of the project
@@ -48,18 +49,19 @@ def emit_event(project_slug, action_slug, payload, sender_name, sender_secret):
     project = project_graph.project
 
     # execute event
-    event = {'uuid': uuid4(), 'project': project['slug'], 'action': action['slug']}
+    event_uuid = event_uuid or uuid4()
+    event = {'uuid': event_uuid, 'project': project['slug'], 'action': action['slug']}
 
     res = exec_event(event, action['webhooks'], payload)
 
     logger.info('EMIT %s "%s" "%s" %s',
-                 event['uuid'], project_slug, action_slug, json.dumps(payload))
+                 event_uuid, project_slug, action_slug, json.dumps(payload))
 
     return dict(
         task=dict(
             id=res.id,
         ),
         event=dict(
-            uuid=event['uuid'],
+            uuid=event_uuid,
         ),
     )

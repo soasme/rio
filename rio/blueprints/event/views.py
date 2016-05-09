@@ -45,6 +45,7 @@ def emit_event(project_slug, action_slug):
     Rio will trigger all registered webhooks related to this action and
     trace running process.
     """
+
     if request.headers.get('Content-Type') == 'application/json':
         payload = request.get_json()
     elif request.method == 'POST':
@@ -58,7 +59,11 @@ def emit_event(project_slug, action_slug):
     sender_name = request.authorization.username
     sender_secret = request.authorization.password
 
-    data = _emit_event(project_slug, action_slug, payload, sender_name, sender_secret)
+    event_uuid = request.headers.get('X-Rio-Event-UUID') or \
+           request.headers.get('X-B3-TraceId')
+
+    data = _emit_event(project_slug, action_slug, payload, sender_name, sender_secret,
+                       event_uuid=event_uuid)
     data['message'] = 'ok'
 
     event_received.send(None, project_slug=project_slug, data=data)
