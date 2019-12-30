@@ -20,7 +20,7 @@ requirements = [
     'rb==1.4',
     'simplejson==3.8.2',
     'blinker==1.4',
-    'requests==2.9.1',
+    'requests==2.20.0',
     'raven==5.12.0',
     'MySQL-python==1.2.5', # fixme
     'awesome-slugify==1.6.5',
