@@ -10,7 +10,7 @@ with open('HISTORY.rst') as history_file:
     history = history_file.read()
 
 requirements = [
-    'flask==0.10.1',
+    'flask==1.0',
     'flask-sqlalchemy==2.1',
     'flask-migrate==1.8.0',
     'Flask-Celery-Helper==1.1.0',
