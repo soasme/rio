@@ -27,7 +27,7 @@ class StepStartEvent:
 
 @dataclass(frozen=True, slots=True)
 class ReasoningDiscardedEvent:
-    """R_t: surfaced once for observability, then never sent back to the model."""
+    """The model's reasoning for this step. Surfaced once for observability, then never sent back to the model."""
 
     step: int
     reasoning: str
@@ -35,7 +35,7 @@ class ReasoningDiscardedEvent:
 
 @dataclass(frozen=True, slots=True)
 class ValidationErrorEvent:
-    """A proposed ΔΣ_t or a_t failed runtime validation; a rollback-retry follows."""
+    """A proposed state update or action failed runtime validation; a rollback-retry follows."""
 
     step: int
     attempt: int
@@ -44,7 +44,7 @@ class ValidationErrorEvent:
 
 @dataclass(frozen=True, slots=True)
 class StateUpdateEvent:
-    """Σ_{t+1} = Σ_t ⊕ ΔΣ_t was validated and committed."""
+    """The proposed state update was validated and committed to form the new state."""
 
     step: int
     delta: JSONObject

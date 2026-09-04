@@ -1,15 +1,17 @@
 """Algorithm 1 from arXiv:2608.26263: the SKILL.state execution loop.
 
-At each step t the runtime sends exactly A_t = (P, Σ_t, O_t) to the model --
-never a growing transcript. The model must respond with one `skill_step`
-tool call carrying (R_t, ΔΣ_t, a_t): private reasoning, a state delta, and an
-action. The runtime validates ΔΣ_t and a_t deterministically; an invalid
-proposal triggers a rollback-retry cycle (bounded by `max_retries`) rather
-than being committed. On success, Σ_{t+1} is committed, R_t is discarded
-forever, a_t is executed to produce O_{t+1}, and the loop repeats.
+At each step, the runtime sends the model only three things: the skill
+instructions, the current state, and the latest observation. It never sends
+a growing transcript. The model must respond with one `skill_step` tool
+call carrying its private reasoning, a state update, and an action. The
+runtime checks the state update and the action; an invalid proposal
+triggers a rollback-retry cycle, bounded by `max_retries`, instead of being
+committed. On success, the runtime commits the new state, discards the
+reasoning for good, runs the action to get the next observation, and the
+loop repeats.
 
-Because A_t never includes history, cumulative prompt size grows as O(T)
-rather than the O(T^2) of an append-only conversation baseline -- see
+Because the prompt never includes history, total prompt size across a run
+grows in proportion to the number of steps, not the square of it -- see
 `tests/test_rio_agent_loop.py::test_prompt_footprint_is_bounded_across_steps`
 for a runtime check of that property.
 """

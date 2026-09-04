@@ -1,11 +1,10 @@
-"""SkillSpec: the immutable procedural specification P plus the domain's
-state schema and action tools (arXiv:2608.26263 §3.1).
+"""SkillSpec: the fixed instructions for a domain, plus its state schema and
+action tools (arXiv:2608.26263 §3.1).
 
-A skill is authored once per domain, not per task instance -- the paper's
-central claim is that P and the shape of Σ stay fixed across an entire
-execution horizon T while only Σ_t and the latest observation O_t vary, and
-that is what keeps each step's prompt at O(|P| + |Σ| + |O|) rather than
-growing with t.
+You write a skill once per domain, not once per task. The instructions and
+the shape of the state stay the same for the whole run. Only the state
+values and the latest observation change from step to step. That is why
+each step's prompt stays a fixed size instead of growing as the run goes on.
 """
 
 from __future__ import annotations

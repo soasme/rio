@@ -1,10 +1,10 @@
-"""Execution state Σ and the ΔΣ merge rule from arXiv:2608.26263 (§3.1, Algorithm 1).
+"""How the execution state is updated (arXiv:2608.26263 §3.1, Algorithm 1).
 
-Σ is a plain JSON object. A step proposes ΔΣ, a partial update; the runtime
-commits Σ_{t+1} = Σ_t ⊕ ΔΣ_t using RFC 7396 JSON Merge Patch semantics: a
-`null` value deletes the key, an object value merges recursively, anything
-else replaces the key in place. This is the "dictionary merge with
-null-deletion semantics" the paper describes.
+The state is a plain JSON object. Each step proposes a partial update. The
+runtime merges it into the state using RFC 7396 JSON Merge Patch rules: a
+`null` value deletes the key, an object value merges recursively, and any
+other value replaces the key in place. The paper calls this a dictionary
+merge with null-deletion semantics.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from rio_ai.types import JSONObject, JSONValue
 
 
 def apply_state_delta(state: JSONObject, delta: Mapping[str, JSONValue]) -> JSONObject:
-    """Return Σ_{t+1} = Σ_t ⊕ ΔΣ_t. Does not mutate `state`."""
+    """Merge `delta` into `state` and return the new state. Does not change `state` in place."""
     result = dict(state)
     for key, value in delta.items():
         if value is None:

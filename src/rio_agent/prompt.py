@@ -1,13 +1,14 @@
-"""The per-step prompt A_t = (P, Σ_t, O_t) (arXiv:2608.26263 Appendix A.4).
+"""The per-step prompt sent to the model (arXiv:2608.26263 Appendix A.4).
 
-P is sent as the provider `system` string. Σ_t and O_t are the only other
-inputs -- no historical observations, actions, or reasoning traces are ever
-included, which is what bounds the per-step prompt size independently of
-how many steps have already run.
+The skill instructions are sent as the provider's `system` string. The
+current state and the latest observation are the only other inputs -- no
+past observations, actions, or reasoning traces are ever included, which is
+what keeps the per-step prompt a fixed size no matter how many steps have
+already run.
 
-The model reports its step output -- (R_t reasoning, ΔΣ_t state update, a_t
-action) -- by calling a single mandatory `skill_step` tool. Free-text/
-thinking content preceding that call is R_t; the runtime reads it for
+The model reports its output for the step -- reasoning, a state update, and
+an action -- by calling a single mandatory `skill_step` tool. Any free text
+or thinking before that call is the reasoning; the runtime reads it for
 observability then discards it forever (see `rio_agent.loop`).
 """
 
@@ -37,7 +38,7 @@ async def _skill_step_not_executed(
 
 
 def skill_step_tool(skill: SkillSpec) -> AgentTool:
-    """The one tool the model may call each step, forcing structured (R_t, ΔΣ_t, a_t) output."""
+    """The one tool the model may call each step. It forces structured output: reasoning, a state update, and an action."""
     parameters: JSONObject = {
         "type": "object",
         "properties": {
@@ -84,7 +85,7 @@ def build_step_messages(
     *,
     error_note: str | None = None,
 ) -> list[AgentMessage]:
-    """Build A_t's non-system half: exactly Σ_t and O_t, nothing else."""
+    """Build the non-system half of the prompt: the current state and the latest observation, nothing else."""
     body = (
         "Skill Execution State:\n```json\n"
         + json.dumps(state, indent=2, sort_keys=True)

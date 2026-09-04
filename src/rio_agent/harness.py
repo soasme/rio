@@ -5,8 +5,8 @@ Deliberately mirrors the public shape of `rio_ai`'s ported tau_agent-style
 call `run()`/`prompt()` to drive it, `cancel()` to stop it -- so callers
 already familiar with that loop interface can pick this one up directly.
 The difference is entirely internal: instead of holding a growing message
-transcript, this harness holds only the current execution state Σ_t and
-replays `run_skill_loop`'s bounded per-step prompt.
+transcript, this harness holds only the current execution state and
+replays `run_skill_loop`'s fixed-size per-step prompt.
 """
 
 from __future__ import annotations
