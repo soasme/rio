@@ -1,0 +1,159 @@
+"""Algorithm 1 from arXiv:2608.26263: the SKILL.state execution loop.
+
+At each step t the runtime sends exactly A_t = (P, Σ_t, O_t) to the model --
+never a growing transcript. The model must respond with one `skill_step`
+tool call carrying (R_t, ΔΣ_t, a_t): private reasoning, a state delta, and an
+action. The runtime validates ΔΣ_t and a_t deterministically; an invalid
+proposal triggers a rollback-retry cycle (bounded by `max_retries`) rather
+than being committed. On success, Σ_{t+1} is committed, R_t is discarded
+forever, a_t is executed to produce O_{t+1}, and the loop repeats.
+
+Because A_t never includes history, cumulative prompt size grows as O(T)
+rather than the O(T^2) of an append-only conversation baseline -- see
+`tests/test_rio_agent_loop.py::test_prompt_footprint_is_bounded_across_steps`
+for a runtime check of that property.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+
+from rio_agent.errors import ActionNotFoundError, RetriesExhaustedError, StateValidationError
+from rio_agent.events import (
+    ActionEndEvent,
+    ActionStartEvent,
+    ReasoningDiscardedEvent,
+    RunEndEvent,
+    RunStartEvent,
+    SkillEvent,
+    StateUpdateEvent,
+    StepEndEvent,
+    StepStartEvent,
+    ValidationErrorEvent,
+)
+from rio_agent.prompt import STEP_TOOL_NAME, build_step_messages, skill_step_tool
+from rio_agent.skill import SkillSpec
+from rio_agent.state import apply_state_delta, validate_state_delta
+from rio_ai.messages import AssistantMessage
+from rio_ai.provider import CancellationToken, ModelProvider
+from rio_ai.provider_events import AssistantDoneEvent, AssistantErrorEvent
+
+
+async def run_skill_loop(
+    *,
+    provider: ModelProvider,
+    model: str,
+    skill: SkillSpec,
+    observation: str,
+    state: dict | None = None,
+    max_steps: int | None = None,
+    max_retries: int = 2,
+    signal: CancellationToken | None = None,
+) -> AsyncIterator[SkillEvent]:
+    """Run the SKILL.state loop, yielding one event per lifecycle transition."""
+    state = dict(state if state is not None else skill.initial_state)
+    actions = skill.action_by_name()
+    tool = skill_step_tool(skill)
+
+    yield RunStartEvent(skill=skill.name)
+
+    step = 0
+    current_observation = observation
+    terminated = False
+    while max_steps is None or step < max_steps:
+        if signal is not None and signal.is_cancelled():
+            break
+
+        yield StepStartEvent(step=step, state=dict(state), observation=current_observation)
+
+        delta, action_name, action_arguments = None, None, None
+        error_note: str | None = None
+        attempt = 0
+        while True:
+            messages = build_step_messages(state, current_observation, error_note=error_note)
+            assistant = await _call_model(
+                provider, model, skill.instructions, messages, [tool], signal
+            )
+            call = next(
+                (c for c in assistant.tool_calls if c.name == STEP_TOOL_NAME),
+                None,
+            )
+            if call is None:
+                error_note = (
+                    f"you must call the `{STEP_TOOL_NAME}` tool exactly once; "
+                    f"stop_reason was {assistant.stop_reason!r}"
+                )
+                attempt += 1
+                yield ValidationErrorEvent(step=step, attempt=attempt, error=error_note)
+                if attempt > max_retries:
+                    raise RetriesExhaustedError(error_note)
+                continue
+
+            if assistant.text:
+                yield ReasoningDiscardedEvent(step=step, reasoning=assistant.text)
+
+            proposed_delta = call.arguments.get("state_delta")
+            proposed_action = call.arguments.get("action") or {}
+            try:
+                if not isinstance(proposed_delta, dict):
+                    raise StateValidationError(
+                        f"state_delta must be a JSON object, got {type(proposed_delta).__name__}"
+                    )
+                validate_state_delta(proposed_delta, allowed_fields=skill.state_fields)
+                candidate_name = proposed_action.get("name")
+                if candidate_name not in actions:
+                    raise ActionNotFoundError(
+                        f"unknown action {candidate_name!r}; declared actions are {sorted(actions)}"
+                    )
+            except (StateValidationError, ActionNotFoundError) as exc:
+                error_note = str(exc)
+                attempt += 1
+                yield ValidationErrorEvent(step=step, attempt=attempt, error=error_note)
+                if attempt > max_retries:
+                    raise RetriesExhaustedError(error_note) from exc
+                continue
+
+            delta = proposed_delta
+            action_name = candidate_name
+            action_arguments = dict(proposed_action.get("arguments") or {})
+            break
+
+        state = apply_state_delta(state, delta)
+        yield StateUpdateEvent(step=step, delta=dict(delta), state=dict(state))
+
+        yield ActionStartEvent(step=step, name=action_name, arguments=dict(action_arguments))
+        result = await actions[action_name].execute(
+            f"{skill.name}-step-{step}", action_arguments, signal
+        )
+        yield ActionEndEvent(step=step, name=action_name, result=result, is_error=False)
+
+        terminated = bool(result.terminate)
+        yield StepEndEvent(step=step, state=dict(state), terminated=terminated)
+
+        step += 1
+        if terminated:
+            break
+        current_observation = result.text or "(no observation)"
+
+    yield RunEndEvent(steps=step, state=dict(state))
+
+
+async def _call_model(
+    provider: ModelProvider,
+    model: str,
+    system: str,
+    messages: list,
+    tools: list,
+    signal: CancellationToken | None,
+) -> AssistantMessage:
+    result: AssistantMessage | None = None
+    async for event in provider.stream_response(
+        model=model, system=system, messages=messages, tools=tools, signal=signal
+    ):
+        if isinstance(event, AssistantDoneEvent):
+            result = event.message
+        elif isinstance(event, AssistantErrorEvent):
+            result = event.error
+    if result is None:
+        raise RuntimeError("provider produced no assistant message")
+    return result
