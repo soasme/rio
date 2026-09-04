@@ -1,10 +1,9 @@
-"""How the execution state is updated (arXiv:2608.26263 §3.1, Algorithm 1).
+"""How the execution state is updated.
 
 The state is a plain JSON object. Each step proposes a partial update. The
 runtime merges it into the state using RFC 7396 JSON Merge Patch rules: a
 `null` value deletes the key, an object value merges recursively, and any
-other value replaces the key in place. The paper calls this a dictionary
-merge with null-deletion semantics.
+other value replaces the key in place.
 """
 
 from __future__ import annotations
@@ -36,8 +35,8 @@ def validate_state_delta(
     """Reject a delta that isn't a JSON object or that touches undeclared fields.
 
     `allowed_fields` is the domain's schema, authored once per skill rather
-    than per task (paper §4.1). Passing `None` skips the field-membership
-    check for skills that don't declare a fixed schema.
+    than per task. Passing `None` skips the field-membership check for
+    skills that don't declare a fixed schema.
     """
     if not isinstance(delta, Mapping):
         raise StateValidationError(f"state_delta must be a JSON object, got {type(delta).__name__}")

@@ -1,4 +1,4 @@
-"""The per-step prompt sent to the model (arXiv:2608.26263 Appendix A.4).
+"""The per-step prompt sent to the model.
 
 The skill instructions are sent as the provider's `system` string. The
 current state and the latest observation are the only other inputs -- no

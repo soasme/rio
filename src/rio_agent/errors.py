@@ -6,9 +6,9 @@ from __future__ import annotations
 class StateValidationError(Exception):
     """A proposed state_delta failed deterministic runtime validation.
 
-    Per Algorithm 1 in arXiv:2608.26263, validation happens in the runtime,
-    not the model, so a malformed patch never corrupts persistent state --
-    it triggers a rollback-retry cycle instead (see `RetriesExhaustedError`).
+    Validation happens in the runtime, not the model, so a malformed patch
+    never corrupts persistent state -- it triggers a rollback-retry cycle
+    instead (see `RetriesExhaustedError`).
     """
 
 

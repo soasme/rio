@@ -1,8 +1,6 @@
 """rio_agent: a SKILL.state long-horizon agent runtime.
 
-Implements the runtime architecture from Badhe, Tiwari & Chung,
-"SKILL.state: Scalable Long-Horizon Agent Skills" (arXiv:2608.26263, EMNLP):
-fixed skill instructions, a structured mutable execution state, and the
+Fixed skill instructions, a structured mutable execution state, and the
 latest observation are the only inputs to each step. The runtime discards
 the reasoning behind each step once it commits a valid state update, so
 per-step prompt size stays fixed instead of growing with the number of

@@ -1,5 +1,5 @@
 """SkillSpec: the fixed instructions for a domain, plus its state schema and
-action tools (arXiv:2608.26263 §3.1).
+action tools.
 
 You write a skill once per domain, not once per task. The instructions and
 the shape of the state stay the same for the whole run. Only the state

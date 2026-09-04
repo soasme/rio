@@ -1,4 +1,4 @@
-"""Algorithm 1 from arXiv:2608.26263: the SKILL.state execution loop.
+"""The SKILL.state execution loop.
 
 At each step, the runtime sends the model only three things: the skill
 instructions, the current state, and the latest observation. It never sends
