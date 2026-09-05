@@ -1,11 +1,11 @@
-"""Tests for SkillStateHarness, the stateful wrapper around run_skill_loop."""
+"""Tests for Harness, the stateful wrapper around run_skill_loop."""
 
 from __future__ import annotations
 
 import pytest
 
 from conftest import make_skill, step_response
-from rio_agent import RunEndEvent, SkillStateHarness, SkillStateHarnessConfig
+from rio_agent import Harness, HarnessConfig, RunEndEvent
 from rio_ai import FakeProvider
 
 
@@ -15,7 +15,7 @@ async def test_harness_tracks_state_and_notifies_listeners():
     provider = FakeProvider(
         [step_response(reasoning="r1", state_delta={"counter": 1}, action="finish", args={})]
     )
-    harness = SkillStateHarness(SkillStateHarnessConfig(provider=provider, model="m", skill=skill))
+    harness = Harness(HarnessConfig(provider=provider, model="m", skill=skill))
     received = []
     harness.subscribe(received.append)
 
@@ -33,7 +33,7 @@ async def test_harness_rejects_concurrent_run():
     provider = FakeProvider(
         [step_response(reasoning="r1", state_delta={}, action="finish", args={})]
     )
-    harness = SkillStateHarness(SkillStateHarnessConfig(provider=provider, model="m", skill=skill))
+    harness = Harness(HarnessConfig(provider=provider, model="m", skill=skill))
 
     generator = harness.run("start")
     with pytest.raises(RuntimeError):
@@ -51,8 +51,8 @@ async def test_harness_seeds_from_explicit_state_not_only_skill_default():
     provider = FakeProvider(
         [step_response(reasoning="r1", state_delta={"counter": 6}, action="finish", args={})]
     )
-    harness = SkillStateHarness(
-        SkillStateHarnessConfig(provider=provider, model="m", skill=skill),
+    harness = Harness(
+        HarnessConfig(provider=provider, model="m", skill=skill),
         state={"counter": 5},
     )
 

@@ -1,4 +1,4 @@
-"""SkillSpec: the fixed instructions for a domain, plus its state schema and
+"""HarnessSpec: the fixed instructions for a domain, plus its state schema and
 action tools.
 
 You write a skill once per domain, not once per task. The instructions and
@@ -16,7 +16,7 @@ from rio_ai.types import JSONObject
 
 
 @dataclass(frozen=True, slots=True)
-class SkillSpec:
+class HarnessSpec:
     name: str
     instructions: str
     state_fields: tuple[str, ...]

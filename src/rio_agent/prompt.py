@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
-from rio_agent.skill import SkillSpec
+from rio_agent.skill import HarnessSpec
 from rio_ai.messages import AgentMessage, UserMessage
 from rio_ai.tools import AgentTool, AgentToolResult, ToolCancellationToken, ToolUpdateCallback
 from rio_ai.types import JSONObject, JSONValue
@@ -37,7 +37,7 @@ async def _skill_step_not_executed(
     )
 
 
-def skill_step_tool(skill: SkillSpec) -> AgentTool:
+def skill_step_tool(skill: HarnessSpec) -> AgentTool:
     """The one tool the model may call each step. It forces structured output: reasoning, a state update, and an action."""
     parameters: JSONObject = {
         "type": "object",

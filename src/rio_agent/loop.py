@@ -34,7 +34,7 @@ from rio_agent.events import (
     ValidationErrorEvent,
 )
 from rio_agent.prompt import STEP_TOOL_NAME, build_step_messages, skill_step_tool
-from rio_agent.skill import SkillSpec
+from rio_agent.skill import HarnessSpec
 from rio_agent.state import apply_state_delta, validate_state_delta
 from rio_ai.messages import AssistantMessage
 from rio_ai.provider import CancellationToken, ModelProvider
@@ -45,7 +45,7 @@ async def run_skill_loop(
     *,
     provider: ModelProvider,
     model: str,
-    skill: SkillSpec,
+    skill: HarnessSpec,
     observation: str,
     state: dict | None = None,
     max_steps: int | None = None,

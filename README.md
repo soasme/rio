@@ -36,7 +36,7 @@ it is never replayed. That keeps per-step prompt size at
 cumulative tokens over `T` steps are `O(T)` instead of `O(T^2)`.
 
 `rio_agent`'s public interface -- a bare async-generator loop
-(`run_skill_loop`) plus a stateful wrapper (`SkillStateHarness`) that both
+(`run_skill_loop`) plus a stateful wrapper (`Harness`) that both
 emit a typed event stream and can be `subscribe()`d to -- deliberately
 mirrors the shape of `rio_ai`'s ported tau_agent-style `run_agent_loop` /
 `AgentHarness`, so the loop interface should feel familiar; only what's
@@ -44,7 +44,7 @@ inside the loop differs.
 
 ```python
 from rio_ai import AgentTool, AgentToolResult, FakeProvider, TextContent
-from rio_agent import SkillSpec, SkillStateHarness, SkillStateHarnessConfig
+from rio_agent import HarnessSpec, Harness, HarnessConfig
 
 
 async def run_shell(tool_call_id, arguments, signal=None, on_update=None):
@@ -52,7 +52,7 @@ async def run_shell(tool_call_id, arguments, signal=None, on_update=None):
     return AgentToolResult(content=[TextContent(text=output)])
 
 
-skill = SkillSpec(
+skill = HarnessSpec(
     name="ctf-solver",
     instructions="You are solving an InterCode CTF challenge. ...",
     state_fields=("discovered_flags", "tested_hypotheses", "active_files", "working_dir"),
@@ -68,8 +68,8 @@ skill = SkillSpec(
     ),
 )
 
-harness = SkillStateHarness(
-    SkillStateHarnessConfig(provider=my_provider, model="claude-sonnet-5", skill=skill)
+harness = Harness(
+    HarnessConfig(provider=my_provider, model="claude-sonnet-5", skill=skill)
 )
 async for event in harness.run("Challenge files are in /root/ctf."):
     ...

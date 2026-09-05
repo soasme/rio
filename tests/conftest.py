@@ -3,7 +3,7 @@ from __future__ import annotations
 import itertools
 from collections.abc import Mapping
 
-from rio_agent import STEP_TOOL_NAME, SkillSpec
+from rio_agent import STEP_TOOL_NAME, HarnessSpec
 from rio_ai import (
     AgentTool,
     AgentToolResult,
@@ -60,7 +60,7 @@ FINISH = AgentTool(
 )
 
 
-def make_skill(**overrides) -> SkillSpec:
+def make_skill(**overrides) -> HarnessSpec:
     defaults = dict(
         name="demo",
         instructions="You are the demo SKILL.state skill.",
@@ -69,4 +69,4 @@ def make_skill(**overrides) -> SkillSpec:
         actions=(ADVANCE, FINISH),
     )
     defaults.update(overrides)
-    return SkillSpec(**defaults)
+    return HarnessSpec(**defaults)

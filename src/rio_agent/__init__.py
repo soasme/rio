@@ -29,13 +29,13 @@ from rio_agent.events import (
 )
 from rio_agent.harness import (
     EventListener,
-    SimpleCancellationToken,
-    SkillStateHarness,
-    SkillStateHarnessConfig,
+    Harness,
+    HarnessCancellationToken,
+    HarnessConfig,
 )
 from rio_agent.loop import run_skill_loop
 from rio_agent.prompt import STEP_TOOL_NAME, build_step_messages, skill_step_tool
-from rio_agent.skill import SkillSpec
+from rio_agent.skill import HarnessSpec
 from rio_agent.state import apply_state_delta, validate_state_delta
 
 __all__ = [name for name in globals() if not name.startswith("_")]

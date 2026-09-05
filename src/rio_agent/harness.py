@@ -1,4 +1,4 @@
-"""SkillStateHarness: a reusable stateful runtime around `run_skill_loop`.
+"""Harness: a reusable stateful runtime around `run_skill_loop`.
 
 Deliberately mirrors the public shape of `rio_ai`'s ported tau_agent-style
 `AgentHarness` -- construct with a config, `subscribe()` an event listener,
@@ -18,7 +18,7 @@ from inspect import isawaitable
 
 from rio_agent.events import RunEndEvent, SkillEvent, StateUpdateEvent
 from rio_agent.loop import run_skill_loop
-from rio_agent.skill import SkillSpec
+from rio_agent.skill import HarnessSpec
 from rio_ai.provider import ModelProvider
 from rio_ai.types import JSONObject, JSONValue
 
@@ -26,15 +26,15 @@ EventListener = Callable[[SkillEvent], Awaitable[None] | None]
 
 
 @dataclass(slots=True)
-class SkillStateHarnessConfig:
+class HarnessConfig:
     provider: ModelProvider
     model: str
-    skill: SkillSpec
+    skill: HarnessSpec
     max_steps: int | None = None
     max_retries: int = 2
 
 
-class SimpleCancellationToken:
+class HarnessCancellationToken:
     def __init__(self) -> None:
         self._cancelled = False
 
@@ -45,19 +45,19 @@ class SimpleCancellationToken:
         return self._cancelled
 
 
-class SkillStateHarness:
+class Harness:
     """Reusable stateful long-horizon agent runtime built on SKILL.state."""
 
     def __init__(
         self,
-        config: SkillStateHarnessConfig,
+        config: HarnessConfig,
         *,
         state: JSONObject | None = None,
     ) -> None:
         self._config = config
         self._state: JSONObject = dict(state if state is not None else config.skill.initial_state)
         self._listeners: list[EventListener] = []
-        self._current_signal: SimpleCancellationToken | None = None
+        self._current_signal: HarnessCancellationToken | None = None
         self._running = False
 
     @property
@@ -65,7 +65,7 @@ class SkillStateHarness:
         return dict(self._state)
 
     @property
-    def config(self) -> SkillStateHarnessConfig:
+    def config(self) -> HarnessConfig:
         return self._config
 
     @property
@@ -91,7 +91,7 @@ class SkillStateHarness:
         return self._run(observation)
 
     async def _run(self, observation: str) -> AsyncIterator[SkillEvent]:
-        signal = SimpleCancellationToken()
+        signal = HarnessCancellationToken()
         self._current_signal = signal
         try:
             async for event in run_skill_loop(
@@ -121,4 +121,4 @@ class SkillStateHarness:
 
     def _ensure_not_running(self) -> None:
         if self._running:
-            raise RuntimeError("SkillStateHarness is already running")
+            raise RuntimeError("Harness is already running")
