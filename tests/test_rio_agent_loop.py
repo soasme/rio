@@ -222,3 +222,96 @@ async def test_missing_skill_step_tool_call_is_rejected():
             provider=provider, model="m", skill=skill, observation="start", max_retries=0
         ):
             pass
+
+
+@pytest.mark.asyncio
+async def test_a_failing_action_becomes_an_observation_instead_of_crashing():
+    """A raising tool must not end the run.
+
+    The step's state update has already been committed when the action runs, so
+    the loop is in a consistent state; the failure is reported as this step's
+    observation and the model recovers from it like any other result. That is
+    the whole recovery path -- there is no history to unwind.
+    """
+    from conftest import FINISH
+    from rio_ai import AgentTool
+
+    async def _explode(tool_call_id, arguments, signal=None, on_update=None):
+        raise RuntimeError("disk is on fire")
+
+    exploding = AgentTool(
+        name="explode",
+        label="Explode",
+        description="Always fails.",
+        parameters={"type": "object", "properties": {}},
+        execute_fn=_explode,
+    )
+    skill = make_skill(actions=(exploding, FINISH))
+    provider = FakeProvider(
+        [
+            step_response(reasoning="r1", state_delta={"counter": 1}, action="explode", args={}),
+            step_response(reasoning="r2", state_delta={"counter": 2}, action="finish", args={}),
+        ]
+    )
+
+    events = [
+        event
+        async for event in run_skill_loop(
+            provider=provider, model="m", skill=skill, observation="start"
+        )
+    ]
+
+    action_ends = [e for e in events if isinstance(e, ActionEndEvent)]
+    assert [e.is_error for e in action_ends] == [True, False]
+    assert "disk is on fire" in action_ends[0].result.text
+
+    # The run continued, and the failure was handed to the next step verbatim.
+    _model, _system, second_messages, _tools = provider.calls[1]
+    assert "disk is on fire" in second_messages[0].content
+
+    run_end = events[-1]
+    assert isinstance(run_end, RunEndEvent)
+    assert run_end.state["counter"] == 2
+
+
+@pytest.mark.parametrize(
+    "action", ["finish", [], {"name": []}, {"name": "finish", "arguments": []}]
+)
+async def test_malformed_action_rolls_back_then_retries(action):
+    invalid = step_response(reasoning="", state_delta={"counter": 99}, action="finish", args={})
+    invalid[0].message.tool_calls[0].arguments["action"] = action
+    provider = FakeProvider(
+        [
+            invalid,
+            step_response(reasoning="", state_delta={"counter": 1}, action="finish", args={}),
+        ]
+    )
+    events = [
+        event
+        async for event in run_skill_loop(
+            provider=provider, model="m", skill=make_skill(), observation="start"
+        )
+    ]
+    assert len([event for event in events if isinstance(event, ValidationErrorEvent)]) == 1
+    assert [event.state["counter"] for event in events if isinstance(event, StateUpdateEvent)] == [
+        1
+    ]
+
+
+async def test_multiple_step_calls_are_rejected_before_action_execution():
+    invalid = step_response(reasoning="", state_delta={"counter": 99}, action="finish", args={})
+    invalid[0].message.content.append(invalid[0].message.tool_calls[0].model_copy())
+    provider = FakeProvider(
+        [
+            invalid,
+            step_response(reasoning="", state_delta={"counter": 1}, action="finish", args={}),
+        ]
+    )
+    events = [
+        event
+        async for event in run_skill_loop(
+            provider=provider, model="m", skill=make_skill(), observation="start"
+        )
+    ]
+    assert len([event for event in events if isinstance(event, ActionEndEvent)]) == 1
+    assert events[-1].state == {"counter": 1}

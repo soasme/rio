@@ -1,6 +1,6 @@
 # rio
 
-Two packages:
+Three packages:
 
 - **`rio_ai`** -- a multi-provider LLM streaming SDK (Anthropic, Google
   Gemini, Mistral, OpenAI Codex, OpenAI-compatible), ported from
@@ -12,6 +12,9 @@ Two packages:
 - **`rio_agent`** -- a from-scratch runtime implementing
   [*SKILL.state: Scalable Long-Horizon Agent Skills*](https://arxiv.org/abs/2608.26263)
   (Badhe, Tiwari & Chung; EMNLP), built on `rio_ai`.
+- **`rio_coding`** -- a coding agent (CLI, TUI, tools, skills, extensions)
+  ported from tau's `tau_coding` and retargeted onto `rio_agent`. Installs the
+  `rio` command.
 
 ## Why rio_agent exists
 
@@ -33,7 +36,9 @@ Patch (RFC 7396: `null` deletes a field, an object merges recursively,
 anything else replaces), executes `a_t`, and **discards `R_t` forever** --
 it is never replayed. That keeps per-step prompt size at
 `O(|P| + |Σ| + |O|)`, independent of how many steps have already run, so
-cumulative tokens over `T` steps are `O(T)` instead of `O(T^2)`.
+cumulative tokens over `T` steps are `O(T)` when state and observations remain
+bounded. Rio excludes history from prompts; it does not enforce a hard byte
+limit on the model-authored state.
 
 `rio_agent`'s public interface -- a bare async-generator loop
 (`run_skill_loop`) plus a stateful wrapper (`Harness`) that both
@@ -68,12 +73,41 @@ skill = HarnessSpec(
     ),
 )
 
-harness = Harness(
-    HarnessConfig(provider=my_provider, model="claude-sonnet-5", skill=skill)
-)
+harness = Harness(HarnessConfig(provider=my_provider, model="claude-sonnet-5", skill=skill))
 async for event in harness.run("Challenge files are in /root/ctf."):
     ...
 ```
+
+## Coding agent
+
+```bash
+uv sync
+uv run rio setup --provider local --base-url http://localhost:8080/v1 --model my-model
+uv run rio                         # interactive terminal interface
+uv run rio -p "Inspect this project and explain its entry point"
+uv run rio -p --mode json "Add a regression test for the parser"
+uv run rio --mode rpc              # JSONL commands on stdin
+uv run rio sessions
+uv run rio --session SESSION_ID
+uv run rio export SESSION_ID --format html
+```
+
+Choose an existing provider with `--provider NAME --model MODEL`; `rio providers`
+lists the configured catalog. Credentials may come from the provider's environment
+variable or Rio's credential store (`rio login PROVIDER`; use `--method api-key`
+for an API key). Configuration and journals live under `~/.rio`.
+Use `--approve` to allow ambient project instructions and extensions for a run;
+project trust controls resource loading, not what shell commands can access.
+
+The coding tools are `read`, `write`, `edit`, `bash`, and `respond`. Each step
+updates structured state and executes one action. Sessions store snapshots for
+resume and checkpoint restoration; they never replay a transcript into the model.
+HTML exports show steps, final state, and estimated token footprints.
+
+See the [installed documentation](src/rio_coding/data/docs/README.md) for
+providers, skills, extensions, RPC, and the state-based runtime. The
+[offline example](src/rio_coding/data/examples/offline_session.py) runs a complete
+session with a fake provider and requires no credentials.
 
 ## Development
 
@@ -83,8 +117,9 @@ uv run pytest
 uv run ruff check .
 ```
 
-Tests run entirely against `rio_ai.FakeProvider` (a scripted, deterministic
-`ModelProvider`) -- no network access or API key required. See in
+Tests use scripted providers (`rio_ai.FakeProvider`) and mocked HTTP; no live
+provider credentials are required. Headless Textual tests exercise terminal
+interaction, and tool integration tests work in temporary directories. See in
 particular `tests/test_rio_agent_loop.py::test_prompt_footprint_is_bounded_across_steps`,
 which asserts that per-step prompt size stays constant across many steps
 rather than growing -- a direct runtime check of the paper's core claim.

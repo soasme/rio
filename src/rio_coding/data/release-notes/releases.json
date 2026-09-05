@@ -1,0 +1,16 @@
+[
+  {
+    "version": "0.1.0",
+    "date": "2026-09-06",
+    "sections": {
+      "New": [
+        "Initial release of rio: a SKILL.state coding agent ported from tau, using structured execution state and the latest observation at each step (arXiv:2608.26263).",
+        "rio_ai provides the provider/model streaming layer; rio_agent runs the SKILL.state step loop; rio_coding is the CLI application, resources, skills, and RPC frontend built on top of them.",
+        "A JSONL RPC frontend (`rio_coding.rpc`) exposes the session's execution state, its state journal, and the SKILL.state step-lifecycle event stream to external frontends.",
+        "Built-in provider catalog, OAuth login, project skills and prompt templates, and project-input trust ported from tau.",
+        "Interactive Textual interface with execution-state inspection, model and session selection, local inference management, extension dialogs and widgets, and checkpoint restoration.",
+        "Coding tools, extension lifecycle hooks, HTML/JSONL exports, and deterministic integration tests."
+      ]
+    }
+  }
+]

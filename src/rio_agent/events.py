@@ -27,7 +27,9 @@ class StepStartEvent:
 
 @dataclass(frozen=True, slots=True)
 class ReasoningDiscardedEvent:
-    """The model's reasoning for this step. Surfaced once for observability, then never sent back to the model."""
+    """The model's reasoning for this step. Surfaced once for observability, then never sent back
+    to the model.
+    """
 
     step: int
     reasoning: str

@@ -38,7 +38,9 @@ async def _skill_step_not_executed(
 
 
 def skill_step_tool(skill: HarnessSpec) -> AgentTool:
-    """The one tool the model may call each step. It forces structured output: reasoning, a state update, and an action."""
+    """The one tool the model may call each step. It forces structured output: reasoning, a state
+    update, and an action.
+    """
     parameters: JSONObject = {
         "type": "object",
         "properties": {
@@ -85,7 +87,9 @@ def build_step_messages(
     *,
     error_note: str | None = None,
 ) -> list[AgentMessage]:
-    """Build the non-system half of the prompt: the current state and the latest observation, nothing else."""
+    """Build the non-system half of the prompt: the current state and the latest observation,
+    nothing else.
+    """
     body = (
         "Skill Execution State:\n```json\n"
         + json.dumps(state, indent=2, sort_keys=True)

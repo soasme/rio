@@ -36,9 +36,10 @@ from rio_agent.events import (
 from rio_agent.prompt import STEP_TOOL_NAME, build_step_messages, skill_step_tool
 from rio_agent.skill import HarnessSpec
 from rio_agent.state import apply_state_delta, validate_state_delta
-from rio_ai.messages import AssistantMessage
+from rio_ai.messages import AssistantMessage, TextContent
 from rio_ai.provider import CancellationToken, ModelProvider
 from rio_ai.provider_events import AssistantDoneEvent, AssistantErrorEvent
+from rio_ai.tools import AgentToolResult
 
 
 async def run_skill_loop(
@@ -80,7 +81,7 @@ async def run_skill_loop(
                 (c for c in assistant.tool_calls if c.name == STEP_TOOL_NAME),
                 None,
             )
-            if call is None:
+            if call is None or len(assistant.tool_calls) != 1:
                 error_note = (
                     f"you must call the `{STEP_TOOL_NAME}` tool exactly once; "
                     f"stop_reason was {assistant.stop_reason!r}"
@@ -95,18 +96,23 @@ async def run_skill_loop(
                 yield ReasoningDiscardedEvent(step=step, reasoning=assistant.text)
 
             proposed_delta = call.arguments.get("state_delta")
-            proposed_action = call.arguments.get("action") or {}
+            proposed_action = call.arguments.get("action")
             try:
                 if not isinstance(proposed_delta, dict):
                     raise StateValidationError(
                         f"state_delta must be a JSON object, got {type(proposed_delta).__name__}"
                     )
                 validate_state_delta(proposed_delta, allowed_fields=skill.state_fields)
+                if not isinstance(proposed_action, dict):
+                    raise StateValidationError("action must be a JSON object")
                 candidate_name = proposed_action.get("name")
-                if candidate_name not in actions:
+                if not isinstance(candidate_name, str) or candidate_name not in actions:
                     raise ActionNotFoundError(
                         f"unknown action {candidate_name!r}; declared actions are {sorted(actions)}"
                     )
+                candidate_arguments = proposed_action.get("arguments", {})
+                if not isinstance(candidate_arguments, dict):
+                    raise StateValidationError("action arguments must be a JSON object")
             except (StateValidationError, ActionNotFoundError) as exc:
                 error_note = str(exc)
                 attempt += 1
@@ -117,17 +123,26 @@ async def run_skill_loop(
 
             delta = proposed_delta
             action_name = candidate_name
-            action_arguments = dict(proposed_action.get("arguments") or {})
+            action_arguments = dict(candidate_arguments)
             break
 
         state = apply_state_delta(state, delta)
         yield StateUpdateEvent(step=step, delta=dict(delta), state=dict(state))
 
         yield ActionStartEvent(step=step, name=action_name, arguments=dict(action_arguments))
-        result = await actions[action_name].execute(
-            f"{skill.name}-step-{step}", action_arguments, signal
-        )
-        yield ActionEndEvent(step=step, name=action_name, result=result, is_error=False)
+        try:
+            result = await actions[action_name].execute(
+                f"{skill.name}-step-{step}", action_arguments, signal
+            )
+            is_error = False
+        except Exception as exc:
+            # A failing action is an observation, not a crash. The state update
+            # for this step has already been committed, so the model resumes
+            # from a consistent state with the failure as its latest
+            # observation -- the same recovery path as any other result.
+            result = AgentToolResult(content=[TextContent(text=f"{action_name} failed: {exc}")])
+            is_error = True
+        yield ActionEndEvent(step=step, name=action_name, result=result, is_error=is_error)
 
         terminated = bool(result.terminate)
         yield StepEndEvent(step=step, state=dict(state), terminated=terminated)

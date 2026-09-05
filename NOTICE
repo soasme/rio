@@ -2,6 +2,13 @@ rio_ai (src/rio_ai/) is a port of huggingface/tau's `tau_ai` module, plus the
 `tau_agent` message/tool/type vocabulary that `tau_ai` depends on
 (`messages.py`, `tools.py`, `types.py`, `provider.py`, `provider_events.py`).
 
+rio_coding (src/rio_coding/) is a port of huggingface/tau's `tau_coding`
+module, retargeted from `tau_agent`'s append-only conversational harness onto
+`rio_agent`'s SKILL.state runtime. Modules whose purpose was serving a growing
+transcript -- context compaction, transcript rendering and export, and the
+message-history session log -- were redesigned around execution state rather
+than carried over. `rio_coding/session_store/` derives from `tau_agent.session`.
+
 Upstream project: https://github.com/huggingface/tau
 Upstream license: MIT, reproduced below.
 
