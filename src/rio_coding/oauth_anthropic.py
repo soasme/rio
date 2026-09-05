@@ -229,12 +229,15 @@ async def _wait_for_input(
         tasks.append(asyncio.create_task(_manual_value(manual_callback)))
     if not tasks:
         return None
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-    for task in pending:
-        task.cancel()
-    if server is not None:
-        server.cancel_wait()
-    return next(iter(done)).result()
+    try:
+        done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        return next(iter(done)).result()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if server is not None:
+            server.cancel_wait()
 
 
 async def _manual_value(callback: Callable[[], Awaitable[str]]) -> str:

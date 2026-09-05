@@ -209,16 +209,16 @@ async def login_openai_codex(
     flow = create_openai_codex_authorization_flow(originator=originator)
     server = await _start_local_oauth_server(flow.state)
 
-    on_auth(
-        OAuthAuthInfo(
-            url=flow.url,
-            instructions="A browser window should open. Complete login to finish.",
-        )
-    )
-    if open_browser:
-        webbrowser.open(flow.url)
-
     try:
+        on_auth(
+            OAuthAuthInfo(
+                url=flow.url,
+                instructions="Complete login in your browser, or paste the redirect URL below.",
+            )
+        )
+        if open_browser:
+            await asyncio.to_thread(webbrowser.open, flow.url)
+
         code = await _wait_for_authorization_code(
             flow=flow,
             server=server,
@@ -422,11 +422,12 @@ async def _wait_for_authorization_code(
         return None
 
     try:
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
+        done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         result = next(iter(done)).result()
     finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         if server is not None:
             server.cancel_wait()
 

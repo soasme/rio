@@ -3,6 +3,9 @@
 Run `rio` to open the Textual interface. No API key is required to open it;
 use `/login` to choose a provider and save credentials. Credentials are resolved
 when a task first needs the model, so no restart is needed after login.
+Browser login stays in an interactive dialog: it closes automatically on success,
+or accepts the full redirect URL if the browser callback cannot reach Rio. Escape
+cancels. Successful browser login selects that provider for the current session.
 
  The left pane shows live actions and
 observations; the sidebar shows the current execution state and prompt footprint.

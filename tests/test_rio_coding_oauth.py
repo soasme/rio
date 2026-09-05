@@ -507,3 +507,48 @@ def test_credentials_path_is_rooted_under_rio_home(tmp_path) -> None:
 
     custom = RioPaths(home=tmp_path / ".rio")
     assert credentials_path(custom) == tmp_path / ".rio" / "credentials.json"
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+async def test_cancelling_login_cleans_up_callback_and_manual_waiters(provider):
+    from rio_coding.oauth import _wait_for_authorization_code
+    from rio_coding.oauth_anthropic import _wait_for_input
+
+    started = asyncio.Event()
+    stopped = []
+
+    class Server:
+        cancelled = False
+
+        async def wait_for_code(self):
+            try:
+                await asyncio.Future()
+            finally:
+                stopped.append("server")
+
+        def cancel_wait(self):
+            self.cancelled = True
+
+    async def manual():
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            stopped.append("manual")
+
+    server = Server()
+    if provider == "openai":
+        waiter = _wait_for_authorization_code(
+            flow=create_openai_codex_authorization_flow(),
+            server=server,
+            on_manual_code_input=manual,
+        )
+    else:
+        waiter = _wait_for_input(server, manual)
+    task = asyncio.create_task(waiter)
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert sorted(stopped) == ["manual", "server"]
+    assert server.cancelled

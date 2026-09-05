@@ -479,12 +479,24 @@ class RioTuiApp(App[None]):
                 await self.session.resume_session(value)
             elif command in {"/login", "/logout"}:
                 from rio_coding.auth_commands import login_provider, logout_provider
+                from rio_coding.oauth_registry import get_oauth_provider
+                from rio_coding.tui.oauth_login import OAuthLoginScreen
 
-                with self.suspend():
-                    if command == "/login":
+                if command == "/login" and get_oauth_provider(value) is not None:
+                    result = await self.ui_bridge._dialog(OAuthLoginScreen(value), None)
+                    if isinstance(result, Exception):
+                        raise result
+                    if result is None:
+                        self.write_item(StepStreamItem("status", "Login cancelled."))
+                        return
+                    self.write_item(StepStreamItem("status", result))
+                    if hasattr(self.session, "set_provider_name"):
+                        await self.session.set_provider_name(value)
+                elif command == "/login":
+                    with self.suspend():
                         await login_provider(value)
-                    else:
-                        logout_provider(value)
+                else:
+                    self.write_item(StepStreamItem("status", logout_provider(value)))
             if hasattr(self.session, "extensions"):
                 self.session.extensions.set_ui_bridge(self.ui_bridge)
             self.adapter.state.state = deepcopy(self.session.state)
