@@ -24,7 +24,7 @@ from rio_coding.tui.widgets import CommandPicker, StateSidebar, StepStream
 
 
 class RioTuiApp(App[None]):
-    TITLE = "rio · SKILL.state"
+    TITLE = "rio"
     CSS = """
     #local-backend-picker,
     #local-backend-screen,
