@@ -11,7 +11,7 @@ class StepStreamItem:
     role: StepStreamRole
     text: str
     continuation: bool = False
-    full_text: str | None = None
+    tool_target: str | None = None
 
 
 @dataclass(slots=True)

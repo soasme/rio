@@ -17,7 +17,102 @@ from rio_coding.tui.formatting import (
     human_elapsed,
     prefixed_lines,
 )
-from rio_coding.tui.state import TuiState
+from rio_coding.tui.state import StepStreamItem, TuiState
+
+
+class TranscriptLog(RichLog):
+    """Transcript rendering and tool-result expansion state."""
+
+    def __init__(self, **kwargs):
+        super().__init__(wrap=True, markup=False, min_width=1, max_lines=None, **kwargs)
+        self.entries: list[tuple[Text | StepStreamItem, bool]] = []
+        self._tool_results_expanded = False
+        self._line_counts: list[int] = []
+        self._rendered_width = 0
+
+    def display_text(self, item: Text | StepStreamItem) -> Text:
+        if isinstance(item, Text):
+            return item
+        text = item.text
+        if item.tool_target is not None and not self._tool_results_expanded:
+            name, _, output = text.partition(": ")
+            truncated = output.endswith("\n… output truncated")
+            if truncated:
+                output = output.removesuffix("\n… output truncated")
+            lines = len(output.splitlines())
+            count = f"{lines}{'+' if truncated else ''} {'line' if lines == 1 else 'lines'}"
+            target = f": {item.tool_target}" if item.tool_target else ""
+            error = ", error" if item.role == "error" else ""
+            key = self.app.settings.keybindings.toggle_tool_results
+            text = f"{name}{target} ({count}{error}, {key} to expand)"
+        style = self.app.settings.resolved_theme.role_styles[item.role].body
+        return Text(text, style=style)
+
+    def write_entry(self, text: Text | StepStreamItem, *, continuation: bool = False) -> None:
+        self.entries.append((text, continuation))
+        evicted = len(self.entries) > 1000
+        if evicted:
+            del self.entries[0]
+        width = self.scrollable_content_region.width
+        if not width:
+            return
+        if width != self._rendered_width:
+            self.redraw()
+            return
+        at_end = self.is_vertical_scroll_end
+        scroll_y = self.scroll_y
+        removed = self._line_counts.pop(0) if evicted else 0
+        lines = self._entry_lines(text, continuation, len(self.entries) > 1, width)
+        self._line_counts.append(len(lines))
+        # Trim complete logical entries, never an arbitrary fixed line budget.
+        self.max_lines = sum(self._line_counts)
+        super().write(Text("\n").join(lines), width=width, scroll_end=False)
+        if at_end:
+            self.scroll_end(animate=False)
+        elif removed:
+            self.scroll_to(y=max(0, scroll_y - removed), animate=False)
+
+    def _entry_lines(
+        self, text: Text | StepStreamItem, continuation: bool, gap: bool, width: int
+    ) -> list[Text]:
+        lines = prefixed_lines(
+            self.display_text(text),
+            self.app.console,
+            width,
+            RESULT_PREFIX if continuation else TURN_PREFIX,
+        )
+        return ([Text("")] if gap and not continuation else []) + lines
+
+    def toggle_tool_results(self) -> None:
+        self._tool_results_expanded = not self._tool_results_expanded
+        self.redraw()
+
+    def clear(self) -> None:
+        self.entries.clear()
+        self._line_counts.clear()
+        super().clear()
+
+    def on_resize(self) -> None:
+        self.call_after_refresh(self.redraw)
+
+    def redraw(self) -> None:
+        width = self.scrollable_content_region.width
+        if not width:
+            return
+        at_end = self.is_vertical_scroll_end
+        scroll_y = self.scroll_y
+        super().clear()
+        self.max_lines = None
+        self._line_counts.clear()
+        self._rendered_width = width
+        for index, (text, continuation) in enumerate(self.entries):
+            lines = self._entry_lines(text, continuation, index > 0, width)
+            self._line_counts.append(len(lines))
+            super().write(Text("\n").join(lines), width=width, scroll_end=False)
+        if at_end:
+            self.scroll_end(animate=False)
+        else:
+            self.scroll_to(y=scroll_y, animate=False)
 
 
 class StepStream(Vertical):
@@ -31,89 +126,28 @@ class StepStream(Vertical):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.entries: list[tuple[Text, bool, Text | None]] = []
-        self.tool_results_expanded = False
-        self._line_counts: list[int] = []
-        self._rendered_width = 0
         self._working: tuple[int | None, str, str | None, bool] = (None, "", None, False)
 
     def compose(self) -> ComposeResult:
-        yield RichLog(wrap=True, markup=False, min_width=1, max_lines=None)
+        yield TranscriptLog()
         yield Static("", markup=False)
 
     @property
     def lines(self):
-        return self.query_one(RichLog).lines
+        return self.query_one(TranscriptLog).lines
 
-    def write(
-        self, text: Text, *, continuation: bool = False, full_text: Text | None = None
-    ) -> None:
-        self.entries.append((text, continuation, full_text))
-        if self.tool_results_expanded and full_text is not None:
-            text = full_text
-        evicted = len(self.entries) > 1000
-        if evicted:
-            del self.entries[0]
-        log = self.query_one(RichLog)
-        width = log.scrollable_content_region.width
-        if not width:
-            return
-        if width != self._rendered_width:
-            self.redraw()
-            return
-        at_end = log.is_vertical_scroll_end
-        scroll_y = log.scroll_y
-        removed = self._line_counts.pop(0) if evicted else 0
-        lines = self._entry_lines(text, continuation, len(self.entries) > 1, width)
-        self._line_counts.append(len(lines))
-        # Trim complete logical entries, never an arbitrary fixed line budget.
-        log.max_lines = sum(self._line_counts)
-        log.write(Text("\n").join(lines), width=width, scroll_end=False)
-        if at_end:
-            log.scroll_end(animate=False)
-        elif removed:
-            log.scroll_to(y=max(0, scroll_y - removed), animate=False)
+    @property
+    def entries(self):
+        return self.query_one(TranscriptLog).entries
 
-    def _entry_lines(self, text: Text, continuation: bool, gap: bool, width: int) -> list[Text]:
-        lines = prefixed_lines(
-            text, self.app.console, width, RESULT_PREFIX if continuation else TURN_PREFIX
-        )
-        return ([Text("")] if gap and not continuation else []) + lines
-
-    def toggle_tool_results(self) -> None:
-        self.tool_results_expanded = not self.tool_results_expanded
-        self.redraw()
+    def write(self, text: Text | StepStreamItem, *, continuation: bool = False) -> None:
+        self.query_one(TranscriptLog).write_entry(text, continuation=continuation)
 
     def clear(self) -> None:
-        self.entries.clear()
-        self._line_counts.clear()
-        self.query_one(RichLog).clear()
+        self.query_one(TranscriptLog).clear()
 
     def on_resize(self) -> None:
-        self.call_after_refresh(self.redraw)
         self.call_after_refresh(self._render_working)
-
-    def redraw(self) -> None:
-        log = self.query_one(RichLog)
-        width = log.scrollable_content_region.width
-        if not width:
-            return
-        at_end = log.is_vertical_scroll_end
-        scroll_y = log.scroll_y
-        log.clear()
-        log.max_lines = None
-        self._line_counts.clear()
-        self._rendered_width = width
-        for index, (text, continuation, full_text) in enumerate(self.entries):
-            if self.tool_results_expanded and full_text is not None:
-                text = full_text
-            lines = self._entry_lines(text, continuation, index > 0, width)
-            self._line_counts.append(len(lines))
-            log.write(Text("\n").join(lines), width=width, scroll_end=False)
-        if at_end:
-            log.scroll_end(animate=False)
-        else:
-            log.scroll_to(y=scroll_y, animate=False)
 
     def show_working(
         self, elapsed: int | None, key: str, action: str | None, *, finished: bool = False
