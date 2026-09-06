@@ -670,6 +670,9 @@ def create_bash_tool_definition(
     not continue running; non-POSIX platforms fall back to killing the direct
     subprocess.
 
+    The executor also accepts the `cmd`, `shell_command`, and `bash_command`
+    spellings that models sometimes emit instead of the schema's `command`.
+
     Output is tail-truncated to `DEFAULT_MAX_OUTPUT_LINES` lines or
     `DEFAULT_MAX_OUTPUT_BYTES` bytes. When truncation occurs, the full output is
     written to a temporary log file and that path is reported in `data`.
@@ -684,7 +687,7 @@ def create_bash_tool_definition(
         arguments: Mapping[str, JSONValue],
         signal: ToolCancellationToken | None = None,
     ) -> AgentToolResult:
-        command = _str_arg(arguments, "command")
+        command = _bash_command_arg(arguments)
         shell_command = _prefixed_shell_command(command, prefix)
         timeout = _optional_float_arg(arguments, "timeout")
         if timeout is not None and timeout <= 0:
@@ -1146,6 +1149,9 @@ def _truncate_string_to_bytes_from_end(text: str, max_bytes: int) -> str:
     return clipped.decode(errors="ignore")
 
 
+_BASH_COMMAND_ALIASES = ("cmd", "shell_command", "bash_command")
+
+
 def _str_arg(arguments: Mapping[str, JSONValue], name: str) -> str:
     value = arguments.get(name)
     if not isinstance(value, str):
@@ -1177,6 +1183,20 @@ def _optional_float_arg(arguments: Mapping[str, JSONValue], name: str) -> float 
     if not isinstance(value, int | float):
         raise ToolInputError(f"{name} must be a number")
     return float(value)
+
+
+def _bash_command_arg(arguments: Mapping[str, JSONValue]) -> str:
+    """Return the bash command, tolerating common aliases for `command`.
+
+    Models sometimes call the tool as `bash({"cmd": ...})` even though the
+    schema names the argument `command`. Accepting the alias spellings keeps a
+    valid shell command from failing on its parameter name alone.
+    """
+    for name in ("command", *_BASH_COMMAND_ALIASES):
+        value = arguments.get(name)
+        if isinstance(value, str):
+            return value
+    raise ToolInputError("command must be a string")
 
 
 def _prepare_edit_arguments(arguments: Mapping[str, JSONValue]) -> Mapping[str, JSONValue]:
