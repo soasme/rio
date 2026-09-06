@@ -402,6 +402,32 @@ async def test_bash_tool_tolerates_missing_required_display_description(tmp_path
     assert result.details["timed_out"] is False
 
 
+@pytest.mark.parametrize("alias", ["cmd", "shell_command", "bash_command"])
+async def test_bash_tool_accepts_command_aliases(tmp_path: Path, alias: str) -> None:
+    tool = create_bash_tool(cwd=tmp_path)
+
+    result = await tool.execute("test-call", {alias: "printf hello"})
+
+    assert result.text == "bash printf hello (exit 0)\n\nhello"
+    assert result.details is not None
+    assert result.details["command"] == "printf hello"
+
+
+async def test_bash_tool_prefers_command_over_alias(tmp_path: Path) -> None:
+    tool = create_bash_tool(cwd=tmp_path)
+
+    result = await tool.execute("test-call", {"command": "printf hello", "cmd": "printf goodbye"})
+
+    assert result.text == "bash printf hello (exit 0)\n\nhello"
+
+
+async def test_bash_tool_rejects_missing_command(tmp_path: Path) -> None:
+    tool = create_bash_tool(cwd=tmp_path)
+
+    with pytest.raises(ValueError, match="command must be a string"):
+        await tool.execute("test-call", {"description": "Doing nothing"})
+
+
 async def test_create_coding_tools_applies_shell_command_prefix(
     tmp_path: Path,
 ) -> None:
