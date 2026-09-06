@@ -226,3 +226,253 @@ async def test_extension_widget_crash_closes_pending_main_view():
         assert await handle.wait() is None
         assert not handle.is_open
         assert app.query_one("#stream").display
+
+
+def test_adapter_turns_and_tool_results():
+    from rio_agent.events import ActionEndEvent, ActionStartEvent, StepStartEvent
+    from rio_ai.tools import AgentToolResult
+
+    adapter = TuiEventAdapter()
+    assert adapter.consume(StepStartEvent(step=2, state={}, observation="")) == []
+    assert adapter.state.step == 2
+    items = adapter.consume(
+        ActionStartEvent(step=2, name="bash", arguments={"command": "git status"})
+    )
+    assert items[0].text == "Running git status"
+    assert adapter.state.active_action == "git status"
+    items = adapter.consume(
+        ActionEndEvent(
+            step=2,
+            name="bash",
+            result=AgentToolResult(content="failed"),
+            is_error=True,
+        )
+    )
+    assert items[0].continuation
+    assert items[0].text == "bash: failed"
+    assert items[0].role == "error"
+    assert adapter.state.active_action is None
+
+
+@pytest.mark.asyncio
+async def test_transcript_wraps_and_reflows_and_working_row():
+    from textual.widgets import RichLog, Static
+
+    from rio_coding.tui.state import StepStreamItem
+    from rio_coding.tui.widgets import StepStream
+
+    app = RioTuiApp(FakeSession(), settings=TuiSettings(sidebar_position="off"))
+    async with app.run_test(size=(100, 30)) as pilot:
+        stream = app.query_one(StepStream)
+        app.write_item(StepStreamItem("custom", "[literal] " + "x" * 160))
+        app.write_item(StepStreamItem("step", "output", continuation=True))
+        await pilot.pause()
+        before = len(stream.lines)
+        assert stream.lines[0].text.startswith("• [literal]")
+        assert any(line.text.startswith("  └ output") for line in stream.lines)
+        await pilot.resize_terminal(45, 30)
+        await pilot.pause()
+        assert len(stream.lines) > before
+        log = stream.query_one(RichLog)
+        assert log.max_scroll_x == 0
+        stream.show_working(132, "escape", "gh run watch 123")
+        await pilot.pause()
+        status = stream.query_one(Static)
+        assert (
+            str(status.render()) == "• Working (2m 12s • escape to interrupt)\n  └ gh run watch 123"
+        )
+        assert len(stream.entries) == 2
+        stream.show_working(None, "escape", None)
+        assert not status.display
+
+
+@pytest.mark.asyncio
+async def test_working_timer_and_cleanup():
+    import asyncio
+    from time import monotonic
+
+    from textual.widgets import Static
+
+    from rio_coding.tui.widgets import StepStream
+
+    class SlowSession(FakeSession):
+        async def prompt(self, text):
+            await gate.wait()
+            raise RuntimeError("tool failed")
+            yield
+
+    gate = asyncio.Event()
+    app = RioTuiApp(SlowSession(), settings=TuiSettings())
+    async with app.run_test() as pilot:
+        app.submit_prompt("run")
+        await pilot.pause()
+        assert app._working_since is not None
+        app._working_since = monotonic() - 141
+        app.refresh_working()
+        status = app.query_one(StepStream).query_one(Static)
+        assert app.working_elapsed == 141
+        assert "2m 21s" in str(status.render())
+        await pilot.press("escape")
+        assert app.session.cancelled
+        gate.set()
+        await pilot.pause()
+        assert app._working_since is None
+        assert status.display
+        assert str(status.render()).startswith("- Worked for 2m 21s --")
+        assert not app.adapter.state.running
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "expected"),
+    [
+        (0, "0s"),
+        (59, "59s"),
+        (60, "1m 0s"),
+        (132, "2m 12s"),
+        (4503, "1h 15m 3s"),
+        (90061, "1d 1h 1m 1s"),
+    ],
+)
+def test_human_elapsed(elapsed, expected):
+    from rio_coding.tui.formatting import human_elapsed
+
+    assert human_elapsed(elapsed) == expected
+
+
+@pytest.mark.asyncio
+async def test_wide_transcript_and_working_indentation():
+    from textual.widgets import RichLog, Static
+
+    from rio_coding.tui.widgets import StepStream
+
+    app = RioTuiApp(FakeSession(), settings=TuiSettings(sidebar_position="off"))
+    async with app.run_test(size=(140, 30)) as pilot:
+        stream = app.query_one(StepStream)
+        from rich.text import Text
+
+        stream.write(Text("x" * 400))
+        await pilot.pause()
+        lines = [line.text for line in stream.lines]
+        assert len(lines[0]) > 80
+        assert lines[0].startswith("• ")
+        assert all(line.startswith("  ") for line in lines[1:])
+        assert len(lines[0]) == stream.query_one(RichLog).scrollable_content_region.width
+        stream.show_working(90061, "escape", "x" * 400)
+        await pilot.pause()
+        status = str(stream.query_one(Static).render()).splitlines()
+        assert status[1].startswith("  └ ")
+        assert all(line.startswith("    ") for line in status[2:])
+        await pilot.resize_terminal(45, 30)
+        await pilot.pause()
+        status = str(stream.query_one(Static).render()).splitlines()
+        assert all(len(line) <= 45 for line in status)
+        action_start = next(i for i, line in enumerate(status) if line.startswith("  └ "))
+        assert all(line.startswith("    ") for line in status[action_start + 1 :])
+
+
+@pytest.mark.asyncio
+async def test_append_only_and_whole_entry_retention(monkeypatch):
+    from rich.text import Text
+
+    from rio_coding.tui.widgets import StepStream
+
+    app = RioTuiApp(FakeSession(), settings=TuiSettings(sidebar_position="off"))
+    async with app.run_test(size=(100, 30)) as pilot:
+        stream = app.query_one(StepStream)
+        await pilot.pause()
+        calls = []
+        original = stream._entry_lines
+
+        def counted(*args):
+            calls.append(1)
+            return original(*args)
+
+        monkeypatch.setattr(stream, "_entry_lines", counted)
+        for index in range(1001):
+            stream.write(Text(f"entry-{index:04d} " + "x" * 1000))
+        assert len(calls) == 1001  # Appends never rewrap existing entries, even at the cap.
+        assert len(stream.entries) == 1000
+        assert len(stream.lines) > 10000
+        output = "\n".join(line.text for line in stream.lines)
+        assert "entry-0000" not in output
+        assert "• entry-0001" in output
+        assert "• entry-1000" in output
+        assert next(line.text for line in stream.lines if line.text).startswith("• entry-0001")
+
+
+@pytest.mark.asyncio
+async def test_initial_prompt_defers_rendering_until_layout():
+    from rio_coding.tui.widgets import StepStream
+
+    class StartupApp(RioTuiApp):
+        def submit_prompt(self, text):
+            super().submit_prompt(text)
+            self.startup_lines = len(self.query_one(StepStream).lines)
+
+    app = StartupApp(FakeSession(), initial_prompt="x" * 240, settings=TuiSettings())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.startup_lines == 0
+        assert app.query_one(StepStream).lines[0].text.startswith("• xxxxx")
+
+
+def test_tool_label_fallback_and_result_truncation():
+    from rio_agent.events import ActionEndEvent, ActionStartEvent
+    from rio_ai.tools import AgentToolResult
+
+    adapter = TuiEventAdapter()
+    item = adapter.consume(ActionStartEvent(step=1, name="bash", arguments={"command": ""}))[0]
+    assert item.text == 'Running bash({"command": ""})'
+    item = adapter.consume(
+        ActionEndEvent(
+            step=1,
+            name="bash",
+            result=AgentToolResult(content="x" * 8001),
+            is_error=False,
+        )
+    )[0]
+    assert item.text == "bash: " + "x" * 8000 + "\n… output truncated"
+
+
+@pytest.mark.asyncio
+async def test_completed_status_freezes_and_next_run_restarts(monkeypatch):
+    import asyncio
+
+    from textual.widgets import Static
+
+    from rio_coding.tui.widgets import StepStream
+
+    gate = asyncio.Event()
+    now = 100.0
+    monkeypatch.setattr("rio_coding.tui.app.monotonic", lambda: now)
+
+    class SlowSession(FakeSession):
+        async def prompt(self, text):
+            await gate.wait()
+            yield SessionRunEndEvent(steps=1, state={}, answer="Done")
+
+    app = RioTuiApp(SlowSession(), settings=TuiSettings())
+    async with app.run_test() as pilot:
+        status = app.query_one(StepStream).query_one(Static)
+        assert not status.display
+        app.submit_prompt("first")
+        await pilot.pause()
+        now = 232.0
+        gate.set()
+        await pilot.pause()
+        assert str(status.render()).startswith("- Worked for 2m 12s --")
+        assert len(str(status.render())) == app.query_one(StepStream).content_region.width
+        now = 400.0
+        app.refresh_state()
+        app.refresh_working()
+        await pilot.resize_terminal(100, 30)
+        await pilot.pause()
+        assert str(status.render()).startswith("- Worked for 2m 12s --")
+        assert len(str(status.render())) == app.query_one(StepStream).content_region.width
+        gate.clear()
+        app.submit_prompt("second")
+        await pilot.pause()
+        assert "Working (0s" in str(status.render())
+        gate.set()
+        await pilot.pause()
+        assert str(status.render()).startswith("- Worked for 0s --")

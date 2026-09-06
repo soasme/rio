@@ -3,6 +3,7 @@
 import json
 from copy import deepcopy
 from dataclasses import replace
+from time import monotonic
 
 from rich.text import Text
 from textual import events, work
@@ -24,7 +25,7 @@ from rio_coding.tui.widgets import CommandPicker, StateSidebar, StepStream
 
 
 class RioTuiApp(App[None]):
-    TITLE = "rio · SKILL.state"
+    TITLE = "rio"
     CSS = """
     #local-backend-picker,
     #local-backend-screen,
@@ -168,6 +169,8 @@ class RioTuiApp(App[None]):
         self.settings = settings or load_tui_settings(session.config.paths)
         self.adapter = TuiEventAdapter(TuiState(state=deepcopy(session.state)))
         self._busy = False
+        self._working_since: float | None = None
+        self._worked_elapsed: int | None = None
         self._terminal_title = TerminalTitleController()
         self._turn_notifications = TerminalNotificationController(self.settings.turn_notification)
         theme = self.settings.resolved_theme
@@ -217,6 +220,7 @@ class RioTuiApp(App[None]):
         await super().on_event(event)
 
     def on_mount(self) -> None:
+        self.set_interval(1, self.refresh_working)
         if hasattr(self.session, "extensions"):
             self.session.extensions.set_ui_bridge(self.ui_bridge)
         self.query_one("#sidebar-scroll").display = self.settings.sidebar_position != "off"
@@ -229,7 +233,28 @@ class RioTuiApp(App[None]):
         self.session.cancel()
         self._terminal_title.restore()
 
+    @property
+    def working_elapsed(self) -> int | None:
+        if self._working_since is None:
+            return None
+        return int(monotonic() - self._working_since)
+
+    def refresh_working(self) -> None:
+        self.query_one(StepStream).show_working(
+            self.working_elapsed if self._working_since is not None else self._worked_elapsed,
+            self.settings.keybindings.cancel,
+            self.adapter.state.active_action,
+            finished=self._working_since is None,
+        )
+
     def refresh_state(self) -> None:
+        if self._busy and self._working_since is None:
+            self._worked_elapsed = None
+            self._working_since = monotonic()
+        elif not self._busy and self._working_since is not None:
+            self._worked_elapsed = self.working_elapsed
+            self._working_since = None
+        self.refresh_working()
         self._terminal_title.update(
             getattr(self.session, "session_title", None), running=self._busy
         )
@@ -241,7 +266,9 @@ class RioTuiApp(App[None]):
 
     def write_item(self, item: StepStreamItem) -> None:
         style = self.settings.resolved_theme.role_styles[item.role].body
-        self.query_one(StepStream).write(Text(item.text, style=style))
+        self.query_one(StepStream).write(
+            Text(item.text, style=style), continuation=item.continuation
+        )
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
@@ -544,6 +571,7 @@ class RioTuiApp(App[None]):
         finally:
             self._busy = False
             self.adapter.state.running = False
+            self.adapter.state.active_action = None
             self.refresh_state()
             self._turn_notifications.notify_turn_finished()
 
