@@ -521,7 +521,10 @@ class RioTuiApp(App[None]):
                         await self.session.set_provider_name(value)
                 elif command == "/login":
                     with self.suspend():
-                        await login_provider(value)
+                        result = await login_provider(value)
+                    self.write_item(StepStreamItem("status", result))
+                    if hasattr(self.session, "set_provider_name"):
+                        await self.session.set_provider_name(value)
                 else:
                     self.write_item(StepStreamItem("status", logout_provider(value)))
             if hasattr(self.session, "extensions"):

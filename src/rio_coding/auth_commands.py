@@ -61,7 +61,7 @@ async def login_provider(name, *, method=None, callbacks=None, api_key=None):
         if not secret.strip():
             raise ValueError("API key cannot be empty")
         store.set_api_key(key, secret)
-    upsert_saved_provider(replace(provider, credential_name=key))
+    upsert_saved_provider(replace(provider, credential_name=key), set_default=True)
     return f"Logged in to {name}."
 
 
