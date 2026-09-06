@@ -167,7 +167,10 @@ class RioTuiApp(App[None]):
         self.ui_bridge = TuiBridge(self)
         self.initial_prompt = initial_prompt
         self.settings = settings or load_tui_settings(session.config.paths)
-        self.adapter = TuiEventAdapter(TuiState(state=deepcopy(session.state)))
+        self.adapter = TuiEventAdapter(
+            TuiState(state=deepcopy(session.state)),
+            toggle_tool_results=self.settings.keybindings.toggle_tool_results,
+        )
         self._busy = False
         self._working_since: float | None = None
         self._worked_elapsed: int | None = None
@@ -178,6 +181,11 @@ class RioTuiApp(App[None]):
         self.theme = theme.name
         self.bind(self.settings.keybindings.cancel, "cancel_run", description="Cancel")
         self.bind(self.settings.keybindings.quit, "quit", description="Quit")
+        self.bind(
+            self.settings.keybindings.toggle_tool_results,
+            "toggle_tool_results",
+            description="Tool results",
+        )
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -267,7 +275,9 @@ class RioTuiApp(App[None]):
     def write_item(self, item: StepStreamItem) -> None:
         style = self.settings.resolved_theme.role_styles[item.role].body
         self.query_one(StepStream).write(
-            Text(item.text, style=style), continuation=item.continuation
+            Text(item.text, style=style),
+            continuation=item.continuation,
+            full_text=Text(item.full_text, style=style) if item.full_text is not None else None,
         )
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -577,6 +587,9 @@ class RioTuiApp(App[None]):
             self.adapter.state.active_action = None
             self.refresh_state()
             self._turn_notifications.notify_turn_finished()
+
+    def action_toggle_tool_results(self) -> None:
+        self.query_one(StepStream).toggle_tool_results()
 
     def action_cancel_run(self) -> None:
         self.session.cancel()

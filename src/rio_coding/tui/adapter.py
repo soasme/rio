@@ -29,8 +29,12 @@ _MAX_RESULT_CHARS = 8000
 
 
 class TuiEventAdapter:
-    def __init__(self, state: TuiState | None = None) -> None:
+    def __init__(
+        self, state: TuiState | None = None, *, toggle_tool_results: str = "ctrl+o"
+    ) -> None:
         self.state = state if state is not None else TuiState()
+        self.toggle_tool_results = toggle_tool_results
+        self._action_target = ""
 
     def consume(self, event: CodingSessionEvent) -> list[StepStreamItem]:
         items: list[StepStreamItem] = []
@@ -53,6 +57,8 @@ class TuiEventAdapter:
         if isinstance(event, StateUpdateEvent):
             items.append(StepStreamItem("step", "State delta: " + json.dumps(event.delta)))
         elif isinstance(event, ActionStartEvent):
+            target = event.arguments.get("path") or event.arguments.get("command")
+            self._action_target = " ".join(target.split())[:120] if isinstance(target, str) else ""
             command = event.arguments.get("command")
             label = (
                 command
@@ -64,12 +70,18 @@ class TuiEventAdapter:
         elif isinstance(event, ActionEndEvent):
             self.state.active_action = None
             text = event.result.text
+            target = f": {self._action_target}" if self._action_target else ""
+            self._action_target = ""
+            lines = len(text.splitlines())
+            count = f"{lines} {'line' if lines == 1 else 'lines'}"
+            error = ", error" if event.is_error else ""
             items.append(
                 StepStreamItem(
                     "error" if event.is_error else "step",
-                    f"{event.name}: {text[:_MAX_RESULT_CHARS]}"
-                    + ("\n… output truncated" if len(text) > _MAX_RESULT_CHARS else ""),
+                    f"{event.name}{target} ({count}{error}, {self.toggle_tool_results} to expand)",
                     continuation=True,
+                    full_text=f"{event.name}: {text[:_MAX_RESULT_CHARS]}"
+                    + ("\n… output truncated" if len(text) > _MAX_RESULT_CHARS else ""),
                 )
             )
         elif isinstance(event, ReasoningDiscardedEvent):

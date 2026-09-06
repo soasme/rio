@@ -31,7 +31,8 @@ class StepStream(Vertical):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.entries: list[tuple[Text, bool]] = []
+        self.entries: list[tuple[Text, bool, Text | None]] = []
+        self.tool_results_expanded = False
         self._line_counts: list[int] = []
         self._rendered_width = 0
         self._working: tuple[int | None, str, str | None, bool] = (None, "", None, False)
@@ -44,8 +45,12 @@ class StepStream(Vertical):
     def lines(self):
         return self.query_one(RichLog).lines
 
-    def write(self, text: Text, *, continuation: bool = False) -> None:
-        self.entries.append((text, continuation))
+    def write(
+        self, text: Text, *, continuation: bool = False, full_text: Text | None = None
+    ) -> None:
+        self.entries.append((text, continuation, full_text))
+        if self.tool_results_expanded and full_text is not None:
+            text = full_text
         evicted = len(self.entries) > 1000
         if evicted:
             del self.entries[0]
@@ -75,6 +80,10 @@ class StepStream(Vertical):
         )
         return ([Text("")] if gap and not continuation else []) + lines
 
+    def toggle_tool_results(self) -> None:
+        self.tool_results_expanded = not self.tool_results_expanded
+        self.redraw()
+
     def clear(self) -> None:
         self.entries.clear()
         self._line_counts.clear()
@@ -95,7 +104,9 @@ class StepStream(Vertical):
         log.max_lines = None
         self._line_counts.clear()
         self._rendered_width = width
-        for index, (text, continuation) in enumerate(self.entries):
+        for index, (text, continuation, full_text) in enumerate(self.entries):
+            if self.tool_results_expanded and full_text is not None:
+                text = full_text
             lines = self._entry_lines(text, continuation, index > 0, width)
             self._line_counts.append(len(lines))
             log.write(Text("\n").join(lines), width=width, scroll_end=False)

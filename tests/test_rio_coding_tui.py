@@ -249,7 +249,8 @@ def test_adapter_turns_and_tool_results():
         )
     )
     assert items[0].continuation
-    assert items[0].text == "bash: failed"
+    assert items[0].text == "bash: git status (1 line, error, ctrl+o to expand)"
+    assert items[0].full_text == "bash: failed"
     assert items[0].role == "error"
     assert adapter.state.active_action is None
 
@@ -431,7 +432,8 @@ def test_tool_label_fallback_and_result_truncation():
             is_error=False,
         )
     )[0]
-    assert item.text == "bash: " + "x" * 8000 + "\n… output truncated"
+    assert item.text == "bash (1 line, ctrl+o to expand)"
+    assert item.full_text == "bash: " + "x" * 8000 + "\n… output truncated"
 
 
 @pytest.mark.asyncio
@@ -476,3 +478,86 @@ async def test_completed_status_freezes_and_next_run_restarts(monkeypatch):
         gate.set()
         await pilot.pause()
         assert str(status.render()).startswith("- Worked for 0s --")
+
+
+@pytest.mark.parametrize(
+    "output, lines", [("", 0), ("one\n", 1), ("one\ntwo", 2), ("x\n" * 142, 142)]
+)
+def test_tool_result_summary_retains_output(output, lines):
+    from rio_agent.events import ActionEndEvent, ActionStartEvent
+    from rio_ai.tools import AgentToolResult
+
+    adapter = TuiEventAdapter()
+    adapter.consume(ActionStartEvent(step=1, name="read", arguments={"path": "/tmp/file"}))
+    item = adapter.consume(
+        ActionEndEvent(
+            step=1,
+            name="read",
+            result=AgentToolResult(content=output),
+            is_error=False,
+        )
+    )[0]
+    unit = "line" if lines == 1 else "lines"
+    assert item.text == f"read: /tmp/file ({lines} {unit}, ctrl+o to expand)"
+    assert item.full_text == "read: " + output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["ctrl+o", "ctrl+y"])
+async def test_tool_results_toggle_globally_with_configured_key(key):
+    from rio_agent.events import ActionEndEvent
+    from rio_ai.tools import AgentToolResult
+    from rio_coding.tui.config import TuiKeybindings
+    from rio_coding.tui.state import StepStreamItem
+    from rio_coding.tui.widgets import StepStream
+
+    app = RioTuiApp(
+        FakeSession(),
+        settings=TuiSettings(
+            sidebar_position="off",
+            keybindings=TuiKeybindings(toggle_tool_results=key),
+        ),
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        stream = app.query_one(StepStream)
+        app.write_item(StepStreamItem("user", "Read files"))
+
+        def emit(output):
+            for item in app.adapter.consume(
+                ActionEndEvent(
+                    step=1,
+                    name="read",
+                    result=AgentToolResult(content=output),
+                    is_error=False,
+                )
+            ):
+                app.write_item(item)
+
+        def rendered():
+            return "\n".join(line.text for line in stream.lines)
+
+        emit("first result\nsecond line")
+        emit("another result")
+        await pilot.pause()
+        assert f"{key} to expand" in rendered()
+        assert "first result" not in rendered()
+        assert app.query_one(Input).has_focus
+        if key != "ctrl+o":
+            await pilot.press("ctrl+o")
+            assert "first result" not in rendered()
+        await pilot.press(key)
+        assert "first result" in rendered()
+        assert "second line" in rendered()
+        assert "another result" in rendered()
+        emit("arrived while expanded")
+        await pilot.pause()
+        assert "arrived while expanded" in rendered()
+        await pilot.resize_terminal(60, 30)
+        await pilot.pause()
+        assert "first result" in rendered()
+        await pilot.press(key)
+        assert "first result" not in rendered()
+        assert "another result" not in rendered()
+        assert "arrived while expanded" not in rendered()
+        assert "Read files" in rendered()
+        assert len(stream.entries) == 4
