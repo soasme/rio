@@ -170,6 +170,7 @@ class RioTuiApp(App[None]):
         self.adapter = TuiEventAdapter(TuiState(state=deepcopy(session.state)))
         self._busy = False
         self._working_since: float | None = None
+        self._worked_elapsed: int | None = None
         self._terminal_title = TerminalTitleController()
         self._turn_notifications = TerminalNotificationController(self.settings.turn_notification)
         theme = self.settings.resolved_theme
@@ -240,15 +241,18 @@ class RioTuiApp(App[None]):
 
     def refresh_working(self) -> None:
         self.query_one(StepStream).show_working(
-            self.working_elapsed,
+            self.working_elapsed if self._working_since is not None else self._worked_elapsed,
             self.settings.keybindings.cancel,
             self.adapter.state.active_action,
+            finished=self._working_since is None,
         )
 
     def refresh_state(self) -> None:
         if self._busy and self._working_since is None:
+            self._worked_elapsed = None
             self._working_since = monotonic()
-        elif not self._busy:
+        elif not self._busy and self._working_since is not None:
+            self._worked_elapsed = self.working_elapsed
             self._working_since = None
         self.refresh_working()
         self._terminal_title.update(

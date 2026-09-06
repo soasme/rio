@@ -20,7 +20,7 @@ from rio_coding.tui.state import TuiState
 
 
 class StepStream(Vertical):
-    """Width-aware transcript with a transient working row below its history."""
+    """Width-aware transcript with a working status row below its history."""
 
     DEFAULT_CSS = """
     StepStream { overflow-x: hidden; }
@@ -33,7 +33,7 @@ class StepStream(Vertical):
         self.entries: list[tuple[Text, bool]] = []
         self._line_counts: list[int] = []
         self._rendered_width = 0
-        self._working: tuple[int | None, str, str | None] = (None, "", None)
+        self._working: tuple[int | None, str, str | None, bool] = (None, "", None, False)
 
     def compose(self) -> ComposeResult:
         yield RichLog(wrap=True, markup=False, min_width=1, max_lines=None)
@@ -103,20 +103,26 @@ class StepStream(Vertical):
         else:
             log.scroll_to(y=scroll_y, animate=False)
 
-    def show_working(self, elapsed: int | None, key: str, action: str | None) -> None:
-        self._working = elapsed, key, action
+    def show_working(
+        self, elapsed: int | None, key: str, action: str | None, *, finished: bool = False
+    ) -> None:
+        self._working = elapsed, key, action, finished
         self._render_working()
 
     def _render_working(self) -> None:
-        elapsed, key, action = self._working
+        elapsed, key, action, finished = self._working
         status = self.query_one(Static)
         status.display = elapsed is not None
         width = self.content_region.width
         if elapsed is None or not width:
             return
-        header = f"Working ({human_elapsed(elapsed)} {TURN_INDICATOR} {key} to interrupt)"
+        header = (
+            f"Worked for {human_elapsed(elapsed)}"
+            if finished
+            else f"Working ({human_elapsed(elapsed)} {TURN_INDICATOR} {key} to interrupt)"
+        )
         lines = prefixed_lines(Text(header), self.app.console, width, TURN_PREFIX)
-        if action:
+        if action and not finished:
             lines.extend(prefixed_lines(Text(action), self.app.console, width, RESULT_PREFIX))
         status.update(Text("\n").join(lines))
 

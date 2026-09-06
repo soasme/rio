@@ -15,18 +15,27 @@ do not obscure which tool produced the output. All content is literal text, incl
 • The tests passed.
 ```
 
-The separate transient row below the history (never stored in `entries`):
+The separate status row below the history (never stored in `entries`):
 
 ```text
 • Working (2m 12s • escape to interrupt)
   └ git status --short
 ```
 
-A transient row beneath the scrollable history updates once a second using a
+The status row beneath the scrollable history updates once a second using a
 monotonic clock, with days, hours, minutes, and seconds for long runs. It starts
-when a prompt is submitted and disappears when the worker finishes, including errors and cancellation. It shows the configured
-cancel key and the current action while that action is executing. Updates replace
-the row instead of appending repeated Working messages to history.
+when a prompt is submitted. While running, it shows the configured cancel key
+and the current action. When the worker finishes (including errors or cancellation),
+it freezes the elapsed duration and replaces the active status with:
+
+```text
+• Worked for 2m 21s
+```
+
+The completed status has no interrupt hint or active command and remains visible
+until the next run replaces it with a fresh Working timer. Before the first run,
+the row is hidden. Timer ticks and resizing preserve the frozen duration. Updates
+replace the row instead of appending status messages to history.
 
 Rio currently executes tools in the foreground and exposes no background-terminal
 registry, `/ps`, or `/stop`. The row therefore displays the active action without
