@@ -33,7 +33,11 @@ uv run rio export SESSION_ID --format html
 Choose an existing provider with `--provider NAME --model MODEL`; `rio providers`
 lists the configured catalog. Credentials may come from the provider's environment
 variable or Rio's credential store (`rio login PROVIDER`; use `--method api-key`
-for an API key). Configuration and journals live under `~/.rio`.
+for an API key). A successful login remembers the provider for future launches.
+API keys and OAuth tokens are stored in `~/.rio/credentials.json` with owner-only
+permissions; the file is unencrypted. OAuth tokens refresh automatically.
+Use `rio logout PROVIDER` to remove saved credentials. Configuration and journals
+live under `~/.rio`.
 Use `--approve` to allow ambient project instructions and extensions for a run;
 project trust controls resource loading, not what shell commands can access.
 

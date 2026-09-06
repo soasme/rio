@@ -118,6 +118,7 @@ async def test_tui_browser_login_completes_or_cancels(monkeypatch, tmp_path, com
             else:
                 assert credential.account_id == "test-account"
                 assert session.provider_name == "openai-codex"
+                assert load_provider_settings().default_provider == "openai-codex"
                 assert "Logged in to openai-codex" in output
     finally:
         await session.aclose()

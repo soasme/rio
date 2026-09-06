@@ -168,7 +168,11 @@ async def test_api_key_login_logout(monkeypatch, tmp_path):
             default_model="test",
         ),
     )
-    monkeypatch.setattr(auth_commands, "upsert_saved_provider", saved.append)
+    monkeypatch.setattr(
+        auth_commands,
+        "upsert_saved_provider",
+        lambda provider, *, set_default: saved.append(provider) if set_default else None,
+    )
     assert "Logged in" in await auth_commands.login_provider("test", api_key="secret")
     assert store.get("test") == "secret"
     assert saved[0].credential_name == "test"
@@ -285,7 +289,7 @@ async def test_oauth_login_uses_callbacks_and_persists(monkeypatch, tmp_path):
             default_model="test",
         ),
     )
-    monkeypatch.setattr(auth_commands, "upsert_saved_provider", lambda provider: None)
+    monkeypatch.setattr(auth_commands, "upsert_saved_provider", lambda provider, **kwargs: None)
     await auth_commands.login_provider("example", callbacks=callbacks)
     assert store.get_oauth("example") == credential
 
@@ -373,16 +377,17 @@ def test_tui_starts_without_key_and_can_login_then_run(monkeypatch, tmp_path):
 
             monkeypatch.setattr(app, "suspend", nullcontext)
             monkeypatch.setattr("typer.prompt", lambda *args, **kwargs: "test-api-key")
-            app.submit_prompt("/login openai")
-            await app.workers.wait_for_complete()
-            assert FileCredentialStore().get("openai") == "test-api-key"
 
             def authenticated(config, **kwargs):
                 assert config.credential_name == "openai"
                 assert FileCredentialStore().get(config.credential_name) == "test-api-key"
                 return provider
 
-            monkeypatch.setattr(cli, "create_model_provider", authenticated)
+            monkeypatch.setattr("rio_coding.frontend_session.create_model_provider", authenticated)
+            app.submit_prompt("/login openai")
+            await app.workers.wait_for_complete()
+            assert FileCredentialStore().get("openai") == "test-api-key"
+            assert session.provider_name == "openai"
             app.submit_prompt("hello again")
             await app.workers.wait_for_complete()
             assert session.answer == "Authenticated"
@@ -403,3 +408,79 @@ def test_headless_mode_still_reports_missing_key(monkeypatch, tmp_path):
     result = runner.invoke(cli.app, ["-p", "hello", "--provider", "openai"])
     assert result.exit_code != 0
     assert "Missing provider API key" in result.output
+
+
+@pytest.mark.parametrize("auth_method", ["api_key", "oauth"])
+async def test_login_survives_restart_and_logout(monkeypatch, tmp_path, auth_method):
+    from pathlib import Path
+
+    from rio_coding import auth_commands
+    from rio_coding.credentials import FileCredentialStore, OAuthCredential
+    from rio_coding.provider_config import (
+        load_provider_settings,
+        provider_has_usable_credentials,
+        resolve_provider_selection,
+    )
+    from rio_coding.provider_runtime import create_model_provider
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    name = "deepseek" if auth_method == "api_key" else "openai-codex"
+    credential = OAuthCredential(
+        access="test-access",
+        refresh="test-refresh",
+        expires=9999999999999,
+        account_id="test-account",
+    )
+
+    class OAuth:
+        async def login(self, callbacks):
+            return credential
+
+    if auth_method == "oauth":
+        monkeypatch.setattr(auth_commands, "get_oauth_provider", lambda name: OAuth())
+        await auth_commands.login_provider(name)
+    else:
+        await auth_commands.login_provider(name, api_key="test-key")
+
+    # Reconstruct startup state from disk, without reusing the login's objects.
+    selection = resolve_provider_selection(load_provider_settings())
+    assert selection.provider.name == name
+    store = FileCredentialStore()
+    assert provider_has_usable_credentials(selection.provider, credential_reader=store)
+    if auth_method == "oauth":
+        assert store.get_oauth(name) == credential
+    else:
+        assert store.get(name) == "test-key"
+    assert store.path.stat().st_mode & 0o777 == 0o600
+    runtime = create_model_provider(selection.provider, model=selection.model)
+    await runtime.aclose()
+
+    auth_commands.logout_provider(name)
+    restarted_store = FileCredentialStore()
+    assert not provider_has_usable_credentials(
+        load_provider_settings().get_provider(name), credential_reader=restarted_store
+    )
+
+
+async def test_failed_login_preserves_startup_provider(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from rio_coding import auth_commands
+    from rio_coding.credentials import FileCredentialStore
+    from rio_coding.provider_config import load_provider_settings
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    await auth_commands.login_provider("openai", api_key="test-key")
+
+    class OAuth:
+        async def login(self, callbacks):
+            raise RuntimeError("Authentication failed")
+
+    monkeypatch.setattr(auth_commands, "get_oauth_provider", lambda name: OAuth())
+    with pytest.raises(RuntimeError, match="Authentication failed"):
+        await auth_commands.login_provider("openai-codex")
+    assert load_provider_settings().default_provider == "openai"
+    assert FileCredentialStore().get("openai") == "test-key"
+    assert FileCredentialStore().get_oauth("openai-codex") is None
