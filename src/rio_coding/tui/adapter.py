@@ -25,6 +25,8 @@ from rio_coding.events import (
 )
 from rio_coding.tui.state import StepStreamItem, TuiState
 
+_MAX_RESULT_CHARS = 8000
+
 
 class TuiEventAdapter:
     def __init__(self, state: TuiState | None = None) -> None:
@@ -54,18 +56,19 @@ class TuiEventAdapter:
             command = event.arguments.get("command")
             label = (
                 command
-                if isinstance(command, str)
+                if isinstance(command, str) and command.strip()
                 else (f"{event.name}({json.dumps(event.arguments, ensure_ascii=False)})")
             )
             self.state.active_action = label
-            items.append(StepStreamItem("step", f"Ran {label}"))
+            items.append(StepStreamItem("step", f"Running {label}"))
         elif isinstance(event, ActionEndEvent):
             self.state.active_action = None
+            text = event.result.text
             items.append(
                 StepStreamItem(
                     "error" if event.is_error else "step",
-                    event.result.text[:8000]
-                    + ("\n… output truncated" if len(event.result.text) > 8000 else ""),
+                    f"{event.name}: {text[:_MAX_RESULT_CHARS]}"
+                    + ("\n… output truncated" if len(text) > _MAX_RESULT_CHARS else ""),
                     continuation=True,
                 )
             )

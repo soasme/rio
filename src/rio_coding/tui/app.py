@@ -232,9 +232,15 @@ class RioTuiApp(App[None]):
         self.session.cancel()
         self._terminal_title.restore()
 
+    @property
+    def working_elapsed(self) -> int | None:
+        if self._working_since is None:
+            return None
+        return int(monotonic() - self._working_since)
+
     def refresh_working(self) -> None:
         self.query_one(StepStream).show_working(
-            int(monotonic() - self._working_since) if self._working_since is not None else None,
+            self.working_elapsed,
             self.settings.keybindings.cancel,
             self.adapter.state.active_action,
         )
