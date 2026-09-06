@@ -7,9 +7,8 @@ from json import JSONDecodeError, loads
 from pathlib import Path
 from typing import Any
 
-from rio_coding.project_trust import TrustDefault
-
 from rio_coding.paths import RioPaths
+from rio_coding.project_trust import TrustDefault
 
 
 class ShellConfigError(ValueError):

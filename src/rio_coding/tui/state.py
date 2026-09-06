@@ -10,6 +10,7 @@ from rio_coding.tui.themes import StepStreamRole
 class StepStreamItem:
     role: StepStreamRole
     text: str
+    continuation: bool = False
 
 
 @dataclass(slots=True)
@@ -19,3 +20,4 @@ class TuiState:
     step: int = 0
     running: bool = False
     queued: int = 0
+    active_action: str | None = None

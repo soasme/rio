@@ -36,7 +36,6 @@ class TuiEventAdapter:
             self.state.running = True
         if isinstance(event, StepStartEvent):
             self.state.step = event.step
-            items.append(StepStreamItem("step", f"Step {event.step}"))
         if isinstance(
             event,
             (
@@ -52,12 +51,22 @@ class TuiEventAdapter:
         if isinstance(event, StateUpdateEvent):
             items.append(StepStreamItem("step", "State delta: " + json.dumps(event.delta)))
         elif isinstance(event, ActionStartEvent):
-            items.append(StepStreamItem("step", f"{event.name}({json.dumps(event.arguments)})"))
+            command = event.arguments.get("command")
+            label = (
+                command
+                if isinstance(command, str)
+                else (f"{event.name}({json.dumps(event.arguments, ensure_ascii=False)})")
+            )
+            self.state.active_action = label
+            items.append(StepStreamItem("step", f"Ran {label}"))
         elif isinstance(event, ActionEndEvent):
+            self.state.active_action = None
             items.append(
                 StepStreamItem(
                     "error" if event.is_error else "step",
-                    f"{event.name}: {event.result.text[:8000]}",
+                    event.result.text[:8000]
+                    + ("\n… output truncated" if len(event.result.text) > 8000 else ""),
+                    continuation=True,
                 )
             )
         elif isinstance(event, ReasoningDiscardedEvent):
@@ -80,6 +89,7 @@ class TuiEventAdapter:
             items.append(StepStreamItem("status", "Restored checkpoint " + str(event.entry_id)))
         if isinstance(event, (SessionRunEndEvent, AgentSettledEvent)):
             self.state.running = False
+            self.state.active_action = None
         self.state.items.extend(items)
         del self.state.items[:-1000]
         return items

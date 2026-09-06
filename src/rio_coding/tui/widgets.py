@@ -4,6 +4,7 @@ import json
 
 from rich.text import Text
 from textual.app import ComposeResult
+from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Label, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
@@ -11,9 +12,70 @@ from textual.widgets.option_list import Option
 from rio_coding.tui.state import TuiState
 
 
-class StepStream(RichLog):
+class StepStream(Vertical):
+    """Width-aware transcript with a transient working row below its history."""
+
+    DEFAULT_CSS = """
+    StepStream { overflow-x: hidden; }
+    StepStream RichLog { height: 1fr; overflow-x: hidden; }
+    StepStream Static { height: auto; padding-top: 1; }
+    """
+
     def __init__(self, **kwargs):
-        super().__init__(wrap=True, markup=False, max_lines=3000, **kwargs)
+        super().__init__(**kwargs)
+        self.entries: list[tuple[Text, bool]] = []
+
+    def compose(self) -> ComposeResult:
+        yield RichLog(wrap=True, markup=False, min_width=1, max_lines=10000)
+        yield Static("", markup=False)
+
+    @property
+    def lines(self):
+        return self.query_one(RichLog).lines
+
+    def write(self, text: Text, *, continuation: bool = False) -> None:
+        self.entries.append((text, continuation))
+        del self.entries[:-1000]
+        self.redraw()
+
+    def clear(self) -> None:
+        self.entries.clear()
+        self.query_one(RichLog).clear()
+
+    def on_resize(self) -> None:
+        self.call_after_refresh(self.redraw)
+
+    def redraw(self) -> None:
+        log = self.query_one(RichLog)
+        at_end = log.is_vertical_scroll_end
+        scroll_y = log.scroll_y
+        log.clear()
+        width = max(1, log.scrollable_content_region.width - 4)
+        for index, (text, continuation) in enumerate(self.entries):
+            if index and not continuation:
+                log.write("", scroll_end=False)
+            for number, line in enumerate(text.wrap(self.app.console, width, overflow="fold")):
+                prefix = (
+                    ("  └ " if number == 0 else "    ")
+                    if continuation
+                    else ("• " if number == 0 else "  ")
+                )
+                log.write(Text(prefix) + line, scroll_end=False)
+        if at_end:
+            log.scroll_end(animate=False)
+        else:
+            log.scroll_to(y=scroll_y, animate=False)
+
+    def show_working(self, elapsed: int | None, key: str, action: str | None) -> None:
+        status = self.query_one(Static)
+        status.display = elapsed is not None
+        if elapsed is not None:
+            minutes, seconds = divmod(elapsed, 60)
+            duration = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+            text = f"• Working ({duration} • {key} to interrupt)"
+            if action:
+                text += "\n  └ " + action
+            status.update(Text(text, overflow="fold"))
 
 
 class StateSidebar(Static):
