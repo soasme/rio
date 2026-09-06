@@ -29,10 +29,12 @@ and the current action. When the worker finishes (including errors or cancellati
 it freezes the elapsed duration and replaces the active status with:
 
 ```text
-• Worked for 2m 21s
+- Worked for 2m 21s --------------------------------
 ```
 
-The completed status has no interrupt hint or active command and remains visible
+The completed status uses a leading hyphen and trailing hyphens that fill the
+panel width, recalculated on resize. On very narrow panels the label wraps without
+horizontal scrolling. It has no interrupt hint or active command and remains visible
 until the next run replaces it with a fresh Working timer. Before the first run,
 the row is hidden. Timer ticks and resizing preserve the frozen duration. Updates
 replace the row instead of appending status messages to history.

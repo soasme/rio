@@ -318,7 +318,7 @@ async def test_working_timer_and_cleanup():
         await pilot.pause()
         assert app._working_since is None
         assert status.display
-        assert str(status.render()) == "• Worked for 2m 21s"
+        assert str(status.render()).startswith("- Worked for 2m 21s --")
         assert not app.adapter.state.running
 
 
@@ -460,17 +460,19 @@ async def test_completed_status_freezes_and_next_run_restarts(monkeypatch):
         now = 232.0
         gate.set()
         await pilot.pause()
-        assert str(status.render()) == "• Worked for 2m 12s"
+        assert str(status.render()).startswith("- Worked for 2m 12s --")
+        assert len(str(status.render())) == app.query_one(StepStream).content_region.width
         now = 400.0
         app.refresh_state()
         app.refresh_working()
         await pilot.resize_terminal(100, 30)
         await pilot.pause()
-        assert str(status.render()) == "• Worked for 2m 12s"
+        assert str(status.render()).startswith("- Worked for 2m 12s --")
+        assert len(str(status.render())) == app.query_one(StepStream).content_region.width
         gate.clear()
         app.submit_prompt("second")
         await pilot.pause()
         assert "Working (0s" in str(status.render())
         gate.set()
         await pilot.pause()
-        assert str(status.render()) == "• Worked for 0s"
+        assert str(status.render()).startswith("- Worked for 0s --")

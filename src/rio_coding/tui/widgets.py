@@ -10,6 +10,7 @@ from textual.widgets import Label, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
 from rio_coding.tui.formatting import (
+    DIVIDER_INDICATOR,
     RESULT_PREFIX,
     TURN_INDICATOR,
     TURN_PREFIX,
@@ -116,14 +117,15 @@ class StepStream(Vertical):
         width = self.content_region.width
         if elapsed is None or not width:
             return
-        header = (
-            f"Worked for {human_elapsed(elapsed)}"
-            if finished
-            else f"Working ({human_elapsed(elapsed)} {TURN_INDICATOR} {key} to interrupt)"
-        )
-        lines = prefixed_lines(Text(header), self.app.console, width, TURN_PREFIX)
-        if action and not finished:
-            lines.extend(prefixed_lines(Text(action), self.app.console, width, RESULT_PREFIX))
+        if finished:
+            header = f"{DIVIDER_INDICATOR} Worked for {human_elapsed(elapsed)} "
+            header += DIVIDER_INDICATOR * max(1, width - len(header))
+            lines = Text(header).wrap(self.app.console, width, overflow="fold")
+        else:
+            header = f"Working ({human_elapsed(elapsed)} {TURN_INDICATOR} {key} to interrupt)"
+            lines = prefixed_lines(Text(header), self.app.console, width, TURN_PREFIX)
+            if action:
+                lines.extend(prefixed_lines(Text(action), self.app.console, width, RESULT_PREFIX))
         status.update(Text("\n").join(lines))
 
 
