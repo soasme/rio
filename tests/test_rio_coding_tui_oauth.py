@@ -19,7 +19,7 @@ from rio_coding.session import CodingSession, CodingSessionConfig
 from rio_coding.session_store import InMemorySessionStorage
 from rio_tui import RioTuiApp, Settings
 from rio_tui.bridge import Question
-from rio_tui.widgets.conversation import Notice
+from rio_tui.widget_conversation import Notice
 
 
 @pytest.mark.parametrize(

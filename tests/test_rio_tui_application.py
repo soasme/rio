@@ -16,10 +16,10 @@ from rio_coding.paths import RioPaths
 from rio_tui import RioTuiApp, Settings
 from rio_tui.bridge import Question
 from rio_tui.dialogs import FilePicker, Picker
-from rio_tui.widgets.conversation import Answer, Conversation, ToolBlock, UserMessage
-from rio_tui.widgets.prompt import Editor
-from rio_tui.widgets.sidebar import Sidebar
-from rio_tui.widgets.terminal import ShellTerminal
+from rio_tui.widget_conversation import Answer, Conversation, ToolBlock, UserMessage
+from rio_tui.widget_prompt import Editor
+from rio_tui.widget_sidebar import Sidebar
+from rio_tui.widget_terminal import ShellTerminal
 
 
 class Session:

@@ -339,7 +339,7 @@ def test_tui_starts_without_key_and_can_login_then_run(monkeypatch, tmp_path):
     import rio_tui as tui
     from rio_coding.credentials import FileCredentialStore
     from rio_tui.dialogs import Picker
-    from rio_tui.widgets.conversation import Notice
+    from rio_tui.widget_conversation import Notice
 
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

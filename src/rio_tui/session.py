@@ -22,7 +22,7 @@ from rio_coding.events import AutoRetryStartEvent, QueueUpdateEvent, SessionRunE
 from rio_coding.session_store import StepEntry, TurnEntry, latest_leaf_id, path_to_entry
 from rio_tui.bridge import SessionBridge
 from rio_tui.dialogs import Changes, FilePicker, Picker, Preferences
-from rio_tui.widgets.conversation import (
+from rio_tui.widget_conversation import (
     Answer,
     Conversation,
     Notice,
@@ -30,9 +30,9 @@ from rio_tui.widgets.conversation import (
     ToolBlock,
     UserMessage,
 )
-from rio_tui.widgets.prompt import Editor, Prompt
-from rio_tui.widgets.sidebar import Plan, Sidebar
-from rio_tui.widgets.terminal import ShellTerminal
+from rio_tui.widget_prompt import Editor, Prompt
+from rio_tui.widget_sidebar import Plan, Sidebar
+from rio_tui.widget_terminal import ShellTerminal
 
 
 class SessionScreen(Screen):
