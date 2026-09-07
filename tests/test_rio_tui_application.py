@@ -67,6 +67,10 @@ def make_app(tmp_path):
     return RioTuiApp(Session(tmp_path), settings=Settings())
 
 
+async def loaded(app, node):
+    await asyncio.gather(*(w.wait() for w in app.workers if w.node is node))
+
+
 @pytest.mark.asyncio
 async def test_layout_is_conversation_first(tmp_path):
     app = make_app(tmp_path)
@@ -424,10 +428,11 @@ async def test_diff_review_staged_and_working_tree(tmp_path):
         review = Changes(tmp_path)
         app.push_screen(review)
         await pilot.pause()
+        await loaded(app, review)
         assert review.query(DiffView)
         git("add", ".")
         review.action_staged()
-        await pilot.pause()
+        await loaded(app, review)
         assert review.staged
         assert review.query(DiffView)
 
