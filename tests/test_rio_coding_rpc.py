@@ -64,10 +64,7 @@ def two_step_streams():
         ),
         step_response(
             reasoning="Ready to answer.",
-            state_delta={
-                "answer": "main.py starts the server.",
-                "plan": [{"id": "1", "title": "explain", "status": "done"}],
-            },
+            state_delta={"plan": [{"id": "1", "title": "explain", "status": "done"}]},
             action="respond",
             args={"message": "main.py starts the server."},
         ),

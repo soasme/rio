@@ -58,7 +58,6 @@ class FakeSession:
             "goal": "fix the parser",
             "plan": [{"id": "1", "title": "read", "status": "done"}],
             "findings": {},
-            "answer": None,
         }
     )
     context_window_tokens: int = 200_000

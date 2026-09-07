@@ -39,8 +39,12 @@ of this. Each step, the model is given exactly three things:
 2. `Sigma_t` -- a structured JSON execution state: the goal, a plan, findings,
    touched files, blockers, and so on (see `rio_coding.coding_skill` for the
    coding skill's exact schema).
-3. `O_t` -- the latest observation only: the user's message, or the result of
-   the one action the previous step took.
+3. `O_t` -- the latest observation, one `rio_agent.HarnessObservation`
+   carrying what arrived and what kind of thing it is: the result of the one
+   action the previous step took, a message from the user, or both when a
+   message interrupts a run. Each gets its own labelled section of the
+   prompt. A turn's first step observes only a message -- no action has run
+   yet.
 
 The model answers with a single mandatory tool call carrying `(reasoning,
 state_delta, action)`. The runtime validates the delta, merges it into the
@@ -54,8 +58,11 @@ look different from a transcript-based one:
 - **No conversation history.** Nothing a later step needs is "remembered" by
   being in a message list somewhere -- if it matters, it has to be written
   into the execution state. `rio_coding.session.CodingSession.prompt()` hands
-  the user's text to the runtime as `O_0`. It is journaled for audit, but
-  previous turns are never appended to future model prompts.
+  the user's text to the runtime as the first step's input. It is journaled
+  for audit, but previous turns are never appended to future model prompts. A
+  follow-up message therefore continues the session through the state alone:
+  the state carries over untouched, and the run's answer is the terminating
+  action's message rather than a field a later turn could read as its own.
 - **No context compaction.** Compaction exists to bound a transcript that
   grows without limit. rio's per-step prompt is `P` + `Sigma_t` + `O_t`, and
   previous turns are excluded. `rio_coding.step_footprint` estimates the

@@ -229,11 +229,13 @@ async def test_extension_widget_crash_closes_pending_main_view():
 
 
 def test_adapter_turns_and_tool_results():
+    from rio_agent import HarnessObservation
     from rio_agent.events import ActionEndEvent, ActionStartEvent, StepStartEvent
     from rio_ai.tools import AgentToolResult
 
     adapter = TuiEventAdapter()
-    assert adapter.consume(StepStartEvent(step=2, state={}, observation="")) == []
+    observation = HarnessObservation(tool_call_result="")
+    assert adapter.consume(StepStartEvent(step=2, state={}, observation=observation)) == []
     assert adapter.state.step == 2
     items = adapter.consume(
         ActionStartEvent(step=2, name="bash", arguments={"command": "git status"})

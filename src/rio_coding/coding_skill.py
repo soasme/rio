@@ -33,7 +33,6 @@ CODING_STATE_FIELDS: tuple[str, ...] = (
     "blockers",
     "last_error",
     "scratch",
-    "answer",
 )
 
 #: Statuses a plan item may carry. The plan is state, not a tool: a to-do list
@@ -78,7 +77,6 @@ def initial_coding_state(
         "blockers": [],
         "last_error": None,
         "scratch": {},
-        "answer": None,
     }
 
 
@@ -113,12 +111,6 @@ def touched_files(state: Mapping[str, JSONValue]) -> list[str]:
     if not isinstance(files, Mapping):
         return []
     return sorted(str(path) for path in files)
-
-
-def final_answer(state: Mapping[str, JSONValue]) -> str | None:
-    """Return the run's answer to the user, if one has been recorded."""
-    answer = state.get("answer")
-    return answer if isinstance(answer, str) and answer else None
 
 
 def describe_state(state: Mapping[str, JSONValue]) -> str:
