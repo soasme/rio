@@ -622,17 +622,22 @@ class _ResponsesStreamParser:
             )
 
         elif chunk_type == "response.function_call_arguments.delta":
-            item_id = chunk.get("item_id")
-            if isinstance(item_id, str):
-                builder = self._tool_call_builders.setdefault(item_id, _ResponsesToolCallBuilder())
+            key = _responses_item_key(chunk.get("output_index"), chunk.get("item_id"))
+            if key is not None:
+                builder = self._tool_call_builders.setdefault(key, _ResponsesToolCallBuilder())
                 builder.add_arguments_delta(chunk.get("delta"))
+                builder.set_final(output_index=_int_or_none(chunk.get("output_index")))
                 self.emitted_content = True
 
         elif chunk_type == "response.function_call_arguments.done":
-            item_id = chunk.get("item_id")
-            if isinstance(item_id, str):
-                builder = self._tool_call_builders.setdefault(item_id, _ResponsesToolCallBuilder())
-                builder.set_final(arguments=chunk.get("arguments"))
+            key = _responses_item_key(chunk.get("output_index"), chunk.get("item_id"))
+            if key is not None:
+                builder = self._tool_call_builders.setdefault(key, _ResponsesToolCallBuilder())
+                builder.set_final(
+                    name=_str_or_none(chunk.get("name")),
+                    arguments=chunk.get("arguments"),
+                    output_index=_int_or_none(chunk.get("output_index")),
+                )
 
         elif chunk_type == "response.output_item.done":
             item = chunk.get("item")
@@ -1021,6 +1026,22 @@ def _register_reasoning_item(
         items[item_id] = dict(item)
 
 
+def _responses_item_key(output_index: object, item_id: object) -> str | None:
+    """Key the builder that accumulates one streamed `function_call` output item.
+
+    `output_index` is the item's position in the response and is carried by
+    every function-call event, which makes it the stable identity. The item id
+    is not: GitHub Copilot re-encrypts it on each event, so keying by it splits
+    a single call across one builder per event -- the arguments in one, the
+    name and call id in another.
+    """
+    if isinstance(output_index, int) and not isinstance(output_index, bool):
+        return f"index:{output_index}"
+    if isinstance(item_id, str) and item_id:
+        return f"item:{item_id}"
+    return None
+
+
 def _register_responses_item(
     builders: dict[str, _ResponsesToolCallBuilder],
     item: object,
@@ -1029,11 +1050,11 @@ def _register_responses_item(
 ) -> None:
     if not isinstance(item, Mapping) or item.get("type") != "function_call":
         return
-    item_id = item.get("id")
-    if not isinstance(item_id, str):
+    key = _responses_item_key(output_index, item.get("id"))
+    if key is None:
         return
     raw_arguments = item.get("arguments")
-    builder = builders.setdefault(item_id, _ResponsesToolCallBuilder())
+    builder = builders.setdefault(key, _ResponsesToolCallBuilder())
     builder.set_final(
         call_id=_str_or_none(item.get("call_id")),
         name=_str_or_none(item.get("name")),
@@ -1050,10 +1071,10 @@ def _finalize_responses_item(
 ) -> None:
     if not isinstance(item, Mapping) or item.get("type") != "function_call":
         return
-    item_id = item.get("id")
-    if not isinstance(item_id, str):
+    key = _responses_item_key(output_index, item.get("id"))
+    if key is None:
         return
-    builder = builders.setdefault(item_id, _ResponsesToolCallBuilder())
+    builder = builders.setdefault(key, _ResponsesToolCallBuilder())
     builder.set_final(
         call_id=_str_or_none(item.get("call_id")),
         name=_str_or_none(item.get("name")),
