@@ -314,6 +314,36 @@ async def test_read_tool_header_names_action_path_and_line_range(tmp_path: Path)
     assert result.text.startswith(f"read {path} (lines 1-4 of 4)\n\n")
 
 
+@pytest.mark.parametrize("alias", ["file", "file_path"])
+async def test_read_tool_accepts_path_aliases(tmp_path: Path, alias: str) -> None:
+    path = tmp_path / "notes.txt"
+    path.write_text("one\n")
+    tool = create_read_tool(cwd=tmp_path)
+
+    result = await tool.execute("test-call", {alias: "notes.txt"})
+
+    assert result.text == f"read {path} (lines 1-2 of 2)\n\none\n"
+    assert result.details is not None
+    assert result.details["path"] == str(path)
+
+
+async def test_read_tool_prefers_path_over_alias(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("one\n")
+    (tmp_path / "other.txt").write_text("two\n")
+    tool = create_read_tool(cwd=tmp_path)
+
+    result = await tool.execute("test-call", {"path": "notes.txt", "file": "other.txt"})
+
+    assert result.text.startswith(f"read {tmp_path / 'notes.txt'} ")
+
+
+async def test_read_tool_rejects_missing_path(tmp_path: Path) -> None:
+    tool = create_read_tool(cwd=tmp_path)
+
+    with pytest.raises(ValueError, match="path must be a string"):
+        await tool.execute("test-call", {})
+
+
 # --- write tool ----------------------------------------------------------
 
 
@@ -323,6 +353,17 @@ async def test_write_tool_creates_parent_directories(tmp_path: Path) -> None:
     result = await tool.execute("test-call", {"path": "nested/file.txt", "content": "hello"})
 
     path = tmp_path / "nested" / "file.txt"
+    assert result.text == f"write {path} (5 characters)\n\nSuccessfully wrote to {path}."
+    assert path.read_text() == "hello"
+
+
+@pytest.mark.parametrize("alias", ["file", "file_path"])
+async def test_write_tool_accepts_path_aliases(tmp_path: Path, alias: str) -> None:
+    tool = create_write_tool(cwd=tmp_path)
+
+    result = await tool.execute("test-call", {alias: "file.txt", "content": "hello"})
+
+    path = tmp_path / "file.txt"
     assert result.text == f"write {path} (5 characters)\n\nSuccessfully wrote to {path}."
     assert path.read_text() == "hello"
 
