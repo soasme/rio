@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest an improvement to rio.
+title: "[Feature]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      placeholder: What is hard, missing, or frustrating today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should happen instead?
+      placeholder: Describe the behavior or workflow you want.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Share workarounds or other approaches you considered.
+      placeholder: What have you tried, and why is it not enough?
