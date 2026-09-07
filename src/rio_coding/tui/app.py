@@ -168,6 +168,9 @@ class RioTuiApp(App[None]):
         self.settings = settings or load_tui_settings(session.config.paths)
         self.adapter = TuiEventAdapter(TuiState(state=deepcopy(session.state)))
         self._busy = False
+        # Session-scoped visibility: the configured sidebar_position seeds it,
+        # and toggling never writes back to the durable settings file.
+        self._state_panel_visible = self.settings.sidebar_position != "off"
         self._working_since: float | None = None
         self._worked_elapsed: int | None = None
         self._terminal_title = TerminalTitleController()
@@ -181,6 +184,11 @@ class RioTuiApp(App[None]):
             self.settings.keybindings.toggle_tool_results,
             "toggle_tool_results",
             description="Tool results",
+        )
+        self.bind(
+            self.settings.keybindings.toggle_state_panel,
+            "toggle_state_panel",
+            description="State panel",
         )
 
     def compose(self) -> ComposeResult:
@@ -227,7 +235,7 @@ class RioTuiApp(App[None]):
         self.set_interval(1, self.refresh_working)
         if hasattr(self.session, "extensions"):
             self.session.extensions.set_ui_bridge(self.ui_bridge)
-        self.query_one("#sidebar-scroll").display = self.settings.sidebar_position != "off"
+        self.query_one("#sidebar-scroll").display = self._state_panel_visible
         self.refresh_state()
         self.query_one(Input).focus()
         if self.initial_prompt:
@@ -320,6 +328,7 @@ class RioTuiApp(App[None]):
                     "/state · /session · /checkpoints · /restore ID · /cancel · /clear · /quit\n"
                     "/model · /provider · /thinking · /theme · /skills · /prompts · /sessions\n"
                     "/local · /new · /name TITLE · /login PROVIDER · /logout PROVIDER\n"
+                    "/state-panel\n"
                     "Send input during a run to steer its next step.",
                 )
             )
@@ -378,7 +387,9 @@ class RioTuiApp(App[None]):
                 return False
             if result.message:
                 self.write_item(StepStreamItem("custom", str(result.message)))
-            if result.export_requested:
+            if result.state_panel_toggle_requested:
+                self.action_toggle_state_panel()
+            elif result.export_requested:
                 self.export_session(result.export_destination, result.export_format)
             elif result.resume_picker_requested:
                 self.show_picker("/sessions")
@@ -581,6 +592,12 @@ class RioTuiApp(App[None]):
 
     def action_toggle_tool_results(self) -> None:
         self.query_one(TranscriptLog).toggle_tool_results()
+
+    def action_toggle_state_panel(self) -> None:
+        self._state_panel_visible = not self._state_panel_visible
+        self.query_one("#sidebar-scroll").display = self._state_panel_visible
+        shown = "shown" if self._state_panel_visible else "hidden"
+        self.write_item(StepStreamItem("status", f"State panel {shown}."))
 
     def action_cancel_run(self) -> None:
         self.session.cancel()

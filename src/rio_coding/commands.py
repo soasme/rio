@@ -137,6 +137,7 @@ class CommandResult:
     scoped_models_picker_requested: bool = False
     skills_picker_requested: bool = False
     theme_picker_requested: bool = False
+    state_panel_toggle_requested: bool = False
     thinking_level: str | None = None
     theme: str | None = None
     message: str | None = None
@@ -252,6 +253,16 @@ def create_default_command_registry() -> CommandRegistry:
             description="Show the execution state the model sees each step.",
             handler=_state_command,
             search_terms=("context", "memory", "plan", "findings"),
+        )
+    )
+    registry.register(
+        SlashCommand(
+            name="state-panel",
+            usage="/state-panel",
+            description="Show or hide the execution-state panel.",
+            handler=_state_panel_command,
+            aliases=("sidebar",),
+            search_terms=("toggle", "hide", "show", "panel"),
         )
     )
     registry.register(
@@ -561,6 +572,12 @@ def _footprint_lines(session: CommandSession) -> list[str]:
     projected = usage.projected_tokens(PROJECTION_STEPS)
     lines.append(f"Projected over {PROJECTION_STEPS} steps: {projected:,} tokens (linear)")
     return lines
+
+
+def _state_panel_command(context: CommandContext) -> CommandResult:
+    if context.args:
+        return CommandResult(handled=True, message="Usage: /state-panel")
+    return CommandResult(handled=True, state_panel_toggle_requested=True)
 
 
 def _system_command(context: CommandContext) -> CommandResult:

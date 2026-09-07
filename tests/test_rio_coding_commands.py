@@ -363,3 +363,22 @@ class TestReloadSummary:
         message = format_reload_summary(summary)
         assert "3 total (unchanged)" in message
         assert "Next-step skill instructions: unchanged" in message
+
+
+class TestStatePanel:
+    def test_requests_a_toggle(self, registry, session) -> None:
+        result = registry.execute(session, "/state-panel")
+        assert result.handled
+        assert result.state_panel_toggle_requested
+
+    def test_sidebar_alias_requests_a_toggle(self, registry, session) -> None:
+        assert registry.execute(session, "/sidebar").state_panel_toggle_requested
+
+    def test_rejects_arguments(self, registry, session) -> None:
+        result = registry.execute(session, "/state-panel on")
+        assert not result.state_panel_toggle_requested
+        assert result.message == "Usage: /state-panel"
+
+    def test_is_listed_in_help(self, registry, session) -> None:
+        message = registry.execute(session, "/help").message
+        assert "/state-panel\tShow or hide the execution-state panel." in message

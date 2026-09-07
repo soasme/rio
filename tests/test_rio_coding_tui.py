@@ -629,3 +629,38 @@ async def test_direct_log_write_survives_toggle_and_resize():
         assert len(log.lines) > len(before)
         assert log.lines[0].text.startswith("• direct result")
         assert len(app.query_one(StepStream).entries) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["ctrl+s", "ctrl+g"])
+async def test_state_panel_toggles_with_configured_key(key):
+    from rio_coding.tui.config import TuiKeybindings
+
+    app = RioTuiApp(
+        FakeSession(),
+        settings=TuiSettings(keybindings=TuiKeybindings(toggle_state_panel=key)),
+    )
+    async with app.run_test() as pilot:
+        panel = app.query_one("#sidebar-scroll")
+        assert panel.display
+        await pilot.press(key)
+        assert not panel.display
+        await pilot.press(key)
+        assert panel.display
+
+
+@pytest.mark.asyncio
+async def test_state_panel_command_shows_a_panel_hidden_by_settings():
+    from rio_coding.commands import create_default_command_registry
+
+    session = FakeSession()
+    session.command_registry = create_default_command_registry()
+    app = RioTuiApp(session, settings=TuiSettings(sidebar_position="off"))
+    async with app.run_test():
+        panel = app.query_one("#sidebar-scroll")
+        assert not panel.display
+        app.submit_prompt("/state-panel")
+        assert panel.display
+        app.submit_prompt("/state-panel")
+        assert not panel.display
+        assert session.prompts == []
