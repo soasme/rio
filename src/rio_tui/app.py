@@ -12,7 +12,7 @@ from textual.widgets import Tab, Tabs
 from rio_tui.dialogs import Picker, Preferences
 from rio_tui.session import SessionScreen
 from rio_tui.settings import Settings
-from rio_tui.widgets.prompt import COMMANDS
+from rio_tui.widget_prompt import COMMANDS
 
 
 class RioTuiApp(App[None]):
