@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
+from textual.widgets import Input
 
 from rio_ai import FakeProvider
 from rio_coding import oauth
@@ -16,9 +17,9 @@ from rio_coding.frontend_session import ConfiguredSession
 from rio_coding.provider_config import load_provider_settings
 from rio_coding.session import CodingSession, CodingSessionConfig
 from rio_coding.session_store import InMemorySessionStorage
-from rio_coding.tui import RioTuiApp, TuiSettings
-from rio_coding.tui.oauth_login import OAuthLoginScreen
-from rio_coding.tui.widgets import StepStream
+from rio_tui import RioTuiApp, Settings
+from rio_tui.bridge import Question
+from rio_tui.widgets.conversation import Notice
 
 
 @pytest.mark.parametrize(
@@ -71,12 +72,12 @@ async def test_tui_browser_login_completes_or_cancels(monkeypatch, tmp_path, com
             )
         )
     )
-    app = RioTuiApp(session, settings=TuiSettings())
+    app = RioTuiApp(session, settings=Settings())
     try:
         async with app.run_test() as pilot:
-            app.submit_prompt("/login openai-codex")
+            app.workspace.submit("/login openai-codex")
             await pilot.pause()
-            assert isinstance(app.screen, OAuthLoginScreen)
+            assert app.screen.query(Question)
             login_screen = app.screen
             assert len(urls) == 1
             state = parse_qs(urlparse(urls[0]).query)["state"][0]
@@ -94,20 +95,23 @@ async def test_tui_browser_login_completes_or_cancels(monkeypatch, tmp_path, com
                 if completion == "bad_state":
                     state = "wrong-state"
                 login_screen.query_one(
-                    "#oauth-code"
+                    Input
                 ).value = f"http://localhost:1455/auth/callback?code=test-authorization-code&state={state}"
                 await pilot.press("enter")
-            await asyncio.wait_for(app.workers.wait_for_complete(), timeout=5)
+            await asyncio.wait_for(
+                asyncio.gather(*(w.wait() for w in app.workers if w.node is app.workspace)),
+                timeout=5,
+            )
             await pilot.pause()
-            assert not isinstance(app.screen, OAuthLoginScreen)
-            assert not app._busy
+            assert not app.screen.query(Question)
+            assert not app.workspace.busy
             assert all(not server._thread.is_alive() for server in servers)
-            output = " ".join(line.text for line in app.query_one(StepStream).lines)
+            output = " ".join(item.text for item in app.screen.query(Notice))
             credential = FileCredentialStore().get_oauth("openai-codex")
             if completion == "cancel":
                 assert credential is None
                 assert exchanged == []
-                assert "Login cancelled" in output
+                assert "Sign-in cancelled" in output
             elif completion in {"bad_state", "exchange_error"}:
                 assert credential is None
                 assert session.provider_name == "openai"
@@ -122,26 +126,3 @@ async def test_tui_browser_login_completes_or_cancels(monkeypatch, tmp_path, com
                 assert "Logged in to openai-codex" in output
     finally:
         await session.aclose()
-
-
-async def test_oauth_prompt_can_accept_an_empty_default(monkeypatch):
-    from textual.app import App
-
-    from rio_coding.oauth_types import OAuthPrompt
-    from rio_coding.tui import oauth_login
-
-    answers = []
-
-    async def login(name, *, callbacks):
-        answers.append(await callbacks.on_prompt(OAuthPrompt("Optional domain", allow_empty=True)))
-        return "Logged in."
-
-    monkeypatch.setattr(oauth_login, "login_provider", login)
-    app = App()
-    async with app.run_test() as pilot:
-        app.push_screen(OAuthLoginScreen("github-copilot"))
-        await pilot.pause()
-        await pilot.press("enter")
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=2)
-        assert answers == [""]
-        assert not isinstance(app.screen, OAuthLoginScreen)

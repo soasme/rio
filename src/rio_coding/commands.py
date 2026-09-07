@@ -796,19 +796,8 @@ def _theme_command(context: CommandContext) -> CommandResult:
     if not context.args:
         return CommandResult(handled=True, theme_picker_requested=True)
 
-    # Imported lazily so importing this module never pulls in `rio_coding.tui`
-    # (whose package __init__ imports Textual) until /theme actually executes.
-    from rio_coding.tui.themes import available_tui_theme_names
-
-    theme_name = context.args.strip()
-    available = available_tui_theme_names()
-    if theme_name not in available:
-        themes = ", ".join(available)
-        return CommandResult(
-            handled=True,
-            message=f"Unknown theme: {theme_name}\nAvailable themes: {themes}",
-        )
-    return CommandResult(handled=True, theme=theme_name)
+    # Theme resolution belongs to the frontend hosting this command.
+    return CommandResult(handled=True, theme=context.args.strip())
 
 
 def _local_command(context: CommandContext) -> CommandResult:

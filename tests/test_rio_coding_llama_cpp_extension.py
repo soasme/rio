@@ -825,7 +825,7 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
 async def test_tui_explicit_dynamic_startup_uses_cached_state_during_downtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import rio_coding.tui.app as tui_app
+    import rio_tui.app as tui_app
     from rio_coding.cli import run_configured_session
 
     isolate_home(monkeypatch, tmp_path)
@@ -836,6 +836,8 @@ async def test_tui_explicit_dynamic_startup_uses_cached_state_during_downtime(
     captured: dict[str, object] = {}
 
     class HeadlessTui:
+        sessions = {}
+
         def __init__(self, session: object, **kwargs: object) -> None:
             del kwargs
             captured["session"] = session

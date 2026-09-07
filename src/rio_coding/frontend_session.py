@@ -87,6 +87,43 @@ class ConfiguredSession:
         )
         return provider, selection.provider.name, selection.model, level
 
+    async def open_session(self, session_id=None):
+        """Open an independently owned session without interrupting this one."""
+        if session_id is None:
+            record = self.session_manager.create_session_exclusive(
+                cwd=self.cwd, model=self.model, provider_name=self.provider_name
+            )
+        else:
+            record = self.session_manager.get_session(session_id)
+            if record is None:
+                raise ValueError(f"Unknown session: {session_id}")
+        provider, name, model, level = await self._candidate(
+            record.model, record.provider_name, None
+        )
+        try:
+            _, trust = await ProjectTrustCoordinator(ProjectTrustStore()).resolve(record.cwd)
+            session = await CodingSession.load(
+                replace(
+                    self.session.config,
+                    provider=provider,
+                    provider_name=name,
+                    model=model,
+                    thinking_level=level,
+                    cwd=record.cwd,
+                    storage=JsonlSessionStorage(record.path),
+                    extension_runtime=None,
+                    project_resources_trusted=trust.trusted,
+                )
+            )
+        except BaseException:
+            await provider.aclose()
+            raise
+        configured = ConfiguredSession(
+            session, session_manager=self.session_manager, session_id=record.id
+        )
+        configured._owned_provider = provider
+        return configured
+
     async def resume_session(self, session_id):
         record = self.session_manager.get_session(session_id)
         if record is None:
