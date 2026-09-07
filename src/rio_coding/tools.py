@@ -1150,9 +1150,25 @@ def _truncate_string_to_bytes_from_end(text: str, max_bytes: int) -> str:
     return clipped.decode(errors="ignore")
 
 
-_BASH_COMMAND_ALIASES = ("cmd", "shell_command", "bash_command")
+_BASH_COMMAND_ALIASES = (
+    "cmd",
+    "shell_cmd",
+    "shell_command",
+    "bash_command",
+    "shellCommand",
+    "bashCommand",
+    "shellCmd",
+    "bashCmd",
+)
 
-_PATH_ALIASES = ("file", "file_path", "filepath", "filename")
+_PATH_ALIASES = (
+    "file",
+    "file_path",
+    "filepath",
+    "filePath",
+    "filename",
+    "fileName",
+)
 
 
 def _str_arg(arguments: Mapping[str, JSONValue], name: str) -> str:
