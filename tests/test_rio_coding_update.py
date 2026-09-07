@@ -857,7 +857,6 @@ _EXPECTED_DOC_NAMES = {
     "models.md",
     "security.md",
     "extensions.md",
-    "tui.md",
     "local-inference.md",
 }
 
