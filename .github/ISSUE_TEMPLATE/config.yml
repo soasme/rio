@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: README
+    url: https://github.com/soasme/rio#readme
+    about: Read setup, usage, and troubleshooting guidance.
+  - name: GitHub Discussions
+    url: https://github.com/soasme/rio/discussions
+    about: Ask questions or start broader conversations here.
