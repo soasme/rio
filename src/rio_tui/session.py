@@ -67,7 +67,6 @@ class SessionScreen(Screen):
                 yield VerticalGroup(id="above-prompt")
                 yield Prompt(getattr(self.session, "cwd", Path.cwd()))
                 yield VerticalGroup(id="below-prompt")
-        yield Footer()
 
     async def on_mount(self):
         if hasattr(self.session, "extensions"):
