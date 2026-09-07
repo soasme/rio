@@ -48,7 +48,7 @@ class TranscriptLog(RichLog):
         style = self.app.settings.resolved_theme.role_styles[item.role].body
         return Text(text, style=style)
 
-    def write_entry(self, text: Text | StepStreamItem, *, continuation: bool = False) -> None:
+    def write(self, text: Text | StepStreamItem, *, continuation: bool = False) -> None:
         self.entries.append((text, continuation))
         evicted = len(self.entries) > 1000
         if evicted:
@@ -141,7 +141,7 @@ class StepStream(Vertical):
         return self.query_one(TranscriptLog).entries
 
     def write(self, text: Text | StepStreamItem, *, continuation: bool = False) -> None:
-        self.query_one(TranscriptLog).write_entry(text, continuation=continuation)
+        self.query_one(TranscriptLog).write(text, continuation=continuation)
 
     def clear(self) -> None:
         self.query_one(TranscriptLog).clear()

@@ -605,3 +605,27 @@ async def test_derived_tool_summary_handles_truncation_and_errors():
         assert summary.style == app.settings.resolved_theme.role_styles["error"].body
         log.toggle_tool_results()
         assert log.display_text(item).plain == "bash: " + "x\n" * 4000 + "\n… output truncated"
+
+
+@pytest.mark.asyncio
+async def test_direct_log_write_survives_toggle_and_resize():
+    from rich.text import Text
+    from textual.widgets import RichLog
+
+    from rio_coding.tui.widgets import StepStream
+
+    app = RioTuiApp(FakeSession(), settings=TuiSettings(sidebar_position="off"))
+    async with app.run_test(size=(100, 30)) as pilot:
+        log = app.query_one(RichLog)
+        log.write(Text("direct result " + "x" * 160))
+        await pilot.pause()
+        assert len(app.query_one(StepStream).entries) == 1
+        before = [line.text for line in log.lines]
+        assert before[0].startswith("• direct result")
+        await pilot.press("ctrl+o")
+        assert [line.text for line in log.lines] == before
+        await pilot.resize_terminal(45, 30)
+        await pilot.pause()
+        assert len(log.lines) > len(before)
+        assert log.lines[0].text.startswith("• direct result")
+        assert len(app.query_one(StepStream).entries) == 1
