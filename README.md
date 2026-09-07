@@ -1,6 +1,6 @@
 # rio
 
-Three packages:
+Four packages:
 
 - **`rio_ai`** -- a multi-provider LLM streaming SDK (Anthropic, Google
   Gemini, Mistral, OpenAI Codex, OpenAI-compatible), ported from
@@ -12,9 +12,9 @@ Three packages:
 - **`rio_agent`** -- a from-scratch runtime implementing
   [*SKILL.state: Scalable Long-Horizon Agent Skills*](https://arxiv.org/abs/2608.26263)
   (Badhe, Tiwari & Chung; EMNLP), built on `rio_ai`.
-- **`rio_coding`** -- a coding agent (CLI, TUI, tools, skills, extensions)
-  ported from tau's `tau_coding` and retargeted onto `rio_agent`. Installs the
-  `rio` command.
+- **`rio_coding`** -- the coding backend (CLI, tools, skills, extensions), built on `rio_agent`.
+- **`rio_tui`** -- the terminal application, wired to `rio_coding`. It owns
+  session tabs, the prompt editor, shell, file navigation, diffs, and settings.
 
 ## Coding agent
 

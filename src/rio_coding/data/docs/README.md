@@ -9,7 +9,6 @@ a user asks how to configure, extend, or contribute to rio.
 - [Local inference](local-inference.md): run rio against a local OpenAI-compatible server.
 - [CLI](cli.md): command-line and RPC entry points.
 - [Security](security.md): project-input trust behavior.
-- [TUI](tui.md): interactive interface behavior.
 - [Architecture](architecture.md): package boundaries and the SKILL.state design.
 
 Read only the references relevant to the task, then follow their links and the active project's instructions.

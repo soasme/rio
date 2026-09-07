@@ -615,7 +615,7 @@ async def run_configured_session(
             await RpcServer(session).run()
             return True
         if mode == "tui":
-            from rio_coding.tui import run_tui_app
+            from rio_tui import run_tui_app
 
             await run_tui_app(session, initial_prompt=prompt or None)
             return True

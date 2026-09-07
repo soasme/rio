@@ -1,0 +1,74 @@
+SessionScreen { background: $background; }
+#layout { height: 1fr; align-horizontal: center; }
+#column { width: 1fr; height: 1fr; padding: 0 1; }
+#column.column { max-width: 100; background: $foreground 2%; }
+#sessions { height: 2; margin: 0 1; }
+Conversation { height: 1fr; padding: 0 1; align-vertical: bottom; scrollbar-size-vertical: 1; }
+#blocks { height: auto; }
+.conversation-block { height: auto; margin: 1 1 1 0; }
+UserMessage { background: $secondary 12%; border-left: blank $secondary; padding: 1 1 1 0; }
+.prompt-mark { width: 2; color: $text-secondary; }
+UserMessage Markdown { width: 1fr; }
+Markdown { padding: 0; margin: 0; background: transparent; }
+Markdown > MarkdownBlock:last-child { margin-bottom: 0; }
+Answer { padding: 0; }
+Notice { color: $text-muted; padding: 0 1; }
+Notice.error { border-left: thick $error; color: $text-error; }
+Thought { background: $primary 8%; border: none; padding: 0; max-height: 15; overflow-y: auto; }
+Thought > CollapsibleTitle { color: $text-primary; }
+ToolBlock { border: none; padding: 0 0 0 1; background: transparent; }
+ToolBlock > CollapsibleTitle { color: $text-muted; padding: 0; }
+ToolBlock.error > CollapsibleTitle { color: $text-error; }
+ToolBlock > Contents { padding: 1 1 0 0; }
+ToolBlock Static { height: auto; }
+DiffView { height: auto; margin-bottom: 1; }
+ShellTerminal { height: auto; min-height: 3; max-height: 30; overflow: auto;
+    background: $primary 7%; border: panel $primary 40%; padding: 0 1; }
+ShellTerminal.finished { border: panel $success 35%; }
+ShellTerminal.error { border: panel $error 50%; }
+Prompt { height: auto; margin: 0 1; dock: bottom; }
+#prompt-box { height: auto; min-height: 3; background: $foreground 3%;
+    border: tall transparent; margin: 0 0 1 0; }
+#prompt-box:focus-within { border: tall $secondary; }
+Prompt.shell-mode #prompt-box:focus-within { border: tall $primary; }
+#prompt-marker { width: 3; color: $text-secondary; padding: 0 1; }
+Editor { height: auto; min-height: 1; max-height: 40vh; border: none; background: transparent;
+    padding: 0 1 0 0; width: 1fr; }
+Editor:focus { border: none; }
+#info-bar { height: 1; margin: 0 1 1 1; }
+#model-info { width: auto; color: $text-primary; background: $primary 10%; padding: 0 1; }
+#cwd-info { width: 1fr; color: $text-muted; margin: 0 1; text-overflow: ellipsis; text-wrap: nowrap; }
+#run-info { width: auto; color: $text-secondary; margin: 0 1; }
+#mode-info { width: auto; background: $secondary 10%; color: $text-secondary; padding: 0 1; }
+#completion { overlay: screen; offset-y: -13; height: 12; border: round $secondary;
+    background: $surface; padding: 0 1; }
+#sidebar { width: 36; max-width: 40%; border-right: tall $foreground 8%; padding: 0; }
+Sidebar Collapsible { border: none; background: transparent; padding: 0; }
+Sidebar .plan-panel { height: auto; }
+Sidebar .project-panel { height: 1fr; }
+Sidebar .project-panel > Contents { height: 1fr; padding: 0; }
+ProjectTree { height: 1fr; background: transparent; }
+Plan { height: auto; padding: 0 1; color: $text-primary; }
+#above-prompt, #below-prompt, #extension-sidebar { height: auto; }
+#extension-view { height: 1fr; display: none; }
+#question { height: auto; max-height: 50vh; padding: 1; border: tall $primary;
+    background: $surface; }
+#question OptionList { height: auto; max-height: 12; }
+Footer { background: transparent; }
+ModalScreen { align: center middle; background: $background 60%; }
+.dialog { background: $surface; border: round $primary 50%; padding: 1 2;
+    width: 76; max-width: 95%; height: auto; max-height: 85%; }
+.dialog-title { text-style: bold; margin-bottom: 1; }
+.picker { height: 24; }
+#choices { height: 1fr; border: none; }
+#search { margin-bottom: 1; }
+FilePicker { align: center bottom; }
+FilePicker .dialog { margin-bottom: 5; height: 18; }
+.preferences Select { margin: 0 0 1 0; }
+.preferences HorizontalGroup { margin-top: 1; height: auto; }
+.preferences Button { margin-right: 1; }
+.preview { width: 95%; height: 90%; max-height: 90%; }
+#diffs { height: auto; }
+
+.preferences { height: 32; }
+#preference-fields { height: 1fr; }

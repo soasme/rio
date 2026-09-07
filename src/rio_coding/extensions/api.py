@@ -16,12 +16,12 @@ from rio_ai.types import JSONValue
 
 if TYPE_CHECKING:
     from textual import events
+    from textual.theme import Theme as TuiTheme
     from textual.widget import Widget
 
     from rio_coding.extensions.providers import DynamicProvider
     from rio_coding.extensions.runtime import ExtensionRuntime
     from rio_coding.local_backends import LocalBackend
-    from rio_coding.tui.config import TuiTheme
 
 # Every string here is one step in the SKILL.state step lifecycle or one
 # session-level event a coding session emits (see `rio_coding.events` and
@@ -149,26 +149,6 @@ MainViewFactory = Callable[["MainViewHandle", "TuiTheme"], "Widget"]
 KeyInterceptor = Callable[["events.Key", str], bool]
 
 
-_DEFAULT_THEME: TuiTheme | None = None
-
-
-def _default_theme() -> TuiTheme:
-    """Return a shared default theme without importing the TUI at module load.
-
-    The import is deferred (and cached) so merely importing the extensions API
-    stays free of the Textual/TUI dependency graph; only an extension that
-    actually reads ``theme`` in print mode pays for it. Until rio's TUI is
-    ported, `rio_coding.tui.config` does not exist and this raises
-    `ModuleNotFoundError` on first use -- no code path in this package calls it.
-    """
-    global _DEFAULT_THEME
-    if _DEFAULT_THEME is None:
-        from rio_coding.tui.config import RIO_DARK_THEME
-
-        _DEFAULT_THEME = RIO_DARK_THEME
-    return _DEFAULT_THEME
-
-
 class MainViewHandle(Protocol):
     """Handle to an open main-area view (ports Pi's ``OverlayHandle``, trimmed).
 
@@ -220,7 +200,7 @@ class ComponentBridge(Protocol):
         ...
 
     @property
-    def theme(self) -> TuiTheme:
+    def theme(self) -> TuiTheme | None:
         """Return the live TUI theme handed to widget factories."""
         ...
 
@@ -550,7 +530,7 @@ class UiBridge(Protocol):
         ...
 
     @property
-    def theme(self) -> TuiTheme:
+    def theme(self) -> TuiTheme | None:
         """Return the live TUI theme handed to widget factories."""
         ...
 
@@ -684,9 +664,9 @@ class NullUiBridge:
         return False
 
     @property
-    def theme(self) -> TuiTheme:
-        """Return a usable default theme (never raise; print-mode may read it)."""
-        return _default_theme()
+    def theme(self) -> TuiTheme | None:
+        """Return None: headless sessions do not own a visual theme."""
+        return None
 
     def get_prompt_text(self) -> str:
         """Return an empty prompt: there is no editor in print mode."""

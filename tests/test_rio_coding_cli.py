@@ -1,5 +1,6 @@
 """CLI integration checks without credentials or network calls."""
 
+import asyncio
 import json
 
 import pytest
@@ -331,12 +332,14 @@ async def test_failed_switch_keeps_live_provider(monkeypatch, tmp_path):
 
 
 def test_tui_starts_without_key_and_can_login_then_run(monkeypatch, tmp_path):
-    from contextlib import nullcontext
     from pathlib import Path
 
-    from rio_coding import tui
+    from textual.widgets import Input
+
+    import rio_tui as tui
     from rio_coding.credentials import FileCredentialStore
-    from rio_coding.tui.widgets import CommandPicker, StepStream
+    from rio_tui.dialogs import Picker
+    from rio_tui.widgets.conversation import Notice
 
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -362,21 +365,18 @@ def test_tui_starts_without_key_and_can_login_then_run(monkeypatch, tmp_path):
     async def headless(session, initial_prompt=None):
         app = tui.RioTuiApp(session)
         async with app.run_test() as pilot:
-            app.submit_prompt("/login")
+            app.workspace.submit("/login")
             await pilot.pause()
-            assert isinstance(app.screen, CommandPicker)
+            assert isinstance(app.screen, Picker)
             await pilot.press("escape")
 
             # A missing credential is an in-app error, and leaves login usable.
-            app.submit_prompt("hello")
-            await app.workers.wait_for_complete()
+            app.workspace.submit("hello")
+            await asyncio.gather(*(w.wait() for w in app.workers if w.node is app.workspace))
             await pilot.pause()
-            output = " ".join(line.text for line in app.query_one(StepStream).lines)
+            output = " ".join(item.text for item in app.screen.query(Notice))
             assert "Missing provider API key" in output
-            assert not app._busy
-
-            monkeypatch.setattr(app, "suspend", nullcontext)
-            monkeypatch.setattr("typer.prompt", lambda *args, **kwargs: "test-api-key")
+            assert not app.workspace.busy
 
             def authenticated(config, **kwargs):
                 assert config.credential_name == "openai"
@@ -384,12 +384,15 @@ def test_tui_starts_without_key_and_can_login_then_run(monkeypatch, tmp_path):
                 return provider
 
             monkeypatch.setattr("rio_coding.frontend_session.create_model_provider", authenticated)
-            app.submit_prompt("/login openai")
-            await app.workers.wait_for_complete()
+            app.workspace.submit("/login openai")
+            await pilot.pause()
+            app.screen.query_one(Input).value = "test-api-key"
+            await pilot.press("enter")
+            await asyncio.gather(*(w.wait() for w in app.workers if w.node is app.workspace))
             assert FileCredentialStore().get("openai") == "test-api-key"
             assert session.provider_name == "openai"
-            app.submit_prompt("hello again")
-            await app.workers.wait_for_complete()
+            app.workspace.submit("hello again")
+            await asyncio.gather(*(w.wait() for w in app.workers if w.node is app.workspace))
             assert session.answer == "Authenticated"
             completed.append(True)
 
@@ -484,3 +487,48 @@ async def test_failed_login_preserves_startup_provider(monkeypatch, tmp_path):
     assert load_provider_settings().default_provider == "openai"
     assert FileCredentialStore().get("openai") == "test-key"
     assert FileCredentialStore().get_oauth("openai-codex") is None
+
+
+async def test_frontend_opens_independent_session(monkeypatch, tmp_path):
+    from rio_coding.frontend_session import ConfiguredSession
+    from rio_coding.session import CodingSession, CodingSessionConfig
+
+    class Provider(FakeProvider):
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    manager = SessionManager(RioPaths(home=tmp_path / "home"))
+    original_provider = Provider(streams=[])
+    original = await CodingSession.load(
+        CodingSessionConfig(
+            provider=original_provider,
+            model="test",
+            cwd=tmp_path,
+            storage=InMemorySessionStorage(),
+            load_extensions=False,
+        )
+    )
+    frontend = ConfiguredSession(original, session_manager=manager)
+    providers = []
+
+    async def candidate(*args):
+        provider = Provider(streams=[])
+        providers.append(provider)
+        return provider, "test", "test", None
+
+    monkeypatch.setattr(frontend, "_candidate", candidate)
+    opened = await frontend.open_session()
+    try:
+        assert frontend.session is original
+        assert opened.session is not original
+        assert opened.storage is not original.storage
+        assert opened.session_id is not None
+        assert not original_provider.closed
+        assert opened.session.extensions is not original.extensions
+    finally:
+        await opened.aclose()
+        await frontend.aclose()
+    assert providers[0].closed
+    assert not original_provider.closed  # The caller owns the initial provider.
