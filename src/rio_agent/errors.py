@@ -18,3 +18,12 @@ class ActionNotFoundError(Exception):
 
 class RetriesExhaustedError(Exception):
     """The rollback-retry cycle exceeded `max_retries` without a valid step."""
+
+
+class ProviderResponseError(Exception):
+    """The provider failed to produce an assistant message.
+
+    Distinct from a malformed step: the model never got to propose one, so
+    there is nothing to roll back and nothing a retry of the same prompt would
+    correct.
+    """

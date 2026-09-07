@@ -21,7 +21,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-from rio_agent.errors import ActionNotFoundError, RetriesExhaustedError, StateValidationError
+from rio_agent.errors import (
+    ActionNotFoundError,
+    ProviderResponseError,
+    RetriesExhaustedError,
+    StateValidationError,
+)
 from rio_agent.events import (
     ActionEndEvent,
     ActionStartEvent,
@@ -85,14 +90,24 @@ async def run_skill_loop(
             assistant = await _call_model(
                 provider, model, skill.instructions, messages, [tool], signal
             )
+            if assistant.stop_reason == "error":
+                # A provider failure is not a malformed step: retrying the same
+                # prompt cannot fix it, and reporting it as one hides the real
+                # message behind a protocol complaint.
+                raise ProviderResponseError(assistant.error_message or "provider returned an error")
+
+            # A step is one action, so only the first `skill_step` call is used.
+            # Models that emit several in parallel are not retried: the first
+            # proposal is committed and its observation is what they see next.
             call = next(
                 (c for c in assistant.tool_calls if c.name == STEP_TOOL_NAME),
                 None,
             )
-            if call is None or len(assistant.tool_calls) != 1:
+            if call is None:
+                called = ", ".join(f"`{c.name}`" for c in assistant.tool_calls) or "no tool"
                 error_note = (
-                    f"you must call the `{STEP_TOOL_NAME}` tool exactly once; "
-                    f"stop_reason was {assistant.stop_reason!r}"
+                    f"you must call the `{STEP_TOOL_NAME}` tool; you called {called}. "
+                    f"Every action goes in that call's `action` field."
                 )
                 attempt += 1
                 yield ValidationErrorEvent(step=step, attempt=attempt, error=error_note)

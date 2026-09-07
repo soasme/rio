@@ -14,7 +14,12 @@ internally by execution state rather than an append-only transcript.
 
 # ruff: noqa: F401 - this module intentionally defines the public facade
 
-from rio_agent.errors import ActionNotFoundError, RetriesExhaustedError, StateValidationError
+from rio_agent.errors import (
+    ActionNotFoundError,
+    ProviderResponseError,
+    RetriesExhaustedError,
+    StateValidationError,
+)
 from rio_agent.events import (
     ActionEndEvent,
     ActionStartEvent,

@@ -15,6 +15,7 @@ from conftest import make_skill, step_response
 from rio_agent import (
     ActionEndEvent,
     HarnessObservation,
+    ProviderResponseError,
     ReasoningDiscardedEvent,
     RetriesExhaustedError,
     RunEndEvent,
@@ -252,6 +253,51 @@ async def test_missing_skill_step_tool_call_is_rejected():
 
 
 @pytest.mark.asyncio
+async def test_a_wrongly_named_tool_call_names_what_was_called():
+    from rio_ai import AssistantDoneEvent, AssistantMessage, ToolCall
+
+    skill = make_skill()
+    message = AssistantMessage(
+        content=[ToolCall(id="call-0", name="advance", arguments={})],
+        stop_reason="toolUse",
+    )
+    provider = FakeProvider([[AssistantDoneEvent(reason="toolUse", message=message)]])
+
+    with pytest.raises(RetriesExhaustedError, match="you called `advance`"):
+        async for _ in run_skill_loop(
+            provider=provider,
+            model="m",
+            skill=skill,
+            observation=HarnessObservation(user_message="start"),
+            max_retries=0,
+        ):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_a_provider_error_is_raised_instead_of_retried_as_a_bad_step():
+    """Retrying the same prompt cannot fix a provider failure.
+
+    Reporting one as a malformed step burned the retry budget and replaced the
+    provider's message with a protocol complaint the user could not act on.
+    """
+    from rio_ai import AssistantErrorEvent, AssistantMessage
+
+    skill = make_skill()
+    error = AssistantMessage(content=[], stop_reason="error", error_message="429 rate limited")
+    provider = FakeProvider([[AssistantErrorEvent(reason="error", error=error)]])
+
+    with pytest.raises(ProviderResponseError, match="429 rate limited"):
+        async for _ in run_skill_loop(
+            provider=provider,
+            model="m",
+            skill=skill,
+            observation=HarnessObservation(user_message="start"),
+        ):
+            pass
+
+
+@pytest.mark.asyncio
 async def test_a_failing_action_becomes_an_observation_instead_of_crashing():
     """A raising tool must not end the run.
 
@@ -331,12 +377,19 @@ async def test_malformed_action_rolls_back_then_retries(action):
     ]
 
 
-async def test_multiple_step_calls_are_rejected_before_action_execution():
-    invalid = step_response(reasoning="", state_delta={"counter": 99}, action="finish", args={})
-    invalid[0].message.content.append(invalid[0].message.tool_calls[0].model_copy())
+async def test_only_the_first_of_several_step_calls_is_executed():
+    """A step is one action, however many `skill_step` calls arrive.
+
+    Models emit parallel calls, and a provider can fragment one call into
+    several. Rejecting the whole response spent the retry budget on something
+    a retry does not fix, so the first proposal is committed and the rest
+    dropped -- the model sees that action's observation next and continues.
+    """
+    duplicated = step_response(reasoning="", state_delta={"counter": 99}, action="advance", args={})
+    duplicated[0].message.content.append(duplicated[0].message.tool_calls[0].model_copy())
     provider = FakeProvider(
         [
-            invalid,
+            duplicated,
             step_response(reasoning="", state_delta={"counter": 1}, action="finish", args={}),
         ]
     )
@@ -349,7 +402,11 @@ async def test_multiple_step_calls_are_rejected_before_action_execution():
             observation=HarnessObservation(user_message="start"),
         )
     ]
-    assert len([event for event in events if isinstance(event, ActionEndEvent)]) == 1
+    assert not [event for event in events if isinstance(event, ValidationErrorEvent)]
+    assert [event.name for event in events if isinstance(event, ActionEndEvent)] == [
+        "advance",
+        "finish",
+    ]
     assert events[-1].state == {"counter": 1}
 
 
