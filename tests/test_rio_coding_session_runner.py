@@ -28,7 +28,7 @@ from rio_coding.session_store import (
     resume_state,
 )
 
-CODING_FIELDS = ("goal", "plan", "findings", "files", "cwd", "last_error", "answer")
+CODING_FIELDS = ("goal", "plan", "findings", "files", "cwd", "last_error")
 
 
 async def _read(tool_call_id, arguments, signal=None, on_update=None):
@@ -96,7 +96,7 @@ def two_step_streams():
         ),
         step_response(
             reasoning="Now I can answer.",
-            state_delta={"answer": "main.py starts the server."},
+            state_delta={"plan": [{"id": "1", "title": "explain", "status": "done"}]},
             action="respond",
             args={"message": "main.py starts the server."},
         ),
@@ -204,9 +204,7 @@ class TestJournal:
         storage = InMemorySessionStorage()
         streams = [
             step_response(reasoning="", state_delta={}, action="read", args={"path": "x" * 4000}),
-            step_response(
-                reasoning="", state_delta={"answer": "ok"}, action="respond", args={"message": "ok"}
-            ),
+            step_response(reasoning="", state_delta={}, action="respond", args={"message": "ok"}),
         ]
         runner, _ = make_runner(streams, storage=storage, journaled_observation_limit=100)
         await collect(runner, "read a huge file")
@@ -237,7 +235,7 @@ class TestBoundedPrompt:
         streams.append(
             step_response(
                 reasoning="done",
-                state_delta={"answer": "done"},
+                state_delta={},
                 action="respond",
                 args={"message": "done"},
             )
@@ -271,12 +269,10 @@ class TestBoundedPrompt:
 
 
 class TestSteering:
-    async def test_steering_is_folded_into_the_next_observation(self) -> None:
+    async def test_steering_arrives_as_a_user_message_beside_the_observation(self) -> None:
         streams = [
             step_response(reasoning="", state_delta={}, action="read", args={"path": "main.py"}),
-            step_response(
-                reasoning="", state_delta={"answer": "ok"}, action="respond", args={"message": "ok"}
-            ),
+            step_response(reasoning="", state_delta={}, action="respond", args={"message": "ok"}),
         ]
         runner, provider = make_runner(streams)
 
@@ -286,8 +282,14 @@ class TestSteering:
             if isinstance(event, StepEndEvent) and event.step == 0:
                 runner.queue_steering_message("actually, focus on error handling")
 
-        bodies = [messages[0].content for _m, _s, messages, _t in provider.calls]
-        assert any("actually, focus on error handling" in body for body in bodies)
+        steered = next(
+            messages[0].content
+            for _m, _s, messages, _t in provider.calls
+            if "actually, focus on error handling" in messages[0].content
+        )
+        assert "New User Message:\nactually, focus on error handling" in steered
+        # It reads the run's own last observation in the same prompt.
+        assert "Latest Observation:\nread main.py" in steered
 
     async def test_steering_restarts_from_the_live_state_not_from_scratch(self) -> None:
         """Restarting is free because the state already holds the run's findings."""
@@ -298,9 +300,7 @@ class TestSteering:
                 action="read",
                 args={"path": "main.py"},
             ),
-            step_response(
-                reasoning="", state_delta={"answer": "ok"}, action="respond", args={"message": "ok"}
-            ),
+            step_response(reasoning="", state_delta={}, action="respond", args={"message": "ok"}),
         ]
         runner, provider = make_runner(streams)
 
@@ -334,6 +334,100 @@ class TestSteering:
         assert runner.clear_queued_messages().steering == ()
 
 
+class TestFollowUpTurns:
+    """A second message continues the session; it does not restart it."""
+
+    async def _first_turn(self, storage=None):
+        runner, _ = make_runner(
+            [
+                step_response(
+                    reasoning="",
+                    state_delta={
+                        "goal": "explain main.py",
+                        "findings": {"entrypoint": "main.py:12"},
+                        "last_error": "read failed once",
+                    },
+                    action="read",
+                    args={"path": "main.py"},
+                ),
+                step_response(
+                    reasoning="",
+                    state_delta={},
+                    action="respond",
+                    args={"message": "main.py starts the server."},
+                ),
+            ],
+            storage=storage,
+        )
+        await collect(runner, "explain main.py")
+        return runner
+
+    def _second_turn(self, runner):
+        provider = FakeProvider(
+            [
+                step_response(
+                    reasoning="",
+                    state_delta={"goal": "explain error handling"},
+                    action="respond",
+                    args={"message": "it handles retries"},
+                )
+            ]
+        )
+        runner.rebind(provider=provider)
+        return provider
+
+    async def test_a_follow_up_keeps_what_the_session_already_learned(self) -> None:
+        runner = await self._first_turn()
+        provider = self._second_turn(runner)
+
+        await collect(runner, "what about error handling")
+
+        # The follow-up opens with turn one's finding already in hand.
+        assert "main.py:12" in provider.calls[0][2][0].content
+        assert runner.state["findings"] == {"entrypoint": "main.py:12"}
+
+    async def test_a_follow_up_asks_as_a_user_not_as_a_tool_result(self) -> None:
+        runner = await self._first_turn()
+        provider = self._second_turn(runner)
+
+        await collect(runner, "what about error handling")
+
+        body = provider.calls[0][2][0].content
+        assert "New User Message:\nwhat about error handling" in body
+        assert "Latest Observation:" not in body
+
+    async def test_the_answer_is_the_turn_that_gave_it(self) -> None:
+        runner = await self._first_turn()
+        assert runner.answer == "main.py starts the server."
+
+        self._second_turn(runner)
+        events = await collect(runner, "what about error handling")
+
+        run_end = next(e for e in events if isinstance(e, SessionRunEndEvent))
+        assert run_end.answer == "it handles retries"
+        assert runner.answer == "it handles retries"
+
+    async def test_a_turn_that_never_answers_reports_no_answer(self) -> None:
+        runner = await self._first_turn()
+        runner.rebind(provider=FakeProvider([]))
+
+        with pytest.raises(RuntimeError):
+            await collect(runner, "what about error handling")
+        assert runner.answer is None
+
+    async def test_the_message_is_journaled_as_the_user_typed_it(self) -> None:
+        storage = InMemorySessionStorage()
+        runner = await self._first_turn(storage=storage)
+        self._second_turn(runner)
+        await collect(runner, "what about error handling")
+
+        turns = [e for e in await storage.read_all() if isinstance(e, TurnEntry)]
+        assert [t.observation for t in turns] == [
+            "explain main.py",
+            "what about error handling",
+        ]
+
+
 class TestCheckpoints:
     async def test_load_resumes_from_the_newest_snapshot(self) -> None:
         storage = InMemorySessionStorage()
@@ -342,7 +436,7 @@ class TestCheckpoints:
 
         resumed, _ = make_runner([], storage=storage)
         state = await resumed.load()
-        assert state["answer"] == "main.py starts the server."
+        assert state["files"] == {"main.py": {"status": "read"}}
         assert state == resume_state(await storage.read_all())
 
     async def test_restore_adopts_an_earlier_checkpoint(self) -> None:
@@ -355,7 +449,7 @@ class TestCheckpoints:
 
         assert event.entry_id == first_step.id
         assert runner.state == first_step.state
-        assert runner.state.get("answer") is None
+        assert runner.answer is None
         assert await storage.read_all() != []
 
     async def test_a_restored_checkpoint_survives_a_reload(self) -> None:
@@ -368,7 +462,7 @@ class TestCheckpoints:
         await runner.restore(first_step.id, reason="rewind")
 
         reloaded, _ = make_runner([], storage=storage)
-        assert (await reloaded.load()).get("answer") is None
+        assert (await reloaded.load())["plan"] == []
 
     async def test_restoring_a_non_checkpoint_entry_is_refused(self) -> None:
         storage = InMemorySessionStorage()
@@ -401,7 +495,8 @@ class TestCheckpoints:
         await collect(runner, "explain main.py")
 
         await runner.reset(reason="new session")
-        assert runner.state.get("answer") is None
+        assert runner.answer is None
+        assert runner.state["plan"] == []
         assert runner.state["cwd"] == "/repo"
         assert resume_state(await storage.read_all()) == runner.state
 
@@ -420,7 +515,7 @@ class TestRebinding:
                 ),
                 step_response(
                     reasoning="",
-                    state_delta={"answer": "python"},
+                    state_delta={},
                     action="respond",
                     args={"message": "python"},
                 ),
@@ -433,7 +528,7 @@ class TestRebinding:
             [
                 step_response(
                     reasoning="",
-                    state_delta={"answer": "still python"},
+                    state_delta={},
                     action="respond",
                     args={"message": "still python"},
                 )

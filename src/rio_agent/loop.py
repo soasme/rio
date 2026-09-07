@@ -1,14 +1,15 @@
 """The SKILL.state execution loop.
 
 At each step, the runtime sends the model only three things: the skill
-instructions, the current state, and the latest observation. It never sends
-a growing transcript. The model must respond with one `skill_step` tool
-call carrying its private reasoning, a state update, and an action. The
-runtime checks the state update and the action; an invalid proposal
-triggers a rollback-retry cycle, bounded by `max_retries`, instead of being
-committed. On success, the runtime commits the new state, discards the
-reasoning for good, runs the action to get the next observation, and the
-loop repeats.
+instructions, the current state, and the latest observation -- the result the
+last action produced, a message from the user, or, when a message arrives
+mid-run, both. It never sends a growing transcript. The model must respond
+with one `skill_step` tool call carrying its private reasoning, a state
+update, and an action. The runtime checks the state update and the action;
+an invalid proposal triggers a rollback-retry cycle, bounded by
+`max_retries`, instead of being committed. On success, the runtime commits
+the new state, discards the reasoning for good, runs the action to get the
+next observation, and the loop repeats.
 
 Because the prompt never includes history, total prompt size across a run
 grows in proportion to the number of steps, not the square of it -- see
@@ -33,6 +34,7 @@ from rio_agent.events import (
     StepStartEvent,
     ValidationErrorEvent,
 )
+from rio_agent.observation import HarnessObservation
 from rio_agent.prompt import STEP_TOOL_NAME, build_step_messages, skill_step_tool
 from rio_agent.skill import HarnessSpec
 from rio_agent.state import apply_state_delta, validate_state_delta
@@ -47,13 +49,19 @@ async def run_skill_loop(
     provider: ModelProvider,
     model: str,
     skill: HarnessSpec,
-    observation: str,
+    observation: HarnessObservation,
     state: dict | None = None,
     max_steps: int | None = None,
     max_retries: int = 2,
     signal: CancellationToken | None = None,
 ) -> AsyncIterator[SkillEvent]:
-    """Run the SKILL.state loop, yielding one event per lifecycle transition."""
+    """Run the SKILL.state loop, yielding one event per lifecycle transition.
+
+    `observation` is the first step's `O_0`. A turn started by the user
+    carries only their message; a run steered mid-flight carries the message
+    and the result the run had reached. Every step after the first observes
+    the result of the action the previous one took.
+    """
     state = dict(state if state is not None else skill.initial_state)
     actions = skill.action_by_name()
     tool = skill_step_tool(skill)
@@ -150,7 +158,7 @@ async def run_skill_loop(
         step += 1
         if terminated:
             break
-        current_observation = result.text or "(no observation)"
+        current_observation = HarnessObservation(tool_call_result=result.text or "(no observation)")
 
     yield RunEndEvent(steps=step, state=dict(state))
 

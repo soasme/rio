@@ -28,7 +28,6 @@ from rio_coding.coding_skill import (
     CodingSkillOptions,
     build_coding_skill,
     describe_state,
-    final_answer,
     initial_coding_state,
     plan_progress,
     touched_files,
@@ -456,7 +455,8 @@ class CodingSession:
 
     @property
     def answer(self) -> str | None:
-        return final_answer(self.state)
+        """What the last run answered, if it has answered."""
+        return self._runner.answer
 
     @property
     def state_summary(self) -> str:
@@ -541,9 +541,12 @@ class CodingSession:
     async def prompt(self, text: str) -> AsyncIterator[CodingSessionEvent]:
         """Run one turn from a user message.
 
-        The message becomes the step's observation `O_0`. It is not appended to
-        anything: on the next step the model sees only what the state retained
-        of it, which is why the instructions tell the model to record the goal.
+        The message is what the first step observes, labelled as a user
+        message rather than dressed up as an action result -- no action has run
+        yet. It is not appended to anything: on the next step the model sees
+        only what the state retained of it, which is why the instructions tell
+        the model to record the goal. The state itself carries over untouched,
+        so a second message continues the session instead of restarting it.
         """
         outcome = await self.extensions.run_input_hooks(text)
         if outcome.handled:

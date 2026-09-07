@@ -7,10 +7,11 @@ proper. It owns three things the runtime deliberately does not:
   the merge patch and the resulting state. The model's reasoning is never
   written -- the runtime discards it, and persisting it would rebuild the
   unbounded history the design exists to avoid.
-* **Steering.** A message typed while a run is in flight is folded into the
-  next observation. Because the state is a complete description of the run,
-  interrupting and restarting from the current state costs nothing and loses
-  nothing; there is no conversation to rewind.
+* **Steering.** A message typed while a run is in flight interrupts it and
+  restarts it, observing the message alongside the result the run had
+  reached. Because the state is a complete description of the run, restarting
+  from the current state costs nothing and loses nothing; there is no
+  conversation to rewind.
 * **Checkpoints.** Any journaled snapshot can be adopted as the live state.
 """
 
@@ -25,6 +26,7 @@ from rio_agent import (
     ActionStartEvent,
     Harness,
     HarnessConfig,
+    HarnessObservation,
     HarnessSpec,
     ReasoningDiscardedEvent,
     RunEndEvent,
@@ -36,7 +38,6 @@ from rio_agent import (
 )
 from rio_ai.provider import ModelProvider
 from rio_ai.types import JSONObject, JSONValue
-from rio_coding.coding_skill import final_answer
 from rio_coding.events import (
     AgentSettledEvent,
     CodingSessionEvent,
@@ -118,7 +119,8 @@ class SessionRunner:
         self._running = False
         self._steps_this_run = 0
         self._terminated = False
-        self._last_observation: str | None = None
+        self._last_result: str | None = None
+        self._answer: str | None = None
 
     # -- inspection ----------------------------------------------------------
 
@@ -130,6 +132,16 @@ class SessionRunner:
     def state(self) -> dict[str, JSONValue]:
         """The complete execution state. This is the session's entire memory."""
         return dict(self._state)
+
+    @property
+    def answer(self) -> str | None:
+        """What the last run answered, or `None` if the current turn has not answered yet.
+
+        The answer is the message the terminating action carried, not a state
+        field: keeping a copy in the state only made it possible for a later
+        turn to read an answer that was never its own.
+        """
+        return self._answer
 
     @property
     def is_running(self) -> bool:
@@ -192,21 +204,27 @@ class SessionRunner:
 
     # -- running -------------------------------------------------------------
 
-    async def run(self, observation: str) -> AsyncIterator[CodingSessionEvent]:
-        """Run one turn to completion, yielding step events and journal writes.
+    async def run(self, message: str) -> AsyncIterator[CodingSessionEvent]:
+        """Run one turn from a user message, yielding step events and journal writes.
 
-        Steering restarts the underlying loop from the live execution state
-        with the queued text appended to the observation. That restart is
-        lossless: the state already holds everything the model would have been
-        told, so no steps are spent re-establishing context.
+        The turn starts from the state the session has already built, so a
+        second message continues the session instead of restarting it. The
+        message reaches the model as the observation's user message, not as an
+        action result: no action has run yet.
+
+        Steering restarts the underlying loop from the live execution state,
+        observing the queued text alongside the result the run had reached.
+        That restart is lossless: the state already holds everything the model
+        would have been told, so no steps are spent re-establishing context.
         """
         if self._running:
             raise RuntimeError("SessionRunner is already running")
         self._running = True
         self._steps_this_run = 0
         self._terminated = False
+        self._answer = None
         try:
-            current = observation
+            observation = HarnessObservation(user_message=message)
             while True:
                 limit = self._config.max_steps
                 if limit is not None:
@@ -214,17 +232,19 @@ class SessionRunner:
                     if remaining <= 0:
                         break
                     self._harness.config.max_steps = remaining
-                async for event in self._run_once(current):
+                async for event in self._run_once(observation):
                     yield event
                 steering = self._drain_steering()
                 if steering is None or self._terminated:
                     break
-                current = f"{self._last_observation or observation}\n\n[user] {steering}"
+                observation = HarnessObservation(
+                    user_message=steering, tool_call_result=self._last_result
+                )
 
             yield SessionRunEndEvent(
                 steps=self._steps_this_run,
                 state=dict(self._state),
-                answer=final_answer(self._state),
+                answer=self._answer,
             )
             for entry in await self._write_tip_pointer():
                 yield EntryAppendedEvent(entry=entry)
@@ -233,25 +253,25 @@ class SessionRunner:
         finally:
             self._running = False
 
-    async def _run_once(self, observation: str) -> AsyncIterator[CodingSessionEvent]:
+    async def _run_once(self, observation: HarnessObservation) -> AsyncIterator[CodingSessionEvent]:
         """Run the loop until it terminates, or until steering interrupts it.
 
         Interrupting is a cancel at a step boundary. Nothing has to be saved
         before cancelling: the state up to the last committed step is already
         the whole of what a restarted loop would be told.
         """
-        self._last_observation = observation
+        self._last_result = observation.tool_call_result
         pending: _StepInProgress | None = None
         turn_written = False
 
         iterator = self._harness.run(observation)
         async for event in iterator:
             if isinstance(event, RunStartEvent):
-                if not turn_written:
+                if not turn_written and observation.user_message is not None:
                     turn_written = True
                     entry = TurnEntry(
                         parent_id=self._parent_entry_id,
-                        observation=observation,
+                        observation=observation.user_message,
                         state=dict(self._state),
                     )
                     for written in await self._write([entry]):
@@ -291,12 +311,14 @@ class SessionRunner:
                 yield event
 
             elif isinstance(event, ActionEndEvent):
+                text = event.result.text or ""
+                if event.result.terminate and not event.is_error:
+                    self._answer = text or None
                 if pending is not None:
-                    text = event.result.text or ""
                     limit = self._config.journaled_observation_limit
                     pending.observation_truncated = len(text) > limit
                     pending.observation = text[:limit]
-                    self._last_observation = text or None
+                    self._last_result = text or None
                 yield event
 
             elif isinstance(event, StepEndEvent):
@@ -410,6 +432,7 @@ class SessionRunner:
             raise ValueError(f"session entry {entry_id!r} carries no execution state")
 
         self._state = state
+        self._answer = None
         reset = StateResetEntry(
             parent_id=entry_id,
             state=dict(state),
@@ -424,6 +447,7 @@ class SessionRunner:
     async def reset(self, state: JSONObject | None = None, *, reason: str | None = None) -> None:
         """Replace the execution state wholesale, journaling the reset."""
         self._state = dict(state if state is not None else self._config.skill.initial_state)
+        self._answer = None
         reset = StateResetEntry(
             parent_id=self._parent_entry_id, state=dict(self._state), reason=reason
         )

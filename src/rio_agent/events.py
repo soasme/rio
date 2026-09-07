@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from rio_agent.observation import HarnessObservation
 from rio_ai.tools import AgentToolResult
 from rio_ai.types import JSONObject
 
@@ -22,7 +23,7 @@ class RunStartEvent:
 class StepStartEvent:
     step: int
     state: JSONObject
-    observation: str
+    observation: HarnessObservation
 
 
 @dataclass(frozen=True, slots=True)

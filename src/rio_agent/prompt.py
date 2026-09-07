@@ -6,6 +6,10 @@ past observations, actions, or reasoning traces are ever included, which is
 what keeps the per-step prompt a fixed size no matter how many steps have
 already run.
 
+The observation says which of its inputs arrived, and the prompt gives each
+its own labelled section: the result the last action produced, a message from
+the user, or both when a message interrupts a run.
+
 The model reports its output for the step -- reasoning, a state update, and
 an action -- by calling a single mandatory `skill_step` tool. Any free text
 or thinking before that call is the reasoning; the runtime reads it for
@@ -17,6 +21,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
+from rio_agent.observation import HarnessObservation
 from rio_agent.skill import HarnessSpec
 from rio_ai.messages import AgentMessage, UserMessage
 from rio_ai.tools import AgentTool, AgentToolResult, ToolCancellationToken, ToolUpdateCallback
@@ -83,19 +88,21 @@ def skill_step_tool(skill: HarnessSpec) -> AgentTool:
 
 def build_step_messages(
     state: JSONObject,
-    observation: str,
+    observation: HarnessObservation,
     *,
     error_note: str | None = None,
 ) -> list[AgentMessage]:
-    """Build the non-system half of the prompt: the current state and the latest observation,
-    nothing else.
+    """Build the non-system half of the prompt: the current state, then the observation's inputs,
+    each under the label that says what it is.
     """
-    body = (
-        "Skill Execution State:\n```json\n"
-        + json.dumps(state, indent=2, sort_keys=True)
-        + "\n```\n\nLatest Observation:\n"
-        + observation
-    )
+    sections = [
+        "Skill Execution State:\n```json\n" + json.dumps(state, indent=2, sort_keys=True) + "\n```"
+    ]
+    if observation.tool_call_result is not None:
+        sections.append("Latest Observation:\n" + observation.tool_call_result)
+    if observation.user_message is not None:
+        sections.append("New User Message:\n" + observation.user_message)
+    body = "\n\n".join(sections)
     if error_note:
         body += (
             f"\n\nYour previous {STEP_TOOL_NAME} call was rejected: {error_note}\n"
