@@ -462,3 +462,74 @@ async def test_a_message_arriving_mid_run_carries_the_observation_with_it():
 async def test_an_observation_of_nothing_is_refused():
     with pytest.raises(ValueError, match="a step needs something to observe"):
         HarnessObservation()
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_step_call_is_reported_as_truncation_not_bad_shape():
+    """A call cut off at the output limit must say so, not complain about shape.
+
+    The arguments of a step that ran out of output tokens mid-call never parse,
+    so `action` is absent and the shape checks would reject it with "action must
+    be a JSON object" -- a note that sent the model back to re-send the same
+    oversized call until the retry budget ran out and the run died.
+    """
+    from rio_agent.prompt import STEP_TOOL_NAME
+    from rio_ai import AssistantDoneEvent, AssistantMessage, ToolCall, malformed_tool_arguments
+
+    skill = make_skill()
+    partial = '{"state_delta": {}, "action": {"name": "advance", "arguments": {"note": "aaa'
+    message = AssistantMessage(
+        content=[
+            ToolCall(id="call-0", name=STEP_TOOL_NAME, arguments=malformed_tool_arguments(partial))
+        ],
+        stop_reason="length",
+    )
+    provider = FakeProvider(
+        [
+            [AssistantDoneEvent(reason="length", message=message)],
+            step_response(reasoning="smaller", state_delta={}, action="finish", args={}),
+        ]
+    )
+
+    events = [
+        event
+        async for event in run_skill_loop(
+            provider=provider,
+            model="m",
+            skill=skill,
+            observation=HarnessObservation(user_message="start"),
+            max_retries=1,
+        )
+    ]
+
+    error = next(e for e in events if isinstance(e, ValidationErrorEvent)).error
+    assert "output token limit" in error
+    assert str(len(partial)) in error
+    assert "JSON object" not in error
+    assert any(isinstance(e, ActionEndEvent) and e.name == "finish" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_unparseable_step_arguments_do_not_replay_the_same_call():
+    """Malformed arguments with no truncation still get an actionable note."""
+    from rio_agent.prompt import STEP_TOOL_NAME
+    from rio_ai import AssistantDoneEvent, AssistantMessage, ToolCall, malformed_tool_arguments
+
+    skill = make_skill()
+    message = AssistantMessage(
+        content=[
+            ToolCall(id="call-0", name=STEP_TOOL_NAME, arguments=malformed_tool_arguments("{oops"))
+        ],
+        stop_reason="toolUse",
+    )
+    provider = FakeProvider([[AssistantDoneEvent(reason="toolUse", message=message)]])
+
+    with pytest.raises(RetriesExhaustedError, match="could not be parsed"):
+        async for _ in run_skill_loop(
+            provider=provider,
+            model="m",
+            skill=skill,
+            observation=HarnessObservation(user_message="start"),
+            max_retries=0,
+        ):
+            pass

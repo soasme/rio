@@ -43,6 +43,7 @@ from rio_ai.messages import (
     Usage,
     UserMessage,
     assistant_content,
+    malformed_tool_arguments,
     message_to_user,
 )
 from rio_ai.provider import CancellationToken
@@ -414,7 +415,7 @@ class _AnthropicToolBuilder:
         arguments_text = "".join(self.arguments_parts)
         arguments = _loads_object(arguments_text) if arguments_text else {}
         if arguments is None:
-            arguments = {"_raw_arguments": arguments_text}
+            arguments = malformed_tool_arguments(arguments_text)
         return ToolCall(
             id=self.id or f"tool-call-{index}",
             name=self.name,

@@ -43,7 +43,7 @@ from rio_agent.observation import HarnessObservation
 from rio_agent.prompt import STEP_TOOL_NAME, build_step_messages, skill_step_tool
 from rio_agent.skill import HarnessSpec
 from rio_agent.state import apply_state_delta, validate_state_delta
-from rio_ai.messages import AssistantMessage, TextContent
+from rio_ai.messages import AssistantMessage, TextContent, raw_tool_arguments
 from rio_ai.provider import CancellationToken, ModelProvider
 from rio_ai.provider_events import AssistantDoneEvent, AssistantErrorEvent
 from rio_ai.tools import AgentToolResult
@@ -115,6 +115,21 @@ async def run_skill_loop(
                     raise RetriesExhaustedError(error_note)
                 continue
 
+            # Arguments that never parsed reach here as the raw text. Retrying
+            # on the shape complaint the checks below would raise ("action must
+            # be a JSON object") sent the model back to write the same oversized
+            # call again, so say what actually went wrong instead.
+            raw_arguments = raw_tool_arguments(call.arguments)
+            if raw_arguments is not None:
+                error_note = _truncated_call_note(
+                    raw_arguments, truncated=assistant.stop_reason == "length"
+                )
+                attempt += 1
+                yield ValidationErrorEvent(step=step, attempt=attempt, error=error_note)
+                if attempt > max_retries:
+                    raise RetriesExhaustedError(error_note)
+                continue
+
             if assistant.text:
                 yield ReasoningDiscardedEvent(step=step, reasoning=assistant.text)
 
@@ -176,6 +191,21 @@ async def run_skill_loop(
         current_observation = HarnessObservation(tool_call_result=result.text or "(no observation)")
 
     yield RunEndEvent(steps=step, state=dict(state))
+
+
+def _truncated_call_note(raw_arguments: str, *, truncated: bool) -> str:
+    """Explain unparseable step arguments in terms the next attempt can act on."""
+    cause = (
+        "the response hit the output token limit before the call was finished"
+        if truncated
+        else "the arguments were not valid JSON"
+    )
+    return (
+        f"your `{STEP_TOOL_NAME}` arguments could not be parsed -- {cause} "
+        f"({len(raw_arguments)} characters were received). Retry with a smaller "
+        "action: write or edit the file in several steps instead of sending its "
+        "whole content in one call."
+    )
 
 
 async def _call_model(
