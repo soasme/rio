@@ -5,7 +5,6 @@ from copy import deepcopy
 from dataclasses import replace
 from time import monotonic
 
-from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -21,7 +20,7 @@ from rio_coding.tui.state import StepStreamItem, TuiState
 from rio_coding.tui.terminal_notification import TerminalNotificationController
 from rio_coding.tui.terminal_title import TerminalTitleController
 from rio_coding.tui.themes import available_tui_theme_names, textual_theme_for_tui_theme
-from rio_coding.tui.widgets import CommandPicker, StateSidebar, StepStream
+from rio_coding.tui.widgets import CommandPicker, StateSidebar, StepStream, TranscriptLog
 
 
 class RioTuiApp(App[None]):
@@ -178,6 +177,11 @@ class RioTuiApp(App[None]):
         self.theme = theme.name
         self.bind(self.settings.keybindings.cancel, "cancel_run", description="Cancel")
         self.bind(self.settings.keybindings.quit, "quit", description="Quit")
+        self.bind(
+            self.settings.keybindings.toggle_tool_results,
+            "toggle_tool_results",
+            description="Tool results",
+        )
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -265,10 +269,7 @@ class RioTuiApp(App[None]):
         )
 
     def write_item(self, item: StepStreamItem) -> None:
-        style = self.settings.resolved_theme.role_styles[item.role].body
-        self.query_one(StepStream).write(
-            Text(item.text, style=style), continuation=item.continuation
-        )
+        self.query_one(StepStream).write(item, continuation=item.continuation)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
@@ -577,6 +578,9 @@ class RioTuiApp(App[None]):
             self.adapter.state.active_action = None
             self.refresh_state()
             self._turn_notifications.notify_turn_finished()
+
+    def action_toggle_tool_results(self) -> None:
+        self.query_one(TranscriptLog).toggle_tool_results()
 
     def action_cancel_run(self) -> None:
         self.session.cancel()

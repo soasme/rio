@@ -250,6 +250,7 @@ def test_adapter_turns_and_tool_results():
     )
     assert items[0].continuation
     assert items[0].text == "bash: failed"
+    assert items[0].tool_target == "git status"
     assert items[0].role == "error"
     assert adapter.state.active_action is None
 
@@ -373,6 +374,7 @@ async def test_wide_transcript_and_working_indentation():
 @pytest.mark.asyncio
 async def test_append_only_and_whole_entry_retention(monkeypatch):
     from rich.text import Text
+    from textual.widgets import RichLog
 
     from rio_coding.tui.widgets import StepStream
 
@@ -381,13 +383,13 @@ async def test_append_only_and_whole_entry_retention(monkeypatch):
         stream = app.query_one(StepStream)
         await pilot.pause()
         calls = []
-        original = stream._entry_lines
+        original = stream.query_one(RichLog)._entry_lines
 
         def counted(*args):
             calls.append(1)
             return original(*args)
 
-        monkeypatch.setattr(stream, "_entry_lines", counted)
+        monkeypatch.setattr(stream.query_one(RichLog), "_entry_lines", counted)
         for index in range(1001):
             stream.write(Text(f"entry-{index:04d} " + "x" * 1000))
         assert len(calls) == 1001  # Appends never rewrap existing entries, even at the cap.
@@ -431,6 +433,7 @@ def test_tool_label_fallback_and_result_truncation():
             is_error=False,
         )
     )[0]
+    assert item.tool_target == ""
     assert item.text == "bash: " + "x" * 8000 + "\n… output truncated"
 
 
@@ -476,3 +479,153 @@ async def test_completed_status_freezes_and_next_run_restarts(monkeypatch):
         gate.set()
         await pilot.pause()
         assert str(status.render()).startswith("- Worked for 0s --")
+
+
+@pytest.mark.parametrize(
+    "output, lines", [("", 0), ("one\n", 1), ("one\ntwo", 2), ("x\n" * 142, 142)]
+)
+async def test_tool_result_summary_retains_output(output, lines):
+    from rio_agent.events import ActionEndEvent, ActionStartEvent
+    from rio_ai.tools import AgentToolResult
+
+    adapter = TuiEventAdapter()
+    adapter.consume(ActionStartEvent(step=1, name="read", arguments={"path": "/tmp/file"}))
+    item = adapter.consume(
+        ActionEndEvent(
+            step=1,
+            name="read",
+            result=AgentToolResult(content=output),
+            is_error=False,
+        )
+    )[0]
+    unit = "line" if lines == 1 else "lines"
+    assert item.text == "read: " + output
+    assert item.tool_target == "/tmp/file"
+    from rio_coding.tui.widgets import TranscriptLog
+
+    app = RioTuiApp(FakeSession(), settings=TuiSettings())
+    async with app.run_test():
+        log = app.query_one(TranscriptLog)
+        assert log.display_text(item).plain == (
+            f"read: /tmp/file ({lines} {unit}, ctrl+o to expand)"
+        )
+        log.toggle_tool_results()
+        assert log.display_text(item).plain == item.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["ctrl+o", "ctrl+y"])
+async def test_tool_results_toggle_globally_with_configured_key(key):
+    from rio_agent.events import ActionEndEvent
+    from rio_ai.tools import AgentToolResult
+    from rio_coding.tui.config import TuiKeybindings
+    from rio_coding.tui.state import StepStreamItem
+    from rio_coding.tui.widgets import StepStream
+
+    app = RioTuiApp(
+        FakeSession(),
+        settings=TuiSettings(
+            sidebar_position="off",
+            keybindings=TuiKeybindings(toggle_tool_results=key),
+        ),
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        stream = app.query_one(StepStream)
+        app.write_item(StepStreamItem("user", "Read files"))
+
+        def emit(output):
+            for item in app.adapter.consume(
+                ActionEndEvent(
+                    step=1,
+                    name="read",
+                    result=AgentToolResult(content=output),
+                    is_error=False,
+                )
+            ):
+                app.write_item(item)
+
+        def rendered():
+            return "\n".join(line.text for line in stream.lines)
+
+        emit("first result\nsecond line")
+        emit("another result")
+        await pilot.pause()
+        assert f"{key} to expand" in rendered()
+        assert "first result" not in rendered()
+        assert app.query_one(Input).has_focus
+        if key != "ctrl+o":
+            await pilot.press("ctrl+o")
+            assert "first result" not in rendered()
+        await pilot.press(key)
+        assert "first result" in rendered()
+        assert "second line" in rendered()
+        assert "another result" in rendered()
+        emit("arrived while expanded")
+        await pilot.pause()
+        assert "arrived while expanded" in rendered()
+        await pilot.resize_terminal(60, 30)
+        await pilot.pause()
+        assert "first result" in rendered()
+        await pilot.press(key)
+        assert "first result" not in rendered()
+        assert "another result" not in rendered()
+        assert "arrived while expanded" not in rendered()
+        assert "Read files" in rendered()
+        assert len(stream.entries) == 4
+
+
+@pytest.mark.asyncio
+async def test_derived_tool_summary_handles_truncation_and_errors():
+    from rio_agent.events import ActionEndEvent, ActionStartEvent
+    from rio_ai.tools import AgentToolResult
+    from rio_coding.tui.widgets import TranscriptLog
+
+    adapter = TuiEventAdapter()
+    adapter.consume(
+        ActionStartEvent(
+            step=1,
+            name="bash",
+            arguments={"command": "x" * 130 + "\nsecond command"},
+        )
+    )
+    item = adapter.consume(
+        ActionEndEvent(
+            step=1,
+            name="bash",
+            result=AgentToolResult(content="x\n" * 5000),
+            is_error=True,
+        )
+    )[0]
+    assert item.tool_target == "x" * 120
+    app = RioTuiApp(FakeSession(), settings=TuiSettings())
+    async with app.run_test():
+        log = app.query_one(TranscriptLog)
+        summary = log.display_text(item)
+        assert summary.plain == f"bash: {'x' * 120} (4000+ lines, error, ctrl+o to expand)"
+        assert summary.style == app.settings.resolved_theme.role_styles["error"].body
+        log.toggle_tool_results()
+        assert log.display_text(item).plain == "bash: " + "x\n" * 4000 + "\n… output truncated"
+
+
+@pytest.mark.asyncio
+async def test_direct_log_write_survives_toggle_and_resize():
+    from rich.text import Text
+    from textual.widgets import RichLog
+
+    from rio_coding.tui.widgets import StepStream
+
+    app = RioTuiApp(FakeSession(), settings=TuiSettings(sidebar_position="off"))
+    async with app.run_test(size=(100, 30)) as pilot:
+        log = app.query_one(RichLog)
+        log.write(Text("direct result " + "x" * 160))
+        await pilot.pause()
+        assert len(app.query_one(StepStream).entries) == 1
+        before = [line.text for line in log.lines]
+        assert before[0].startswith("• direct result")
+        await pilot.press("ctrl+o")
+        assert [line.text for line in log.lines] == before
+        await pilot.resize_terminal(45, 30)
+        await pilot.pause()
+        assert len(log.lines) > len(before)
+        assert log.lines[0].text.startswith("• direct result")
+        assert len(app.query_one(StepStream).entries) == 1

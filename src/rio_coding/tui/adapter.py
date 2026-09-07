@@ -26,11 +26,13 @@ from rio_coding.events import (
 from rio_coding.tui.state import StepStreamItem, TuiState
 
 _MAX_RESULT_CHARS = 8000
+_MAX_TARGET_CHARS = 120
 
 
 class TuiEventAdapter:
     def __init__(self, state: TuiState | None = None) -> None:
         self.state = state if state is not None else TuiState()
+        self._action_target = ""
 
     def consume(self, event: CodingSessionEvent) -> list[StepStreamItem]:
         items: list[StepStreamItem] = []
@@ -53,6 +55,10 @@ class TuiEventAdapter:
         if isinstance(event, StateUpdateEvent):
             items.append(StepStreamItem("step", "State delta: " + json.dumps(event.delta)))
         elif isinstance(event, ActionStartEvent):
+            target = event.arguments.get("path") or event.arguments.get("command")
+            self._action_target = (
+                " ".join(target.split())[:_MAX_TARGET_CHARS] if isinstance(target, str) else ""
+            )
             command = event.arguments.get("command")
             label = (
                 command
@@ -70,8 +76,10 @@ class TuiEventAdapter:
                     f"{event.name}: {text[:_MAX_RESULT_CHARS]}"
                     + ("\n… output truncated" if len(text) > _MAX_RESULT_CHARS else ""),
                     continuation=True,
+                    tool_target=self._action_target,
                 )
             )
+            self._action_target = ""
         elif isinstance(event, ReasoningDiscardedEvent):
             items.append(StepStreamItem("reasoning", f"Reasoning (discarded): {event.reasoning}"))
         elif isinstance(event, ValidationErrorEvent):
