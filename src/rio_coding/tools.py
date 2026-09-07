@@ -1152,7 +1152,7 @@ def _truncate_string_to_bytes_from_end(text: str, max_bytes: int) -> str:
 
 _BASH_COMMAND_ALIASES = ("cmd", "shell_command", "bash_command")
 
-_PATH_ALIASES = ("file", "file_path")
+_PATH_ALIASES = ("file", "file_path", "filepath", "filename")
 
 
 def _str_arg(arguments: Mapping[str, JSONValue], name: str) -> str:
@@ -1173,7 +1173,8 @@ def _path_str_arg(arguments: Mapping[str, JSONValue], name: str) -> str:
         value = arguments.get(key)
         if isinstance(value, str):
             return value
-    raise ToolInputError(f"{name} must be a string")
+    accepted = ", ".join((name, *_PATH_ALIASES))
+    raise ToolInputError(f"{name} must be a string; accepted argument names: {accepted}")
 
 
 def _path_arg(arguments: Mapping[str, JSONValue], name: str, *, cwd: Path) -> Path:
