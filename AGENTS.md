@@ -6,3 +6,4 @@
 * When writing PR, write the current topic of conversation visually. Pick the smallest view that makes the key point clear.
 * When answering, keep text short and concise.
 * When composing text, remove emojis, fluff, cheerful filler text and use concise, clear, simple language.
+* When adding parameters, ensure API's simplicity and Orthogonality.
