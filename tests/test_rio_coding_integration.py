@@ -102,7 +102,6 @@ def fix_the_bug_streams():
         step_response(
             reasoning="It prints 5. Done.",
             state_delta={
-                "answer": "calc.add subtracted instead of adding; fixed and verified (2+3=5).",
                 "plan": [
                     {"id": "1", "title": "read calc.py", "status": "done"},
                     {"id": "2", "title": "fix the operator", "status": "done"},
@@ -121,7 +120,8 @@ async def test_the_agent_actually_fixes_the_file(tmp_path) -> None:
         pass
 
     assert "return a + b" in (repo / "calc.py").read_text(encoding="utf-8")
-    assert session.answer == "calc.add subtracted instead of adding; fixed and verified (2+3=5)."
+    # The answer is the terminating action's message, not a copy kept in state.
+    assert session.answer == "Fixed calc.add: it subtracted instead of adding. Verified 2+3=5."
 
 
 async def test_the_plan_progresses_through_the_state(tmp_path) -> None:

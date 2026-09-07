@@ -712,15 +712,6 @@ def test_format_state_field_docs_accepts_a_custom_mapping() -> None:
 
 
 def test_coding_state_field_docs_covers_the_declared_schema() -> None:
-    assert set(CODING_STATE_FIELD_DOCS) == {
-        "goal",
-        "plan",
-        "findings",
-        "files",
-        "cwd",
-        "environment",
-        "blockers",
-        "last_error",
-        "scratch",
-        "answer",
-    }
+    from rio_coding.coding_skill import CODING_STATE_FIELDS
+
+    assert set(CODING_STATE_FIELD_DOCS) == set(CODING_STATE_FIELDS)

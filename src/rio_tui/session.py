@@ -102,7 +102,7 @@ class SessionScreen(Screen):
                         )
                         await block.complete(entry.observation or "")
                     if entry.terminated:
-                        answer = entry.state.get("answer") or entry.action.arguments.get("message")
+                        answer = entry.action.arguments.get("message")
                         if answer:
                             await self.conversation.add(Answer(str(answer)))
         self.query_one(Editor).history_index = len(self.query_one(Editor).sent[False])

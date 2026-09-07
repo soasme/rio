@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from rio_coding.coding_skill import describe_state, final_answer, plan_progress, touched_files
+from rio_coding.coding_skill import describe_state, plan_progress, touched_files
 from rio_coding.session_store import (
     ActionRecord,
     InMemorySessionStorage,
@@ -270,11 +270,6 @@ class TestStateAccessors:
     def test_touched_files_are_sorted(self) -> None:
         state = {"files": {"b.py": {"status": "edited"}, "a.py": {"status": "read"}}}
         assert touched_files(state) == ["a.py", "b.py"]
-
-    def test_final_answer_is_none_until_recorded(self) -> None:
-        assert final_answer({"answer": None}) is None
-        assert final_answer({"answer": ""}) is None
-        assert final_answer({"answer": "all done"}) == "all done"
 
     def test_describe_state_summarizes_without_dumping(self) -> None:
         state = {

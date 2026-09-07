@@ -67,10 +67,7 @@ def two_step_streams():
         ),
         step_response(
             reasoning="Ready to answer.",
-            state_delta={
-                "answer": "main.py starts the server.",
-                "plan": [{"id": "1", "title": "explain", "status": "done"}],
-            },
+            state_delta={"plan": [{"id": "1", "title": "explain", "status": "done"}]},
             action="respond",
             args={"message": "main.py starts the server."},
         ),
@@ -164,15 +161,16 @@ class TestPrompting:
         assert session.touched_files == ["main.py"]
         assert "plan 1/1" in session.state_summary
 
-    async def test_the_user_message_is_the_first_observation_not_a_message(self, project) -> None:
-        """There is nowhere to append it to; it is `O_0` and nothing else."""
+    async def test_the_user_message_is_a_prompt_section_not_a_transcript(self, project) -> None:
+        """There is nowhere to append it to. It is a labelled section of the one message."""
         session = await make_session(project, two_step_streams())
         provider = session.provider
         await collect(session, "explain main.py")
 
         _model, _system, first_messages, _tools = provider.calls[0]
         assert len(first_messages) == 1
-        assert "explain main.py" in first_messages[0].content
+        assert "New User Message:\nexplain main.py" in first_messages[0].content
+        assert "Latest Observation:" not in first_messages[0].content
 
     async def test_the_run_is_journaled_as_steps(self, project) -> None:
         storage = InMemorySessionStorage()
@@ -188,7 +186,7 @@ class TestPrompting:
             *two_step_streams(),
             step_response(
                 reasoning="",
-                state_delta={"answer": "tests pass"},
+                state_delta={},
                 action="respond",
                 args={"message": "tests pass"},
             ),
@@ -256,7 +254,7 @@ class TestReconfiguration:
             [
                 step_response(
                     reasoning="",
-                    state_delta={"answer": "still main.py"},
+                    state_delta={},
                     action="respond",
                     args={"message": "still main.py"},
                 )
@@ -384,7 +382,8 @@ class TestCheckpoints:
         await collect(session, "explain main.py")
 
         reopened = await make_session(project, [], storage=storage)
-        assert reopened.state["answer"] == "main.py starts the server."
+        assert reopened.state["findings"] == {"entrypoint": "main.py"}
+        assert reopened.state["plan"] == [{"id": "1", "title": "explain", "status": "done"}]
 
 
 async def test_metadata_keeps_journal_connected_and_preserves_resumed_state(project):

@@ -24,13 +24,14 @@ from rio_coding.skills import Skill
 CODING_STATE_FIELD_DOCS: Mapping[str, str] = {
     "goal": (
         "What the user asked for, restated in your own words. Set it once, near the "
-        "start of the run, and keep it stable; revisit it only if the user changes "
-        "their request."
+        "start of the turn, and keep it stable. A new user message is a new goal: "
+        "replace it, and keep the rest of the state — the session has not restarted."
     ),
     "plan": (
         "An ordered checklist toward the goal: a list of objects with `id`, `title`, "
         "and `status` (`pending`, `in_progress`, `done`, or `blocked`). Update statuses "
-        "as you make progress, and add or reorder steps as the plan changes."
+        "as you make progress, and add or reorder steps as the plan changes. When a new "
+        "user message sets a new goal, replace the finished plan with one for it."
     ),
     "findings": (
         "Durable conclusions you have reached, keyed by a short topic name. Use it for "
@@ -54,16 +55,12 @@ CODING_STATE_FIELD_DOCS: Mapping[str, str] = {
     ),
     "last_error": (
         "The error message from the most recently failed action, or `null` once you "
-        "have addressed it or it no longer applies. Read it before retrying a failed "
-        "action."
+        "have addressed it or it no longer applies — a new user message makes it no "
+        "longer apply. Read it before retrying a failed action."
     ),
     "scratch": (
         "Short-lived working notes that do not belong in any other field. Treat it as "
         "disposable; do not rely on it for anything that must survive many steps."
-    ),
-    "answer": (
-        "The final response to the user. Set it just before you take the `respond` "
-        "action, then take that action to end the run."
     ),
 }
 
@@ -161,10 +158,17 @@ def format_step_protocol() -> str:
     return (
         "Step protocol:\n"
         "- Every step you receive exactly three things: these instructions, the "
-        "current execution state as JSON, and a single latest observation. You never "
+        "current execution state as JSON, and the step's latest input. You never "
         "see earlier observations, earlier actions, or your own earlier reasoning — "
         "nothing survives between steps except what you write into the execution "
         "state.\n"
+        "- That input is labelled. `Latest Observation` is what the action you took "
+        "last step returned. `New User Message` is the person you are working with "
+        "speaking: a new request, or a correction to the one in flight. The first "
+        "step of a turn has only a message — no action has run yet.\n"
+        "- A session runs many turns and the state survives between them, so a new "
+        "message continues from what you already know: keep your findings, the files "
+        "you have touched and the environment, and do not re-derive them.\n"
         "- You must reply with exactly one `skill_step` tool call carrying three "
         "fields: `reasoning`, `state_delta`, and `action`.\n"
         "- `reasoning` is private scratch space. It is discarded immediately after "
@@ -174,8 +178,9 @@ def format_step_protocol() -> str:
         "state: setting a field to `null` deletes that key, an object value merges "
         "recursively into the existing object, and any other value replaces the "
         "field outright. You may only modify the declared state fields.\n"
-        "- `action` is exactly one tool call — never zero, never more than one. Use "
-        "the `respond` action to finish the turn and answer the user."
+        "- `action` is exactly one tool call — never zero, never more than one. To "
+        "finish the turn, take the `respond` action: its `message` is your answer to "
+        "the user, so there is nothing to write into the state first."
     )
 
 

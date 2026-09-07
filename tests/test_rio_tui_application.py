@@ -46,7 +46,7 @@ class Session:
         self.prompts.append(text)
         self.started.set()
         await self.release.wait()
-        self.state = {"answer": text}
+        self.state = {"goal": text}
         yield StateUpdateEvent(step=1, delta=self.state, state=self.state)
         yield SessionRunEndEvent(steps=1, state=self.state, answer=text)
 
@@ -287,15 +287,13 @@ async def test_resume_uses_active_branch_only(tmp_path):
     abandoned = StepEntry(
         parent_id=turn.id,
         step=1,
-        state={"answer": "abandoned"},
-        action=ActionRecord(name="respond"),
+        action=ActionRecord(name="respond", arguments={"message": "abandoned"}),
         terminated=True,
     )
     active = StepEntry(
         parent_id=turn.id,
         step=1,
-        state={"answer": "restored"},
-        action=ActionRecord(name="respond"),
+        action=ActionRecord(name="respond", arguments={"message": "restored"}),
         terminated=True,
     )
 

@@ -16,7 +16,7 @@ async def main() -> None:
                 id="example-step",
                 name="skill_step",
                 arguments={
-                    "state_delta": {"goal": "greet the user", "answer": "Hello from Rio."},
+                    "state_delta": {"goal": "greet the user"},
                     "action": {"name": "respond", "arguments": {"message": "Hello from Rio."}},
                 },
             )

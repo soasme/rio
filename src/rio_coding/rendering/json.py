@@ -46,17 +46,19 @@ def event_to_json(event: CodingSessionEvent) -> str:
 
 
 def _dataclass_event_payload(event: object) -> dict[str, object]:
-    payload: dict[str, object] = {"type": _event_type_name(event)}
-    for f in fields(event):  # type: ignore[arg-type]
-        payload[f.name] = _jsonable(getattr(event, f.name))
-    return payload
+    return {"type": _event_type_name(event), **_dataclass_fields(event)}
+
+
+def _dataclass_fields(value: object) -> dict[str, object]:
+    """Fields only. A dataclass nested inside an event is data, not an event of its own."""
+    return {f.name: _jsonable(getattr(value, f.name)) for f in fields(value)}  # type: ignore[arg-type]
 
 
 def _jsonable(value: object) -> object:
     if isinstance(value, BaseModel):
         return value.model_dump(by_alias=True, mode="json", exclude_none=True)
     if is_dataclass(value) and not isinstance(value, type):
-        return _dataclass_event_payload(value)
+        return _dataclass_fields(value)
     if isinstance(value, dict):
         return {key: _jsonable(item) for key, item in value.items()}
     if isinstance(value, list | tuple):

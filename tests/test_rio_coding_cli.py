@@ -66,7 +66,7 @@ async def test_print_executes_skill_state_and_journals(tmp_path, capsys):
         streams=[
             step_response(
                 reasoning="Answer directly.",
-                state_delta={"answer": "Hello"},
+                state_delta={},
                 action="respond",
                 args={"message": "Hello"},
             )
@@ -121,7 +121,7 @@ async def test_configured_run_resumes_and_closes_provider(monkeypatch, tmp_path)
         streams=[
             step_response(
                 reasoning="Done",
-                state_delta={"answer": "Done"},
+                state_delta={},
                 action="respond",
                 args={"message": "Done"},
             )
@@ -355,7 +355,7 @@ def test_tui_starts_without_key_and_can_login_then_run(monkeypatch, tmp_path):
         [
             step_response(
                 reasoning="",
-                state_delta={"answer": "Authenticated"},
+                state_delta={},
                 action="respond",
                 args={"message": "Authenticated"},
             )

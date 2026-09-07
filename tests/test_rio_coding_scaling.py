@@ -78,7 +78,7 @@ def long_run_streams(steps: int = STEPS):
     streams.append(
         step_response(
             reasoning="Survey complete.",
-            state_delta={"answer": f"Inspected {steps} modules; all fine."},
+            state_delta={},
             action="respond",
             args={"message": f"Inspected {steps} modules; all fine."},
         )
