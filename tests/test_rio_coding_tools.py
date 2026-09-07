@@ -314,7 +314,7 @@ async def test_read_tool_header_names_action_path_and_line_range(tmp_path: Path)
     assert result.text.startswith(f"read {path} (lines 1-4 of 4)\n\n")
 
 
-@pytest.mark.parametrize("alias", ["file", "file_path"])
+@pytest.mark.parametrize("alias", ["file", "file_path", "filepath", "filename"])
 async def test_read_tool_accepts_path_aliases(tmp_path: Path, alias: str) -> None:
     path = tmp_path / "notes.txt"
     path.write_text("one\n")
@@ -340,8 +340,15 @@ async def test_read_tool_prefers_path_over_alias(tmp_path: Path) -> None:
 async def test_read_tool_rejects_missing_path(tmp_path: Path) -> None:
     tool = create_read_tool(cwd=tmp_path)
 
-    with pytest.raises(ValueError, match="path must be a string"):
+    with pytest.raises(ValueError, match="path must be a string; accepted argument names: "):
         await tool.execute("test-call", {})
+
+
+async def test_write_tool_rejects_non_string_path(tmp_path: Path) -> None:
+    tool = create_write_tool(cwd=tmp_path)
+
+    with pytest.raises(ValueError, match="path must be a string"):
+        await tool.execute("test-call", {"path": 1, "content": "hello"})
 
 
 # --- write tool ----------------------------------------------------------
@@ -357,7 +364,7 @@ async def test_write_tool_creates_parent_directories(tmp_path: Path) -> None:
     assert path.read_text() == "hello"
 
 
-@pytest.mark.parametrize("alias", ["file", "file_path"])
+@pytest.mark.parametrize("alias", ["file", "file_path", "filepath", "filename"])
 async def test_write_tool_accepts_path_aliases(tmp_path: Path, alias: str) -> None:
     tool = create_write_tool(cwd=tmp_path)
 
@@ -391,6 +398,30 @@ async def test_edit_tool_applies_multiple_exact_replacements(tmp_path: Path) -> 
         f"edit {path} (2 edit(s))\n\nSuccessfully replaced 2 block(s) in {path}."
     )
     assert path.read_text() == "one\nbeta\nthree\n"
+
+
+@pytest.mark.parametrize("alias", ["file", "file_path", "filepath", "filename"])
+async def test_edit_tool_accepts_path_aliases(tmp_path: Path, alias: str) -> None:
+    path = tmp_path / "file.txt"
+    path.write_text("alpha\n")
+    tool = create_edit_tool(cwd=tmp_path)
+
+    result = await tool.execute(
+        "test-call",
+        {alias: "file.txt", "edits": [{"oldText": "alpha", "newText": "one"}]},
+    )
+
+    assert result.text == (
+        f"edit {path} (1 edit(s))\n\nSuccessfully replaced 1 block(s) in {path}."
+    )
+    assert path.read_text() == "one\n"
+
+
+async def test_edit_tool_rejects_missing_path(tmp_path: Path) -> None:
+    tool = create_edit_tool(cwd=tmp_path)
+
+    with pytest.raises(ValueError, match="path must be a string"):
+        await tool.execute("test-call", {"edits": [{"oldText": "a", "newText": "b"}]})
 
 
 async def test_edit_tool_rolls_back_when_any_edit_fails(tmp_path: Path) -> None:
