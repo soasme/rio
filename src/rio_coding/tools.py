@@ -230,7 +230,8 @@ def create_read_tool_definition(
     """Create a definition for the `read` tool.
 
     The tool reads a file resolved relative to `cwd` unless an absolute path is
-    supplied. Text files are decoded as UTF-8 and may be sliced with optional
+    supplied. `path` may also be spelled `file` or `file_path`. Text files are
+    decoded as UTF-8 and may be sliced with optional
     1-indexed `offset` and positive integer `limit` arguments. Returned text is
     truncated to `DEFAULT_MAX_OUTPUT_LINES` lines or `DEFAULT_MAX_OUTPUT_BYTES`
     bytes, whichever comes first, and continuation hints are appended when more
@@ -252,7 +253,7 @@ def create_read_tool_definition(
         signal: ToolCancellationToken | None = None,
     ) -> AgentToolResult:
         del signal
-        raw_path = _str_arg(arguments, "path")
+        raw_path = _path_str_arg(arguments, "path")
         path = _path_arg(arguments, "path", cwd=root)
         offset = _optional_int_arg(arguments, "offset")
         limit = _optional_int_arg(arguments, "limit")
@@ -1151,6 +1152,8 @@ def _truncate_string_to_bytes_from_end(text: str, max_bytes: int) -> str:
 
 _BASH_COMMAND_ALIASES = ("cmd", "shell_command", "bash_command")
 
+_PATH_ALIASES = ("file", "file_path")
+
 
 def _str_arg(arguments: Mapping[str, JSONValue], name: str) -> str:
     value = arguments.get(name)
@@ -1159,8 +1162,22 @@ def _str_arg(arguments: Mapping[str, JSONValue], name: str) -> str:
     return value
 
 
+def _path_str_arg(arguments: Mapping[str, JSONValue], name: str) -> str:
+    """Return the path argument, tolerating common aliases for `path`.
+
+    Models sometimes call the tool as `read({"file": ...})` even though the
+    schema names the argument `path`. Accepting the alias spellings keeps a
+    valid path from failing on its parameter name alone.
+    """
+    for key in (name, *_PATH_ALIASES):
+        value = arguments.get(key)
+        if isinstance(value, str):
+            return value
+    raise ToolInputError(f"{name} must be a string")
+
+
 def _path_arg(arguments: Mapping[str, JSONValue], name: str, *, cwd: Path) -> Path:
-    value = _str_arg(arguments, name)
+    value = _path_str_arg(arguments, name)
     path = Path(value).expanduser()
     if not path.is_absolute():
         path = cwd / path
