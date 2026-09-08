@@ -16,6 +16,7 @@ from rio_coding.session_store.entries import (
     LabelEntry,
     LeafEntry,
     ModelChangeEntry,
+    ReasoningEntry,
     SessionEntry,
     SessionInfoEntry,
     StateResetEntry,

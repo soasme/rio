@@ -67,9 +67,10 @@ class StepEntry(BaseSessionEntry):
     runtime accepted; ``state`` is the full execution state that resulted.
     Storing both means the journal is auditable *and* resumable without replay.
 
-    The model's reasoning is deliberately absent. The runtime discards it the
-    moment a step commits, and persisting it here would reintroduce exactly the
-    unbounded history the design exists to avoid.
+    The model's reasoning is deliberately absent *from this entry*. This is the
+    entry a resume reads, so anything stored here is one step away from
+    reaching a prompt and rebuilding the unbounded history the design exists to
+    avoid. Reasoning is journaled separately, as `ReasoningEntry`.
     """
 
     type: Literal["step"] = "step"
@@ -102,6 +103,20 @@ class ValidationFailureEntry(BaseSessionEntry):
     step: int
     attempt: int
     error: str
+
+
+class ReasoningEntry(BaseSessionEntry):
+    """The model's reasoning for a step, kept for diagnostics.
+
+    Never read back into a prompt and never part of the resumable chain: it
+    carries no state snapshot, so a resume or a branch cannot land on it. It is
+    a leaf note beside the step it explains, not a link in the chain.
+    """
+
+    type: Literal["reasoning"] = "reasoning"
+    step: int
+    reasoning: str
+    truncated: bool = False
 
 
 class ModelChangeEntry(BaseSessionEntry):
@@ -164,6 +179,7 @@ type SessionEntry = Annotated[
     | StepEntry
     | StateResetEntry
     | ValidationFailureEntry
+    | ReasoningEntry
     | ModelChangeEntry
     | ThinkingLevelChangeEntry
     | BranchSummaryEntry
@@ -176,6 +192,10 @@ type SessionEntry = Annotated[
 
 #: Entry types that carry a full execution-state snapshot, and so can be
 #: resumed from or branched at without replaying anything earlier.
+#:
+#: "reasoning" is left out deliberately, not by oversight. That omission is
+#: what makes `entry_state()` return None for a `ReasoningEntry`, so resume and
+#: branching cannot see one. Do not "fix" it by adding the type here.
 SNAPSHOT_ENTRY_TYPES = frozenset({"turn", "step", "state_reset"})
 
 

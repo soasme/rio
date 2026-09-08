@@ -17,6 +17,7 @@ from rio_coding.session_store import (
     InMemorySessionStorage,
     JsonlSessionStorage,
     LeafEntry,
+    ReasoningEntry,
     SessionInfoEntry,
     SessionJsonlError,
     SessionTreeError,
@@ -80,8 +81,12 @@ class TestSerialization:
         with pytest.raises(SessionJsonlError):
             entries_from_json_lines(['{"type": "message", "message": {}}'])
 
-    def test_reasoning_is_not_representable_in_the_journal(self) -> None:
-        """The journal has nowhere to put discarded reasoning, by construction."""
+    def test_reasoning_is_not_representable_in_a_step_entry(self) -> None:
+        """Reasoning is journaled as its own entry, never folded into a step.
+
+        A step is what a resume reads back, so the schema refuses to carry
+        reasoning there even if a writer tries.
+        """
         line = json.dumps(
             {
                 "type": "step",
@@ -187,6 +192,32 @@ class TestStateRecovery:
 
     def test_entry_state_is_none_for_non_snapshot_entries(self) -> None:
         assert entry_state(ValidationFailureEntry(step=0, attempt=1, error="x")) is None
+        assert entry_state(ReasoningEntry(step=0, reasoning="because")) is None
+
+    def test_reasoning_entries_are_invisible_to_resume_and_branching(self) -> None:
+        """The journal keeps reasoning; the resume path cannot see it.
+
+        A reasoning entry carries no snapshot and never advances the tip, so a
+        session that journals it recovers exactly the state of one that does
+        not, and it is never offered as a checkpoint.
+        """
+        entries = make_chain(3)
+        notes = [
+            ReasoningEntry(
+                parent_id=entry.parent_id, step=entry.step, reasoning=f"why {entry.step}"
+            )
+            for entry in entries
+        ]
+        interleaved = [item for pair in zip(notes, entries, strict=True) for item in pair]
+
+        assert resume_state(interleaved) == resume_state(entries)
+        assert [e.id for e in checkpoints(interleaved)] == [e.id for e in entries]
+        assert latest_leaf_id(interleaved) == entries[-1].id
+
+    def test_a_reasoning_entry_is_not_a_restorable_checkpoint(self) -> None:
+        entry = ReasoningEntry(step=0, reasoning="because")
+        _state, carrier = state_at_entry([entry], entry.id)
+        assert carrier is None
 
     def test_recovery_cost_does_not_depend_on_journal_length(self) -> None:
         """A transcript replays every entry; a state journal reads exactly one.

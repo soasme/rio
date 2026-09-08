@@ -48,6 +48,7 @@ from rio_coding.session_store import (
     LabelEntry,
     LeafEntry,
     ModelChangeEntry,
+    ReasoningEntry,
     SessionEntry,
     SessionInfoEntry,
     StateResetEntry,
@@ -477,6 +478,13 @@ def _entry_wire(entry: SessionEntry) -> dict[str, JSONValue] | None:
         }
     if isinstance(entry, ValidationFailureEntry):
         return {**base, "step": entry.step, "attempt": entry.attempt, "error": entry.error}
+    if isinstance(entry, ReasoningEntry):
+        return {
+            **base,
+            "step": entry.step,
+            "reasoning": entry.reasoning,
+            "truncated": entry.truncated,
+        }
     if isinstance(entry, ModelChangeEntry):
         return {**base, "model": entry.model, "provider": entry.provider}
     if isinstance(entry, ThinkingLevelChangeEntry):

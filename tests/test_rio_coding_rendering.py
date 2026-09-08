@@ -40,7 +40,13 @@ from rio_coding.session_export import (
     normalize_export_format,
     render_session_html,
 )
-from rio_coding.session_store import ActionRecord, StepEntry, TurnEntry, ValidationFailureEntry
+from rio_coding.session_store import (
+    ActionRecord,
+    ReasoningEntry,
+    StepEntry,
+    TurnEntry,
+    ValidationFailureEntry,
+)
 
 # -- rendering.plain ----------------------------------------------------------
 
@@ -259,6 +265,31 @@ def test_render_session_html_includes_steps_table_and_footprint() -> None:
     assert "Projected cumulative tokens" in html_out
     assert "Per-step footprint is fixed at" in html_out
     assert "<title>Steps test</title>" in html_out
+
+
+def test_render_session_html_attaches_reasoning_to_its_step_collapsed() -> None:
+    entries = [
+        ReasoningEntry(id="r1", step=1, reasoning="I will list the files first.", truncated=True),
+        StepEntry(
+            id="s1",
+            parent_id="r1",
+            step=1,
+            state_delta={"goal": "x"},
+            state={"goal": "x"},
+            action=ActionRecord(name="bash", arguments={"command": "ls"}),
+            observation="ok",
+            terminated=False,
+        ),
+    ]
+
+    html_out = render_session_html(entries, title="Reasoning test")
+
+    assert '<details class="reasoning">' in html_out
+    assert "I will list the files first." in html_out
+    # Collapsed: the details element carries no `open` attribute.
+    assert '<details class="reasoning" open>' not in html_out
+    # It sits above the step it explains.
+    assert html_out.index("I will list the files first.") < html_out.index('id="step-1"')
 
 
 def test_render_session_html_renders_retry_and_final_step() -> None:

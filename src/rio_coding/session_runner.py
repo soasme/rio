@@ -4,9 +4,10 @@ This is the layer between `rio_agent.run_skill_loop` and the coding session
 proper. It owns three things the runtime deliberately does not:
 
 * **Journaling.** Each accepted step is written as a `StepEntry` holding both
-  the merge patch and the resulting state. The model's reasoning is never
-  written -- the runtime discards it, and persisting it would rebuild the
-  unbounded history the design exists to avoid.
+  the merge patch and the resulting state, and the reasoning that produced it
+  as a separate `ReasoningEntry`. The split is the point: the runtime still
+  discards reasoning from the prompt, and the journalled copy carries no state
+  and never advances the branch tip, so it cannot reach a later step.
 * **Steering.** A message typed while a run is in flight interrupts it and
   restarts it, observing the message alongside the result the run had
   reached. Because the state is a complete description of the run, restarting
@@ -49,6 +50,7 @@ from rio_coding.events import (
 from rio_coding.session_store import (
     ActionRecord,
     LeafEntry,
+    ReasoningEntry,
     SessionEntry,
     SessionStorage,
     StateResetEntry,
@@ -65,6 +67,14 @@ from rio_coding.session_store import (
 #: output from dominating the session file.
 DEFAULT_JOURNALED_OBSERVATION_LIMIT = 16 * 1024
 
+#: Reasoning is journaled for the same reason and read back just as rarely, but
+#: it is prose the model wrote rather than arbitrary program output, so a
+#: tighter cap suffices: 8KB holds any step's argument in full while keeping a
+#: long run's journal from being mostly reasoning. `0` disables the writes
+#: entirely -- reasoning is the most sensitive thing a run puts on disk, and
+#: opting out of that is one setting.
+DEFAULT_JOURNALED_REASONING_LIMIT = 8 * 1024
+
 
 @dataclass(slots=True)
 class SessionRunnerConfig:
@@ -77,6 +87,7 @@ class SessionRunnerConfig:
     max_steps: int | None = None
     max_retries: int = 2
     journaled_observation_limit: int = DEFAULT_JOURNALED_OBSERVATION_LIMIT
+    journaled_reasoning_limit: int = DEFAULT_JOURNALED_REASONING_LIMIT
 
 
 @dataclass(slots=True)
@@ -283,8 +294,20 @@ class SessionRunner:
                 yield event
 
             elif isinstance(event, ReasoningDiscardedEvent):
-                # Surfaced once for observability, then gone. Never journaled:
-                # a step's reasoning is not part of what the next step is told.
+                # Discarded from the prompt, kept in the journal. `advance=False`
+                # is the whole of that guarantee: the branch tip does not move,
+                # so the note never becomes a parent and no later step is told
+                # about it. It lands just before the `StepEntry` it explains.
+                limit = self._config.journaled_reasoning_limit
+                if limit:
+                    entry = ReasoningEntry(
+                        parent_id=self._parent_entry_id,
+                        step=event.step,
+                        reasoning=event.reasoning[:limit],
+                        truncated=len(event.reasoning) > limit,
+                    )
+                    for written in await self._write([entry], advance=False):
+                        yield EntryAppendedEvent(entry=written)
                 yield event
 
             elif isinstance(event, ValidationErrorEvent):

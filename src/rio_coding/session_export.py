@@ -39,6 +39,7 @@ from rio_coding.session_store import (
     LabelEntry,
     LeafEntry,
     ModelChangeEntry,
+    ReasoningEntry,
     SessionEntry,
     SessionInfoEntry,
     StateResetEntry,
@@ -318,14 +319,18 @@ def _render_instructions(instructions: str | None) -> str:
 
 def _render_steps_table(entries: Sequence[SessionEntry]) -> str:
     retries_by_step: dict[int, list[ValidationFailureEntry]] = {}
+    reasoning_by_step: dict[int, list[ReasoningEntry]] = {}
     for entry in entries:
         if isinstance(entry, ValidationFailureEntry):
             retries_by_step.setdefault(entry.step, []).append(entry)
+        elif isinstance(entry, ReasoningEntry):
+            reasoning_by_step.setdefault(entry.step, []).append(entry)
 
     rows: list[str] = []
     for entry in entries:
         if isinstance(entry, StepEntry):
             rows.extend(_render_retry_rows(retries_by_step.get(entry.step, [])))
+            rows.extend(_render_reasoning_rows(reasoning_by_step.get(entry.step, [])))
             rows.append(_render_step_row(entry))
         else:
             note = _render_event_note(entry)
@@ -352,6 +357,26 @@ def _render_retry_rows(failures: Sequence[ValidationFailureEntry]) -> list[str]:
         "</td></tr>"
         for failure in failures
     ]
+
+
+def _render_reasoning_rows(reasoning: Sequence[ReasoningEntry]) -> list[str]:
+    """Render a step's reasoning above it, collapsed.
+
+    It is long, and it is only wanted when the state delta below it does not
+    explain what the step was trying to do.
+    """
+    rows: list[str] = []
+    for entry in reasoning:
+        truncated = '<p class="truncated-note">(truncated)</p>' if entry.truncated else ""
+        rows.append(
+            '<tr class="reasoning"><td colspan="5">'
+            '<details class="reasoning">'
+            "<summary>reasoning</summary>"
+            f"<pre>{_escape(entry.reasoning)}</pre>{truncated}"
+            "</details>"
+            "</td></tr>"
+        )
+    return rows
 
 
 def _render_step_row(entry: StepEntry) -> str:
@@ -398,9 +423,10 @@ def _event_note_text(entry: SessionEntry) -> str | None:
         return f"label: <strong>{_escape(entry.label)}</strong>"
     if isinstance(entry, CustomEntry):
         return f"custom[{_escape(entry.namespace)}]: {len(entry.data)} field(s)"
-    if isinstance(entry, SessionInfoEntry | LeafEntry):
+    if isinstance(entry, SessionInfoEntry | LeafEntry | ReasoningEntry):
         # Session metadata is already surfaced in the header; the leaf
-        # pointer is plumbing, not session content.
+        # pointer is plumbing, not session content; reasoning is attached to
+        # the step it explains rather than floated between steps.
         return None
     return None
 
@@ -579,13 +605,15 @@ _STYLE = """\
       background: var(--surface);
       border: 1px solid var(--line);
     }
-    details.instructions summary {
+    details.instructions summary, details.reasoning summary {
       padding: 8px 12px;
       cursor: pointer;
       font-size: 0.78rem;
       font-weight: 600;
     }
     details.instructions pre { border: 0; margin: 0 12px 12px; }
+    details.reasoning summary { padding: 0; }
+    details.reasoning pre { margin-top: 6px; }
     .jsonl-download {
       display: inline-block;
       margin-top: 12px;
@@ -608,6 +636,7 @@ _STYLE = """\
     th { background: var(--surface); color: var(--muted); font-weight: 600; }
     tr.retry td { color: var(--danger); background: var(--surface); font-style: italic; }
     tr.event td { color: var(--muted); background: var(--surface); }
+    tr.reasoning td { color: var(--muted); background: var(--surface); }
     tr.terminated td { background: var(--surface-2); }
     .badge {
       display: inline-block;
