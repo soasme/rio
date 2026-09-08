@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from time import time
 from typing import Annotated, Any, Literal
 
@@ -89,6 +90,28 @@ class ToolCall(WireModel):
     name: str
     arguments: dict[str, JSONValue] = Field(default_factory=dict)
     thought_signature: str | None = None
+
+
+RAW_TOOL_ARGUMENTS_KEY = "_raw_arguments"
+
+
+def malformed_tool_arguments(arguments_text: str) -> dict[str, JSONValue]:
+    """Carry a tool call's unparsed argument text in place of its arguments.
+
+    A model that is cut off at the output token limit mid-call leaves argument
+    JSON that never closes. Every provider parser lands here, so the text is
+    kept under one key callers can recognize rather than being dropped for an
+    empty mapping that looks like a call with no arguments.
+    """
+    return {RAW_TOOL_ARGUMENTS_KEY: arguments_text}
+
+
+def raw_tool_arguments(arguments: Mapping[str, JSONValue]) -> str | None:
+    """Return a tool call's unparsed argument text, or ``None`` if it parsed."""
+    if len(arguments) != 1:
+        return None
+    raw = arguments.get(RAW_TOOL_ARGUMENTS_KEY)
+    return raw if isinstance(raw, str) else None
 
 
 type UserContent = str | list[TextContent | ImageContent]

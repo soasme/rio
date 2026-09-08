@@ -42,6 +42,7 @@ from rio_ai.messages import (
     Usage,
     UserMessage,
     assistant_content,
+    malformed_tool_arguments,
 )
 from rio_ai.model_limits import RuntimeModelLimits
 from rio_ai.openai_cache import openai_prompt_cache_key
@@ -360,7 +361,7 @@ class _ToolCallBuilder:
         arguments_text = "".join(self.arguments_parts)
         arguments = _loads_object(arguments_text) if arguments_text else {}
         if arguments is None:
-            arguments = {"_raw_arguments": arguments_text}
+            arguments = malformed_tool_arguments(arguments_text)
         item_id = self.item_id or f"fc_{self.call_id}"
         return ToolCall(
             id=f"{self.call_id}|{item_id}",

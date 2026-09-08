@@ -78,10 +78,14 @@ def _copy_replay_metadata(target: AssistantMessage, source: AssistantMessage) ->
 
 
 def _finish_reason(value: str | None, *, has_tools: bool) -> str:
-    if has_tools or value in {"tool_calls", "tool_use", "toolUse"}:
-        return "toolUse"
+    # Truncation is checked first, because a response cut off at the output
+    # limit is most often cut off *while writing a tool call*: the partial call
+    # is still emitted, so `has_tools` is true and reporting `toolUse` would
+    # discard the only signal that says the arguments are incomplete.
     if value in {"length", "max_tokens", "MAX_TOKENS", "incomplete"}:
         return "length"
+    if has_tools or value in {"tool_calls", "tool_use", "toolUse"}:
+        return "toolUse"
     return "stop"
 
 
