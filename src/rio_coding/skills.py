@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,25 +92,100 @@ def load_skills_with_diagnostics(
 
 
 def expand_skill_command(text: str, skills: Sequence[Skill]) -> str | None:
-    """Expand `/skill:name` prompt text, or return None for non-skill text."""
+    """Expand `/skill:name` prompt text, or return None for non-skill text.
+
+    This is the explicit, unambiguous form: it never falls back to a prompt
+    template or a built-in command, so an unknown name is an error rather than
+    something to pass on to the model.
+    """
     stripped = text.strip()
     if not stripped.startswith("/skill:"):
         return None
 
-    command_and_request = stripped.split(maxsplit=1)
-    command = command_and_request[0]
-    request = command_and_request[1] if len(command_and_request) > 1 else None
+    command, request = _split_command(stripped)
     name = command.removeprefix("/skill:").strip()
     if not name:
         raise ResourceError("Skill command must include a skill name")
 
-    skill_by_name = {skill.name: skill for skill in skills}
-    skill = skill_by_name.get(name)
+    skill = find_skill(name, skills)
     if skill is None:
         raise ResourceError(f"Unknown skill: {name}")
 
-    additional_instructions = request.strip() if request is not None else None
-    return format_skill_invocation(skill, additional_instructions)
+    return format_skill_invocation(skill, request)
+
+
+def expand_skill_name_command(text: str, skills: Sequence[Skill]) -> str | None:
+    """Expand bare `/name [request]` prompt text with a loaded skill.
+
+    The natural form of a skill invocation. Unlike `/skill:<name>` an unmatched
+    name is not an error here -- it is simply not a skill, which lets callers
+    resolve it against whatever else claims the same namespace.
+    """
+    stripped = text.strip()
+    if not stripped.startswith("/") or stripped.startswith("//") or stripped.startswith("/skill:"):
+        return None
+
+    command, request = _split_command(stripped)
+    skill = find_skill(command.removeprefix("/"), skills)
+    if skill is None:
+        return None
+    return format_skill_invocation(skill, request)
+
+
+def find_skill(name: str, skills: Sequence[Skill]) -> Skill | None:
+    """Return the loaded skill named `name`, preferring an exact match."""
+    normalized = name.strip()
+    if not normalized:
+        return None
+    for skill in skills:
+        if skill.name == normalized:
+            return skill
+    folded = normalized.casefold()
+    for skill in skills:
+        if skill.name.casefold() == folded:
+            return skill
+    return None
+
+
+def shadowed_skill_diagnostics(
+    skills: Sequence[Skill],
+    *,
+    command_names: Iterable[str] = (),
+    prompt_templates: Mapping[str, Path] | None = None,
+) -> list[ResourceDiagnostic]:
+    """Report skills that a bare `/<name>` invocation cannot reach.
+
+    Bare `/<name>` resolves as built-in command > prompt template > skill, so a
+    skill sharing its name with either is only reachable as `/skill:<name>`.
+    Reported in the style of the precedence notes discovery already emits.
+    """
+    reserved = {name.strip().casefold() for name in command_names}
+    templates = {name.casefold(): path for name, path in (prompt_templates or {}).items()}
+    diagnostics: list[ResourceDiagnostic] = []
+    for skill in skills:
+        folded = skill.name.casefold()
+        if folded in reserved:
+            shadow = f"the built-in /{folded} command"
+        elif folded in templates:
+            shadow = f"the prompt template at {templates[folded]}"
+        else:
+            continue
+        diagnostics.append(
+            ResourceDiagnostic(
+                kind="skill",
+                name=skill.name,
+                path=skill.path,
+                message=f"/{skill.name} is taken by {shadow}; invoke it as /skill:{skill.name}",
+            )
+        )
+    return diagnostics
+
+
+def _split_command(text: str) -> tuple[str, str | None]:
+    """Split `/command rest` into the command word and its trimmed remainder."""
+    command_and_request = text.split(maxsplit=1)
+    request = command_and_request[1].strip() if len(command_and_request) > 1 else None
+    return command_and_request[0], request or None
 
 
 def format_skill_invocation(

@@ -204,6 +204,126 @@ class TestPrompting:
         assert [event async for event in session.continue_()] == []
 
 
+def write_skill(root, name: str, body: str = "Body") -> None:
+    """Write `<root>/skills/<name>/SKILL.md`, creating the directories."""
+    directory = root / "skills" / name
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "SKILL.md").write_text(body, encoding="utf-8")
+
+
+def write_prompt_template(root, name: str, body: str = "Template body") -> None:
+    """Write `<root>/prompts/<name>.md`, creating the directories."""
+    directory = root / "prompts"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{name}.md").write_text(body, encoding="utf-8")
+
+
+class TestSlashInvocation:
+    """`/<name>` resolution: built-in command, then prompt template, then skill."""
+
+    async def test_a_bare_slash_name_runs_the_skill(self, project) -> None:
+        repo, _home = project
+        write_skill(repo / ".rio", "review", "# Review\nRead the diff first.")
+        session = await make_session(project, [])
+
+        expanded = session.expand_prompt_text("/review")
+
+        assert '<skill name="review"' in expanded
+        assert "Read the diff first." in expanded
+
+    async def test_the_rest_of_the_line_becomes_additional_instructions(self, project) -> None:
+        repo, _home = project
+        write_skill(repo / ".rio", "review", "# Review")
+        session = await make_session(project, [])
+
+        assert session.expand_prompt_text("/review do the thing").endswith(
+            "</skill>\n\ndo the thing"
+        )
+
+    async def test_the_explicit_prefix_still_works(self, project) -> None:
+        repo, _home = project
+        write_skill(repo / ".rio", "review", "# Review")
+        session = await make_session(project, [])
+
+        assert session.expand_prompt_text("/skill:review do the thing") == (
+            session.expand_prompt_text("/review do the thing")
+        )
+
+    async def test_every_skill_directory_is_reachable_by_name(self, project) -> None:
+        repo, home = project
+        write_skill(home / ".rio", "user", "# User skill")
+        write_skill(home / ".agents", "agents", "# Agents skill")
+        write_skill(repo / ".rio", "project", "# Project skill")
+        write_skill(repo / ".agents", "project-agents", "# Project agents skill")
+        session = await make_session(project, [])
+
+        for name in ("user", "agents", "project", "project-agents"):
+            assert f'<skill name="{name}"' in session.expand_prompt_text(f"/{name}")
+
+    async def test_the_highest_precedence_skill_directory_wins(self, project) -> None:
+        repo, home = project
+        write_skill(home / ".rio", "review", "# User review")
+        write_skill(repo / ".agents", "review", "# Project review")
+        session = await make_session(project, [])
+
+        expanded = session.expand_prompt_text("/review")
+
+        assert "Project review" in expanded
+        assert "User review" not in expanded
+
+    async def test_a_prompt_template_wins_over_a_skill(self, project) -> None:
+        repo, _home = project
+        write_skill(repo / ".rio", "review", "# Review skill")
+        write_prompt_template(repo / ".rio", "review", "Review the diff.")
+        session = await make_session(project, [])
+
+        expanded = session.expand_prompt_text("/review")
+
+        assert expanded.strip() == "Review the diff."
+        assert '<skill name="review"' in session.expand_prompt_text("/skill:review")
+
+    async def test_a_builtin_command_wins_over_both(self, project) -> None:
+        repo, _home = project
+        write_skill(repo / ".rio", "model", "# Model skill")
+        write_prompt_template(repo / ".rio", "model", "Model template.")
+        session = await make_session(project, [])
+
+        assert session.expand_prompt_text("/model gpt") == "/model gpt"
+
+    async def test_shadowed_skills_are_reported_at_load(self, project) -> None:
+        repo, _home = project
+        write_skill(repo / ".rio", "model", "# Model skill")
+        write_skill(repo / ".rio", "review", "# Review skill")
+        write_skill(repo / ".rio", "testing", "# Testing skill")
+        write_prompt_template(repo / ".rio", "review", "Review the diff.")
+        session = await make_session(project, [])
+
+        shadowed = {
+            d.name: d.message for d in session.resource_diagnostics if "is taken by" in d.message
+        }
+
+        assert "testing" not in shadowed
+        assert "the built-in /model command" in shadowed["model"]
+        assert "invoke it as /skill:model" in shadowed["model"]
+        assert "the prompt template at" in shadowed["review"]
+
+    async def test_a_name_that_matches_nothing_reaches_the_model(self, project) -> None:
+        session = await make_session(project, [])
+
+        assert session.expand_prompt_text("/nope go") == "/nope go"
+        assert session.expand_prompt_text("//review") == "//review"
+
+    async def test_reload_picks_up_a_newly_added_skill(self, project) -> None:
+        repo, _home = project
+        session = await make_session(project, [])
+        assert session.expand_prompt_text("/review") == "/review"
+
+        write_skill(repo / ".rio", "review", "# Review")
+        await session.reload()
+
+        assert '<skill name="review"' in session.expand_prompt_text("/review")
+
+
 class TestBoundedFootprint:
     async def test_the_step_footprint_is_reported_before_any_run(self, project) -> None:
         session = await make_session(project, [])

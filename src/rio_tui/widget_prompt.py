@@ -35,6 +35,10 @@ COMMANDS = {
 }
 
 
+#: Longest description rendered beside a name in the `/` popover.
+DESCRIPTION_WIDTH = 60
+
+
 class Editor(TextArea):
     BINDINGS = [
         Binding("enter", "send", "Send", priority=True),
@@ -128,6 +132,20 @@ class Prompt(VerticalGroup):
         self.cwd = Path(cwd)
         self.shell = False
         self.choices = []
+        #: Loaded skills and prompt templates, kept alongside `COMMANDS` so the
+        #: popover offers everything `/<name>` can actually resolve to.
+        self.resource_commands = {}
+
+    @property
+    def commands(self):
+        """Every `/<name>` the popover offers, built-ins first."""
+        return {**COMMANDS, **self.resource_commands}
+
+    def set_resource_commands(self, commands):
+        """Replace the loaded-resource half of the completion list."""
+        self.resource_commands = {
+            name: description for name, description in commands.items() if name not in COMMANDS
+        }
 
     def compose(self):
         yield OptionList(id="completion")
@@ -157,14 +175,21 @@ class Prompt(VerticalGroup):
             event.text_area.clear()
             self.set_shell(True)
             return
+        commands = self.commands
         if not self.shell and text.startswith("/") and " " not in text and "\n" not in text:
-            self.choices = ["/" + command for command in COMMANDS if command.startswith(text[1:])]
+            prefix = text[1:].lower()
+            self.choices = [
+                "/" + command for command in commands if command.lower().startswith(prefix)
+            ]
         else:
             self.choices = []
         options = self.query_one(OptionList)
         options.clear_options()
         options.add_options(
-            [Option(Text(f"{command:16} {COMMANDS[command[1:]]}")) for command in self.choices]
+            [
+                Option(Text(f"{command:16} {_summarize(commands[command[1:]])}"))
+                for command in self.choices
+            ]
         )
         options.display = bool(self.choices)
         if self.choices:
@@ -190,3 +215,11 @@ class Prompt(VerticalGroup):
         self.query_one("#mode-info", Label).update(
             Text(getattr(session, "thinking_level", "") or "")
         )
+
+
+def _summarize(description):
+    """Shorten a skill or template description to one popover line."""
+    text = " ".join((description or "").split())
+    if len(text) <= DESCRIPTION_WIDTH:
+        return text
+    return text[: DESCRIPTION_WIDTH - 1].rstrip() + "\u2026"
