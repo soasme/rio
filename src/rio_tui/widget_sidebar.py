@@ -6,6 +6,11 @@ from textual.widgets import Collapsible, DirectoryTree, Static
 
 
 class ProjectTree(DirectoryTree):
+    # Textual defaults to emoji here; ASCII keeps every row one cell per column.
+    ICON_NODE_EXPANDED = "- "
+    ICON_NODE = "+ "
+    ICON_FILE = "  "
+
     def filter_paths(self, paths):
         hidden = {
             ".git",

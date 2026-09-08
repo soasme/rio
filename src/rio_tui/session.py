@@ -9,7 +9,7 @@ from time import monotonic
 from textual import work
 from textual.containers import Horizontal, Vertical, VerticalGroup
 from textual.screen import Screen
-from textual.widgets import Footer, Tabs
+from textual.widgets import Tabs
 
 from rio_agent.events import (
     ActionEndEvent,

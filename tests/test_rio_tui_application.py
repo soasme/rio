@@ -9,6 +9,7 @@ import pytest
 from textual.widgets import OptionList, Tabs
 from textual_diff_view import DiffView
 
+import rio_tui
 from rio_agent.events import ActionEndEvent, ActionStartEvent, StateUpdateEvent
 from rio_ai.tools import AgentToolResult
 from rio_coding.events import SessionRunEndEvent
@@ -19,8 +20,15 @@ from rio_tui.commands import COMMANDS, help_message, palette_choices
 from rio_tui.dialogs import FilePicker, Picker
 from rio_tui.widget_conversation import Answer, Conversation, Notice, ToolBlock, UserMessage
 from rio_tui.widget_prompt import Editor
-from rio_tui.widget_sidebar import Sidebar
+from rio_tui.widget_sidebar import ProjectTree, Sidebar
 from rio_tui.widget_terminal import ShellTerminal
+
+EMOJI_RANGES = ((0x1F000, 0x1FAFF), (0x2600, 0x26FF), (0xFE0F, 0xFE0F))
+
+
+def emoji(text):
+    """Emoji in text. Typographic marks the widgets do use (`·`, `❯`, `✓`, `›`) are not emoji."""
+    return [c for c in text if any(low <= ord(c) <= high for low, high in EMOJI_RANGES)]
 
 
 def resource(name, description):
@@ -612,3 +620,14 @@ async def test_completion_popover_shows_hotkeys(tmp_path):
         ]
         assert [label.split()[0] for label in labels] == ["/new", "/next"]
         assert [label.split()[-1] for label in labels] == ["Ctrl+N", "Ctrl+]"]
+
+
+def test_widgets_carry_no_emoji():
+    # Both sources are inherited, so scanning the source text alone would miss them.
+    assert RioTuiApp.ENABLE_COMMAND_PALETTE is False
+    icons = (ProjectTree.ICON_NODE, ProjectTree.ICON_NODE_EXPANDED, ProjectTree.ICON_FILE)
+    assert not [char for icon in icons for char in emoji(icon)]
+    assert len({len(icon) for icon in icons}) == 1
+    for path in sorted(Path(rio_tui.__file__).parent.rglob("*")):
+        if path.is_file():
+            assert not emoji(path.read_text(encoding="utf-8", errors="ignore")), path

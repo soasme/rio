@@ -18,6 +18,8 @@ from rio_tui.settings import Settings
 class RioTuiApp(App[None]):
     TITLE = "rio"
     CSS_PATH = "app.tcss"
+    # Ctrl+K and the COMMANDS table are the only palette.
+    ENABLE_COMMAND_PALETTE = False
     BINDINGS = [
         *hotkey_bindings(),
         # The palette opener shows the table rather than appearing in it.
