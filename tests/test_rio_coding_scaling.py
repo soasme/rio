@@ -194,12 +194,12 @@ async def test_the_state_stays_bounded_while_the_run_grows(tmp_path) -> None:
     assert all(entry.state_delta for entry in entries[:-1])
 
 
-async def test_reasoning_is_discarded_even_at_scale(tmp_path) -> None:
-    """Each step reasons at length; none of it is stored or resent."""
+async def test_reasoning_is_never_resent_even_at_scale(tmp_path) -> None:
+    """Each step reasons at length; the journal keeps it, no prompt resends it."""
     session, provider = await run_survey(tmp_path)
 
     journal = repr(await session.session_entries())
-    assert "Thinking at length" not in journal
+    assert "Thinking at length" in journal
 
     prompts = " ".join(
         message.content for _m, _s, messages, _t in provider.calls for message in messages

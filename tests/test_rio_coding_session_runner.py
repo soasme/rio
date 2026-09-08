@@ -1,9 +1,9 @@
 """Tests for `SessionRunner`: SKILL.state runs journaled as execution state.
 
 The assertions worth reading here are the ones that only hold because there is
-no transcript: the journal never contains reasoning, a model swap mid-session
-needs no history translation, steering restarts a run for free, and the prompt
-the provider receives does not grow with the step count.
+no transcript: journaled reasoning never reaches a prompt or a resume, a model
+swap mid-session needs no history translation, steering restarts a run for
+free, and the prompt the provider receives does not grow with the step count.
 """
 
 from __future__ import annotations
@@ -22,9 +22,11 @@ from rio_coding.events import (
 from rio_coding.session_runner import SessionRunner, SessionRunnerConfig
 from rio_coding.session_store import (
     InMemorySessionStorage,
+    ReasoningEntry,
     StepEntry,
     TurnEntry,
     ValidationFailureEntry,
+    latest_leaf_id,
     resume_state,
 )
 
@@ -155,12 +157,14 @@ class TestJournal:
         await collect(runner, "explain main.py")
 
         entries = await storage.read_all()
-        entries = [entry for entry in entries if entry.type != "leaf"]
+        # Leaf pointers and reasoning notes hang off the chain without
+        # extending it; the chain itself is the state-carrying entries.
+        entries = [entry for entry in entries if entry.type not in {"leaf", "reasoning"}]
         for previous, current in zip(entries, entries[1:], strict=False):
             assert current.parent_id == previous.id
 
-    async def test_reasoning_is_surfaced_once_and_never_journaled(self) -> None:
-        """The runtime discards reasoning; persisting it would rebuild history."""
+    async def test_reasoning_is_surfaced_once_and_journaled_beside_its_step(self) -> None:
+        """Discarded from the prompt, kept in the journal as a leaf note."""
         storage = InMemorySessionStorage()
         runner, _ = make_runner(two_step_streams(), storage=storage)
         events = await collect(runner, "explain main.py")
@@ -171,9 +175,67 @@ class TestJournal:
             "Now I can answer.",
         ]
 
-        serialized = repr(await storage.read_all())
-        assert "I should look at the entry point first." not in serialized
-        assert "Now I can answer." not in serialized
+        entries = await storage.read_all()
+        reasoning = [e for e in entries if isinstance(e, ReasoningEntry)]
+        assert [(e.step, e.reasoning, e.truncated) for e in reasoning] == [
+            (0, "I should look at the entry point first.", False),
+            (1, "Now I can answer.", False),
+        ]
+
+        # Each note sits immediately before the step it explains, and shares
+        # that step's parent: it is beside the chain, not in it.
+        for note in reasoning:
+            index = entries.index(note)
+            step = entries[index + 1]
+            assert isinstance(step, StepEntry)
+            assert step.step == note.step
+            assert step.parent_id == note.parent_id
+
+    async def test_reasoning_journaling_can_be_switched_off(self) -> None:
+        """Reasoning at rest is opt-out with one setting."""
+        storage = InMemorySessionStorage()
+        runner, _ = make_runner(two_step_streams(), storage=storage, journaled_reasoning_limit=0)
+        await collect(runner, "explain main.py")
+
+        entries = await storage.read_all()
+        assert [e for e in entries if isinstance(e, ReasoningEntry)] == []
+        assert "I should look at the entry point first." not in repr(entries)
+
+    async def test_long_reasoning_is_truncated(self) -> None:
+        streams = [
+            step_response(reasoning="r" * 500, state_delta={}, action="read", args={"path": "a"}),
+            step_response(reasoning="ok", state_delta={}, action="respond", args={"message": "ok"}),
+        ]
+        storage = InMemorySessionStorage()
+        runner, _ = make_runner(streams, storage=storage, journaled_reasoning_limit=100)
+        await collect(runner, "explain main.py")
+
+        first, second = [e for e in await storage.read_all() if isinstance(e, ReasoningEntry)]
+        assert first.truncated is True
+        assert len(first.reasoning) == 100
+        assert second.truncated is False
+
+    async def test_a_journaled_session_resumes_to_the_same_state_as_one_without(self) -> None:
+        """Reasoning entries carry no state, so resume cannot see them."""
+        with_reasoning = InMemorySessionStorage()
+        without_reasoning = InMemorySessionStorage()
+        runner, _ = make_runner(two_step_streams(), storage=with_reasoning)
+        await collect(runner, "explain main.py")
+        bare, _ = make_runner(
+            two_step_streams(), storage=without_reasoning, journaled_reasoning_limit=0
+        )
+        await collect(bare, "explain main.py")
+
+        journaled_entries = await with_reasoning.read_all()
+        assert any(isinstance(e, ReasoningEntry) for e in journaled_entries)
+        assert resume_state(journaled_entries) == resume_state(await without_reasoning.read_all())
+
+        resumed, _ = make_runner([], storage=with_reasoning)
+        assert await resumed.load() == runner.state
+        # The branch tip still names the last committed step, not a note.
+        leaf = latest_leaf_id(journaled_entries)
+        assert leaf == next(e.id for e in reversed(journaled_entries) if isinstance(e, StepEntry))
+        assert resumed.parent_entry_id == leaf
 
     async def test_entry_appended_events_mirror_the_journal(self) -> None:
         storage = InMemorySessionStorage()
@@ -251,6 +313,28 @@ class TestBoundedPrompt:
         # observation, whose length is bounded by the tool's own output.
         assert max(sizes) - min(sizes) < 200
         assert sizes[-1] < sizes[0] * 2
+
+    async def test_journaling_reasoning_does_not_change_any_prompt(self) -> None:
+        """The journal is write-only with respect to the prompt.
+
+        Two identical runs, one journaling reasoning and one not, must send
+        byte-identical prompts: journaling changes what is on disk, never what
+        the next step is told.
+        """
+        storage = InMemorySessionStorage()
+        journaling, journaling_provider = make_runner(two_step_streams(), storage=storage)
+        await collect(journaling, "explain main.py")
+        bare, bare_provider = make_runner(two_step_streams(), journaled_reasoning_limit=0)
+        await collect(bare, "explain main.py")
+
+        assert any(isinstance(e, ReasoningEntry) for e in await storage.read_all())
+        assert [
+            [message.content for message in messages]
+            for _m, _s, messages, _t in journaling_provider.calls
+        ] == [
+            [message.content for message in messages]
+            for _m, _s, messages, _t in bare_provider.calls
+        ]
 
     async def test_no_call_replays_an_earlier_observation(self) -> None:
         """The second step's prompt carries only the newest observation.

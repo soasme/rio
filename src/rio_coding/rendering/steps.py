@@ -24,6 +24,7 @@ from rio_coding.session_store import (
     LabelEntry,
     LeafEntry,
     ModelChangeEntry,
+    ReasoningEntry,
     SessionEntry,
     SessionInfoEntry,
     StateResetEntry,
@@ -71,6 +72,8 @@ def _render_entry(entry: SessionEntry) -> list[str]:
         return _render_step(entry)
     if isinstance(entry, ValidationFailureEntry):
         return [f"  retry {entry.attempt}: {entry.error}"]
+    if isinstance(entry, ReasoningEntry):
+        return [f"  reasoning: {_truncate(entry.reasoning)}"]
     if isinstance(entry, StateResetEntry):
         reason = f": {entry.reason}" if entry.reason else ""
         return [f"# state reset{reason}"]

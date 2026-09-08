@@ -26,6 +26,7 @@ from rio_coding.session_store import ActionRecord, StepEntry
 from rio_coding.session_store.entries import (
     BranchSummaryEntry,
     ModelChangeEntry,
+    ReasoningEntry,
     ThinkingLevelChangeEntry,
     TurnEntry,
     ValidationFailureEntry,
@@ -193,6 +194,29 @@ class TestSessionUsage:
         assert usage.action_calls == (("read", 3),)
         assert usage.total_tokens == sum(step.total_tokens for step in usage.steps)
         assert all(step.estimated_cost is None for step in usage.steps)
+
+    def test_journaled_reasoning_does_not_change_the_step_footprint(self) -> None:
+        """Journaling is free at prompt time: nothing journaled reaches a prompt.
+
+        A step's footprint is instructions + state + observation + tools. A
+        `ReasoningEntry` is none of those, however long it is, so a journal
+        with one beside every step measures exactly the same as one without.
+        """
+        entries = _make_chain(3)
+        noisy = [
+            item
+            for entry in entries
+            for item in (
+                ReasoningEntry(parent_id=entry.parent_id, step=entry.step, reasoning="w" * 10_000),
+                entry,
+            )
+        ]
+
+        bare_usage = collect_session_usage(entries, instructions="instructions")
+        noisy_usage = collect_session_usage(noisy, instructions="instructions")
+
+        assert noisy_usage.steps == bare_usage.steps
+        assert noisy_usage.total_tokens == bare_usage.total_tokens
 
     def test_collect_session_usage_positions_events_against_the_next_step(self) -> None:
         entries = _make_chain(1)
