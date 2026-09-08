@@ -19,9 +19,19 @@ rio loads user and project skills in increasing precedence:
 
 rio's own product knowledge is regular packaged documentation, not a built-in skill, so it does not appear in the user's skill list or compete with user skill names.
 
-A higher-precedence skill with the same name overrides the lower one. Use `/skill:<name>` for explicit invocation.
+A higher-precedence skill with the same name overrides the lower one.
 
-A skill with `disable-model-invocation: true` in its `SKILL.md` frontmatter is excluded from the skill instructions entirely, so the model cannot invoke it on its own. The skill stays loaded and remains available through explicit `/skill:<name>` invocation.
+Invoke a skill as `/<skill-name>`, optionally followed by a request that becomes the skill's additional instructions: `/review the parser diff`. `/skill:<name>` is the explicit form and always resolves to a skill, so use it when a name is ambiguous or when an unknown name should be an error rather than a message.
+
+A bare `/<name>` resolves in one order, whichever frontend you are in:
+
+1. built-in slash command
+2. prompt template
+3. skill
+
+A skill whose name is taken by a command or a template is reported as a load-time diagnostic (`/resources` lists them) and stays reachable as `/skill:<name>`. A `/<name>` that matches nothing is reported as an unknown command rather than sent to the model.
+
+A skill with `disable-model-invocation: true` in its `SKILL.md` frontmatter is excluded from the skill instructions entirely, so the model cannot invoke it on its own. The skill stays loaded and remains available through explicit `/<name>` or `/skill:<name>` invocation.
 
 ## Prompt templates
 

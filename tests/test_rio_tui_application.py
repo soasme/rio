@@ -16,10 +16,15 @@ from rio_coding.paths import RioPaths
 from rio_tui import RioTuiApp, Settings
 from rio_tui.bridge import Question
 from rio_tui.dialogs import FilePicker, Picker
-from rio_tui.widget_conversation import Answer, Conversation, ToolBlock, UserMessage
+from rio_tui.widget_conversation import Answer, Conversation, Notice, ToolBlock, UserMessage
 from rio_tui.widget_prompt import Editor
 from rio_tui.widget_sidebar import Sidebar
 from rio_tui.widget_terminal import ShellTerminal
+
+
+def resource(name, description):
+    """A stand-in for a loaded skill or prompt template."""
+    return SimpleNamespace(name=name, description=description)
 
 
 class Session:
@@ -28,6 +33,8 @@ class Session:
     session_title = None
     thinking_level = "off"
     available_models = ("test", "other")
+    skills = ()
+    prompt_templates = ()
 
     def __init__(self, cwd, session_id="first"):
         self.cwd = Path(cwd)
@@ -394,6 +401,75 @@ async def test_extension_crash_does_not_end_application(tmp_path):
         await pilot.pause()
         assert await handle.wait() is None
         assert app.workspace.conversation.display
+
+
+@pytest.mark.asyncio
+async def test_slash_completion_offers_skills_and_templates(tmp_path):
+    app = make_app(tmp_path)
+    app.initial_session.skills = (resource("audit", "Audit the dependency tree"),)
+    app.initial_session.prompt_templates = (resource("zoom", "Zoom in on a file"),)
+    async with app.run_test() as pilot:
+        await pilot.press("/", "a", "u", "tab")
+        assert app.workspace.query_one(Editor).text == "/audit "
+        app.workspace.query_one(Editor).clear()
+        await pilot.press("/", "z")
+        assert app.workspace.prompt.choices == ["/zoom"]
+
+
+@pytest.mark.asyncio
+async def test_a_bare_skill_name_is_sent_for_expansion(tmp_path):
+    app = make_app(tmp_path)
+    app.initial_session.skills = (resource("audit", "Audit the dependency tree"),)
+    app.initial_session.release.set()
+    async with app.run_test() as pilot:
+        app.workspace.submit("/audit the lockfile")
+        await pilot.pause()
+        await loaded(app, app.workspace)
+    assert app.initial_session.prompts == ["/audit the lockfile"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_slash_command_is_reported_not_sent(tmp_path):
+    app = make_app(tmp_path)
+    app.initial_session.release.set()
+    async with app.run_test() as pilot:
+        app.workspace.submit("/nope go")
+        await pilot.pause()
+        await loaded(app, app.workspace)
+        notices = [notice.text for notice in app.workspace.query(Notice)]
+    assert any("Unknown command: /nope" in text for text in notices)
+    assert app.initial_session.prompts == []
+
+
+@pytest.mark.asyncio
+async def test_a_leading_path_is_still_a_message(tmp_path):
+    app = make_app(tmp_path)
+    app.initial_session.release.set()
+    async with app.run_test() as pilot:
+        app.workspace.submit("/usr/bin/env python is missing")
+        await pilot.pause()
+        await loaded(app, app.workspace)
+    assert app.initial_session.prompts == ["/usr/bin/env python is missing"]
+
+
+@pytest.mark.asyncio
+async def test_skills_picker_prefers_bare_names(tmp_path):
+    app = make_app(tmp_path)
+    app.initial_session.skills = (
+        resource("audit", "Audit the dependency tree"),
+        resource("model", "Pick a model"),
+        resource("zoom", "Zoom in on a file"),
+    )
+    app.initial_session.prompt_templates = (resource("zoom", "Zoom template"),)
+    async with app.run_test() as pilot:
+        app.workspace.submit("/skills")
+        await pilot.pause()
+        assert isinstance(app.screen, Picker)
+        assert [command for _label, command in app.screen.choices] == [
+            "/audit",
+            "/skill:model",
+            "/skill:zoom",
+        ]
 
 
 @pytest.mark.asyncio

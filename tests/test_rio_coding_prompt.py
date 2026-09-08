@@ -27,10 +27,12 @@ from rio_coding.skills import (
     Skill,
     build_skill_index,
     expand_skill_command,
+    expand_skill_name_command,
     format_skill_invocation,
     load_skills,
     load_skills_with_diagnostics,
     parse_skill_invocation,
+    shadowed_skill_diagnostics,
 )
 from rio_coding.system_prompt import (
     CODING_STATE_FIELD_DOCS,
@@ -280,6 +282,57 @@ def test_parse_skill_invocation_extracts_display_metadata(tmp_path: Path) -> Non
 def test_expand_skill_command_rejects_unknown_skill() -> None:
     with pytest.raises(ResourceError, match="Unknown skill"):
         expand_skill_command("/skill:missing", [])
+
+
+def test_expand_skill_name_command_expands_a_bare_slash_name(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills" / "testing"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text("# Testing\nRun pytest.", encoding="utf-8")
+    skills = load_skills(RioResourcePaths(root=tmp_path, agents_root=None))
+
+    expanded = expand_skill_name_command("/testing add parser tests", skills)
+
+    assert expanded is not None
+    assert '<skill name="testing"' in expanded
+    assert expanded.endswith("</skill>\n\nadd parser tests")
+
+
+def test_expand_skill_name_command_without_a_request(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills" / "testing"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text("# Testing\nRun pytest.", encoding="utf-8")
+    skills = load_skills(RioResourcePaths(root=tmp_path, agents_root=None))
+
+    assert expand_skill_name_command("/testing", skills) == format_skill_invocation(skills[0])
+    assert expand_skill_name_command("/testing   ", skills) == format_skill_invocation(skills[0])
+
+
+@pytest.mark.parametrize("text", ["/missing", "//testing", "/skill:testing", "explain /testing"])
+def test_expand_skill_name_command_leaves_other_text_alone(tmp_path: Path, text: str) -> None:
+    skills_dir = tmp_path / "skills" / "testing"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text("# Testing\nRun pytest.", encoding="utf-8")
+    skills = load_skills(RioResourcePaths(root=tmp_path, agents_root=None))
+
+    assert expand_skill_name_command(text, skills) is None
+
+
+def test_shadowed_skill_diagnostics_report_commands_and_templates(tmp_path: Path) -> None:
+    model = Skill(name="model", path=tmp_path / "model" / "SKILL.md", content="Body")
+    review = Skill(name="review", path=tmp_path / "review" / "SKILL.md", content="Body")
+    free = Skill(name="testing", path=tmp_path / "testing" / "SKILL.md", content="Body")
+    template_path = tmp_path / "prompts" / "review.md"
+
+    diagnostics = shadowed_skill_diagnostics(
+        [model, review, free],
+        command_names=("model", "exit"),
+        prompt_templates={"review": template_path},
+    )
+
+    assert [d.name for d in diagnostics] == ["model", "review"]
+    assert "the built-in /model command" in diagnostics[0].message
+    assert "/skill:model" in diagnostics[0].message
+    assert str(template_path) in diagnostics[1].message
 
 
 def test_build_skill_index_excludes_disabled_skills(tmp_path: Path) -> None:

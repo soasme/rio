@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from time import monotonic
 
@@ -30,9 +31,13 @@ from rio_tui.widget_conversation import (
     ToolBlock,
     UserMessage,
 )
-from rio_tui.widget_prompt import Editor, Prompt
+from rio_tui.widget_prompt import COMMANDS, Editor, Prompt
 from rio_tui.widget_sidebar import Plan, Sidebar
 from rio_tui.widget_terminal import ShellTerminal
+
+#: What a leading `/` has to look like before an unmatched name is reported as
+#: a typo. A path (`/usr/bin/env ...`) or an escaped `//` line is just a message.
+COMMAND_NAME = re.compile(r"^/([A-Za-z][A-Za-z0-9_:.-]*)(?:\s|$)")
 
 
 class SessionScreen(Screen):
@@ -72,12 +77,45 @@ class SessionScreen(Screen):
         if hasattr(self.session, "extensions"):
             self.session.extensions.set_ui_bridge(self.bridge)
         self.apply_preferences()
+        self.refresh_commands()
         await self.restore_display()
         self.query_one(Editor).focus()
         self.update_status()
         self.set_interval(1, self.update_status)
         if self.initial_prompt:
             self.submit(self.initial_prompt)
+
+    def refresh_commands(self):
+        """Offer loaded skills and prompt templates in the `/` popover.
+
+        Templates go in first: a bare `/<name>` resolves to a template before a
+        skill, so a shared name should describe the one that actually wins.
+        """
+        commands = {}
+        for template in getattr(self.session, "prompt_templates", ()) or ():
+            commands.setdefault(template.name, template.description or "Prompt template")
+        for skill in getattr(self.session, "skills", ()) or ():
+            commands.setdefault(skill.name, skill.description or "Skill")
+        self.prompt.set_resource_commands(commands)
+
+    def unknown_command(self, text):
+        """Return the `/name` nothing claims, or None when something will.
+
+        Only text shaped like a command counts: a leading path or an escaped
+        `//` line is a message, and the backend still owns `/skill:<name>`.
+        """
+        match = COMMAND_NAME.match(text.strip())
+        if match is None:
+            return None
+        name = match.group(1)
+        if name.startswith("skill:"):
+            return None
+        loaded = {
+            resource.name.lower()
+            for attribute in ("prompt_templates", "skills")
+            for resource in getattr(self.session, attribute, ()) or ()
+        }
+        return None if name.lower() in loaded else name
 
     def apply_preferences(self):
         self.query_one(Sidebar).display = self.app.settings.sidebar
@@ -313,18 +351,23 @@ class SessionScreen(Screen):
                     await getattr(self.session, setter)(value)
                     self.update_status()
             elif name in {"skills", "prompts"}:
-                resources = getattr(
-                    self.session, "skills" if name == "skills" else "prompt_templates", ()
-                )
+                if name == "skills":
+                    # A skill is `/<name>` unless a command or a template already
+                    # answers to that name, where only `/skill:` still reaches it.
+                    taken = set(COMMANDS) | {
+                        t.name for t in getattr(self.session, "prompt_templates", ()) or ()
+                    }
+                    resources = [
+                        (r, f"/skill:{r.name}" if r.name in taken else f"/{r.name}")
+                        for r in getattr(self.session, "skills", ())
+                    ]
+                else:
+                    resources = [
+                        (r, f"/{r.name}") for r in getattr(self.session, "prompt_templates", ())
+                    ]
                 self.picker(
                     name.capitalize(),
-                    [
-                        (
-                            r.name + " · " + (r.description or ""),
-                            f"/skill:{r.name}" if name == "skills" else f"/{r.name}",
-                        )
-                        for r in resources
-                    ],
+                    [(r.name + " · " + (r.description or ""), command) for r, command in resources],
                 )
             elif name == "name":
                 await self.session.set_session_name(value)
@@ -334,6 +377,7 @@ class SessionScreen(Screen):
                     raise ValueError("Interrupt this session before reloading resources")
                 await self.session.reload()
                 self.session.extensions.set_ui_bridge(self.bridge)
+                self.refresh_commands()
             elif name in {"checkpoints", "restore"}:
                 if self.busy:
                     raise ValueError("Interrupt this session before restoring a checkpoint")
@@ -426,6 +470,8 @@ class SessionScreen(Screen):
                             provider=self.session.provider_name,
                         )
                         await self.conversation.add(Notice(f"Exported {artifact}"))
+                elif (unknown := self.unknown_command(text)) is not None:
+                    raise ValueError(f"Unknown command: /{unknown}")
                 else:
                     # Skill invocations and prompt templates are interpreted by the backend.
                     if self.busy:

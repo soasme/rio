@@ -283,7 +283,7 @@ def create_default_command_registry() -> CommandRegistry:
     registry.register(
         SlashCommand(
             name="skill",
-            usage="/skill:<name> [request]",
+            usage="/<name> [request] or /skill:<name> [request]",
             description="Expand a loaded skill into your prompt.",
             handler=_skill_command,
             search_terms=("skills",),
@@ -635,7 +635,10 @@ def _context_command(context: CommandContext) -> CommandResult:
 def _skill_command(context: CommandContext) -> CommandResult:
     return CommandResult(
         handled=True,
-        message="Use /skill:<name> [request] to expand a loaded skill into your prompt.",
+        message=(
+            "Use /<name> [request], or /skill:<name> [request] when a command or "
+            "prompt template already answers to that name."
+        ),
     )
 
 

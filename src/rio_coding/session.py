@@ -71,7 +71,13 @@ from rio_coding.session_store import (
     checkpoints,
     entry_state,
 )
-from rio_coding.skills import Skill, expand_skill_command, load_skills_with_diagnostics
+from rio_coding.skills import (
+    Skill,
+    expand_skill_command,
+    expand_skill_name_command,
+    load_skills_with_diagnostics,
+    shadowed_skill_diagnostics,
+)
 from rio_coding.step_footprint import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     StepFootprint,
@@ -229,6 +235,7 @@ class CodingSession:
         config.extension_runtime = runtime
         if config.command_registry is None:
             config.command_registry = runtime.build_command_registry()
+        resources = _with_shadow_diagnostics(resources, config.command_registry)
         skill = _build_skill(config, resources, runtime.compose_tools(tools), cwd)
 
         storage = config.storage
@@ -566,12 +573,25 @@ class CodingSession:
             yield event
 
     def expand_prompt_text(self, text: str) -> str:
-        """Expand a `/skill` invocation into its full instructions."""
+        """Expand a `/skill:<name>` or bare `/<name>` invocation into instructions.
+
+        `/skill:<name>` is explicit and always wins. A bare `/<name>` resolves in
+        one fixed order -- built-in slash command, then prompt template, then
+        skill -- so every frontend agrees on what a name means. Interactive
+        frontends execute built-in commands before a prompt ever reaches here;
+        the check below is what makes `rio -p` and RPC resolve names the same
+        way. A name that matches nothing is returned untouched.
+        """
         expanded = expand_skill_command(text, self._resources.skills)
         if expanded is not None:
             return expanded
+        if _names_builtin_command(self._config.command_registry, text):
+            return text
         template = expand_prompt_template_command(text, self._resources.prompt_templates)
-        return template if template is not None else text
+        if template is not None:
+            return template
+        skill = expand_skill_name_command(text, self._resources.skills)
+        return skill if skill is not None else text
 
     # -- journal -------------------------------------------------------------
 
@@ -681,7 +701,7 @@ class CodingSession:
         self._config.extension_runtime = successor
         self._provider_registry = successor.provider_registry
         self._config.command_registry = successor.build_command_registry()
-        self._resources = resources
+        self._resources = _with_shadow_diagnostics(resources, self._config.command_registry)
         self._skill = skill
         successor.bind(self)
         await successor.emit_session_start("reload")
@@ -706,6 +726,41 @@ class CodingSession:
         self._runner.cancel()
         await self.extensions.emit_session_shutdown("quit")
         await self.extensions.aclose()
+
+
+def _names_builtin_command(registry: object | None, text: str) -> bool:
+    """Return whether bare `/name` text is claimed by a registered command."""
+    stripped = text.strip()
+    if not stripped.startswith("/") or stripped.startswith("//"):
+        return False
+    get_command = getattr(registry, "get", None)
+    if get_command is None:
+        return False
+    name = stripped.split(maxsplit=1)[0].removeprefix("/").strip()
+    return bool(name) and get_command(name) is not None
+
+
+def _with_shadow_diagnostics(
+    resources: SessionResources, registry: object | None
+) -> SessionResources:
+    """Append notes for skills a bare `/<name>` invocation cannot reach.
+
+    Deferred until the command registry exists, since extensions may register
+    commands of their own and those shadow a skill name just as built-ins do.
+    """
+    list_commands = getattr(registry, "list_commands", None)
+    command_names: list[str] = []
+    for command in list_commands() if list_commands is not None else ():
+        command_names.append(command.name)
+        command_names.extend(command.aliases)
+    diagnostics = shadowed_skill_diagnostics(
+        resources.skills,
+        command_names=command_names,
+        prompt_templates={template.name: template.path for template in resources.prompt_templates},
+    )
+    if not diagnostics:
+        return resources
+    return replace(resources, diagnostics=(*resources.diagnostics, *diagnostics))
 
 
 def _environment(cwd: Path) -> JSONObject:
