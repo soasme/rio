@@ -1233,6 +1233,67 @@ def _bash_command_arg(arguments: Mapping[str, JSONValue]) -> str:
     raise ToolInputError("command must be a string")
 
 
+_MAX_ACTION_TARGET_CHARS = 120
+_MAX_LISTED_FILES = 3
+
+
+def describe_action(
+    name: str,
+    arguments: Mapping[str, JSONValue],
+    *,
+    cwd: str | Path | None = None,
+) -> str:
+    """Return the display target of a tool call, resolving argument aliases.
+
+    A UI labelling a call has to read the arguments the way the executors do,
+    or a call spelled `read({"filePath": ...})` runs fine yet renders without
+    the file it read. Paths under `cwd` are shortened to a relative path so a
+    narrow header shows the part that differs. Unknown tools fall back to their
+    first string argument. Returns an empty string when nothing describes the
+    call.
+    """
+    if not isinstance(arguments, Mapping):
+        return ""
+    if name == "bash":
+        return _one_line(_first_str(arguments, ("command", *_BASH_COMMAND_ALIASES)))
+    if name in ("read", "write", "edit"):
+        path = _first_str(arguments, ("path", *_PATH_ALIASES))
+        if path:
+            return _one_line(_relative_to(path, cwd))
+        files = arguments.get("files")
+        if not isinstance(files, list):
+            return ""
+        paths = [_relative_to(item, cwd) for item in files if isinstance(item, str)]
+        if len(paths) > _MAX_LISTED_FILES:
+            return f"{len(paths)} files"
+        return ", ".join(paths)
+    return _one_line(_first_str(arguments, tuple(arguments)))
+
+
+def _first_str(arguments: Mapping[str, JSONValue], names: tuple[str, ...]) -> str:
+    for name in names:
+        value = arguments.get(name)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _relative_to(path: str, cwd: str | Path | None) -> str:
+    if cwd is None:
+        return path
+    try:
+        return str(Path(path).relative_to(cwd))
+    except ValueError:
+        return path
+
+
+def _one_line(text: str) -> str:
+    line = text.strip().split("\n", 1)[0].strip()
+    if len(line) <= _MAX_ACTION_TARGET_CHARS:
+        return line
+    return line[: _MAX_ACTION_TARGET_CHARS - 1] + "…"
+
+
 def _prepare_edit_arguments(arguments: Mapping[str, JSONValue]) -> Mapping[str, JSONValue]:
     prepared = dict(arguments)
     edits_value = prepared.get("edits")

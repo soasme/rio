@@ -136,7 +136,11 @@ class SessionScreen(Screen):
                 elif isinstance(entry, StepEntry):
                     if entry.action.name != "respond":
                         block = await self.conversation.add(
-                            ToolBlock(entry.action.name, entry.action.arguments)
+                            ToolBlock(
+                                entry.action.name,
+                                entry.action.arguments,
+                                cwd=getattr(self.session, "cwd", None),
+                            )
                         )
                         await block.complete(entry.observation or "")
                     if entry.terminated:
@@ -202,7 +206,9 @@ class SessionScreen(Screen):
 
     async def consume(self, event):
         if isinstance(event, ActionStartEvent) and event.name != "respond":
-            self.active_tool = await self.conversation.add(ToolBlock(event.name, event.arguments))
+            self.active_tool = await self.conversation.add(
+                ToolBlock(event.name, event.arguments, cwd=getattr(self.session, "cwd", None))
+            )
         elif isinstance(event, ActionEndEvent) and self.active_tool:
             diff = None
             arguments = self.active_tool.arguments

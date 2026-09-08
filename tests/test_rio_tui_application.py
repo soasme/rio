@@ -170,6 +170,43 @@ async def test_tools_expand_individually_and_show_real_diff_widget(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_tool_blocks_name_their_target_whatever_the_model_spells(tmp_path):
+    calls = [
+        ("read", {"filePath": str(tmp_path / "a.py")}),
+        ("read", {"files": [str(tmp_path / "b.py"), str(tmp_path / "c.py")]}),
+        ("bash", {"cmd": "ls -l"}),
+        ("lookup", {"query": "todo"}),
+        (
+            "edit",
+            {
+                "filePath": str(tmp_path / "d.py"),
+                "edits": [{"oldText": "a = 1", "newText": "a = 2"}],
+            },
+        ),
+    ]
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        pane = app.workspace
+        for step, (name, arguments) in enumerate(calls, start=1):
+            await pane.consume(ActionStartEvent(step=step, name=name, arguments=arguments))
+            await pane.consume(
+                ActionEndEvent(
+                    step=step, name=name, result=AgentToolResult(content="ok"), is_error=False
+                )
+            )
+        await pilot.pause()
+        blocks = list(pane.query(ToolBlock))
+        assert [block.label for block in blocks] == [
+            "read a.py",
+            "read b.py, c.py",
+            "bash ls -l",
+            "lookup todo",
+            "edit d.py",
+        ]
+        assert blocks[-1].query_one(DiffView).path_original == "d.py"
+
+
+@pytest.mark.asyncio
 async def test_concurrent_sessions_keep_drafts_and_events_separate(tmp_path):
     app = make_app(tmp_path)
     async with app.run_test() as pilot:
