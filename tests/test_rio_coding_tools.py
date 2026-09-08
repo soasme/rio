@@ -32,6 +32,7 @@ from rio_coding.tools import (
     create_read_tool_definition,
     create_respond_tool,
     create_write_tool,
+    describe_action,
 )
 
 
@@ -747,3 +748,44 @@ def test_decode_failure_returns_safe_failure() -> None:
 
     assert isinstance(result, ImageProcessingFailure)
     assert "could not decode a valid image" in result.message
+
+
+@pytest.mark.parametrize("alias", ["path", "file", "file_path", "filepath", "filePath", "fileName"])
+def test_describe_action_resolves_path_aliases(alias: str) -> None:
+    assert describe_action("read", {alias: "/repo/src/app.py"}) == "/repo/src/app.py"
+
+
+def test_describe_action_shortens_paths_under_cwd() -> None:
+    assert describe_action("edit", {"filePath": "/repo/src/app.py"}, cwd="/repo") == "src/app.py"
+    assert describe_action("read", {"path": "/other/app.py"}, cwd="/repo") == "/other/app.py"
+    assert describe_action("read", {"path": "src/app.py"}, cwd="/repo") == "src/app.py"
+
+
+def test_describe_action_lists_batch_read_files() -> None:
+    files = ["/repo/a.py", "/repo/b.py"]
+    assert describe_action("read", {"files": files}, cwd="/repo") == "a.py, b.py"
+    assert describe_action("read", {"files": [f"/repo/{index}.py" for index in range(4)]}) == (
+        "4 files"
+    )
+
+
+@pytest.mark.parametrize("alias", ["command", "cmd", "shell_command", "bashCmd"])
+def test_describe_action_resolves_bash_aliases(alias: str) -> None:
+    assert describe_action("bash", {alias: "ls -l\ncat x"}) == "ls -l"
+
+
+def test_describe_action_truncates_long_commands() -> None:
+    description = describe_action("bash", {"cmd": "echo " + "x" * 200})
+
+    assert len(description) == 120
+    assert description.endswith("…")
+
+
+def test_describe_action_falls_back_to_first_string_argument() -> None:
+    assert describe_action("grep", {"limit": 3, "pattern": "todo"}) == "todo"
+
+
+def test_describe_action_returns_empty_without_a_target() -> None:
+    assert describe_action("read", {}) == ""
+    assert describe_action("edit", {"edits": [{"oldText": "a", "newText": "b"}]}) == ""
+    assert describe_action("bash", {"timeout": 5}) == ""

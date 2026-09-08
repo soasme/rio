@@ -6,6 +6,8 @@ from textual.containers import HorizontalGroup, VerticalGroup, VerticalScroll
 from textual.widgets import Collapsible, Label, Markdown, Static
 from textual_diff_view import DiffView
 
+from rio_coding.tools import describe_action
+
 
 class UserMessage(HorizontalGroup):
     def __init__(self, text):
@@ -41,13 +43,13 @@ class Notice(Static):
 class ToolBlock(Collapsible):
     """One tool invocation, updated in place when its result arrives."""
 
-    def __init__(self, name, arguments):
+    def __init__(self, name, arguments, *, cwd=None):
         self.tool_name = name
         self.arguments = arguments
+        self.cwd = cwd
         self.output = ""
         self.result = VerticalGroup()
-        target = arguments.get("path") or arguments.get("command") or ""
-        self.label = f"{name} {target}".strip()
+        self.label = f"{name} {describe_action(name, arguments, cwd=cwd)}".strip()
         super().__init__(
             self.result,
             title=f"{self.label} · running",
@@ -63,7 +65,7 @@ class ToolBlock(Collapsible):
         if diff:
             before, after = diff
             layout = self.app.settings.diff_layout
-            path = str(self.arguments.get("path", "file"))
+            path = describe_action(self.tool_name, self.arguments, cwd=self.cwd) or "file"
             await self.result.mount(
                 DiffView(
                     path,
