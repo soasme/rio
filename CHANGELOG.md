@@ -1,12 +1,12 @@
 # 0.4.1
 
-* `rio_tui` derives hotkeys, the command palette, and `/help` from one command table.
-* `rio_coding` invokes skills as `/<skill-name> <prompt>`.
-* `rio_agent` recovers from a step call truncated at the output limit.
-* `rio_coding` vendors bundled models.
-* `rio_tui` disables the footer.
-* `rio_tui` renames `rio_tui.widgets.*` to `rio_tui.widget_*`.
-* `rio_tui` fixes read failures when the LLM does not honor the spec.
+* feat(tui): derive hotkeys, palette, and /help from one command table ([#57](https://github.com/soasme/rio/pull/57))
+* feat(coding): invoke skills as /<skill-name> <prompt> ([#56](https://github.com/soasme/rio/pull/56))
+* fix(agent): recover from a step call truncated at the output limit ([#55](https://github.com/soasme/rio/pull/55))
+* ci(coding): vendor bundled models. ([#54](https://github.com/soasme/rio/pull/54))
+* feat(tui): disable footer. ([#53](https://github.com/soasme/rio/pull/53))
+* neat(tui): refactor rio_tui.widgets.* to rio_tui.widget_*. ([#51](https://github.com/soasme/rio/pull/51))
+* fix(tui): read failed due to llm not honoring spec. ([#49](https://github.com/soasme/rio/pull/49))
 
 # 0.4.0
 
