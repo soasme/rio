@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from textual.widgets import Tabs
+from textual.widgets import OptionList, Tabs
 from textual_diff_view import DiffView
 
 from rio_agent.events import ActionEndEvent, ActionStartEvent, StateUpdateEvent
@@ -15,6 +15,7 @@ from rio_coding.events import SessionRunEndEvent
 from rio_coding.paths import RioPaths
 from rio_tui import RioTuiApp, Settings
 from rio_tui.bridge import Question
+from rio_tui.commands import COMMANDS, help_message, palette_choices
 from rio_tui.dialogs import FilePicker, Picker
 from rio_tui.widget_conversation import Answer, Conversation, Notice, ToolBlock, UserMessage
 from rio_tui.widget_prompt import Editor
@@ -542,3 +543,72 @@ async def test_message_menu_can_edit_previous_prompt(tmp_path):
         await pilot.press("e", "d", "i", "t", "enter")
         await pilot.pause()
         assert app.workspace.query_one(Editor).text == "Rewrite this paragraph"
+
+
+def test_hotkeys_and_palette_come_from_one_table():
+    keys = {key for key, _action, _description in RioTuiApp.BINDINGS}
+    actions = {action for _key, action, _description in RioTuiApp.BINDINGS}
+    assert keys == {command.key for command in COMMANDS if command.key} | {"ctrl+k"}
+    assert actions - {"commands"} == {command.action for command in COMMANDS if command.key}
+    labels = {command: label for label, command in palette_choices()}
+    assert set(labels) == {"/" + command.name for command in COMMANDS}
+    for command in COMMANDS:
+        assert labels["/" + command.name].endswith(command.hotkey or command.description)
+    message = help_message()
+    assert "Ctrl+K" in message
+    assert all(command.hotkey in message for command in COMMANDS if command.key)
+
+
+@pytest.mark.asyncio
+async def test_palette_runs_a_command_that_only_had_a_hotkey(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+k")
+        await pilot.pause()
+        assert isinstance(app.screen, Picker)
+        await pilot.press(*"sidebar", "enter")
+        await pilot.pause()
+        await loaded(app, app.workspace)
+        await pilot.pause()
+        assert app.workspace.query_one(Sidebar).display
+
+
+@pytest.mark.asyncio
+async def test_session_commands_mirror_their_hotkeys(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        first = app.workspace
+        await app.open_session().wait()
+        second = app.workspace
+        second.submit("/prev")
+        await loaded(app, second)
+        await pilot.pause()
+        assert app.workspace is first
+        first.submit("/next")
+        await loaded(app, first)
+        await pilot.pause()
+        assert app.workspace is second
+        second.submit("/close")
+        await loaded(app, second)
+        await pilot.pause()
+        assert len(app.sessions) == 1
+        assert app.workspace is first
+        await app.open_session().wait()
+        await pilot.press("ctrl+w")
+        await pilot.pause()
+        await pilot.pause()
+        assert len(app.sessions) == 1
+
+
+@pytest.mark.asyncio
+async def test_completion_popover_shows_hotkeys(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("/", "n", "e")
+        await pilot.pause()
+        options = app.workspace.query_one("#completion", OptionList)
+        labels = [
+            str(options.get_option_at_index(index).prompt) for index in range(options.option_count)
+        ]
+        assert [label.split()[0] for label in labels] == ["/new", "/next"]
+        assert [label.split()[-1] for label in labels] == ["Ctrl+N", "Ctrl+]"]

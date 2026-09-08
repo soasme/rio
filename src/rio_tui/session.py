@@ -22,6 +22,7 @@ from rio_agent.events import (
 from rio_coding.events import AutoRetryStartEvent, QueueUpdateEvent, SessionRunEndEvent
 from rio_coding.session_store import StepEntry, TurnEntry, latest_leaf_id, path_to_entry
 from rio_tui.bridge import SessionBridge
+from rio_tui.commands import ACTIONS, BUILTIN, help_message
 from rio_tui.dialogs import Changes, FilePicker, Picker, Preferences
 from rio_tui.widget_conversation import (
     Answer,
@@ -31,7 +32,7 @@ from rio_tui.widget_conversation import (
     ToolBlock,
     UserMessage,
 )
-from rio_tui.widget_prompt import COMMANDS, Editor, Prompt
+from rio_tui.widget_prompt import Editor, Prompt
 from rio_tui.widget_sidebar import Plan, Sidebar
 from rio_tui.widget_terminal import ShellTerminal
 
@@ -313,6 +314,9 @@ class SessionScreen(Screen):
                         "Resume session",
                         [(f"{r.title or r.id} · {r.model}", f"/resume {r.id}") for r in records],
                     )
+            elif name in {"sidebar", "next", "prev", "close"}:
+                # Pure app actions; the palette reaches them through the same table.
+                getattr(self.app, "action_" + ACTIONS[name])()
             elif name == "settings":
                 self.app.push_screen(Preferences(self.app.settings), self.app.save_preferences)
             elif name == "files":
@@ -354,7 +358,7 @@ class SessionScreen(Screen):
                 if name == "skills":
                     # A skill is `/<name>` unless a command or a template already
                     # answers to that name, where only `/skill:` still reaches it.
-                    taken = set(COMMANDS) | {
+                    taken = set(BUILTIN) | {
                         t.name for t in getattr(self.session, "prompt_templates", ()) or ()
                     }
                     resources = [
@@ -401,16 +405,7 @@ class SessionScreen(Screen):
 
                 await self.conversation.add(Notice(logout_provider(value)))
             elif name == "help":
-                await self.conversation.add(
-                    Answer(
-                        "## rio\n\nEnter sends; Shift+Enter adds a line. "
-                        "Type `/` for commands or `!` for shell mode. "
-                        "Up/Down browse prompt history.\n\n"
-                        "Ctrl+B toggles the plan/project sidebar. Ctrl+N opens a session, "
-                        "Ctrl+R resumes, and Ctrl+[ / Ctrl+] switch sessions. "
-                        "Ctrl+F finds files. Escape interrupts the active run."
-                    )
-                )
+                await self.conversation.add(Answer(help_message()))
             else:
                 registry = getattr(self.session, "command_registry", None)
                 result = registry.execute(self.session, text) if registry else None

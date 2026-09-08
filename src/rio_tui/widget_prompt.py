@@ -10,30 +10,7 @@ from textual.message import Message
 from textual.widgets import Label, OptionList, TextArea
 from textual.widgets.option_list import Option
 
-COMMANDS = {
-    "new": "New session",
-    "sessions": "Resume a session",
-    "settings": "Preferences",
-    "model": "Choose model",
-    "provider": "Choose provider",
-    "thinking": "Thinking level",
-    "files": "Find project files",
-    "diff": "Review changes",
-    "shell": "Enter shell mode",
-    "skills": "Use a skill",
-    "prompts": "Prompt templates",
-    "checkpoints": "Restore state",
-    "state": "Inspect execution state",
-    "name": "Rename session",
-    "login": "Sign in",
-    "logout": "Sign out",
-    "reload": "Reload resources",
-    "clear": "Clear conversation",
-    "cancel": "Interrupt run",
-    "help": "Keyboard and commands",
-    "quit": "Quit",
-}
-
+from rio_tui.commands import BUILTIN, HOTKEYS
 
 #: Longest description rendered beside a name in the `/` popover.
 DESCRIPTION_WIDTH = 60
@@ -47,6 +24,10 @@ class Editor(TextArea):
         Binding("up", "previous", "History", show=False),
         Binding("down", "next", "History", show=False),
         Binding("escape", "escape", "Cancel", priority=True),
+        # `TextArea` binds these itself, so the app hotkeys never reach the app.
+        # Ctrl+Backspace still deletes a word to the left.
+        Binding("ctrl+k", "app.commands", "Commands", priority=True, show=False),
+        Binding("ctrl+w", "app.close_session", "Close session", priority=True, show=False),
     ]
 
     class Submit(Message):
@@ -132,19 +113,19 @@ class Prompt(VerticalGroup):
         self.cwd = Path(cwd)
         self.shell = False
         self.choices = []
-        #: Loaded skills and prompt templates, kept alongside `COMMANDS` so the
-        #: popover offers everything `/<name>` can actually resolve to.
+        #: Loaded skills and prompt templates, kept alongside the built-in
+        #: commands so the popover offers everything `/<name>` can resolve to.
         self.resource_commands = {}
 
     @property
     def commands(self):
         """Every `/<name>` the popover offers, built-ins first."""
-        return {**COMMANDS, **self.resource_commands}
+        return {**BUILTIN, **self.resource_commands}
 
     def set_resource_commands(self, commands):
         """Replace the loaded-resource half of the completion list."""
         self.resource_commands = {
-            name: description for name, description in commands.items() if name not in COMMANDS
+            name: description for name, description in commands.items() if name not in BUILTIN
         }
 
     def compose(self):
@@ -185,10 +166,17 @@ class Prompt(VerticalGroup):
             self.choices = []
         options = self.query_one(OptionList)
         options.clear_options()
+        rows = [
+            (command, _summarize(commands[command[1:]]), HOTKEYS.get(command[1:], ""))
+            for command in self.choices
+        ]
+        # Pad the descriptions only when a hotkey needs a column to line up in.
+        keyed = any(key for *_, key in rows)
+        width = max((len(summary) for _, summary, _ in rows), default=0) if keyed else 0
         options.add_options(
             [
-                Option(Text(f"{command:16} {_summarize(commands[command[1:]])}"))
-                for command in self.choices
+                Option(Text(f"{command:16} {summary:<{width}} {key}".rstrip()))
+                for command, summary, key in rows
             ]
         )
         options.display = bool(self.choices)
