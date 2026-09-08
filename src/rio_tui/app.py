@@ -9,26 +9,19 @@ from textual import events, work
 from textual.app import App
 from textual.widgets import Tab, Tabs
 
+from rio_tui.commands import hotkey_bindings, palette_choices
 from rio_tui.dialogs import Picker, Preferences
 from rio_tui.session import SessionScreen
 from rio_tui.settings import Settings
-from rio_tui.widget_prompt import COMMANDS
 
 
 class RioTuiApp(App[None]):
     TITLE = "rio"
     CSS_PATH = "app.tcss"
     BINDINGS = [
-        ("ctrl+b", "sidebar", "Sidebar"),
-        ("ctrl+n", "new_session", "New session"),
-        ("ctrl+r", "resume", "Resume"),
-        ("ctrl+left_square_bracket", "previous_session", "Previous session"),
-        ("ctrl+right_square_bracket,ctrl+tab", "next_session", "Next session"),
-        ("ctrl+w", "close_session", "Close session"),
-        ("ctrl+f", "files", "Files"),
-        ("ctrl+comma", "settings", "Settings"),
+        *hotkey_bindings(),
+        # The palette opener shows the table rather than appearing in it.
         ("ctrl+k", "commands", "Commands"),
-        ("ctrl+d", "quit", "Quit"),
     ]
 
     def __init__(self, session, *, initial_prompt=None, settings=None):
@@ -149,7 +142,7 @@ class RioTuiApp(App[None]):
 
     def action_commands(self):
         self.push_screen(
-            Picker("Commands", [(f"/{c} · {d}", "/" + c) for c, d in COMMANDS.items()]),
+            Picker("Commands", palette_choices()),
             lambda value: self.workspace.submit(value) if value else None,
         )
 

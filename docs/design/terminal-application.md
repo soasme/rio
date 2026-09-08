@@ -61,6 +61,10 @@ Keys:
 
 Commands:
 
+* One table defines every command, its hotkey, and its action, so the palette,
+  the `/` popover, `/help`, and the key bindings cannot drift apart.
+* Every hotkey is also a command: `/sidebar`, `/next`, `/prev`, and `/close`.
+  The palette and the popover show the key beside the command that has one.
 * `/model`, `/provider`, and `/thinking` select backend configuration.
 * `/skills` and `/prompts` choose project resources.
 * `/name TITLE` renames a session.
