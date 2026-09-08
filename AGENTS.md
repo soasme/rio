@@ -8,3 +8,4 @@
 * When composing text, remove emojis, fluff, cheerful filler text and use concise, clear, simple language.
 * When adding parameters, ensure API's simplicity and Orthogonality.
 * When writing issues, follow the templates under `.github/ISSUE_TEMPLATE/`.
+* When bumping a version, update CHANGELOG.md using recent comits, bump pyproject.toml version and git tag/push.
