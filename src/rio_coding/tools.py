@@ -429,7 +429,8 @@ def create_read_tool_definition(
             "truncated to "
             f"{DEFAULT_MAX_OUTPUT_LINES} lines or {DEFAULT_MAX_OUTPUT_BYTES // 1024}KB "
             "(whichever is hit first). Use offset/limit for large files. When you need the "
-            "full file, continue with offset until complete."
+            "full file, continue with offset until complete. Reads one file per call: `path` "
+            "is a single path, never a list -- to read several files, issue several calls."
         ),
         prompt_snippet="Read file contents",
         prompt_guidelines=("Use read to examine files instead of cat or sed.",),
