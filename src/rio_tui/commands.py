@@ -56,6 +56,7 @@ COMMANDS = (
     Command("tools", "Browse available tools"),
     Command("system", "Show the active instructions"),
     Command("checkpoints", "Restore state", aliases=("tree",)),
+    Command("fork", "Branch a new session from the live state"),
     Command("state", "Inspect execution state"),
     Command("session", "Session info and stats"),
     Command("export", "Export the session"),

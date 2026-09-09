@@ -99,6 +99,20 @@ class RioTuiApp(App[None]):
                     await session.aclose()
                 self.notify(str(error), severity="error")
 
+    @work
+    async def fork_session(self, *, title=None):
+        async with self.session_lock:
+            session = None
+            try:
+                session = await self.workspace.session.fork_session(title=title)
+                await self.add_session(session)
+            except Exception as error:
+                if session is not None and all(
+                    p.session is not session for p in self.sessions.values()
+                ):
+                    await session.aclose()
+                self.notify(str(error), severity="error")
+
     def action_new_session(self):
         self.open_session()
 

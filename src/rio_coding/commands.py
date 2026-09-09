@@ -123,6 +123,8 @@ class CommandResult:
     resume_picker_requested: bool = False
     prompts_picker_requested: bool = False
     tree_picker_requested: bool = False
+    fork_requested: bool = False
+    fork_title: str | None = None
     login_picker_requested: bool = False
     custom_provider_login_requested: bool = False
     local_requested: bool = False
@@ -339,7 +341,16 @@ def create_default_command_registry() -> CommandRegistry:
             usage="/tree",
             description="Branch from an earlier execution-state checkpoint.",
             handler=_tree_command,
-            search_terms=("branch", "checkpoint", "rewind", "fork"),
+            search_terms=("branch", "checkpoint", "rewind"),
+        )
+    )
+    registry.register(
+        SlashCommand(
+            name="fork",
+            usage="/fork [name]",
+            description="Branch a new session from the current live state.",
+            handler=_fork_command,
+            search_terms=("branch", "checkpoint", "split"),
         )
     )
     registry.register(
@@ -664,6 +675,10 @@ def _tree_command(context: CommandContext) -> CommandResult:
     if context.args:
         return CommandResult(handled=True, message="Usage: /tree")
     return CommandResult(handled=True, tree_picker_requested=True)
+
+
+def _fork_command(context: CommandContext) -> CommandResult:
+    return CommandResult(handled=True, fork_requested=True, fork_title=context.args.strip() or None)
 
 
 def _name_command(context: CommandContext) -> CommandResult:
