@@ -1,3 +1,12 @@
+# 0.4.2
+
+* fix(tui): offer every backend slash command in the `/` popover ([#70](https://github.com/soasme/rio/pull/70))
+* feat(state): keep file contents in the execution state ([#69](https://github.com/soasme/rio/pull/69))
+* fix(coding): state the single-file contract in the read tool description ([#68](https://github.com/soasme/rio/pull/68))
+* feat(coding): journal step reasoning as a non-resumable session entry ([#67](https://github.com/soasme/rio/pull/67))
+* fix(tui): label tool blocks with the resolved target when the model uses an argument alias ([#66](https://github.com/soasme/rio/pull/66))
+* feat(tui): replace inherited emoji icons with ascii markers ([#64](https://github.com/soasme/rio/pull/64))
+
 # 0.4.1
 
 * feat(tui): derive hotkeys, palette, and /help from one command table ([#57](https://github.com/soasme/rio/pull/57))

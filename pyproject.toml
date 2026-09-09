@@ -1,6 +1,6 @@
 [project]
 name = "rio"
-version = "0.4.1"
+version = "0.4.2"
 description = "rio_ai: a ported multi-provider LLM streaming SDK. rio_agent: a SKILL.state long-horizon agent runtime (arXiv:2608.26263). rio_coding: a SKILL.state coding agent."
 readme = "README.md"
 authors = [
