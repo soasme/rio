@@ -345,6 +345,76 @@ async def test_read_tool_rejects_missing_path(tmp_path: Path) -> None:
         await tool.execute("test-call", {})
 
 
+# --- read tool: batch `files` -------------------------------------------------
+
+
+async def test_read_tool_batch_reads_multiple_files_as_separate_blocks(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("alpha\n")
+    (tmp_path / "b.txt").write_text("bravo\n")
+    tool = create_read_tool(cwd=tmp_path)
+
+    result = await tool.execute("test-call", {"files": ["a.txt", "b.txt"]})
+
+    path_a = tmp_path / "a.txt"
+    path_b = tmp_path / "b.txt"
+    assert result.text == (
+        f"read {path_a} (lines 1-2 of 2)\n\nalpha\n\n\nread {path_b} (lines 1-2 of 2)\n\nbravo\n"
+    )
+    assert len(result.content) == 2
+    assert result.details is not None
+    assert [entry["path"] for entry in result.details["files"]] == [str(path_a), str(path_b)]
+
+
+async def test_read_tool_batch_applies_shared_offset_and_limit(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("one\ntwo\nthree\n")
+    (tmp_path / "b.txt").write_text("uno\ndos\ntres\n")
+    tool = create_read_tool(cwd=tmp_path)
+
+    result = await tool.execute("test-call", {"files": ["a.txt", "b.txt"], "offset": 2, "limit": 1})
+
+    assert "two" in result.text
+    assert "dos" in result.text
+    assert "three" not in result.text
+    assert "tres" not in result.text
+
+
+async def test_read_tool_batch_reports_bad_entry_without_failing_others(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("alpha\n")
+    tool = create_read_tool(cwd=tmp_path)
+
+    result = await tool.execute("test-call", {"files": ["a.txt", "missing.txt"]})
+
+    assert "alpha" in result.text
+    assert "[Error: File not found:" in result.text
+    assert result.details is not None
+    assert "error" in result.details["files"][1]
+
+
+async def test_read_tool_batch_rejects_empty_files_list(tmp_path: Path) -> None:
+    tool = create_read_tool(cwd=tmp_path)
+
+    with pytest.raises(ValueError, match="files must be a non-empty list of path strings"):
+        await tool.execute("test-call", {"files": []})
+
+
+async def test_read_tool_batch_rejects_non_string_entries(tmp_path: Path) -> None:
+    tool = create_read_tool(cwd=tmp_path)
+
+    with pytest.raises(ValueError, match="files must be a list of path strings"):
+        await tool.execute("test-call", {"files": ["a.txt", 1]})
+
+
+async def test_read_tool_prefers_path_over_files(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("alpha\n")
+    (tmp_path / "b.txt").write_text("bravo\n")
+    tool = create_read_tool(cwd=tmp_path)
+
+    result = await tool.execute("test-call", {"path": "a.txt", "files": ["b.txt"]})
+
+    assert result.text.startswith(f"read {tmp_path / 'a.txt'} ")
+    assert "bravo" not in result.text
+
+
 async def test_write_tool_rejects_non_string_path(tmp_path: Path) -> None:
     tool = create_write_tool(cwd=tmp_path)
 
