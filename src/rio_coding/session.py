@@ -722,6 +722,19 @@ class CodingSession:
         self._last_observation = None
         return state
 
+    async def fork_from(
+        self, state: dict[str, JSONValue], *, parent_session_id: str | None
+    ) -> None:
+        """Adopt `state` as the live state, journaling the session forked from.
+
+        Used to seed a brand-new session's journal from another session's live
+        state -- a state_reset, same as `new_session()`, but into an
+        empty journal rather than this one, with a lineage note beside it.
+        """
+        await self.append_custom_entry("fork", {"parent_session_id": parent_session_id})
+        await self._runner.reset(dict(state), reason=f"forked from session {parent_session_id}")
+        self._last_observation = None
+
     async def aclose(self) -> None:
         self._runner.cancel()
         await self.extensions.emit_session_shutdown("quit")

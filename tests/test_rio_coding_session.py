@@ -17,6 +17,7 @@ from rio_ai import AgentTool, AgentToolResult, FakeProvider, TextContent
 from rio_coding.events import EntryAppendedEvent, SessionRunEndEvent
 from rio_coding.session import CodingSession, CodingSessionConfig
 from rio_coding.session_store import (
+    CustomEntry,
     InMemorySessionStorage,
     LabelEntry,
     ModelChangeEntry,
@@ -438,6 +439,19 @@ class TestCheckpoints:
 
         assert session.answer is None
         assert session.state["findings"] == {"entrypoint": "main.py"}
+
+    async def test_fork_from_adopts_state_and_journals_lineage(self, project) -> None:
+        parent = await make_session(project, two_step_streams())
+        await collect(parent, "explain main.py")
+
+        child_storage = InMemorySessionStorage()
+        child = await make_session(project, [], storage=child_storage)
+        await child.fork_from(dict(parent.state), parent_session_id="parent-id")
+
+        assert child.state["findings"] == {"entrypoint": "main.py"}
+        entries = await child_storage.read_all()
+        fork_notes = [e for e in entries if isinstance(e, CustomEntry) and e.namespace == "fork"]
+        assert fork_notes[-1].data == {"parent_session_id": "parent-id"}
 
     async def test_a_prepared_session_writes_nothing_until_adopted(self, project) -> None:
         """An abandoned candidate must leave the journal exactly as it found it."""

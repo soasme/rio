@@ -437,6 +437,8 @@ class SessionScreen(Screen):
                         self.app.open_session()
                     if result.resume_session_id:
                         self.app.open_session(result.resume_session_id)
+                    if result.fork_requested:
+                        self.app.fork_session(title=result.fork_title)
                     if result.clear_requested:
                         await self.conversation.clear()
                     if result.reload_requested:

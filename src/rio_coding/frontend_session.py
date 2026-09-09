@@ -124,6 +124,40 @@ class ConfiguredSession:
         configured._owned_provider = provider
         return configured
 
+    async def fork_session(self, *, title=None):
+        """Branch a new, independently owned session from the current live state."""
+        record = self.session_manager.create_session_exclusive(
+            cwd=self.cwd, model=self.model, provider_name=self.provider_name, title=title
+        )
+        provider, name, model, level = await self._candidate(
+            record.model, record.provider_name, None
+        )
+        try:
+            _, trust = await ProjectTrustCoordinator(ProjectTrustStore()).resolve(record.cwd)
+            session = await CodingSession.load(
+                replace(
+                    self.session.config,
+                    provider=provider,
+                    provider_name=name,
+                    model=model,
+                    thinking_level=level,
+                    cwd=record.cwd,
+                    storage=JsonlSessionStorage(record.path),
+                    extension_runtime=None,
+                    project_resources_trusted=trust.trusted,
+                    session_title=title,
+                )
+            )
+            await session.fork_from(self.session.state, parent_session_id=self.session_id)
+        except BaseException:
+            await provider.aclose()
+            raise
+        configured = ConfiguredSession(
+            session, session_manager=self.session_manager, session_id=record.id
+        )
+        configured._owned_provider = provider
+        return configured
+
     async def resume_session(self, session_id):
         record = self.session_manager.get_session(session_id)
         if record is None:

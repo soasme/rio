@@ -234,6 +234,16 @@ class TestSimpleCommands:
         assert "checkpoint" in command.description
         assert "checkpoint" in command.search_terms
 
+    def test_fork_requests_a_new_session_from_the_live_state(self, registry, session) -> None:
+        result = registry.execute(session, "/fork")
+        assert result.fork_requested is True
+        assert result.fork_title is None
+
+    def test_fork_captures_a_name_for_the_child_session(self, registry, session) -> None:
+        result = registry.execute(session, "/fork what-if branch")
+        assert result.fork_requested is True
+        assert result.fork_title == "what-if branch"
+
     def test_context_reports_no_files(self, registry, session) -> None:
         assert "No project context files loaded." in registry.execute(session, "/context").message
 
