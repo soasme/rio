@@ -563,96 +563,30 @@ async def test_a_state_that_outgrows_its_budget_is_rejected_before_it_is_committ
     assert events[-1].state["notes"] == "small"
 
 
-class _Observer:
-    """A minimal `ActionObserver`: refuses `advance` twice, then records the result."""
+async def test_action_executor_records_results_and_reports_failures():
+    async def execute(action, call_id, arguments, state, signal):
+        if arguments.get("note") == "refuse":
+            raise ValueError("advance refused")
+        result = await action.execute(call_id, arguments, signal)
+        return result, {"notes": result.text}
 
-    def __init__(self, *, refuse: str | None = None, note: str | None = None) -> None:
-        self.refuse = refuse
-        self.note = note
-        self.seen: list[str] = []
-
-    def before_action(self, state, name, arguments):
-        if name == self.refuse:
-            raise RuntimeError(f"{name} refused")
-
-    def after_action(self, state, name, arguments, result):
-        from rio_agent import ActionOutcome
-
-        self.seen.append(name)
-        return ActionOutcome(delta={"notes": result.text}, note=self.note)
-
-
-@pytest.mark.asyncio
-async def test_the_observer_records_the_result_the_model_could_not_know_yet():
-    observer = _Observer()
-    skill = make_skill(observer=observer)
     provider = FakeProvider(
         [
             step_response(reasoning="", state_delta={}, action="advance", args={"note": "a"}),
+            step_response(reasoning="", state_delta={}, action="advance", args={"note": "refuse"}),
             step_response(reasoning="", state_delta={}, action="finish", args={}),
         ]
     )
-
     events = [
         event
         async for event in run_skill_loop(
             provider=provider,
             model="m",
-            skill=skill,
+            skill=make_skill(execute_action=execute),
             observation=HarnessObservation(user_message="start"),
         )
     ]
-
-    assert observer.seen == ["advance", "finish"]
-    # The state the second step was sent already carried the first action's result.
-    assert "observed:a" in provider.calls[1][2][0].content
+    assert "observed:a" in provider.calls[1][2][0].content.partition("Latest Observation:")[0]
+    assert "advance refused" in provider.calls[2][2][0].content
+    assert [e.is_error for e in events if isinstance(e, ActionEndEvent)] == [False, True, False]
     assert events[-1].state["notes"] == "terminal"
-
-
-@pytest.mark.asyncio
-async def test_an_observer_refusal_becomes_the_observation_not_a_crash():
-    observer = _Observer(refuse="advance")
-    skill = make_skill(observer=observer)
-    provider = FakeProvider(
-        [
-            step_response(reasoning="", state_delta={}, action="advance", args={"note": "a"}),
-            step_response(reasoning="", state_delta={}, action="finish", args={}),
-        ]
-    )
-
-    events = [
-        event
-        async for event in run_skill_loop(
-            provider=provider,
-            model="m",
-            skill=skill,
-            observation=HarnessObservation(user_message="start"),
-        )
-    ]
-
-    refused = next(e for e in events if isinstance(e, ActionEndEvent))
-    assert refused.is_error is True
-    assert "advance refused" in refused.result.text
-    assert observer.seen == ["finish"]
-
-
-@pytest.mark.asyncio
-async def test_an_observer_note_reaches_the_next_step():
-    observer = _Observer(note="state is full")
-    skill = make_skill(observer=observer)
-    provider = FakeProvider(
-        [
-            step_response(reasoning="", state_delta={}, action="advance", args={"note": "a"}),
-            step_response(reasoning="", state_delta={}, action="finish", args={}),
-        ]
-    )
-
-    async for _event in run_skill_loop(
-        provider=provider,
-        model="m",
-        skill=skill,
-        observation=HarnessObservation(user_message="start"),
-    ):
-        pass
-
-    assert "[state is full]" in provider.calls[1][2][0].content

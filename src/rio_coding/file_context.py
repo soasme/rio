@@ -7,14 +7,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from rio_agent import ActionOutcome, apply_state_delta, state_size_chars
-from rio_ai.tools import AgentToolResult
+from rio_agent import apply_state_delta, state_size_chars
+from rio_ai.messages import TextContent
+from rio_ai.tools import AgentTool, AgentToolResult, ToolCancellationToken
 from rio_ai.types import JSONObject, JSONValue
-from rio_coding.tools import ToolInputError, resolve_path_argument
-
-
-class StaleFileError(RuntimeError):
-    """A write or edit was refused because the state's copy of the file is out of date."""
+from rio_coding.tools import DEFAULT_MAX_OUTPUT_LINES, ToolInputError, resolve_path_argument
 
 
 def short_hash(data: bytes) -> str:
@@ -40,106 +37,88 @@ def file_entry(state: Mapping[str, JSONValue], key: str) -> Mapping[str, JSONVal
 
 
 @dataclass(frozen=True, slots=True)
-class FileContextObserver:
+class FileContext:
     """Check writes before execution and cache successful file actions."""
 
     cwd: Path
     state_budget_chars: int | None = None
 
-    def before_action(
-        self, state: JSONObject, name: str, arguments: Mapping[str, JSONValue]
-    ) -> None:
-        """Refuse a write or edit whose file no longer matches the state's copy."""
-        if name not in ("write", "edit"):
-            return
-        path = self._path(arguments)
-        if path is None or not path.is_file():
-            # A brand new file has nothing to be stale against; a missing one
-            # is the tool's error to report, not ours.
-            return
-        key = state_key(path, self.cwd)
-        recorded = file_entry(state, key).get("hash")
-        try:
-            current = short_hash(path.read_bytes())
-        except OSError:
-            current = None
-        if recorded == current:
-            return
-        if not isinstance(recorded, str):
-            raise StaleFileError(
-                f"{key} exists but is not in your state's `files`. Read it first: "
-                f"{name} would discard content you have never seen."
-            )
-        raise StaleFileError(
-            f"{key} changed on disk since you read it (state records hash {recorded}, "
-            f"the file is now {current}). Read it again before you {name} it."
-        )
-
-    def after_action(
+    async def execute(
         self,
-        state: JSONObject,
-        name: str,
+        action: AgentTool,
+        call_id: str,
         arguments: Mapping[str, JSONValue],
-        result: AgentToolResult,
-    ) -> ActionOutcome:
-        """Record what the action left on disk into `state.files`."""
+        state: JSONObject,
+        signal: ToolCancellationToken | None = None,
+    ) -> tuple[AgentToolResult, JSONObject]:
+        name = action.name
         if name not in ("read", "write", "edit"):
-            return ActionOutcome()
-        path = self._path(arguments)
-        if path is None:
-            return ActionOutcome()
+            return await action.execute(call_id, arguments, signal), {}
+
+        path = resolve_path_argument(arguments, cwd=self.cwd)
         key = state_key(path, self.cwd)
         previous = file_entry(state, key)
+        existed = path.is_file()
+        # ponytail: preflight is outside the tool lock; move it inside for concurrent writes.
+        if name in ("write", "edit") and existed:
+            recorded = previous.get("hash")
+            if not isinstance(recorded, str):
+                raise ToolInputError(f"{key} exists but has no recorded hash. Read it first.")
+            if recorded != short_hash(path.read_bytes()):
+                raise ToolInputError(f"{key} changed on disk. Read it again before you {name} it.")
+
+        result = await action.execute(call_id, arguments, signal)
         if name == "read":
-            details = result.details or {}
+            details = result.details
+            if not isinstance(details, Mapping):
+                return result, {}
             start, end = details.get("start_line"), details.get("end_line")
             if not isinstance(start, int) or not isinstance(end, int):
-                return ActionOutcome()  # Images and oversized lines have no text slice.
+                return result, {}  # Images and oversized lines have no text slice.
             status, ranges = "read", [(start, end)]
         else:
-            status = "edited" if previous else "created"
+            status = "edited" if existed else "created"
             # Refresh cached windows after edits; deliberately forgotten files stay forgotten.
-            ranges = _cached_ranges(previous) if previous else [(1, 2_000)]
+            ranges = _cached_ranges(previous) if existed else [(1, DEFAULT_MAX_OUTPUT_LINES)]
 
         try:
             data = path.read_bytes()
             text = data.decode("utf-8")
         except (OSError, UnicodeDecodeError):
-            return ActionOutcome()
+            return result, {}
 
         digest = short_hash(data)
         entry: dict[str, JSONValue] = {"status": status, "hash": digest}
         if "context" in previous:
             entry["context"] = None
-        if not ranges:
-            return ActionOutcome(delta={"files": {key: entry}})
-
-        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-        slices = _slice_patch(previous, lines, ranges, keep_previous=previous.get("hash") == digest)
         cached = dict(entry)
-        cached["context"] = {"total_lines": len(lines), "slices": slices}
+        if ranges:
+            lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            slices = _slice_patch(
+                previous, lines, ranges, keep_previous=previous.get("hash") == digest
+            )
+            cached["context"] = {"total_lines": len(lines), "slices": slices}
 
         delta: JSONObject = {"files": {key: cached}}
         if (
             self.state_budget_chars is None
             or state_size_chars(apply_state_delta(state, delta)) <= self.state_budget_chars
         ):
-            return ActionOutcome(delta=delta)
+            return result, delta
 
-        return ActionOutcome(
-            delta={"files": {key: entry}},
-            note=(
-                f"{key} was not cached in state.files: the state is at its size limit. "
-                "Forget a file you are done with -- set its `files[path].context` to null, "
-                "keeping what you learned in its `note` -- then read this one again."
-            ),
+        result.content.append(
+            TextContent(
+                text=(
+                    f"\n\n[{key} was not cached in state.files: the state is at its size limit. "
+                    "Forget a file you are done with -- set its `files[path].context` to null, "
+                    "keeping what you learned in its `note` -- then read this one again.]"
+                )
+            )
         )
-
-    def _path(self, arguments: Mapping[str, JSONValue]) -> Path | None:
-        try:
-            return resolve_path_argument(arguments, cwd=self.cwd)
-        except ToolInputError:
-            return None
+        delta = {"files": {key: entry}}
+        if state_size_chars(apply_state_delta(state, delta)) > self.state_budget_chars:
+            delta = {}  # Even metadata needs space; leave the state unchanged until a re-read.
+        return result, delta
 
 
 def _cached_ranges(entry: Mapping[str, JSONValue]) -> list[tuple[int, int]]:
@@ -176,6 +155,7 @@ def _slice_patch(
             continue
         fresh[f"{start}-{end}"] = "\n".join(lines[start - 1 : end])
 
+    # ponytail: quadratic in slice count; use interval merging if many ranges accumulate.
     patch: dict[str, JSONValue] = dict(fresh)
     for start, end in _cached_ranges(previous):
         key = f"{start}-{end}"

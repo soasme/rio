@@ -35,7 +35,6 @@ from rio_agent import (
     StepEndEvent,
     StepStartEvent,
     ValidationErrorEvent,
-    apply_state_delta,
 )
 from rio_ai.provider import ModelProvider
 from rio_ai.types import JSONObject, JSONValue
@@ -85,7 +84,7 @@ class _StepInProgress:
     """The pieces of one step, gathered across the events that announce them."""
 
     step: int
-    state_delta: JSONObject = field(default_factory=dict)
+    state_delta: JSONObject | None = None
     state: JSONObject = field(default_factory=dict)
     action: ActionRecord | None = None
     observation: str | None = None
@@ -301,11 +300,9 @@ class SessionRunner:
 
             elif isinstance(event, StateUpdateEvent):
                 if pending is not None:
-                    # A step can commit twice: the model's own delta, then the
-                    # runtime's record of what the action produced. The journal
-                    # keeps one patch per step, so the second folds into the
-                    # first rather than replacing it.
-                    pending.state_delta = apply_state_delta(pending.state_delta, event.delta)
+                    # Keep the model's patch; later updates are runtime-owned state.
+                    if pending.state_delta is None:
+                        pending.state_delta = dict(event.delta)
                     pending.state = dict(event.state)
                 self._state = dict(event.state)
                 yield event
@@ -333,7 +330,7 @@ class SessionRunner:
                     entry = StepEntry(
                         parent_id=self._parent_entry_id,
                         step=pending.step,
-                        state_delta=pending.state_delta,
+                        state_delta=pending.state_delta or {},
                         state=pending.state or dict(event.state),
                         action=pending.action,
                         observation=pending.observation,

@@ -19,7 +19,7 @@ from pathlib import Path
 from rio_agent import HarnessSpec
 from rio_ai.tools import AgentTool
 from rio_ai.types import JSONObject, JSONValue
-from rio_coding.file_context import FileContextObserver
+from rio_coding.file_context import FileContext
 from rio_coding.step_footprint import CHARS_PER_TOKEN, DEFAULT_CONTEXT_WINDOW_TOKENS
 
 #: The coding skill's declared state schema, in the order it is documented to
@@ -43,16 +43,6 @@ CODING_STATE_FIELDS: tuple[str, ...] = (
 PLAN_STATUSES: tuple[str, ...] = ("pending", "in_progress", "done", "blocked")
 
 RESPOND_ACTION = "respond"
-
-#: How much of the model's context window the execution state may occupy. The
-#: state is sent in full every step and shares the window with the fixed
-#: instructions and the latest observation, so it gets a share, not the lot.
-STATE_BUDGET_FRACTION = 0.4
-
-
-def state_budget_for_context_window(context_window_tokens: int) -> int:
-    """Return the state size limit, in characters, for a model of this window size."""
-    return int(context_window_tokens * CHARS_PER_TOKEN * STATE_BUDGET_FRACTION)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,14 +84,9 @@ def initial_coding_state(
 
 
 def build_coding_skill(options: CodingSkillOptions) -> HarnessSpec:
-    """Return the `HarnessSpec` that drives a coding session.
-
-    The skill carries a `FileContextObserver`, which is what makes `files` a
-    record of file contents rather than a list of paths: it writes what a read
-    produced into the state and refuses a write against a stale copy. Its
-    budget is the skill's, so cached content can never crowd out the prompt.
-    """
-    budget = state_budget_for_context_window(options.context_window_tokens)
+    """Return the `HarnessSpec` that drives a coding session."""
+    # ponytail: approximate token sizing; use provider token counts if this proves too loose.
+    budget = int(options.context_window_tokens * CHARS_PER_TOKEN * 0.4)
     return HarnessSpec(
         name=options.name,
         instructions=options.instructions,
@@ -113,7 +98,7 @@ def build_coding_skill(options: CodingSkillOptions) -> HarnessSpec:
         ),
         actions=tuple(options.tools),
         state_budget_chars=budget,
-        observer=FileContextObserver(cwd=Path(options.cwd), state_budget_chars=budget),
+        execute_action=FileContext(cwd=Path(options.cwd), state_budget_chars=budget).execute,
     )
 
 

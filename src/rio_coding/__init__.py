@@ -23,7 +23,6 @@ from rio_coding.credentials import (
     OAuthCredential,
     credentials_path,
 )
-from rio_coding.file_context import FileContextObserver, StaleFileError
 from rio_coding.oauth_registry import (
     get_oauth_provider,
     get_oauth_providers,
@@ -195,7 +194,6 @@ __all__ = [
     "DEFAULT_PROVIDER_NAME",
     "DEFAULT_THINKING_LEVEL",
     "EventRenderer",
-    "FileContextObserver",
     "FileCredentialStore",
     "ImageSupportState",
     "JsonEventRenderer",
@@ -230,7 +228,6 @@ __all__ = [
     "ShellSettings",
     "Skill",
     "SlashCommand",
-    "StaleFileError",
     "StepFootprint",
     "THINKING_LEVELS",
     "ThinkingLevel",

@@ -75,25 +75,19 @@ look different from a transcript-based one:
 - **Exactly one action per step.** There is no multi-tool assistant turn and
   no parallel tool call. One step, one action, one observation.
 
-## Files live in the state, not in the last observation
+## File context
 
-An observation lives exactly one step, so a file that was read and not written
-down is gone by the next step -- and the only way back to it is another read.
-`rio_coding.file_context.FileContextObserver` closes that gap. It implements
-`rio_agent.ActionObserver`, which the runtime consults on both sides of an
-action: before, so a `write` or `edit` against a file that no longer matches
-the hash in the state is refused with "read it again" instead of composing an
-edit against content that has since changed; after, so what the action
-actually produced is recorded rather than inferred. Each entry in
-`state.files` carries `status`, `hash`, the cached `context` (`total_lines`
-plus a `slices` map keyed by line range, so a large file arrives one range at
-a time), and the model's own one-line `note`.
+The coding skill's `execute_action` callback checks file hashes, executes the
+existing tool, and returns its result plus a state delta. The loop commits the
+delta; cache-limit notes use the normal tool result.
 
-Cached content costs prompt space on every step, so it is bounded by the same
-state budget. When a file will not fit, its `status` and `hash` are still
-recorded, the content is not, and the observation says which lever frees
-space: forget a file -- set its `context` to null and keep what you learned in
-its `note`.
+`state.files[path]` holds `status`, `hash`, and `context` (`total_lines` plus
+`slices` keyed by line range). Reads accumulate slices; writes refresh cached
+windows. Set `context` to null to forget content while keeping the hash and note.
+Content that exceeds the state budget is omitted with a note in the tool result.
+
+The journal keeps the model's original patch and the full resulting state,
+including runtime file updates. Resume uses that snapshot, not patch replay.
 
 ## Branching is checkpointing, not tree replay
 

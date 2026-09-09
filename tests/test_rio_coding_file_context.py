@@ -20,8 +20,8 @@ from conftest import step_response
 from rio_agent import HarnessObservation, apply_state_delta, run_skill_loop
 from rio_ai import FakeProvider
 from rio_coding.coding_skill import CodingSkillOptions, build_coding_skill
-from rio_coding.file_context import FileContextObserver, StaleFileError, short_hash
-from rio_coding.tools import create_coding_tools
+from rio_coding.file_context import FileContext, short_hash
+from rio_coding.tools import ToolInputError, create_coding_tools
 
 CALC = '"""A tiny module."""\n\n\ndef add(a, b):\n    return a + b\n'
 
@@ -33,13 +33,11 @@ def make_repo(tmp_path: Path) -> Path:
     return repo
 
 
-async def act(observer, state, tools, name, arguments):
-    """Run one action the way `run_skill_loop` runs it: check, execute, record."""
-    observer.before_action(state, name, arguments)
+async def act(context, state, tools, name, arguments):
+    """Execute a real tool through the coding action callback."""
     tool = next(tool for tool in tools if tool.name == name)
-    result = await tool.execute("call", arguments)
-    outcome = observer.after_action(state, name, arguments, result)
-    return apply_state_delta(state, outcome.delta), outcome
+    result, delta = await context.execute(tool, "call", arguments, state)
+    return apply_state_delta(state, delta), result
 
 
 def entry(state, path="calc.py"):
@@ -56,9 +54,9 @@ def slices(state, path="calc.py"):
 async def test_a_read_puts_the_file_contents_in_the_state(tmp_path) -> None:
     repo = make_repo(tmp_path)
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo)
+    context = FileContext(cwd=repo)
 
-    state, _outcome = await act(observer, {"files": {}}, tools, "read", {"path": "calc.py"})
+    state, _outcome = await act(context, {"files": {}}, tools, "read", {"path": "calc.py"})
 
     assert entry(state)["status"] == "read"
     assert entry(state)["hash"] == short_hash((repo / "calc.py").read_bytes())
@@ -69,10 +67,10 @@ async def test_a_read_puts_the_file_contents_in_the_state(tmp_path) -> None:
 async def test_the_key_is_the_path_relative_to_the_run(tmp_path) -> None:
     repo = make_repo(tmp_path)
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo)
+    context = FileContext(cwd=repo)
 
     state, _outcome = await act(
-        observer, {"files": {}}, tools, "read", {"path": str(repo / "calc.py")}
+        context, {"files": {}}, tools, "read", {"path": str(repo / "calc.py")}
     )
 
     assert list(state["files"]) == ["calc.py"]
@@ -82,13 +80,13 @@ async def test_reading_another_range_adds_a_slice_instead_of_replacing_one(tmp_p
     repo = make_repo(tmp_path)
     (repo / "big.py").write_text("\n".join(f"line {i}" for i in range(1, 501)), encoding="utf-8")
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo)
+    context = FileContext(cwd=repo)
 
     state, _ = await act(
-        observer, {"files": {}}, tools, "read", {"path": "big.py", "offset": 1, "limit": 100}
+        context, {"files": {}}, tools, "read", {"path": "big.py", "offset": 1, "limit": 100}
     )
     state, _ = await act(
-        observer, state, tools, "read", {"path": "big.py", "offset": 101, "limit": 100}
+        context, state, tools, "read", {"path": "big.py", "offset": 101, "limit": 100}
     )
 
     assert sorted(slices(state, "big.py")) == ["1-100", "101-200"]
@@ -100,12 +98,12 @@ async def test_a_wider_read_absorbs_the_slice_it_covers(tmp_path) -> None:
     repo = make_repo(tmp_path)
     (repo / "big.py").write_text("\n".join(f"line {i}" for i in range(1, 501)), encoding="utf-8")
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo)
+    context = FileContext(cwd=repo)
 
     state, _ = await act(
-        observer, {"files": {}}, tools, "read", {"path": "big.py", "offset": 1, "limit": 100}
+        context, {"files": {}}, tools, "read", {"path": "big.py", "offset": 1, "limit": 100}
     )
-    state, _ = await act(observer, state, tools, "read", {"path": "big.py"})
+    state, _ = await act(context, state, tools, "read", {"path": "big.py"})
 
     assert list(slices(state, "big.py")) == ["1-500"]
 
@@ -118,9 +116,9 @@ async def test_an_image_read_records_nothing_to_cache(tmp_path) -> None:
     )
     (repo / "pixel.png").write_bytes(png)
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo)
+    context = FileContext(cwd=repo)
 
-    state, _ = await act(observer, {"files": {}}, tools, "read", {"path": "pixel.png"})
+    state, _ = await act(context, {"files": {}}, tools, "read", {"path": "pixel.png"})
 
     assert state["files"] == {}
 
@@ -131,10 +129,10 @@ async def test_an_image_read_records_nothing_to_cache(tmp_path) -> None:
 async def test_writing_over_a_file_the_state_has_never_seen_is_refused(tmp_path) -> None:
     repo = make_repo(tmp_path)
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo)
+    context = FileContext(cwd=repo)
 
-    with pytest.raises(StaleFileError, match="Read it first"):
-        await act(observer, {"files": {}}, tools, "write", {"path": "calc.py", "content": "gone\n"})
+    with pytest.raises(ToolInputError, match="Read it first"):
+        await act(context, {"files": {}}, tools, "write", {"path": "calc.py", "content": "gone\n"})
 
     assert (repo / "calc.py").read_text(encoding="utf-8") == CALC
 
@@ -142,10 +140,10 @@ async def test_writing_over_a_file_the_state_has_never_seen_is_refused(tmp_path)
 async def test_creating_a_new_file_needs_no_prior_read(tmp_path) -> None:
     repo = make_repo(tmp_path)
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo)
+    context = FileContext(cwd=repo)
 
     state, _ = await act(
-        observer, {"files": {}}, tools, "write", {"path": "new.py", "content": "x = 1\n"}
+        context, {"files": {}}, tools, "write", {"path": "new.py", "content": "x = 1\n"}
     )
 
     assert entry(state, "new.py")["status"] == "created"
@@ -155,14 +153,14 @@ async def test_creating_a_new_file_needs_no_prior_read(tmp_path) -> None:
 async def test_a_file_that_changed_underneath_must_be_read_again(tmp_path) -> None:
     repo = make_repo(tmp_path)
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo)
-    state, _ = await act(observer, {"files": {}}, tools, "read", {"path": "calc.py"})
+    context = FileContext(cwd=repo)
+    state, _ = await act(context, {"files": {}}, tools, "read", {"path": "calc.py"})
 
     (repo / "calc.py").write_text(CALC.replace("a + b", "a - b"), encoding="utf-8")
 
-    with pytest.raises(StaleFileError, match="changed on disk"):
+    with pytest.raises(ToolInputError, match="changed on disk"):
         await act(
-            observer,
+            context,
             state,
             tools,
             "edit",
@@ -173,18 +171,18 @@ async def test_a_file_that_changed_underneath_must_be_read_again(tmp_path) -> No
 async def test_an_edit_restamps_the_hash_so_the_next_edit_is_allowed(tmp_path) -> None:
     repo = make_repo(tmp_path)
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo)
-    state, _ = await act(observer, {"files": {}}, tools, "read", {"path": "calc.py"})
+    context = FileContext(cwd=repo)
+    state, _ = await act(context, {"files": {}}, tools, "read", {"path": "calc.py"})
 
     state, _ = await act(
-        observer,
+        context,
         state,
         tools,
         "edit",
         {"path": "calc.py", "edits": [{"oldText": "a + b", "newText": "a * b"}]},
     )
     state, _ = await act(
-        observer,
+        context,
         state,
         tools,
         "edit",
@@ -199,11 +197,11 @@ async def test_an_edit_restamps_the_hash_so_the_next_edit_is_allowed(tmp_path) -
 async def test_an_edit_replaces_the_content_the_state_was_holding(tmp_path) -> None:
     repo = make_repo(tmp_path)
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo)
-    state, _ = await act(observer, {"files": {}}, tools, "read", {"path": "calc.py"})
+    context = FileContext(cwd=repo)
+    state, _ = await act(context, {"files": {}}, tools, "read", {"path": "calc.py"})
 
     state, _ = await act(
-        observer,
+        context,
         state,
         tools,
         "edit",
@@ -220,20 +218,20 @@ async def test_an_edit_replaces_the_content_the_state_was_holding(tmp_path) -> N
 async def test_a_file_that_does_not_fit_the_budget_is_recorded_but_not_cached(tmp_path) -> None:
     repo = make_repo(tmp_path)
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo, state_budget_chars=200)
+    context = FileContext(cwd=repo, state_budget_chars=200)
 
-    state, outcome = await act(observer, {"files": {}}, tools, "read", {"path": "calc.py"})
+    state, outcome = await act(context, {"files": {}}, tools, "read", {"path": "calc.py"})
 
     assert entry(state)["hash"] == short_hash((repo / "calc.py").read_bytes())
     assert "context" not in entry(state)
-    assert "Forget a file" in outcome.note
+    assert "Forget a file" in outcome.text
 
 
 async def test_forgetting_a_file_keeps_its_status_and_note(tmp_path) -> None:
     repo = make_repo(tmp_path)
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo)
-    state, _ = await act(observer, {"files": {}}, tools, "read", {"path": "calc.py"})
+    context = FileContext(cwd=repo)
+    state, _ = await act(context, {"files": {}}, tools, "read", {"path": "calc.py"})
     state = apply_state_delta(
         state, {"files": {"calc.py": {"context": None, "note": "add() is correct"}}}
     )
@@ -248,12 +246,12 @@ async def test_forgetting_a_file_keeps_its_status_and_note(tmp_path) -> None:
 async def test_a_forgotten_file_is_not_re_cached_by_an_edit(tmp_path) -> None:
     repo = make_repo(tmp_path)
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo)
-    state, _ = await act(observer, {"files": {}}, tools, "read", {"path": "calc.py"})
+    context = FileContext(cwd=repo)
+    state, _ = await act(context, {"files": {}}, tools, "read", {"path": "calc.py"})
     state = apply_state_delta(state, {"files": {"calc.py": {"context": None}}})
 
     state, _ = await act(
-        observer,
+        context,
         state,
         tools,
         "edit",
@@ -299,11 +297,11 @@ async def test_the_next_step_sees_the_file_in_its_state_not_only_in_the_observat
 async def test_reading_a_changed_file_drops_old_slices(tmp_path) -> None:
     repo = make_repo(tmp_path)
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo)
-    state, _ = await act(observer, {"files": {}}, tools, "read", {"path": "calc.py", "limit": 2})
+    context = FileContext(cwd=repo)
+    state, _ = await act(context, {"files": {}}, tools, "read", {"path": "calc.py", "limit": 2})
     (repo / "calc.py").write_text("one\ntwo\nthree", encoding="utf-8")
 
-    state, _ = await act(observer, state, tools, "read", {"path": "calc.py", "offset": 3})
+    state, _ = await act(context, state, tools, "read", {"path": "calc.py", "offset": 3})
 
     assert slices(state) == {"3-3": "three"}
     assert entry(state)["context"]["total_lines"] == 3
@@ -312,11 +310,11 @@ async def test_reading_a_changed_file_drops_old_slices(tmp_path) -> None:
 async def test_shortening_a_file_removes_slices_beyond_its_end(tmp_path) -> None:
     repo = make_repo(tmp_path)
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo)
-    state, _ = await act(observer, {"files": {}}, tools, "read", {"path": "calc.py", "limit": 2})
-    state, _ = await act(observer, state, tools, "read", {"path": "calc.py", "offset": 4})
+    context = FileContext(cwd=repo)
+    state, _ = await act(context, {"files": {}}, tools, "read", {"path": "calc.py", "limit": 2})
+    state, _ = await act(context, state, tools, "read", {"path": "calc.py", "offset": 4})
 
-    state, _ = await act(observer, state, tools, "write", {"path": "calc.py", "content": "short"})
+    state, _ = await act(context, state, tools, "write", {"path": "calc.py", "content": "short"})
 
     assert slices(state) == {"1-1": "short"}
     assert entry(state)["status"] == "edited"
@@ -325,14 +323,14 @@ async def test_shortening_a_file_removes_slices_beyond_its_end(tmp_path) -> None
 async def test_an_edit_that_exceeds_the_cache_budget_drops_old_content(tmp_path) -> None:
     repo = make_repo(tmp_path)
     tools = create_coding_tools(cwd=repo)
-    observer = FileContextObserver(cwd=repo, state_budget_chars=500)
-    state, _ = await act(observer, {"files": {}}, tools, "read", {"path": "calc.py"})
+    context = FileContext(cwd=repo, state_budget_chars=500)
+    state, _ = await act(context, {"files": {}}, tools, "read", {"path": "calc.py"})
     assert "context" in entry(state)
 
     state, outcome = await act(
-        observer, state, tools, "write", {"path": "calc.py", "content": "x" * 1_000}
+        context, state, tools, "write", {"path": "calc.py", "content": "x" * 1_000}
     )
 
     assert "context" not in entry(state)
     assert entry(state)["hash"] == short_hash((repo / "calc.py").read_bytes())
-    assert "Forget a file" in outcome.note
+    assert "Forget a file" in outcome.text

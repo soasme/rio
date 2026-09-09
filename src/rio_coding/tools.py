@@ -254,7 +254,7 @@ def create_read_tool_definition(
     ) -> AgentToolResult:
         del signal
         raw_path = _path_str_arg(arguments, "path")
-        path = _path_arg(arguments, "path", cwd=root)
+        path = resolve_path_argument(arguments, cwd=root)
         offset = _optional_int_arg(arguments, "offset")
         limit = _optional_int_arg(arguments, "limit")
 
@@ -368,7 +368,6 @@ def create_read_tool_definition(
         details: dict[str, JSONValue] = {
             "path": str(path),
             "truncation": truncation.to_json(),
-            "total_lines": len(all_lines),
         }
 
         if truncation.first_line_exceeds_limit:
@@ -443,11 +442,7 @@ def create_read_tool_definition(
             "full file, continue with offset until complete."
         ),
         prompt_snippet="Read file contents",
-        prompt_guidelines=(
-            "Use read to examine files instead of cat or sed.",
-            "Check state.files[path].context first: a file already cached there does "
-            "not need reading again, only a line range that is missing from it does.",
-        ),
+        prompt_guidelines=("Use read to examine files instead of cat or sed.",),
         input_schema={
             "type": "object",
             "properties": {
@@ -515,7 +510,7 @@ def create_write_tool_definition(*, cwd: str | Path | None = None) -> ToolDefini
         signal: ToolCancellationToken | None = None,
     ) -> AgentToolResult:
         del signal
-        path = _path_arg(arguments, "path", cwd=root)
+        path = resolve_path_argument(arguments, cwd=root)
         content = _str_arg(arguments, "content")
 
         async with _file_lock(path):
@@ -535,11 +530,7 @@ def create_write_tool_definition(*, cwd: str | Path | None = None) -> ToolDefini
             "Automatically creates parent directories."
         ),
         prompt_snippet="Create or overwrite files",
-        prompt_guidelines=(
-            "Use write only for new files or complete rewrites.",
-            "Writing over an existing file requires state.files[path].hash to match it "
-            "on disk: read the file first, and read it again if it has changed since.",
-        ),
+        prompt_guidelines=("Use write only for new files or complete rewrites.",),
         input_schema={
             "type": "object",
             "properties": {
@@ -584,7 +575,7 @@ def create_edit_tool_definition(*, cwd: str | Path | None = None) -> ToolDefinit
     ) -> AgentToolResult:
         del signal
         prepared = _prepare_edit_arguments(arguments)
-        path = _path_arg(prepared, "path", cwd=root)
+        path = resolve_path_argument(prepared, cwd=root)
         edits = _edits_arg(prepared)
 
         if not path.exists():
@@ -644,8 +635,6 @@ def create_edit_tool_definition(*, cwd: str | Path | None = None) -> ToolDefinit
             "changes into one edit.",
             "Keep edits[].oldText as small as possible while still being unique in the file. "
             "Do not pad with large unchanged regions.",
-            "Editing requires state.files[path].hash to match the file on disk: read the "
-            "file first, and read it again if it has changed since.",
         ),
         input_schema={
             "type": "object",
@@ -1214,22 +1203,10 @@ def _path_str_arg(arguments: Mapping[str, JSONValue], name: str) -> str:
     raise ToolInputError(f"{name} must be a string; accepted argument names: {accepted}")
 
 
-def _path_arg(arguments: Mapping[str, JSONValue], name: str, *, cwd: Path) -> Path:
-    value = _path_str_arg(arguments, name)
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        path = cwd / path
-    return path
-
-
 def resolve_path_argument(arguments: Mapping[str, JSONValue], *, cwd: Path) -> Path:
-    """Return the file a call's arguments name, resolved exactly as the tool will resolve it.
-
-    Callers outside the tool -- `rio_coding.file_context`, which has to find
-    the same file in the execution state -- need the alias handling and cwd
-    resolution to agree with the executor's, not merely resemble it.
-    """
-    return _path_arg(arguments, "path", cwd=cwd)
+    """Resolve a file argument, accepting the tools' shared path aliases."""
+    path = Path(_path_str_arg(arguments, "path")).expanduser()
+    return path if path.is_absolute() else cwd / path
 
 
 def _optional_int_arg(arguments: Mapping[str, JSONValue], name: str) -> int | None:

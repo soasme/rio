@@ -247,9 +247,7 @@ async def test_the_file_the_agent_read_is_in_the_state_it_carries(tmp_path) -> N
 async def test_a_file_changed_behind_the_agents_back_must_be_read_again(tmp_path) -> None:
     """The hash is what stops an edit being composed against content that has moved on."""
     streams = [
-        step_response(
-            reasoning="", state_delta={}, action="read", args={"path": "calc.py"}
-        ),
+        step_response(reasoning="", state_delta={}, action="read", args={"path": "calc.py"}),
         step_response(
             reasoning="",
             state_delta={},
@@ -268,9 +266,7 @@ async def test_a_file_changed_behind_the_agents_back_must_be_read_again(tmp_path
                 "edits": [{"oldText": "return a - b", "newText": "return a + b"}],
             },
         ),
-        step_response(
-            reasoning="", state_delta={}, action="respond", args={"message": "stopped"}
-        ),
+        step_response(reasoning="", state_delta={}, action="respond", args={"message": "stopped"}),
     ]
     session, repo = await build_session(tmp_path, streams)
     async for _event in session.prompt("fix calc.add"):

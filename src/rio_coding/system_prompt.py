@@ -39,18 +39,14 @@ CODING_STATE_FIELD_DOCS: Mapping[str, str] = {
         "why an approach was rejected."
     ),
     "files": (
-        "A map from file path to what this run knows about that file. The runtime "
-        "maintains most of it for you: after a successful read, write, or edit it sets "
-        "`status` (`read`, `edited`, or `created`), `hash` (a short digest of the file "
-        "on disk), and `context` — the file content it cached, as `total_lines` plus a "
-        "`slices` map keyed by the line range each slice covers. Work from `context` "
-        "instead of reading a file again; read a file only for a range that is not "
-        "there, with `offset`, or when the content you need genuinely is not in it. "
-        "`note` is yours: one line on why the file matters and what you concluded about "
-        "it. Writing and editing require the recorded `hash` to still match the file on "
-        "disk, so if you are told it changed, read the file again first. When the state "
-        "runs out of room, forget a file: set its `context` to `null` and move anything "
-        "you still need into its `note`. `status` and `note` survive forgetting."
+        "A map from file path to `status` (`read`, `edited`, or `created`), `hash`, "
+        "`context` (`total_lines` and `slices` keyed by line range), and your short `note`. "
+        "The runtime records status, hash, and content after successful file actions; "
+        "leave those fields to it. Use cached slices instead of repeating reads. "
+        "Read missing ranges with `offset`. Existing files must be read before writing "
+        "or editing; read again if their hash changed on disk. To free state space, "
+        "set `context` to null and summarize what matters in `note`. "
+        "Forgetting content keeps the status, hash, and note."
     ),
     "cwd": "The current working directory for file and shell operations.",
     "environment": (

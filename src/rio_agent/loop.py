@@ -12,12 +12,6 @@ and an invalid proposal triggers a rollback-retry cycle, bounded by
 the new state, discards the reasoning for good, runs the action to get the
 next observation, and the loop repeats.
 
-A skill may supply an `ActionObserver`. It sees each action before it runs,
-so it can refuse one the state says is unsafe, and again after it returns,
-so what the action produced -- which the model could not know when it wrote
-its delta -- is recorded in the state rather than left in an observation
-that is discarded one step later.
-
 Because the prompt never includes history, total prompt size across a run
 grows in proportion to the number of steps, not the square of it -- see
 `tests/test_rio_agent_loop.py::test_prompt_footprint_is_bounded_across_steps`
@@ -177,12 +171,16 @@ async def run_skill_loop(
         yield StateUpdateEvent(step=step, delta=dict(delta), state=dict(state))
 
         yield ActionStartEvent(step=step, name=action_name, arguments=dict(action_arguments))
+        action_delta = {}
         try:
-            if skill.observer is not None:
-                skill.observer.before_action(state, action_name, action_arguments)
-            result = await actions[action_name].execute(
-                f"{skill.name}-step-{step}", action_arguments, signal
-            )
+            action = actions[action_name]
+            call_id = f"{skill.name}-step-{step}"
+            if skill.execute_action is None:
+                result = await action.execute(call_id, action_arguments, signal)
+            else:
+                result, action_delta = await skill.execute_action(
+                    action, call_id, action_arguments, state, signal
+                )
             is_error = False
         except Exception as exc:
             # A failing action is an observation, not a crash. The state update
@@ -193,15 +191,9 @@ async def run_skill_loop(
             is_error = True
         yield ActionEndEvent(step=step, name=action_name, result=result, is_error=is_error)
 
-        # What the action actually produced is knowledge the model did not have
-        # when it wrote its own delta, so the observer records it afterwards.
-        note: str | None = None
-        if skill.observer is not None and not is_error:
-            outcome = skill.observer.after_action(state, action_name, action_arguments, result)
-            note = outcome.note
-            if outcome.delta:
-                state = apply_state_delta(state, outcome.delta)
-                yield StateUpdateEvent(step=step, delta=dict(outcome.delta), state=dict(state))
+        if action_delta:
+            state = apply_state_delta(state, action_delta)
+            yield StateUpdateEvent(step=step, delta=action_delta, state=dict(state))
 
         terminated = bool(result.terminate)
         yield StepEndEvent(step=step, state=dict(state), terminated=terminated)
@@ -209,10 +201,7 @@ async def run_skill_loop(
         step += 1
         if terminated:
             break
-        observed = result.text or "(no observation)"
-        if note:
-            observed += f"\n\n[{note}]"
-        current_observation = HarnessObservation(tool_call_result=observed)
+        current_observation = HarnessObservation(tool_call_result=result.text or "(no observation)")
 
     yield RunEndEvent(steps=step, state=dict(state))
 
