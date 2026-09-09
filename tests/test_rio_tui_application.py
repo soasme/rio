@@ -16,7 +16,7 @@ from rio_coding.events import SessionRunEndEvent
 from rio_coding.paths import RioPaths
 from rio_tui import RioTuiApp, Settings
 from rio_tui.bridge import Question
-from rio_tui.commands import COMMANDS, help_message, palette_choices
+from rio_tui.commands import BUILTIN, COMMANDS, help_message, palette_choices
 from rio_tui.dialogs import FilePicker, Picker
 from rio_tui.widget_conversation import Answer, Conversation, Notice, ToolBlock, UserMessage
 from rio_tui.widget_prompt import Editor
@@ -602,6 +602,17 @@ def test_hotkeys_and_palette_come_from_one_table():
     message = help_message()
     assert "Ctrl+K" in message
     assert all(command.hotkey in message for command in COMMANDS if command.key)
+
+
+def test_popover_offers_every_backend_command():
+    """`/` has to list what the backend answers to, aliases included."""
+    from rio_coding.commands import create_default_command_registry
+
+    registry = create_default_command_registry()
+    backend = {
+        name for command in registry.list_commands() for name in (command.name, *command.aliases)
+    }
+    assert backend <= set(BUILTIN)
 
 
 @pytest.mark.asyncio
