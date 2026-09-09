@@ -19,6 +19,8 @@ class Command:
     description: str
     key: str = ""
     action: str = ""
+    #: Other names the same command answers to, offered alongside it.
+    aliases: tuple[str, ...] = ()
 
     @property
     def hotkey(self):
@@ -31,37 +33,55 @@ class Command:
 
 COMMANDS = (
     Command("new", "New session", "ctrl+n", "new_session"),
-    Command("sessions", "Resume a session", "ctrl+r", "resume"),
+    Command("sessions", "Resume a session", "ctrl+r", "resume", aliases=("resume",)),
     Command("next", "Next session", "ctrl+right_square_bracket,ctrl+tab", "next_session"),
     Command("prev", "Previous session", "ctrl+left_square_bracket", "previous_session"),
     Command("close", "Close session", "ctrl+w", "close_session"),
     Command("sidebar", "Toggle sidebar", "ctrl+b", "sidebar"),
     Command("settings", "Preferences", "ctrl+comma", "settings"),
+    Command("theme", "Show or set the theme"),
     Command("model", "Choose model"),
+    Command("scoped-models", "Choose quick-cycle models"),
     Command("provider", "Choose provider"),
+    Command("local", "Manage local backends"),
     Command("thinking", "Thinking level"),
     Command("files", "Find project files", "ctrl+f", "files"),
     Command("diff", "Review changes"),
     Command("shell", "Enter shell mode"),
     Command("skills", "Use a skill"),
+    Command("skill", "Insert a skill into the prompt"),
     Command("prompts", "Prompt templates"),
-    Command("checkpoints", "Restore state"),
+    Command("context", "Project context files"),
+    Command("resources", "Loaded resources and diagnostics"),
+    Command("tools", "Browse available tools"),
+    Command("system", "Show the active instructions"),
+    Command("checkpoints", "Restore state", aliases=("tree",)),
     Command("state", "Inspect execution state"),
+    Command("session", "Session info and stats"),
+    Command("export", "Export the session"),
     Command("name", "Rename session"),
     Command("login", "Sign in"),
     Command("logout", "Sign out"),
     Command("reload", "Reload resources"),
     Command("clear", "Clear conversation"),
     Command("cancel", "Interrupt run"),
-    Command("help", "Keyboard and commands"),
-    Command("quit", "Quit", "ctrl+d", "quit"),
+    Command("hotkeys", "Keyboard shortcuts"),
+    Command("help", "Keyboard and commands", aliases=("?",)),
+    Command("quit", "Quit", "ctrl+d", "quit", aliases=("exit",)),
 )
 
-#: Description by name: the built-in half of the `/` popover.
-BUILTIN = {command.name: command.description for command in COMMANDS}
+#: Description by name and alias: the built-in half of the `/` popover.
+BUILTIN = {
+    name: command.description for command in COMMANDS for name in (command.name, *command.aliases)
+}
 
-#: Displayed hotkey by name, for the commands that have one.
-HOTKEYS = {command.name: command.hotkey for command in COMMANDS if command.key}
+#: Displayed hotkey by name and alias, for the commands that have one.
+HOTKEYS = {
+    name: command.hotkey
+    for command in COMMANDS
+    if command.key
+    for name in (command.name, *command.aliases)
+}
 
 #: App action by name, for the commands a hotkey also reaches.
 ACTIONS = {command.name: command.action for command in COMMANDS if command.action}
