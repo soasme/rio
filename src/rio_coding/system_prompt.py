@@ -39,9 +39,14 @@ CODING_STATE_FIELD_DOCS: Mapping[str, str] = {
         "why an approach was rejected."
     ),
     "files": (
-        "A map from file path to an object describing what you have done with that "
-        "file: `status` (`read`, `edited`, or `created`) and a short `note`. Keep this "
-        "current so you do not re-read or re-explain a file you already touched."
+        "A map from file path to `status` (`read`, `edited`, or `created`), `hash`, "
+        "`context` (`total_lines` and `slices` keyed by line range), and your short `note`. "
+        "The runtime records status, hash, and content after successful file actions; "
+        "leave those fields to it. Use cached slices instead of repeating reads. "
+        "Read missing ranges with `offset`. Existing files must be read before writing "
+        "or editing; read again if their hash changed on disk. To free state space, "
+        "set `context` to null and summarize what matters in `note`. "
+        "Forgetting content keeps the status, hash, and note."
     ),
     "cwd": "The current working directory for file and shell operations.",
     "environment": (

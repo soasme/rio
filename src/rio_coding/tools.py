@@ -254,7 +254,7 @@ def create_read_tool_definition(
     ) -> AgentToolResult:
         del signal
         raw_path = _path_str_arg(arguments, "path")
-        path = _path_arg(arguments, "path", cwd=root)
+        path = resolve_path_argument(arguments, cwd=root)
         offset = _optional_int_arg(arguments, "offset")
         limit = _optional_int_arg(arguments, "limit")
 
@@ -365,7 +365,10 @@ def create_read_tool_definition(
 
         truncation = truncate_head(selected)
         start_display = start_line + 1
-        details: dict[str, JSONValue] = {"path": str(path), "truncation": truncation.to_json()}
+        details: dict[str, JSONValue] = {
+            "path": str(path),
+            "truncation": truncation.to_json(),
+        }
 
         if truncation.first_line_exceeds_limit:
             first_line_size = format_size(len(all_lines[start_line].encode()))
@@ -414,6 +417,13 @@ def create_read_tool_definition(
                 "read", str(path), f"lines {start_display}-{end_display} of {len(all_lines)}"
             )
             output = truncation.content
+
+        if not truncation.first_line_exceeds_limit:
+            # The span the model just saw. `rio_coding.file_context` caches
+            # exactly this range in the state, so a later step can read it
+            # there instead of reading the file again.
+            details["start_line"] = start_display
+            details["end_line"] = end_display
 
         return AgentToolResult(
             content=[TextContent(text=_with_header(header, output))],
@@ -501,7 +511,7 @@ def create_write_tool_definition(*, cwd: str | Path | None = None) -> ToolDefini
         signal: ToolCancellationToken | None = None,
     ) -> AgentToolResult:
         del signal
-        path = _path_arg(arguments, "path", cwd=root)
+        path = resolve_path_argument(arguments, cwd=root)
         content = _str_arg(arguments, "content")
 
         async with _file_lock(path):
@@ -566,7 +576,7 @@ def create_edit_tool_definition(*, cwd: str | Path | None = None) -> ToolDefinit
     ) -> AgentToolResult:
         del signal
         prepared = _prepare_edit_arguments(arguments)
-        path = _path_arg(prepared, "path", cwd=root)
+        path = resolve_path_argument(prepared, cwd=root)
         edits = _edits_arg(prepared)
 
         if not path.exists():
@@ -1194,12 +1204,10 @@ def _path_str_arg(arguments: Mapping[str, JSONValue], name: str) -> str:
     raise ToolInputError(f"{name} must be a string; accepted argument names: {accepted}")
 
 
-def _path_arg(arguments: Mapping[str, JSONValue], name: str, *, cwd: Path) -> Path:
-    value = _path_str_arg(arguments, name)
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        path = cwd / path
-    return path
+def resolve_path_argument(arguments: Mapping[str, JSONValue], *, cwd: Path) -> Path:
+    """Resolve a file argument, accepting the tools' shared path aliases."""
+    path = Path(_path_str_arg(arguments, "path")).expanduser()
+    return path if path.is_absolute() else cwd / path
 
 
 def _optional_int_arg(arguments: Mapping[str, JSONValue], name: str) -> int | None:

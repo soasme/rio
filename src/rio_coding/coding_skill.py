@@ -19,6 +19,8 @@ from pathlib import Path
 from rio_agent import HarnessSpec
 from rio_ai.tools import AgentTool
 from rio_ai.types import JSONObject, JSONValue
+from rio_coding.file_context import FileContext
+from rio_coding.step_footprint import CHARS_PER_TOKEN, DEFAULT_CONTEXT_WINDOW_TOKENS
 
 #: The coding skill's declared state schema, in the order it is documented to
 #: the model. A delta touching anything outside this tuple is rejected by the
@@ -53,6 +55,7 @@ class CodingSkillOptions:
     name: str = "rio-coding"
     environment: JSONObject = field(default_factory=dict)
     goal: str | None = None
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS
 
 
 def initial_coding_state(
@@ -82,6 +85,8 @@ def initial_coding_state(
 
 def build_coding_skill(options: CodingSkillOptions) -> HarnessSpec:
     """Return the `HarnessSpec` that drives a coding session."""
+    # ponytail: approximate token sizing; use provider token counts if this proves too loose.
+    budget = int(options.context_window_tokens * CHARS_PER_TOKEN * 0.4)
     return HarnessSpec(
         name=options.name,
         instructions=options.instructions,
@@ -92,6 +97,8 @@ def build_coding_skill(options: CodingSkillOptions) -> HarnessSpec:
             goal=options.goal,
         ),
         actions=tuple(options.tools),
+        state_budget_chars=budget,
+        execute_action=FileContext(cwd=Path(options.cwd), state_budget_chars=budget).execute,
     )
 
 

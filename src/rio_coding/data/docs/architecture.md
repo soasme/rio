@@ -67,11 +67,27 @@ look different from a transcript-based one:
   grows without limit. rio's per-step prompt is `P` + `Sigma_t` + `O_t`, and
   previous turns are excluded. `rio_coding.step_footprint` estimates the
   current prompt cost. The paper's `O(T)` cumulative scaling assumes bounded
-  state and observations: Rio does not impose a byte limit on model-authored
-  state, so an ever-growing state can still increase prompt costs. The
-  cumulative projection assumes the current footprint stays unchanged.
+  state and observations, so the state carries a size budget of its own
+  (`HarnessSpec.state_budget_chars`, a share of the model's context window):
+  a delta that would push the state past it is rejected the same way an
+  invalid one is, and the model frees space before retrying. The cumulative
+  projection assumes the current footprint stays unchanged.
 - **Exactly one action per step.** There is no multi-tool assistant turn and
   no parallel tool call. One step, one action, one observation.
+
+## File context
+
+The coding skill's `execute_action` callback checks file hashes, executes the
+existing tool, and returns its result plus a state delta. The loop commits the
+delta; cache-limit notes use the normal tool result.
+
+`state.files[path]` holds `status`, `hash`, and `context` (`total_lines` plus
+`slices` keyed by line range). Reads accumulate slices; writes refresh cached
+windows. Set `context` to null to forget content while keeping the hash and note.
+Content that exceeds the state budget is omitted with a note in the tool result.
+
+The journal keeps the model's original patch and the full resulting state,
+including runtime file updates. Resume uses that snapshot, not patch replay.
 
 ## Branching is checkpointing, not tree replay
 

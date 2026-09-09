@@ -8,6 +8,7 @@ other value replaces the key in place.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 
 from rio_agent.errors import StateValidationError
@@ -48,3 +49,22 @@ def validate_state_delta(
             f"state_delta references undeclared field(s) {unknown}; "
             f"declared fields are {sorted(allowed_fields)}"
         )
+
+
+def state_size_chars(state: Mapping[str, JSONValue]) -> int:
+    """Measure state in the JSON format used by the prompt."""
+    return len(json.dumps(state, indent=2, sort_keys=True))
+
+
+def check_state_budget(state: Mapping[str, JSONValue], *, max_chars: int | None) -> None:
+    """Reject oversized model state through the validation retry path."""
+    if max_chars is None:
+        return
+    size = state_size_chars(state)
+    if size <= max_chars:
+        return
+    raise StateValidationError(
+        f"the updated state would be {size} characters, over the {max_chars} limit. "
+        "Free space before retrying: set the largest values you no longer need to null, "
+        "keeping a one-line summary of each in its place."
+    )

@@ -533,3 +533,60 @@ async def test_unparseable_step_arguments_do_not_replay_the_same_call():
             max_retries=0,
         ):
             pass
+
+
+@pytest.mark.asyncio
+async def test_a_state_that_outgrows_its_budget_is_rejected_before_it_is_committed():
+    """The whole state ships every step, so it cannot be allowed to grow without bound."""
+    skill = make_skill(state_budget_chars=300)
+    provider = FakeProvider(
+        [
+            step_response(
+                reasoning="", state_delta={"notes": "x" * 500}, action="advance", args={}
+            ),
+            step_response(reasoning="", state_delta={"notes": "small"}, action="finish", args={}),
+        ]
+    )
+
+    events = [
+        event
+        async for event in run_skill_loop(
+            provider=provider,
+            model="m",
+            skill=skill,
+            observation=HarnessObservation(user_message="start"),
+        )
+    ]
+
+    error = next(e for e in events if isinstance(e, ValidationErrorEvent)).error
+    assert "over the 300 limit" in error
+    assert events[-1].state["notes"] == "small"
+
+
+async def test_action_executor_records_results_and_reports_failures():
+    async def execute(action, call_id, arguments, state, signal):
+        if arguments.get("note") == "refuse":
+            raise ValueError("advance refused")
+        result = await action.execute(call_id, arguments, signal)
+        return result, {"notes": result.text}
+
+    provider = FakeProvider(
+        [
+            step_response(reasoning="", state_delta={}, action="advance", args={"note": "a"}),
+            step_response(reasoning="", state_delta={}, action="advance", args={"note": "refuse"}),
+            step_response(reasoning="", state_delta={}, action="finish", args={}),
+        ]
+    )
+    events = [
+        event
+        async for event in run_skill_loop(
+            provider=provider,
+            model="m",
+            skill=make_skill(execute_action=execute),
+            observation=HarnessObservation(user_message="start"),
+        )
+    ]
+    assert "observed:a" in provider.calls[1][2][0].content.partition("Latest Observation:")[0]
+    assert "advance refused" in provider.calls[2][2][0].content
+    assert [e.is_error for e in events if isinstance(e, ActionEndEvent)] == [False, True, False]
+    assert events[-1].state["notes"] == "terminal"
