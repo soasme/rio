@@ -35,6 +35,7 @@ from rio_agent import (
     StepEndEvent,
     StepStartEvent,
     ValidationErrorEvent,
+    apply_state_delta,
 )
 from rio_ai.provider import ModelProvider
 from rio_ai.types import JSONObject, JSONValue
@@ -300,7 +301,11 @@ class SessionRunner:
 
             elif isinstance(event, StateUpdateEvent):
                 if pending is not None:
-                    pending.state_delta = dict(event.delta)
+                    # A step can commit twice: the model's own delta, then the
+                    # runtime's record of what the action produced. The journal
+                    # keeps one patch per step, so the second folds into the
+                    # first rather than replacing it.
+                    pending.state_delta = apply_state_delta(pending.state_delta, event.delta)
                     pending.state = dict(event.state)
                 self._state = dict(event.state)
                 yield event

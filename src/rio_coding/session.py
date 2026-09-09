@@ -828,6 +828,7 @@ def _build_skill(
             cwd=cwd,
             tools=tuple(tools),
             environment=_environment(cwd),
+            context_window_tokens=config.context_window_tokens,
         )
     )
 

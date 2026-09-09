@@ -92,7 +92,7 @@ def test_tool_definitions_expose_pi_style_prompt_metadata(tmp_path: Path) -> Non
     definition = create_edit_tool_definition(cwd=tmp_path)
 
     assert definition.prompt_snippet.startswith("Make precise file edits")
-    assert len(definition.prompt_guidelines) == 4
+    assert len(definition.prompt_guidelines) == 5
 
 
 def test_read_tool_schema_defines_line_controls_as_integers(tmp_path: Path) -> None:

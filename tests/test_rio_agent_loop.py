@@ -533,3 +533,126 @@ async def test_unparseable_step_arguments_do_not_replay_the_same_call():
             max_retries=0,
         ):
             pass
+
+
+@pytest.mark.asyncio
+async def test_a_state_that_outgrows_its_budget_is_rejected_before_it_is_committed():
+    """The whole state ships every step, so it cannot be allowed to grow without bound."""
+    skill = make_skill(state_budget_chars=300)
+    provider = FakeProvider(
+        [
+            step_response(
+                reasoning="", state_delta={"notes": "x" * 500}, action="advance", args={}
+            ),
+            step_response(reasoning="", state_delta={"notes": "small"}, action="finish", args={}),
+        ]
+    )
+
+    events = [
+        event
+        async for event in run_skill_loop(
+            provider=provider,
+            model="m",
+            skill=skill,
+            observation=HarnessObservation(user_message="start"),
+        )
+    ]
+
+    error = next(e for e in events if isinstance(e, ValidationErrorEvent)).error
+    assert "over the 300 limit" in error
+    assert events[-1].state["notes"] == "small"
+
+
+class _Observer:
+    """A minimal `ActionObserver`: refuses `advance` twice, then records the result."""
+
+    def __init__(self, *, refuse: str | None = None, note: str | None = None) -> None:
+        self.refuse = refuse
+        self.note = note
+        self.seen: list[str] = []
+
+    def before_action(self, state, name, arguments):
+        if name == self.refuse:
+            raise RuntimeError(f"{name} refused")
+
+    def after_action(self, state, name, arguments, result):
+        from rio_agent import ActionOutcome
+
+        self.seen.append(name)
+        return ActionOutcome(delta={"notes": result.text}, note=self.note)
+
+
+@pytest.mark.asyncio
+async def test_the_observer_records_the_result_the_model_could_not_know_yet():
+    observer = _Observer()
+    skill = make_skill(observer=observer)
+    provider = FakeProvider(
+        [
+            step_response(reasoning="", state_delta={}, action="advance", args={"note": "a"}),
+            step_response(reasoning="", state_delta={}, action="finish", args={}),
+        ]
+    )
+
+    events = [
+        event
+        async for event in run_skill_loop(
+            provider=provider,
+            model="m",
+            skill=skill,
+            observation=HarnessObservation(user_message="start"),
+        )
+    ]
+
+    assert observer.seen == ["advance", "finish"]
+    # The state the second step was sent already carried the first action's result.
+    assert "observed:a" in provider.calls[1][2][0].content
+    assert events[-1].state["notes"] == "terminal"
+
+
+@pytest.mark.asyncio
+async def test_an_observer_refusal_becomes_the_observation_not_a_crash():
+    observer = _Observer(refuse="advance")
+    skill = make_skill(observer=observer)
+    provider = FakeProvider(
+        [
+            step_response(reasoning="", state_delta={}, action="advance", args={"note": "a"}),
+            step_response(reasoning="", state_delta={}, action="finish", args={}),
+        ]
+    )
+
+    events = [
+        event
+        async for event in run_skill_loop(
+            provider=provider,
+            model="m",
+            skill=skill,
+            observation=HarnessObservation(user_message="start"),
+        )
+    ]
+
+    refused = next(e for e in events if isinstance(e, ActionEndEvent))
+    assert refused.is_error is True
+    assert "advance refused" in refused.result.text
+    assert observer.seen == ["finish"]
+
+
+@pytest.mark.asyncio
+async def test_an_observer_note_reaches_the_next_step():
+    observer = _Observer(note="state is full")
+    skill = make_skill(observer=observer)
+    provider = FakeProvider(
+        [
+            step_response(reasoning="", state_delta={}, action="advance", args={"note": "a"}),
+            step_response(reasoning="", state_delta={}, action="finish", args={}),
+        ]
+    )
+
+    async for _event in run_skill_loop(
+        provider=provider,
+        model="m",
+        skill=skill,
+        observation=HarnessObservation(user_message="start"),
+    ):
+        pass
+
+    assert "[state is full]" in provider.calls[1][2][0].content

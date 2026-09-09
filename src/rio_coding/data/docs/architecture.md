@@ -67,11 +67,33 @@ look different from a transcript-based one:
   grows without limit. rio's per-step prompt is `P` + `Sigma_t` + `O_t`, and
   previous turns are excluded. `rio_coding.step_footprint` estimates the
   current prompt cost. The paper's `O(T)` cumulative scaling assumes bounded
-  state and observations: Rio does not impose a byte limit on model-authored
-  state, so an ever-growing state can still increase prompt costs. The
-  cumulative projection assumes the current footprint stays unchanged.
+  state and observations, so the state carries a size budget of its own
+  (`HarnessSpec.state_budget_chars`, a share of the model's context window):
+  a delta that would push the state past it is rejected the same way an
+  invalid one is, and the model frees space before retrying. The cumulative
+  projection assumes the current footprint stays unchanged.
 - **Exactly one action per step.** There is no multi-tool assistant turn and
   no parallel tool call. One step, one action, one observation.
+
+## Files live in the state, not in the last observation
+
+An observation lives exactly one step, so a file that was read and not written
+down is gone by the next step -- and the only way back to it is another read.
+`rio_coding.file_context.FileContextObserver` closes that gap. It implements
+`rio_agent.ActionObserver`, which the runtime consults on both sides of an
+action: before, so a `write` or `edit` against a file that no longer matches
+the hash in the state is refused with "read it again" instead of composing an
+edit against content that has since changed; after, so what the action
+actually produced is recorded rather than inferred. Each entry in
+`state.files` carries `status`, `hash`, the cached `context` (`total_lines`
+plus a `slices` map keyed by line range, so a large file arrives one range at
+a time), and the model's own one-line `note`.
+
+Cached content costs prompt space on every step, so it is bounded by the same
+state budget. When a file will not fit, its `status` and `hash` are still
+recorded, the content is not, and the observation says which lever frees
+space: forget a file -- set its `context` to null and keep what you learned in
+its `note`.
 
 ## Branching is checkpointing, not tree replay
 

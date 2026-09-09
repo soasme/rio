@@ -230,3 +230,53 @@ async def test_a_rejected_delta_does_not_touch_the_file(tmp_path) -> None:
     assert "wrecked" not in (repo / "calc.py").read_text(encoding="utf-8")
     assert "not_a_declared_field" not in session.state
     assert "return a + b" in (repo / "calc.py").read_text(encoding="utf-8")
+
+
+async def test_the_file_the_agent_read_is_in_the_state_it_carries(tmp_path) -> None:
+    """A read is remembered as content, not as a note saying a read happened."""
+    session, _repo = await build_session(tmp_path, fix_the_bug_streams())
+    async for _event in session.prompt("fix calc.add"):
+        pass
+
+    entry = session.state["files"]["calc.py"]
+    assert entry["status"] == "edited"
+    assert entry["hash"]
+    assert "return a + b" in entry["context"]["slices"]["1-6"]
+
+
+async def test_a_file_changed_behind_the_agents_back_must_be_read_again(tmp_path) -> None:
+    """The hash is what stops an edit being composed against content that has moved on."""
+    streams = [
+        step_response(
+            reasoning="", state_delta={}, action="read", args={"path": "calc.py"}
+        ),
+        step_response(
+            reasoning="",
+            state_delta={},
+            action="bash",
+            args={
+                "command": "printf 'def add(a, b):\\n    return a * b\\n' > calc.py",
+                "description": "Rewriting calc.py",
+            },
+        ),
+        step_response(
+            reasoning="",
+            state_delta={},
+            action="edit",
+            args={
+                "path": "calc.py",
+                "edits": [{"oldText": "return a - b", "newText": "return a + b"}],
+            },
+        ),
+        step_response(
+            reasoning="", state_delta={}, action="respond", args={"message": "stopped"}
+        ),
+    ]
+    session, repo = await build_session(tmp_path, streams)
+    async for _event in session.prompt("fix calc.add"):
+        pass
+
+    provider = session.provider
+    refusal = provider.calls[3][2][0].content.partition("Latest Observation:")[2]
+    assert "changed on disk" in refusal
+    assert "return a * b" in (repo / "calc.py").read_text(encoding="utf-8")

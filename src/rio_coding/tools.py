@@ -365,7 +365,11 @@ def create_read_tool_definition(
 
         truncation = truncate_head(selected)
         start_display = start_line + 1
-        details: dict[str, JSONValue] = {"path": str(path), "truncation": truncation.to_json()}
+        details: dict[str, JSONValue] = {
+            "path": str(path),
+            "truncation": truncation.to_json(),
+            "total_lines": len(all_lines),
+        }
 
         if truncation.first_line_exceeds_limit:
             first_line_size = format_size(len(all_lines[start_line].encode()))
@@ -415,6 +419,13 @@ def create_read_tool_definition(
             )
             output = truncation.content
 
+        if not truncation.first_line_exceeds_limit:
+            # The span the model just saw. `rio_coding.file_context` caches
+            # exactly this range in the state, so a later step can read it
+            # there instead of reading the file again.
+            details["start_line"] = start_display
+            details["end_line"] = end_display
+
         return AgentToolResult(
             content=[TextContent(text=_with_header(header, output))],
             details=details,
@@ -432,7 +443,11 @@ def create_read_tool_definition(
             "full file, continue with offset until complete."
         ),
         prompt_snippet="Read file contents",
-        prompt_guidelines=("Use read to examine files instead of cat or sed.",),
+        prompt_guidelines=(
+            "Use read to examine files instead of cat or sed.",
+            "Check state.files[path].context first: a file already cached there does "
+            "not need reading again, only a line range that is missing from it does.",
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -520,7 +535,11 @@ def create_write_tool_definition(*, cwd: str | Path | None = None) -> ToolDefini
             "Automatically creates parent directories."
         ),
         prompt_snippet="Create or overwrite files",
-        prompt_guidelines=("Use write only for new files or complete rewrites.",),
+        prompt_guidelines=(
+            "Use write only for new files or complete rewrites.",
+            "Writing over an existing file requires state.files[path].hash to match it "
+            "on disk: read the file first, and read it again if it has changed since.",
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -625,6 +644,8 @@ def create_edit_tool_definition(*, cwd: str | Path | None = None) -> ToolDefinit
             "changes into one edit.",
             "Keep edits[].oldText as small as possible while still being unique in the file. "
             "Do not pad with large unchanged regions.",
+            "Editing requires state.files[path].hash to match the file on disk: read the "
+            "file first, and read it again if it has changed since.",
         ),
         input_schema={
             "type": "object",
@@ -1199,6 +1220,16 @@ def _path_arg(arguments: Mapping[str, JSONValue], name: str, *, cwd: Path) -> Pa
     if not path.is_absolute():
         path = cwd / path
     return path
+
+
+def resolve_path_argument(arguments: Mapping[str, JSONValue], *, cwd: Path) -> Path:
+    """Return the file a call's arguments name, resolved exactly as the tool will resolve it.
+
+    Callers outside the tool -- `rio_coding.file_context`, which has to find
+    the same file in the execution state -- need the alias handling and cwd
+    resolution to agree with the executor's, not merely resemble it.
+    """
+    return _path_arg(arguments, "path", cwd=cwd)
 
 
 def _optional_int_arg(arguments: Mapping[str, JSONValue], name: str) -> int | None:

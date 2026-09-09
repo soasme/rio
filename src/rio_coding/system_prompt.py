@@ -39,9 +39,18 @@ CODING_STATE_FIELD_DOCS: Mapping[str, str] = {
         "why an approach was rejected."
     ),
     "files": (
-        "A map from file path to an object describing what you have done with that "
-        "file: `status` (`read`, `edited`, or `created`) and a short `note`. Keep this "
-        "current so you do not re-read or re-explain a file you already touched."
+        "A map from file path to what this run knows about that file. The runtime "
+        "maintains most of it for you: after a successful read, write, or edit it sets "
+        "`status` (`read`, `edited`, or `created`), `hash` (a short digest of the file "
+        "on disk), and `context` — the file content it cached, as `total_lines` plus a "
+        "`slices` map keyed by the line range each slice covers. Work from `context` "
+        "instead of reading a file again; read a file only for a range that is not "
+        "there, with `offset`, or when the content you need genuinely is not in it. "
+        "`note` is yours: one line on why the file matters and what you concluded about "
+        "it. Writing and editing require the recorded `hash` to still match the file on "
+        "disk, so if you are told it changed, read the file again first. When the state "
+        "runs out of room, forget a file: set its `context` to `null` and move anything "
+        "you still need into its `note`. `status` and `note` survive forgetting."
     ),
     "cwd": "The current working directory for file and shell operations.",
     "environment": (

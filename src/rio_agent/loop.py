@@ -5,11 +5,18 @@ instructions, the current state, and the latest observation -- the result the
 last action produced, a message from the user, or, when a message arrives
 mid-run, both. It never sends a growing transcript. The model must respond
 with one `skill_step` tool call carrying its private reasoning, a state
-update, and an action. The runtime checks the state update and the action;
-an invalid proposal triggers a rollback-retry cycle, bounded by
+update, and an action. The runtime checks the state update and the action --
+including whether the updated state still fits the skill's state budget --
+and an invalid proposal triggers a rollback-retry cycle, bounded by
 `max_retries`, instead of being committed. On success, the runtime commits
 the new state, discards the reasoning for good, runs the action to get the
 next observation, and the loop repeats.
+
+A skill may supply an `ActionObserver`. It sees each action before it runs,
+so it can refuse one the state says is unsafe, and again after it returns,
+so what the action produced -- which the model could not know when it wrote
+its delta -- is recorded in the state rather than left in an observation
+that is discarded one step later.
 
 Because the prompt never includes history, total prompt size across a run
 grows in proportion to the number of steps, not the square of it -- see
@@ -42,7 +49,7 @@ from rio_agent.events import (
 from rio_agent.observation import HarnessObservation
 from rio_agent.prompt import STEP_TOOL_NAME, build_step_messages, skill_step_tool
 from rio_agent.skill import HarnessSpec
-from rio_agent.state import apply_state_delta, validate_state_delta
+from rio_agent.state import apply_state_delta, check_state_budget, validate_state_delta
 from rio_ai.messages import AssistantMessage, TextContent, raw_tool_arguments
 from rio_ai.provider import CancellationToken, ModelProvider
 from rio_ai.provider_events import AssistantDoneEvent, AssistantErrorEvent
@@ -151,6 +158,8 @@ async def run_skill_loop(
                 candidate_arguments = proposed_action.get("arguments", {})
                 if not isinstance(candidate_arguments, dict):
                     raise StateValidationError("action arguments must be a JSON object")
+                candidate_state = apply_state_delta(state, proposed_delta)
+                check_state_budget(candidate_state, max_chars=skill.state_budget_chars)
             except (StateValidationError, ActionNotFoundError) as exc:
                 error_note = str(exc)
                 attempt += 1
@@ -164,11 +173,13 @@ async def run_skill_loop(
             action_arguments = dict(candidate_arguments)
             break
 
-        state = apply_state_delta(state, delta)
+        state = candidate_state
         yield StateUpdateEvent(step=step, delta=dict(delta), state=dict(state))
 
         yield ActionStartEvent(step=step, name=action_name, arguments=dict(action_arguments))
         try:
+            if skill.observer is not None:
+                skill.observer.before_action(state, action_name, action_arguments)
             result = await actions[action_name].execute(
                 f"{skill.name}-step-{step}", action_arguments, signal
             )
@@ -182,13 +193,26 @@ async def run_skill_loop(
             is_error = True
         yield ActionEndEvent(step=step, name=action_name, result=result, is_error=is_error)
 
+        # What the action actually produced is knowledge the model did not have
+        # when it wrote its own delta, so the observer records it afterwards.
+        note: str | None = None
+        if skill.observer is not None and not is_error:
+            outcome = skill.observer.after_action(state, action_name, action_arguments, result)
+            note = outcome.note
+            if outcome.delta:
+                state = apply_state_delta(state, outcome.delta)
+                yield StateUpdateEvent(step=step, delta=dict(outcome.delta), state=dict(state))
+
         terminated = bool(result.terminate)
         yield StepEndEvent(step=step, state=dict(state), terminated=terminated)
 
         step += 1
         if terminated:
             break
-        current_observation = HarnessObservation(tool_call_result=result.text or "(no observation)")
+        observed = result.text or "(no observation)"
+        if note:
+            observed += f"\n\n[{note}]"
+        current_observation = HarnessObservation(tool_call_result=observed)
 
     yield RunEndEvent(steps=step, state=dict(state))
 
