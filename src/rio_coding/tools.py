@@ -239,13 +239,6 @@ def create_read_tool_definition(
     detected from file content and returned as provider-neutral image blocks.
     Images are validated and resized or converted when needed to fit inline limits.
 
-    A batch form is also accepted: passing `files` (a list of paths) instead of
-    `path` reads each of them with the shared `offset`/`limit` and returns one
-    result block per file, in order. A path that fails within a batch (missing
-    file, directory, bad offset, ...) is reported as an inline error block for
-    that entry instead of failing the whole call; `path` takes precedence over
-    `files` when both are supplied.
-
     The executor raises `ToolInputError` for invalid arguments, missing files,
     directories, and offsets beyond the end of the file. Successful results
     include the resolved path and truncation metadata in `data`, and the
@@ -255,12 +248,20 @@ def create_read_tool_definition(
     root = Path.cwd() if cwd is None else Path(cwd)
     read_operations = operations or DEFAULT_READ_OPERATIONS
 
-    async def _read_one(
-        path: Path,
-        raw_path: str,
-        offset: int | None,
-        limit: int | None,
+    async def execute(
+        arguments: Mapping[str, JSONValue],
+        signal: ToolCancellationToken | None = None,
     ) -> AgentToolResult:
+        del signal
+        raw_path = _path_str_arg(arguments, "path")
+        path = resolve_path_argument(arguments, cwd=root)
+        offset = _optional_int_arg(arguments, "offset")
+        limit = _optional_int_arg(arguments, "limit")
+
+        if offset is not None and offset < 0:
+            raise ToolInputError("offset must be at least 0")
+        if limit is not None and limit < 1:
+            raise ToolInputError("limit must be at least 1")
         read_operations.validate_path(path)
         if read_operations.size_bytes is not None and read_operations.read_prefix is not None:
             source_size = read_operations.size_bytes(path)
@@ -429,57 +430,6 @@ def create_read_tool_definition(
             details=details,
         )
 
-    async def execute(
-        arguments: Mapping[str, JSONValue],
-        signal: ToolCancellationToken | None = None,
-    ) -> AgentToolResult:
-        del signal
-        offset = _optional_int_arg(arguments, "offset")
-        limit = _optional_int_arg(arguments, "limit")
-        if offset is not None and offset < 0:
-            raise ToolInputError("offset must be at least 0")
-        if limit is not None and limit < 1:
-            raise ToolInputError("limit must be at least 1")
-
-        has_single_path = any(
-            isinstance(arguments.get(key), str) for key in ("path", *_PATH_ALIASES)
-        )
-        files = arguments.get("files")
-        if not has_single_path and files is not None:
-            return await _read_many(files, offset, limit)
-
-        raw_path = _path_str_arg(arguments, "path")
-        path = resolve_path_argument(arguments, cwd=root)
-        return await _read_one(path, raw_path, offset, limit)
-
-    async def _read_many(
-        files: JSONValue,
-        offset: int | None,
-        limit: int | None,
-    ) -> AgentToolResult:
-        if not isinstance(files, list) or not files:
-            raise ToolInputError("files must be a non-empty list of path strings")
-        combined_content: list[TextContent | ImageContent] = []
-        file_details: list[JSONValue] = []
-        for index, item in enumerate(files):
-            if not isinstance(item, str):
-                raise ToolInputError("files must be a list of path strings")
-            item_path = _resolve_path(item, cwd=root)
-            try:
-                single = await _read_one(item_path, item, offset, limit)
-            except ToolInputError as error:
-                header = _tool_header("read", str(item_path))
-                single = AgentToolResult(
-                    content=[TextContent(text=_with_header(header, f"[Error: {error}]"))],
-                    details={"path": str(item_path), "error": str(error)},
-                )
-            blocks = list(single.content)
-            if index > 0 and blocks and isinstance(blocks[0], TextContent):
-                blocks[0] = TextContent(text="\n\n" + blocks[0].text)
-            combined_content.extend(blocks)
-            file_details.append(single.details)
-        return AgentToolResult(content=combined_content, details={"files": file_details})
-
     return ToolDefinition(
         name="read",
         description=(
@@ -489,33 +439,19 @@ def create_read_tool_definition(
             "truncated to "
             f"{DEFAULT_MAX_OUTPUT_LINES} lines or {DEFAULT_MAX_OUTPUT_BYTES // 1024}KB "
             "(whichever is hit first). Use offset/limit for large files. When you need the "
-            "full file, continue with offset until complete. `path` reads a single file; to "
-            "read several files in one call, pass `files` as a list of paths instead and omit "
-            "`path` -- each file comes back as its own result block, offset/limit apply to all "
-            "of them, and a bad path in the list is reported inline rather than failing the "
-            "whole call."
+            "full file, continue with offset until complete. Reads one file per call: `path` "
+            "is a single path, never a list -- to read several files, issue several calls."
         ),
         prompt_snippet="Read file contents",
-        prompt_guidelines=(
-            "Use read to examine files instead of cat or sed.",
-            "Reading several files at once? Pass `files` (a list of paths) in one call "
-            "instead of issuing one `read` per file.",
-        ),
+        prompt_guidelines=("Use read to examine files instead of cat or sed.",),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Path to the file to read"},
-                "files": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Multiple file paths to read in one call, each returned as its own "
-                        "result block. Omit `path` when using this."
-                    ),
-                },
                 "offset": {"type": "integer", "description": "Line number to start reading from"},
                 "limit": {"type": "integer", "description": "Maximum number of lines to read"},
             },
+            "required": ["path"],
         },
         executor=execute,
     )
@@ -1268,14 +1204,10 @@ def _path_str_arg(arguments: Mapping[str, JSONValue], name: str) -> str:
     raise ToolInputError(f"{name} must be a string; accepted argument names: {accepted}")
 
 
-def _resolve_path(raw_path: str, *, cwd: Path) -> Path:
-    path = Path(raw_path).expanduser()
-    return path if path.is_absolute() else cwd / path
-
-
 def resolve_path_argument(arguments: Mapping[str, JSONValue], *, cwd: Path) -> Path:
     """Resolve a file argument, accepting the tools' shared path aliases."""
-    return _resolve_path(_path_str_arg(arguments, "path"), cwd=cwd)
+    path = Path(_path_str_arg(arguments, "path")).expanduser()
+    return path if path.is_absolute() else cwd / path
 
 
 def _optional_int_arg(arguments: Mapping[str, JSONValue], name: str) -> int | None:
