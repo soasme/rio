@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from rio_ai.tools import AgentTool, AgentToolResult
 from rio_ai.types import JSONObject, JSONValue
@@ -37,7 +37,6 @@ class ActionOutcome:
     note: str | None = None
 
 
-@runtime_checkable
 class ActionObserver(Protocol):
     """Runtime-owned state around an action, on either side of running it."""
 

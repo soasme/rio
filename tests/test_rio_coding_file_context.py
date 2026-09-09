@@ -294,3 +294,45 @@ async def test_the_next_step_sees_the_file_in_its_state_not_only_in_the_observat
     second_prompt = provider.calls[1][2][0].content
     state_block = second_prompt.partition("Latest Observation:")[0]
     assert "return a + b" in state_block
+
+
+async def test_reading_a_changed_file_drops_old_slices(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    tools = create_coding_tools(cwd=repo)
+    observer = FileContextObserver(cwd=repo)
+    state, _ = await act(observer, {"files": {}}, tools, "read", {"path": "calc.py", "limit": 2})
+    (repo / "calc.py").write_text("one\ntwo\nthree", encoding="utf-8")
+
+    state, _ = await act(observer, state, tools, "read", {"path": "calc.py", "offset": 3})
+
+    assert slices(state) == {"3-3": "three"}
+    assert entry(state)["context"]["total_lines"] == 3
+
+
+async def test_shortening_a_file_removes_slices_beyond_its_end(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    tools = create_coding_tools(cwd=repo)
+    observer = FileContextObserver(cwd=repo)
+    state, _ = await act(observer, {"files": {}}, tools, "read", {"path": "calc.py", "limit": 2})
+    state, _ = await act(observer, state, tools, "read", {"path": "calc.py", "offset": 4})
+
+    state, _ = await act(observer, state, tools, "write", {"path": "calc.py", "content": "short"})
+
+    assert slices(state) == {"1-1": "short"}
+    assert entry(state)["status"] == "edited"
+
+
+async def test_an_edit_that_exceeds_the_cache_budget_drops_old_content(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    tools = create_coding_tools(cwd=repo)
+    observer = FileContextObserver(cwd=repo, state_budget_chars=500)
+    state, _ = await act(observer, {"files": {}}, tools, "read", {"path": "calc.py"})
+    assert "context" in entry(state)
+
+    state, outcome = await act(
+        observer, state, tools, "write", {"path": "calc.py", "content": "x" * 1_000}
+    )
+
+    assert "context" not in entry(state)
+    assert entry(state)["hash"] == short_hash((repo / "calc.py").read_bytes())
+    assert "Forget a file" in outcome.note
