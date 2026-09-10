@@ -1,4 +1,4 @@
-"""Tests for rio_coding.provider_config and rio_coding.provider_runtime.
+"""Tests for rio.coding.provider_config and rio.coding.provider_runtime.
 
 Ported from tau_coding's test_provider_config.py, test_provider_runtime.py, and
 the runtime-OAuth-resolver tests in test_oauth_providers.py, with `tau` renamed
@@ -9,11 +9,11 @@ unmodified copy of tau's.
 
 test_cross_provider_history.py from tau is deliberately NOT ported here: it
 tests translating a message transcript between provider wire formats, which is
-entirely rio_ai's concern (already ported) and has nothing to do with
-provider_config/provider_runtime. rio_coding also has no transcript to
+entirely rio.ai's concern (already ported) and has nothing to do with
+provider_config/provider_runtime. rio.coding also has no transcript to
 translate in the first place -- a provider swap only carries the
 provider-neutral SKILL.state execution state (see `CodingSession.set_provider`
-in rio_coding/session.py). The replacement here,
+in rio/coding/session.py). The replacement here,
 `test_switching_provider_and_model_preserves_configuration_and_credentials`,
 asserts that swapping the active provider/model leaves every other provider's
 settings and stored credentials untouched and still resolvable.
@@ -29,20 +29,20 @@ from typing import cast
 
 import pytest
 
-import rio_coding.provider_config as provider_config
-from rio_ai import AnthropicProvider, OpenAICodexProvider, OpenAICompatibleProvider
-from rio_coding.credentials import FileCredentialStore, OAuthCredential
-from rio_coding.oauth_registry import (
+import rio.coding.provider_config as provider_config
+from rio.ai import AnthropicProvider, OpenAICodexProvider, OpenAICompatibleProvider
+from rio.coding.credentials import FileCredentialStore, OAuthCredential
+from rio.coding.oauth_registry import (
     get_oauth_provider,
     oauth_provider_ids,
     register_oauth_provider,
     reset_oauth_providers,
     unregister_oauth_provider,
 )
-from rio_coding.oauth_types import OAuthLoginCallbacks, OAuthProvider, OAuthRuntimeAuth
-from rio_coding.paths import RioPaths
-from rio_coding.provider_catalog import ModelCostTier
-from rio_coding.provider_config import (
+from rio.coding.oauth_types import OAuthLoginCallbacks, OAuthProvider, OAuthRuntimeAuth
+from rio.coding.paths import RioPaths
+from rio.coding.provider_catalog import ModelCostTier
+from rio.coding.provider_config import (
     DEFAULT_MODEL,
     AnthropicProviderConfig,
     OpenAICodexProviderConfig,
@@ -70,13 +70,13 @@ from rio_coding.provider_config import (
     set_provider_thinking_level,
     upsert_openai_compatible_provider,
 )
-from rio_coding.provider_runtime import (
+from rio.coding.provider_runtime import (
     OAuthRuntimeCredentialResolver,
     OpenAICodexCredentialResolver,
     _refresh_lock,
     create_model_provider,
 )
-from rio_coding.thinking import ThinkingLevel
+from rio.coding.thinking import ThinkingLevel
 
 # ---------------------------------------------------------------------------
 # Settings load / save / migration
@@ -2364,7 +2364,7 @@ async def test_openai_codex_credential_resolver_refreshes_expired_credentials(
             account_id="new-account",
         )
 
-    import rio_coding.provider_runtime as provider_runtime
+    import rio.coding.provider_runtime as provider_runtime
 
     monkeypatch.setattr(provider_runtime, "refresh_openai_codex_token", fake_refresh)
 
@@ -2448,7 +2448,7 @@ async def test_runtime_oauth_resolver_spends_a_refresh_token_once(tmp_path: Path
             raise AssertionError("not used")
 
         async def refresh(self, credential: OAuthCredential) -> OAuthCredential:
-            from rio_coding.oauth import OAuthError
+            from rio.coding.oauth import OAuthError
 
             if not _is_expired(credential):
                 return credential
@@ -2488,7 +2488,7 @@ async def test_runtime_oauth_resolver_spends_a_refresh_token_once(tmp_path: Path
 
 
 def _is_expired(credential: OAuthCredential) -> bool:
-    from rio_coding.oauth import oauth_credential_is_expired
+    from rio.coding.oauth import oauth_credential_is_expired
 
     return oauth_credential_is_expired(credential)
 
@@ -2528,8 +2528,8 @@ def test_builtin_oauth_registry_matches_supported_subscription_providers() -> No
 # Provider/model switch preserves configuration and credentials
 #
 # Replaces tau's test_cross_provider_history.py, which tested translating a
-# message transcript between provider wire formats (an rio_ai concern with no
-# rio_coding transcript to translate -- see module docstring above).
+# message transcript between provider wire formats (an rio.ai concern with no
+# rio.coding transcript to translate -- see module docstring above).
 # ---------------------------------------------------------------------------
 
 

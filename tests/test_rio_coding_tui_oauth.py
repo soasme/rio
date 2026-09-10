@@ -10,16 +10,16 @@ import httpx
 import pytest
 from textual.widgets import Input
 
-from rio_ai import FakeProvider
-from rio_coding import oauth
-from rio_coding.credentials import FileCredentialStore
-from rio_coding.frontend_session import ConfiguredSession
-from rio_coding.provider_config import load_provider_settings
-from rio_coding.session import CodingSession, CodingSessionConfig
-from rio_coding.session_store import InMemorySessionStorage
-from rio_tui import RioTuiApp, Settings
-from rio_tui.bridge import Question
-from rio_tui.widget_conversation import Notice
+from rio.ai import FakeProvider
+from rio.coding import oauth
+from rio.coding.credentials import FileCredentialStore
+from rio.coding.frontend_session import ConfiguredSession
+from rio.coding.provider_config import load_provider_settings
+from rio.coding.session import CodingSession, CodingSessionConfig
+from rio.coding.session_store import InMemorySessionStorage
+from rio.tui import RioTuiApp, Settings
+from rio.tui.bridge import Question
+from rio.tui.widget_conversation import Notice
 
 
 @pytest.mark.parametrize(

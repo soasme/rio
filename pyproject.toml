@@ -1,7 +1,7 @@
 [project]
 name = "rio"
 version = "0.4.2"
-description = "rio_ai: a ported multi-provider LLM streaming SDK. rio_agent: a SKILL.state long-horizon agent runtime (arXiv:2608.26263). rio_coding: a SKILL.state coding agent."
+description = "rio.ai: a ported multi-provider LLM streaming SDK. rio.agent: a SKILL.state long-horizon agent runtime (arXiv:2608.26263). rio.coding: a SKILL.state coding agent."
 readme = "README.md"
 authors = [
     { name = "Ju Lin", email = "soasme@gmail.com" }
@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.scripts]
-rio = "rio_coding.cli:app"
+rio = "rio.coding.cli:app"
 
 [project.urls]
 Repository = "https://github.com/soasme/rio"
@@ -34,7 +34,7 @@ requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/rio_ai", "src/rio_agent", "src/rio_coding", "src/rio_tui"]
+packages = ["src/rio"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

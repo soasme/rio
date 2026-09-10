@@ -7,12 +7,12 @@ import pytest
 from typer.testing import CliRunner
 
 from conftest import step_response
-from rio_ai import FakeProvider
-from rio_coding import cli
-from rio_coding.paths import RioPaths
-from rio_coding.rendering import PrintOutputMode
-from rio_coding.session_manager import SessionManager
-from rio_coding.session_store import InMemorySessionStorage, StepEntry
+from rio.ai import FakeProvider
+from rio.coding import cli
+from rio.coding.paths import RioPaths
+from rio.coding.rendering import PrintOutputMode
+from rio.coding.session_manager import SessionManager
+from rio.coding.session_store import InMemorySessionStorage, StepEntry
 
 runner = CliRunner()
 
@@ -151,9 +151,9 @@ async def test_configured_run_resumes_and_closes_provider(monkeypatch, tmp_path)
 
 
 async def test_api_key_login_logout(monkeypatch, tmp_path):
-    from rio_coding import auth_commands
-    from rio_coding.credentials import FileCredentialStore
-    from rio_coding.provider_config import OpenAICompatibleProviderConfig
+    from rio.coding import auth_commands
+    from rio.coding.credentials import FileCredentialStore
+    from rio.coding.provider_config import OpenAICompatibleProviderConfig
 
     store = FileCredentialStore(tmp_path / "auth.json")
     saved = []
@@ -184,8 +184,8 @@ async def test_api_key_login_logout(monkeypatch, tmp_path):
 async def test_frontend_switch_constructs_and_closes_provider(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
-    from rio_coding import frontend_session
-    from rio_coding.session import CodingSession, CodingSessionConfig
+    from rio.coding import frontend_session
+    from rio.coding.session import CodingSession, CodingSessionConfig
 
     candidates = []
 
@@ -233,8 +233,8 @@ async def test_frontend_switch_constructs_and_closes_provider(monkeypatch, tmp_p
 
 
 async def test_frontend_resume_changes_journal(monkeypatch, tmp_path):
-    from rio_coding import frontend_session
-    from rio_coding.session import CodingSession, CodingSessionConfig
+    from rio.coding import frontend_session
+    from rio.coding.session import CodingSession, CodingSessionConfig
 
     class Provider(FakeProvider):
         async def aclose(self):
@@ -264,9 +264,9 @@ async def test_frontend_resume_changes_journal(monkeypatch, tmp_path):
 
 
 async def test_oauth_login_uses_callbacks_and_persists(monkeypatch, tmp_path):
-    from rio_coding import auth_commands
-    from rio_coding.credentials import FileCredentialStore, OAuthCredential
-    from rio_coding.provider_config import OpenAICompatibleProviderConfig
+    from rio.coding import auth_commands
+    from rio.coding.credentials import FileCredentialStore, OAuthCredential
+    from rio.coding.provider_config import OpenAICompatibleProviderConfig
 
     store = FileCredentialStore(tmp_path / "oauth.json")
     callbacks = object()
@@ -296,8 +296,8 @@ async def test_oauth_login_uses_callbacks_and_persists(monkeypatch, tmp_path):
 
 
 async def test_failed_switch_keeps_live_provider(monkeypatch, tmp_path):
-    from rio_coding.frontend_session import ConfiguredSession
-    from rio_coding.session import CodingSession, CodingSessionConfig
+    from rio.coding.frontend_session import ConfiguredSession
+    from rio.coding.session import CodingSession, CodingSessionConfig
 
     class Provider(FakeProvider):
         closed = False
@@ -336,10 +336,10 @@ def test_tui_starts_without_key_and_can_login_then_run(monkeypatch, tmp_path):
 
     from textual.widgets import Input
 
-    import rio_tui as tui
-    from rio_coding.credentials import FileCredentialStore
-    from rio_tui.dialogs import Picker
-    from rio_tui.widget_conversation import Notice
+    import rio.tui as tui
+    from rio.coding.credentials import FileCredentialStore
+    from rio.tui.dialogs import Picker
+    from rio.tui.widget_conversation import Notice
 
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -383,7 +383,7 @@ def test_tui_starts_without_key_and_can_login_then_run(monkeypatch, tmp_path):
                 assert FileCredentialStore().get(config.credential_name) == "test-api-key"
                 return provider
 
-            monkeypatch.setattr("rio_coding.frontend_session.create_model_provider", authenticated)
+            monkeypatch.setattr("rio.coding.frontend_session.create_model_provider", authenticated)
             app.workspace.submit("/login openai")
             await pilot.pause()
             app.screen.query_one(Input).value = "test-api-key"
@@ -417,14 +417,14 @@ def test_headless_mode_still_reports_missing_key(monkeypatch, tmp_path):
 async def test_login_survives_restart_and_logout(monkeypatch, tmp_path, auth_method):
     from pathlib import Path
 
-    from rio_coding import auth_commands
-    from rio_coding.credentials import FileCredentialStore, OAuthCredential
-    from rio_coding.provider_config import (
+    from rio.coding import auth_commands
+    from rio.coding.credentials import FileCredentialStore, OAuthCredential
+    from rio.coding.provider_config import (
         load_provider_settings,
         provider_has_usable_credentials,
         resolve_provider_selection,
     )
-    from rio_coding.provider_runtime import create_model_provider
+    from rio.coding.provider_runtime import create_model_provider
 
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -470,9 +470,9 @@ async def test_login_survives_restart_and_logout(monkeypatch, tmp_path, auth_met
 async def test_failed_login_preserves_startup_provider(monkeypatch, tmp_path):
     from pathlib import Path
 
-    from rio_coding import auth_commands
-    from rio_coding.credentials import FileCredentialStore
-    from rio_coding.provider_config import load_provider_settings
+    from rio.coding import auth_commands
+    from rio.coding.credentials import FileCredentialStore
+    from rio.coding.provider_config import load_provider_settings
 
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     await auth_commands.login_provider("openai", api_key="test-key")
@@ -490,8 +490,8 @@ async def test_failed_login_preserves_startup_provider(monkeypatch, tmp_path):
 
 
 async def test_frontend_opens_independent_session(monkeypatch, tmp_path):
-    from rio_coding.frontend_session import ConfiguredSession
-    from rio_coding.session import CodingSession, CodingSessionConfig
+    from rio.coding.frontend_session import ConfiguredSession
+    from rio.coding.session import CodingSession, CodingSessionConfig
 
     class Provider(FakeProvider):
         closed = False

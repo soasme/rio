@@ -15,12 +15,12 @@ rather than asserted in the abstract.
 from __future__ import annotations
 
 from conftest import step_response
-from rio_ai import AgentTool, AgentToolResult, FakeProvider, TextContent
-from rio_coding.paths import RioPaths
-from rio_coding.resources import RioResourcePaths
-from rio_coding.session import CodingSession, CodingSessionConfig
-from rio_coding.session_store import InMemorySessionStorage, StepEntry
-from rio_coding.step_footprint import estimate_text_tokens
+from rio.ai import AgentTool, AgentToolResult, FakeProvider, TextContent
+from rio.coding.paths import RioPaths
+from rio.coding.resources import RioResourcePaths
+from rio.coding.session import CodingSession, CodingSessionConfig
+from rio.coding.session_store import InMemorySessionStorage, StepEntry
+from rio.coding.step_footprint import estimate_text_tokens
 
 STEPS = 100
 OBSERVATION_SIZE = 400

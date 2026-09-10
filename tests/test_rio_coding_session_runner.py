@@ -11,16 +11,16 @@ from __future__ import annotations
 import pytest
 
 from conftest import step_response
-from rio_agent import HarnessSpec, ReasoningDiscardedEvent, StepEndEvent
-from rio_ai import AgentTool, AgentToolResult, FakeProvider, TextContent
-from rio_coding.events import (
+from rio.agent import HarnessSpec, ReasoningDiscardedEvent, StepEndEvent
+from rio.ai import AgentTool, AgentToolResult, FakeProvider, TextContent
+from rio.coding.events import (
     AgentSettledEvent,
     EntryAppendedEvent,
     QueueUpdateEvent,
     SessionRunEndEvent,
 )
-from rio_coding.session_runner import SessionRunner, SessionRunnerConfig
-from rio_coding.session_store import (
+from rio.coding.session_runner import SessionRunner, SessionRunnerConfig
+from rio.coding.session_store import (
     InMemorySessionStorage,
     ReasoningEntry,
     StepEntry,

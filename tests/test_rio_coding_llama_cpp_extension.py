@@ -10,17 +10,17 @@ from pathlib import Path
 import httpx
 import pytest
 
-from rio_agent.harness import HarnessCancellationToken as SimpleCancellationToken
-from rio_ai.env import DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS
-from rio_coding.credentials import FileCredentialStore
-from rio_coding.extensions import ExtensionRuntime
-from rio_coding.extensions.builtins.llama_cpp import service as llama_service
-from rio_coding.extensions.builtins.llama_cpp.huggingface import discover_hf_token
-from rio_coding.extensions.builtins.llama_cpp.router import (
+from rio.agent.harness import HarnessCancellationToken as SimpleCancellationToken
+from rio.ai.env import DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS
+from rio.coding.credentials import FileCredentialStore
+from rio.coding.extensions import ExtensionRuntime
+from rio.coding.extensions.builtins.llama_cpp import service as llama_service
+from rio.coding.extensions.builtins.llama_cpp.huggingface import discover_hf_token
+from rio.coding.extensions.builtins.llama_cpp.router import (
     RouterCapability,
     watch_router_download_progress,
 )
-from rio_coding.extensions.builtins.llama_cpp.service import (
+from rio.coding.extensions.builtins.llama_cpp.service import (
     LLAMA_CPP_API_KEY_ENV,
     LLAMA_CPP_DEFAULT_ENDPOINT,
     LLAMA_CPP_ENDPOINT_ENV,
@@ -28,18 +28,18 @@ from rio_coding.extensions.builtins.llama_cpp.service import (
     LlamaCppService,
     normalize_llama_cpp_endpoint,
 )
-from rio_coding.extensions.builtins.llama_cpp.state import (
+from rio.coding.extensions.builtins.llama_cpp.state import (
     LLAMA_CPP_CREDENTIAL_PREFIX,
     LlamaCppIntegrationState,
     LlamaCppStateError,
     LlamaCppStateStore,
     LlamaCppStoredModel,
 )
-from rio_coding.extensions.providers import ProviderRefreshContext, ResolvedProviderAuth
-from rio_coding.local_backends import LocalOperationContext, LocalProgress
-from rio_coding.paths import RioPaths
-from rio_coding.provider_runtime import create_dynamic_model_provider
-from rio_coding.resources import RioResourcePaths
+from rio.coding.extensions.providers import ProviderRefreshContext, ResolvedProviderAuth
+from rio.coding.local_backends import LocalOperationContext, LocalProgress
+from rio.coding.paths import RioPaths
+from rio.coding.provider_runtime import create_dynamic_model_provider
+from rio.coding.resources import RioResourcePaths
 
 
 def isolate_home(monkeypatch, tmp_path):
@@ -555,7 +555,7 @@ def test_state_schema_validation_and_legacy_recovery(tmp_path: Path) -> None:
 def test_state_replace_is_atomic_on_write_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import rio_coding.extensions.builtins.llama_cpp.state as state_module
+    import rio.coding.extensions.builtins.llama_cpp.state as state_module
 
     store = LlamaCppStateStore(tmp_path / "state.json")
     store.save(_state())
@@ -747,7 +747,7 @@ async def test_credential_cleanup_failure_is_reported_and_reset_is_recoverable(
 async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from rio_coding.cli import run_configured_session
+    from rio.coding.cli import run_configured_session
 
     isolate_home(monkeypatch, tmp_path)
 
@@ -805,7 +805,7 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
         return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout)
 
     monkeypatch.setattr(llama_service, "create_async_client", fake_client)
-    import rio_ai.openai_compatible as compatible
+    import rio.ai.openai_compatible as compatible
 
     monkeypatch.setattr(compatible, "create_async_client", fake_client)
     ok = await run_configured_session(
@@ -825,8 +825,8 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
 async def test_tui_explicit_dynamic_startup_uses_cached_state_during_downtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import rio_tui.app as tui_app
-    from rio_coding.cli import run_configured_session
+    import rio.tui.app as tui_app
+    from rio.coding.cli import run_configured_session
 
     isolate_home(monkeypatch, tmp_path)
     paths = RioPaths(home=tmp_path / ".rio", agents_home=tmp_path / ".agents")
@@ -1447,12 +1447,12 @@ async def test_llama_scoped_reference_persists_pair_and_stays_inert_when_unloade
 ) -> None:
     from dataclasses import replace
 
-    from rio_coding.provider_config import (
+    from rio.coding.provider_config import (
         OpenAICompatibleProviderConfig,
         ProviderSettings,
         load_provider_settings,
     )
-    from rio_coding.session import CodingSession, ModelChoice
+    from rio.coding.session import CodingSession, ModelChoice
 
     paths = RioPaths(home=tmp_path / "rio", agents_home=tmp_path / "agents")
     LlamaCppStateStore(paths=paths).save(_state())

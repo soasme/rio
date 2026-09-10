@@ -6,10 +6,10 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from rio_ai._provider_events import ProviderEvent, ProviderResponseEndEvent, ProviderToolCallEvent
-from rio_ai.messages import AssistantMessage, ToolCall, malformed_tool_arguments
-from rio_ai.provider_events import AssistantDoneEvent
-from rio_ai.stream import canonicalize_provider_stream
+from rio.ai._provider_events import ProviderEvent, ProviderResponseEndEvent, ProviderToolCallEvent
+from rio.ai.messages import AssistantMessage, ToolCall, malformed_tool_arguments
+from rio.ai.provider_events import AssistantDoneEvent
+from rio.ai.stream import canonicalize_provider_stream
 
 
 async def _canonicalize(events: list[ProviderEvent]) -> AssistantMessage:

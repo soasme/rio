@@ -19,10 +19,10 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from rio_coding import updater
-from rio_coding.reload import CodingReloadSummary, ReloadCategorySummary
-from rio_coding.self_docs import rio_docs_path, rio_examples_path, rio_readme_path
-from rio_coding.update_check import (
+from rio.coding import updater
+from rio.coding.reload import CodingReloadSummary, ReloadCategorySummary
+from rio.coding.self_docs import rio_docs_path, rio_examples_path, rio_readme_path
+from rio.coding.update_check import (
     PYPI_JSON_URL,
     UPDATE_CHECK_TIMEOUT_SECONDS,
     ReleaseNoteSection,
@@ -33,7 +33,7 @@ from rio_coding.update_check import (
     startup_release_notes_notice,
     startup_update_notice,
 )
-from rio_coding.updater import detect_install_method, update_rio
+from rio.coding.updater import detect_install_method, update_rio
 
 # -- update_check --------------------------------------------------------
 
@@ -255,7 +255,7 @@ def test_startup_release_notes_notice_reports_upgrade_once(tmp_path) -> None:
 def test_startup_release_notes_notice_survives_missing_release_notes_file(
     tmp_path, monkeypatch
 ) -> None:
-    import rio_coding.update_check as update_check_module
+    import rio.coding.update_check as update_check_module
 
     monkeypatch.setattr(
         update_check_module, "RELEASE_NOTES_PATH", tmp_path / "missing" / "releases.json"
@@ -272,7 +272,7 @@ def test_startup_release_notes_notice_survives_missing_release_notes_file(
 def test_startup_release_notes_notice_survives_malformed_release_notes_file(
     tmp_path, monkeypatch
 ) -> None:
-    import rio_coding.update_check as update_check_module
+    import rio.coding.update_check as update_check_module
 
     broken_path = tmp_path / "releases.json"
     broken_path.write_text("{not json", encoding="utf-8")
@@ -894,9 +894,9 @@ def test_architecture_doc_cites_the_skill_state_paper_and_the_three_packages() -
     text = (rio_docs_path() / "architecture.md").read_text(encoding="utf-8")
     assert "SKILL.state" in text
     assert "arXiv:2608.26263" in text
-    assert "rio_ai" in text
-    assert "rio_agent" in text
-    assert "rio_coding" in text
+    assert "rio.ai" in text
+    assert "rio.agent" in text
+    assert "rio.coding" in text
     assert "session_store" in text
     assert "session_runner" in text
 

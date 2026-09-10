@@ -1,12 +1,12 @@
-"""Tests for the `/v1/responses` SSE parser in `rio_ai.openai_compatible`."""
+"""Tests for the `/v1/responses` SSE parser in `rio.ai.openai_compatible`."""
 
 from __future__ import annotations
 
 import json
 from itertools import count
 
-from rio_ai._provider_events import ProviderResponseEndEvent
-from rio_ai.openai_compatible import _ResponsesStreamParser
+from rio.ai._provider_events import ProviderResponseEndEvent
+from rio.ai.openai_compatible import _ResponsesStreamParser
 
 _opaque_ids = count()
 

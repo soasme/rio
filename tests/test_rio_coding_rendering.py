@@ -1,9 +1,9 @@
-"""Tests for rio_coding's non-TUI renderers and session export.
+"""Tests for rio.coding's non-TUI renderers and session export.
 
-Covers `rio_coding.rendering.{base,plain,json,steps}` and
-`rio_coding.session_export`. There is no conversation transcript to render
+Covers `rio.coding.rendering.{base,plain,json,steps}` and
+`rio.coding.session_export`. There is no conversation transcript to render
 under SKILL.state, so these tests exercise the redesigned surface: live
-per-step rendering of `rio_agent`/`rio_coding` events, an after-the-fact
+per-step rendering of `rio.agent`/`rio.coding` events, an after-the-fact
 step account read back from the journal, and a self-contained HTML export.
 """
 
@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from rio_agent import (
+from rio.agent import (
     ActionEndEvent,
     ActionStartEvent,
     HarnessObservation,
@@ -23,9 +23,9 @@ from rio_agent import (
     StepStartEvent,
     ValidationErrorEvent,
 )
-from rio_ai.tools import AgentToolResult
-from rio_coding.events import AutoRetryEndEvent, AutoRetryStartEvent, SessionRunEndEvent
-from rio_coding.rendering import (
+from rio.ai.tools import AgentToolResult
+from rio.coding.events import AutoRetryEndEvent, AutoRetryStartEvent, SessionRunEndEvent
+from rio.coding.rendering import (
     JsonEventRenderer,
     PlainEventRenderer,
     PrintOutputMode,
@@ -33,14 +33,14 @@ from rio_coding.rendering import (
     render_completed_run,
     render_run_steps,
 )
-from rio_coding.session_export import (
+from rio.coding.session_export import (
     SessionExportError,
     export_session_html,
     export_session_jsonl,
     normalize_export_format,
     render_session_html,
 )
-from rio_coding.session_store import (
+from rio.coding.session_store import (
     ActionRecord,
     ReasoningEntry,
     StepEntry,

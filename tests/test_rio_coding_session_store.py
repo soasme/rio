@@ -11,8 +11,8 @@ import json
 
 import pytest
 
-from rio_coding.coding_skill import describe_state, plan_progress, touched_files
-from rio_coding.session_store import (
+from rio.coding.coding_skill import describe_state, plan_progress, touched_files
+from rio.coding.session_store import (
     ActionRecord,
     InMemorySessionStorage,
     JsonlSessionStorage,

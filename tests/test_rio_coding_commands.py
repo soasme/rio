@@ -7,17 +7,17 @@ from pathlib import Path
 
 import pytest
 
-from rio_coding.commands import (
+from rio.coding.commands import (
     CommandRegistry,
     CommandResult,
     SlashCommand,
     create_default_command_registry,
     format_reload_summary,
 )
-from rio_coding.reload import CodingReloadSummary, ReloadCategorySummary
-from rio_coding.resources import ResourceDiagnostic
-from rio_coding.session_manager import SessionManager
-from rio_coding.step_footprint import StepFootprint
+from rio.coding.reload import CodingReloadSummary, ReloadCategorySummary
+from rio.coding.resources import ResourceDiagnostic
+from rio.coding.session_manager import SessionManager
+from rio.coding.step_footprint import StepFootprint
 
 
 @dataclass

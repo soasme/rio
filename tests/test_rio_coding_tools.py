@@ -10,9 +10,9 @@ from time import monotonic
 import pytest
 from PIL import Image
 
-import rio_coding.image_processing as image_processing
-from rio_ai import ImageContent
-from rio_coding.image_processing import (
+import rio.coding.image_processing as image_processing
+from rio.ai import ImageContent
+from rio.coding.image_processing import (
     DEFAULT_MAX_SOURCE_IMAGE_BYTES,
     ImageProcessingFailure,
     ProcessedImage,
@@ -20,7 +20,7 @@ from rio_coding.image_processing import (
     process_image,
     unsupported_image_reason,
 )
-from rio_coding.tools import (
+from rio.coding.tools import (
     ImageSupportState,
     ReadOperations,
     create_bash_tool,

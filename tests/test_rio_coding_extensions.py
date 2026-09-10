@@ -5,11 +5,11 @@ from pathlib import Path
 import pytest
 
 from conftest import step_response
-from rio_ai import FakeProvider
-from rio_coding.extensions import ExtensionError
-from rio_coding.resources import RioResourcePaths
-from rio_coding.session import CodingSession, CodingSessionConfig
-from rio_coding.session_store import CustomEntry, InMemorySessionStorage
+from rio.ai import FakeProvider
+from rio.coding.extensions import ExtensionError
+from rio.coding.resources import RioResourcePaths
+from rio.coding.session import CodingSession, CodingSessionConfig
+from rio.coding.session_store import CustomEntry, InMemorySessionStorage
 
 
 async def test_extension_hooks_state_actions_and_reload(tmp_path: Path):
@@ -17,8 +17,8 @@ async def test_extension_hooks_state_actions_and_reload(tmp_path: Path):
     directory.mkdir()
     extension = directory / "example.py"
     extension.write_text("""
-from rio_ai import AgentTool, AgentToolResult, TextContent
-from rio_coding.extensions import InputHookResult, ToolCallHookResult, ToolResultHookResult
+from rio.ai import AgentTool, AgentToolResult, TextContent
+from rio.coding.extensions import InputHookResult, ToolCallHookResult, ToolResultHookResult
 API = None
 SEEN = []
 def setup(api):

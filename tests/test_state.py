@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from rio_agent.errors import StateValidationError
-from rio_agent.state import apply_state_delta, validate_state_delta
+from rio.agent.errors import StateValidationError
+from rio.agent.state import apply_state_delta, validate_state_delta
 
 
 def test_apply_state_delta_replaces_and_adds_fields():

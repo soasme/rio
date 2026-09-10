@@ -1,6 +1,6 @@
 """Tests for `run_skill_loop`, the SKILL.state algorithm (arXiv:2608.26263 Algorithm 1).
 
-Uses `rio_ai.FakeProvider` to script deterministic model responses -- no
+Uses `rio.ai.FakeProvider` to script deterministic model responses -- no
 network, no API key -- so these assert the runtime's own guarantees:
 state commits correctly, reasoning is never replayed, invalid proposals
 roll back and retry, and per-step prompt size stays bounded regardless of
@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import make_skill, step_response
-from rio_agent import (
+from rio.agent import (
     ActionEndEvent,
     HarnessObservation,
     ProviderResponseError,
@@ -24,7 +24,7 @@ from rio_agent import (
     ValidationErrorEvent,
     run_skill_loop,
 )
-from rio_ai import FakeProvider
+from rio.ai import FakeProvider
 
 
 @pytest.mark.asyncio
@@ -235,7 +235,7 @@ async def test_retries_exhausted_raises():
 
 @pytest.mark.asyncio
 async def test_missing_skill_step_tool_call_is_rejected():
-    from rio_ai import AssistantDoneEvent, AssistantMessage, TextContent
+    from rio.ai import AssistantDoneEvent, AssistantMessage, TextContent
 
     skill = make_skill()
     plain_message = AssistantMessage(content=[TextContent(text="no tool call")], stop_reason="stop")
@@ -254,7 +254,7 @@ async def test_missing_skill_step_tool_call_is_rejected():
 
 @pytest.mark.asyncio
 async def test_a_wrongly_named_tool_call_names_what_was_called():
-    from rio_ai import AssistantDoneEvent, AssistantMessage, ToolCall
+    from rio.ai import AssistantDoneEvent, AssistantMessage, ToolCall
 
     skill = make_skill()
     message = AssistantMessage(
@@ -281,7 +281,7 @@ async def test_a_provider_error_is_raised_instead_of_retried_as_a_bad_step():
     Reporting one as a malformed step burned the retry budget and replaced the
     provider's message with a protocol complaint the user could not act on.
     """
-    from rio_ai import AssistantErrorEvent, AssistantMessage
+    from rio.ai import AssistantErrorEvent, AssistantMessage
 
     skill = make_skill()
     error = AssistantMessage(content=[], stop_reason="error", error_message="429 rate limited")
@@ -307,7 +307,7 @@ async def test_a_failing_action_becomes_an_observation_instead_of_crashing():
     the whole recovery path -- there is no history to unwind.
     """
     from conftest import FINISH
-    from rio_ai import AgentTool
+    from rio.ai import AgentTool
 
     async def _explode(tool_call_id, arguments, signal=None, on_update=None):
         raise RuntimeError("disk is on fire")
@@ -473,8 +473,8 @@ async def test_a_truncated_step_call_is_reported_as_truncation_not_bad_shape():
     be a JSON object" -- a note that sent the model back to re-send the same
     oversized call until the retry budget ran out and the run died.
     """
-    from rio_agent.prompt import STEP_TOOL_NAME
-    from rio_ai import AssistantDoneEvent, AssistantMessage, ToolCall, malformed_tool_arguments
+    from rio.agent.prompt import STEP_TOOL_NAME
+    from rio.ai import AssistantDoneEvent, AssistantMessage, ToolCall, malformed_tool_arguments
 
     skill = make_skill()
     partial = '{"state_delta": {}, "action": {"name": "advance", "arguments": {"note": "aaa'
@@ -512,8 +512,8 @@ async def test_a_truncated_step_call_is_reported_as_truncation_not_bad_shape():
 @pytest.mark.asyncio
 async def test_unparseable_step_arguments_do_not_replay_the_same_call():
     """Malformed arguments with no truncation still get an actionable note."""
-    from rio_agent.prompt import STEP_TOOL_NAME
-    from rio_ai import AssistantDoneEvent, AssistantMessage, ToolCall, malformed_tool_arguments
+    from rio.agent.prompt import STEP_TOOL_NAME
+    from rio.ai import AssistantDoneEvent, AssistantMessage, ToolCall, malformed_tool_arguments
 
     skill = make_skill()
     message = AssistantMessage(

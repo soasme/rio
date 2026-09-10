@@ -12,18 +12,18 @@ from __future__ import annotations
 
 import json
 
-from rio_ai.messages import AssistantMessage, AssistantMessageDiagnostic, TextContent
-from rio_ai.tools import AgentTool, AgentToolResult
-from rio_coding.branch_summary import summarize_state_diff
-from rio_coding.diagnostics import (
+from rio.ai.messages import AssistantMessage, AssistantMessageDiagnostic, TextContent
+from rio.ai.tools import AgentTool, AgentToolResult
+from rio.coding.branch_summary import summarize_state_diff
+from rio.coding.diagnostics import (
     AgentCallDiagnosticContext,
     AgentCallDiagnosticLogger,
     new_agent_call_run_id,
 )
-from rio_coding.paths import RioPaths
-from rio_coding.session_stats import calculate_session_stats
-from rio_coding.session_store import ActionRecord, StepEntry
-from rio_coding.session_store.entries import (
+from rio.coding.paths import RioPaths
+from rio.coding.session_stats import calculate_session_stats
+from rio.coding.session_store import ActionRecord, StepEntry
+from rio.coding.session_store.entries import (
     BranchSummaryEntry,
     ModelChangeEntry,
     ReasoningEntry,
@@ -31,8 +31,8 @@ from rio_coding.session_store.entries import (
     TurnEntry,
     ValidationFailureEntry,
 )
-from rio_coding.session_usage import collect_session_usage, estimated_step_cost
-from rio_coding.step_footprint import (
+from rio.coding.session_usage import collect_session_usage, estimated_step_cost
+from rio.coding.step_footprint import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     StepFootprint,
     context_window_utilization,

@@ -1,5 +1,5 @@
 """Tests for project-context discovery, skills, prompt templates, thinking
-levels, shell config, and skill-instruction assembly in `rio_coding`.
+levels, shell config, and skill-instruction assembly in `rio.coding`.
 """
 
 from __future__ import annotations
@@ -9,21 +9,21 @@ from pathlib import Path
 
 import pytest
 
-from rio_ai.tools import AgentTool, AgentToolResult
-from rio_coding.context import (
+from rio.ai.tools import AgentTool, AgentToolResult
+from rio.coding.context import (
     discover_project_context,
     discover_project_context_with_diagnostics,
 )
-from rio_coding.paths import RioPaths
-from rio_coding.prompt_templates import (
+from rio.coding.paths import RioPaths
+from rio.coding.prompt_templates import (
     PromptTemplate,
     expand_prompt_template_command,
     load_prompt_templates,
     load_prompt_templates_with_diagnostics,
     render_prompt_template,
 )
-from rio_coding.resources import ResourceError, RioResourcePaths
-from rio_coding.skills import (
+from rio.coding.resources import ResourceError, RioResourcePaths
+from rio.coding.skills import (
     Skill,
     build_skill_index,
     expand_skill_command,
@@ -34,7 +34,7 @@ from rio_coding.skills import (
     parse_skill_invocation,
     shadowed_skill_diagnostics,
 )
-from rio_coding.system_prompt import (
+from rio.coding.system_prompt import (
     CODING_STATE_FIELD_DOCS,
     BuildSystemPromptOptions,
     ProjectContextFile,
@@ -47,7 +47,7 @@ from rio_coding.system_prompt import (
     format_state_field_docs,
     format_step_protocol,
 )
-from rio_coding.thinking import (
+from rio.coding.thinking import (
     DEFAULT_THINKING_LEVEL,
     THINKING_LEVELS,
     next_thinking_level,
@@ -534,10 +534,10 @@ def test_reasoning_effort_maps_off_to_none() -> None:
 
 # --- shell_config.py --------------------------------------------------------
 #
-# NOTE: shell_config.py imports `TrustDefault` from `rio_coding.project_trust`,
+# NOTE: shell_config.py imports `TrustDefault` from `rio.coding.project_trust`,
 # which is a sibling slice not yet ported at the time this file was written.
 # Its tests are intentionally omitted here (see final report) rather than
-# left broken; re-add them once `rio_coding.project_trust` exists, porting
+# left broken; re-add them once `rio.coding.project_trust` exists, porting
 # tau's tests/test_shell_config.py verbatim with the tau->rio renames.
 
 
@@ -765,6 +765,6 @@ def test_format_state_field_docs_accepts_a_custom_mapping() -> None:
 
 
 def test_coding_state_field_docs_covers_the_declared_schema() -> None:
-    from rio_coding.coding_skill import CODING_STATE_FIELDS
+    from rio.coding.coding_skill import CODING_STATE_FIELDS
 
     assert set(CODING_STATE_FIELD_DOCS) == set(CODING_STATE_FIELDS)

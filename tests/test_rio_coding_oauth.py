@@ -1,4 +1,4 @@
-"""Tests for rio_coding's credential store and OAuth provider stack.
+"""Tests for rio.coding's credential store and OAuth provider stack.
 
 Ported from tau's test_credentials.py, test_oauth.py, and
 test_oauth_providers.py. All network calls use httpx.MockTransport fakes;
@@ -7,7 +7,7 @@ nothing hits a real endpoint.
 Tests in tau's test_oauth_providers.py that exercise
 `OAuthRuntimeCredentialResolver` / `provider_config_from_catalog_entry`
 (from tau_coding.provider_runtime / tau_coding.provider_config) are not
-ported here: those modules are a different slice of the rio_coding port and
+ported here: those modules are a different slice of the rio.coding port and
 do not exist yet.
 """
 
@@ -23,8 +23,8 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from rio_coding.credentials import CredentialStoreError, FileCredentialStore, OAuthCredential
-from rio_coding.oauth import (
+from rio.coding.credentials import CredentialStoreError, FileCredentialStore, OAuthCredential
+from rio.coding.oauth import (
     OPENAI_CODEX_ACCOUNT_CLAIM,
     OPENAI_CODEX_CLIENT_ID,
     OAuthError,
@@ -33,21 +33,21 @@ from rio_coding.oauth import (
     parse_authorization_input,
     refresh_openai_codex_token,
 )
-from rio_coding.oauth_anthropic import (
+from rio.coding.oauth_anthropic import (
     ANTHROPIC_CLIENT_ID,
     ANTHROPIC_TOKEN_URL,
     refresh_anthropic_token,
 )
-from rio_coding.oauth_device import DevicePollResult, poll_oauth_device_code
-from rio_coding.oauth_github_copilot import (
+from rio.coding.oauth_device import DevicePollResult, poll_oauth_device_code
+from rio.coding.oauth_github_copilot import (
     GITHUB_COPILOT_CLIENT_ID,
     github_copilot_base_url,
     login_github_copilot,
     normalize_github_domain,
     refresh_github_copilot_token,
 )
-from rio_coding.oauth_registry import get_oauth_provider, oauth_provider_ids
-from rio_coding.oauth_types import (
+from rio.coding.oauth_registry import get_oauth_provider, oauth_provider_ids
+from rio.coding.oauth_types import (
     OAuthDeviceCodeInfo,
     OAuthLoginCallbacks,
     OAuthPrompt,
@@ -499,8 +499,8 @@ def test_builtin_oauth_registry_matches_supported_subscription_providers() -> No
 
 
 def test_credentials_path_is_rooted_under_rio_home(tmp_path) -> None:
-    from rio_coding.credentials import credentials_path
-    from rio_coding.paths import RioPaths
+    from rio.coding.credentials import credentials_path
+    from rio.coding.paths import RioPaths
 
     assert credentials_path().name == "credentials.json"
     assert str(RioPaths().home).endswith(".rio")
@@ -511,8 +511,8 @@ def test_credentials_path_is_rooted_under_rio_home(tmp_path) -> None:
 
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 async def test_cancelling_login_cleans_up_callback_and_manual_waiters(provider):
-    from rio_coding.oauth import _wait_for_authorization_code
-    from rio_coding.oauth_anthropic import _wait_for_input
+    from rio.coding.oauth import _wait_for_authorization_code
+    from rio.coding.oauth_anthropic import _wait_for_input
 
     started = asyncio.Event()
     stopped = []
