@@ -1,3 +1,9 @@
+# 0.4.3
+
+* refactor: consolidate rio_agent/rio_ai/rio_coding/rio_tui into one rio package ([#78](https://github.com/soasme/rio/pull/78))
+* feat(coding): add /fork to branch a new session from the live state ([#76](https://github.com/soasme/rio/pull/76))
+* feat(coding): support batch reads via read.arguments.files ([#74](https://github.com/soasme/rio/pull/74))
+
 # 0.4.2
 
 * fix(tui): offer every backend slash command in the `/` popover ([#70](https://github.com/soasme/rio/pull/70))
