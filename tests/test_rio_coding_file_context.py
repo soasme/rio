@@ -17,11 +17,11 @@ from pathlib import Path
 import pytest
 
 from conftest import step_response
-from rio_agent import HarnessObservation, apply_state_delta, run_skill_loop
-from rio_ai import FakeProvider
-from rio_coding.coding_skill import CodingSkillOptions, build_coding_skill
-from rio_coding.file_context import FileContext, short_hash
-from rio_coding.tools import ToolInputError, create_coding_tools
+from rio.agent import HarnessObservation, apply_state_delta, run_skill_loop
+from rio.ai import FakeProvider
+from rio.coding.coding_skill import CodingSkillOptions, build_coding_skill
+from rio.coding.file_context import FileContext, short_hash
+from rio.coding.tools import ToolInputError, create_coding_tools
 
 CALC = '"""A tiny module."""\n\n\ndef add(a, b):\n    return a + b\n'
 

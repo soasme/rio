@@ -1,0 +1,1173 @@
+"""Extension-facing API types and hook payloads."""
+
+from __future__ import annotations
+
+import sys
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from copy import deepcopy
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, Protocol, cast
+from uuid import uuid4
+
+from rio.agent.events import StepEndEvent, StepStartEvent
+from rio.ai.tools import AgentTool, AgentToolResult
+from rio.ai.types import JSONValue
+
+if TYPE_CHECKING:
+    from textual import events
+    from textual.theme import Theme as TuiTheme
+    from textual.widget import Widget
+
+    from rio.coding.extensions.providers import DynamicProvider
+    from rio.coding.extensions.runtime import ExtensionRuntime
+    from rio.coding.local_backends import LocalBackend
+
+# Every string here is one step in the SKILL.state step lifecycle or one
+# session-level event a coding session emits (see `rio.coding.events` and
+# `rio.agent.events`). There is no per-message streaming here (a step's model
+# reply is not surfaced incrementally to extensions) and no compaction (there
+# is no transcript to compact): both existed only to serve an append-only
+# conversation, which SKILL.state does not keep.
+AGENT_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "run_start",
+        "run_end",
+        "agent_settled",
+        "step_start",
+        "step_end",
+        "reasoning_discarded",
+        "validation_error",
+        "state_update",
+        "action_start",
+        "action_end",
+        "queue_update",
+        "entry_appended",
+        "state_restored",
+        "session_info_changed",
+        "thinking_level_changed",
+        "auto_retry_start",
+        "auto_retry_end",
+    }
+)
+AGENT_EVENT_WILDCARD = "agent_event"
+
+LIFECYCLE_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "session_start",
+        "session_shutdown",
+        "input",
+        "tool_call",
+        "tool_result",
+        "project_trust",
+    }
+)
+
+SessionLifecycleReason = Literal["startup", "reload", "new", "resume", "restore", "quit"]
+DeliverAs = Literal["steer", "follow_up"]
+NotifyLevel = Literal["info", "warning", "error"]
+
+
+@dataclass(frozen=True, slots=True)
+class CustomMessageView:
+    """Read-only view of a custom message handed to a message renderer.
+
+    Ports Pi's ``CustomMessage``: ``custom_type`` selects the renderer,
+    ``content`` is the LLM-context text, and ``details`` carries arbitrary
+    structured data the renderer formats.
+    """
+
+    custom_type: str
+    content: str
+    details: Mapping[str, JSONValue] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MessageRenderOptions:
+    """Options passed to a message renderer (ports Pi's ``MessageRenderOptions``)."""
+
+    expanded: bool = False
+
+
+# A message renderer returns a Rich-markup (or plain) string, NOT a Textual
+# widget, so extensions never import the TUI toolkit (deviation from Pi's
+# ``Component`` return; see the phase-21 custom-renderer Ruling).
+MessageRenderer = Callable[[CustomMessageView, MessageRenderOptions], str]
+
+# Host-side resolver installed into render paths: given a custom message's
+# fields and whether it is expanded, return rendered markup or ``None`` to fall
+# back to the raw content. Errors are swallowed by the resolver, never raised
+# into the frontend.
+CustomMessageMarkup = Callable[[str, str, "Mapping[str, JSONValue] | None", bool], "str | None"]
+
+# Host-side resolver installed into render paths: given a tool call's name and
+# arguments, return the friendly invocation line from the tool's `render_call`
+# or ``None`` to fall back to generic formatting. Errors are swallowed by the
+# resolver, never raised into the frontend.
+ToolCallMarkup = Callable[[str, "Mapping[str, JSONValue]"], "str | None"]
+
+# Host-side resolver installed into render paths: given the tool name, its
+# result, and whether the row is expanded, return the display markup from the tool's
+# `render_result` or ``None`` to fall back to the generic result block. Errors
+# are swallowed by the resolver, never raised into the frontend.
+ToolResultMarkup = Callable[[str, AgentToolResult, bool], "str | None"]
+
+# --- component seam ---------------------------------------------------------
+# Widget-hosting capability that lets an extension mount its own Textual widgets
+# into host-owned slots and a main-area view, and intercept keys pre-dispatch
+# (before the host's priority bindings and the focused widget). The "component"
+# type is Textual's own ``Widget`` (referenced only under TYPE_CHECKING so
+# print-mode stays import-clean): Textual is deliberately part of the public
+# extension contract. Extensions build against the Textual version rio pins; a
+# Textual major bump is a coordinated break for core and extensions together.
+# Hosts may supply this optional widget seam; headless sessions use
+# `NullUiBridge`/`StderrUiBridge`.
+
+Placement = Literal["above_prompt", "below_prompt"]
+
+# Factories run on the UI thread and receive the live theme (theme handoff,
+# mirrors Pi's ``(tui, theme) => Component``).
+SlotWidgetFactory = Callable[["TuiTheme"], "Widget"]
+# A slot widget may be given as a factory or, for the simple case, as a plain
+# list of display lines the HOST turns into a widget — this lets an extension
+# mount text without importing Textual at all (ports Pi's ``string[]`` form of
+# ``setWidget``). Strings are rendered as Rich markup, with a literal-text
+# fallback if the markup is malformed.
+SlotWidgetContent = Sequence[str] | SlotWidgetFactory
+# Sidebar bodies use the same data-first shape: simple sections provide Rich
+# display lines without importing Textual; advanced sections provide a widget
+# factory receiving the live theme.
+SidebarWidgetFactory = Callable[["TuiTheme"], "Widget"]
+SidebarContent = Sequence[str] | SidebarWidgetFactory
+# The main-view factory also receives the handle so the widget can close itself.
+MainViewFactory = Callable[["MainViewHandle", "TuiTheme"], "Widget"]
+
+# Pre-dispatch key hook (ports Pi's ``onTerminalInput``). Returns True to
+# consume the key. Fires for every main-screen key regardless of focus; the host
+# passes the Textual ``Key`` event and the current prompt text so the handler
+# can self-gate (Pi gates on ``getEditorText() === ""``).
+KeyInterceptor = Callable[["events.Key", str], bool]
+
+
+class MainViewHandle(Protocol):
+    """Handle to an open main-area view (ports Pi's ``OverlayHandle``, trimmed).
+
+    Carries Pi's ``done(result)`` semantics: the factory (or a key interceptor)
+    calls ``close(result)`` to tear the view down *and* hand a value back to
+    whoever opened it, and the opener awaits :meth:`wait` for that value. This
+    is the result-resolution half of Pi's ``ctx.ui.custom<T>``, kept on the
+    synchronous open/handle model rather than an ``async`` open.
+
+    ``close()`` unmounts the view and restores the main transcript. It is safe
+    to call more than once; the first close wins and later closes are no-ops.
+    """
+
+    def close(self, result: object | None = None) -> None:
+        """Close the view, resolving :meth:`wait` with ``result`` (Pi's ``done``).
+
+        The first close wins: its ``result`` is what :meth:`wait` returns, and
+        any later ``close(...)`` is a no-op. Safe to call more than once.
+        """
+        ...
+
+    async def wait(self) -> object | None:
+        """Await the view's teardown and return the result passed to ``close``.
+
+        Resolves with the value handed to :meth:`close` (``None`` when closed
+        with no result). Also resolves with ``None`` — never hangs — when the
+        view is force-cleared on a session rebind, quarantined after a widget
+        crash, or superseded by a later ``open_main_view``. Returns immediately
+        if the view was already closed before ``wait`` is awaited.
+        """
+        ...
+
+    @property
+    def is_open(self) -> bool: ...
+
+
+class ComponentBridge(Protocol):
+    """Host widget-hosting capability, exposed via ``context.ui.components``.
+
+    Part of what a :class:`UiBridge` provides when a TUI is attached;
+    :class:`NullUiBridge`/:class:`StderrUiBridge` implement it as no-ops so an
+    extension stays fully functional (just widget-less) in print mode. Check
+    :attr:`supports_components` before building widgets.
+    """
+
+    @property
+    def supports_components(self) -> bool:
+        """Return whether the frontend can host extension widgets."""
+        ...
+
+    @property
+    def theme(self) -> TuiTheme | None:
+        """Return the live TUI theme handed to widget factories."""
+        ...
+
+    def get_prompt_text(self) -> str:
+        """Return the current prompt-editor text (Pi's getEditorText).
+
+        Key interceptors receive the prompt text as their second argument;
+        this is for reads outside the key path.
+        """
+        ...
+
+    def request_render(self) -> None:
+        """Ask the host to re-render mounted extension widgets (Pi's requestRender)."""
+        ...
+
+    def set_slot_widget(
+        self,
+        key: str,
+        content: SlotWidgetContent | None,
+        *,
+        placement: Placement = "above_prompt",
+    ) -> None:
+        """Mount an extension widget into a prompt-adjacent slot under ``key``.
+
+        ``content`` is either a ``factory(theme) -> Widget`` callable or a plain
+        list of display lines (``Sequence[str]``) the host renders as Rich
+        markup — the string form lets simple extensions avoid importing Textual.
+        Passing ``content=None`` unmounts and forgets that key. Re-setting a key
+        replaces its content. Multiple keys per placement mount in call order.
+        Placement defaults to ``"above_prompt"`` (Pi's ``aboveEditor``).
+        """
+        ...
+
+    def open_main_view(self, factory: MainViewFactory) -> MainViewHandle:
+        """Mount ``factory(handle, theme)`` as a full main-area view.
+
+        The widget replaces the main transcript in place (a display-toggled
+        sibling, not a modal screen), so prompt-adjacent widgets such as slot
+        widgets stay visible. ``handle.close(result)`` restores the transcript
+        and resolves ``await handle.wait()`` with ``result`` (Pi's ``done``),
+        so the opener can show a view and get an answer back.
+        """
+        ...
+
+    def register_key_interceptor(self, handler: KeyInterceptor) -> Callable[[], None]:
+        """Register a pre-dispatch key hook; return an unsubscribe callable.
+
+        Ports Pi's ``onTerminalInput``. The handler sees a key before the
+        host's app-level priority bindings and before the focused widget, so it
+        can own navigation keys the host otherwise reserves. It fires for EVERY
+        main-screen key regardless of focus (never while a modal screen is on
+        top), so the handler MUST self-gate and return ``True`` only for keys it
+        consumes.
+
+        The host's hard interrupt/exit keys (``ctrl+c`` and ``ctrl+d``) are
+        reserved: the interceptor is never consulted for them and cannot
+        consume them, so a bug in the handler can never swallow the session's
+        escape hatches. All other keys — escape, enter, arrows, tab — remain
+        interceptable.
+        """
+        ...
+
+
+class ExtensionSidebar:
+    """Extension-owned facade for host-framed TUI sidebar sections.
+
+    Sections are isolated by extension name and stable key. Re-setting a key
+    updates it without changing its position; removing and re-adding it appends
+    it after the remaining extension sections. The host owns headings,
+    separators, width, scrolling, sidebar placement, and lifecycle cleanup.
+    """
+
+    def __init__(
+        self,
+        runtime: ExtensionRuntime,
+        extension_name: str,
+        generation: ExtensionGeneration,
+    ) -> None:
+        self._runtime = runtime
+        self._extension_name = extension_name
+        self._generation = generation
+
+    @property
+    def supported(self) -> bool:
+        """Return whether the active frontend can display sidebar sections."""
+        self._generation.assert_active()
+        return bool(getattr(self._runtime.ui, "supports_sidebar", False))
+
+    def set_section(self, key: str, *, title: str, content: SidebarContent) -> None:
+        """Add or replace a host-framed sidebar section under stable ``key``."""
+        self._generation.assert_active()
+        normalized_key = key.strip()
+        normalized_title = title.strip()
+        if not normalized_key:
+            raise ExtensionError("sidebar section key must not be empty")
+        if not normalized_title:
+            raise ExtensionError("sidebar section title must not be empty")
+        if not self.supported:
+            return
+        setter = getattr(self._runtime.ui, "set_sidebar_section", None)
+        if setter is not None:
+            setter(
+                self._extension_name,
+                normalized_key,
+                title=normalized_title,
+                content=content,
+            )
+
+    def remove_section(self, key: str) -> None:
+        """Remove this extension's sidebar section under ``key``, if present."""
+        self._generation.assert_active()
+        normalized_key = key.strip()
+        if not normalized_key:
+            raise ExtensionError("sidebar section key must not be empty")
+        if not self.supported:
+            return
+        remover = getattr(self._runtime.ui, "remove_sidebar_section", None)
+        if remover is not None:
+            remover(self._extension_name, normalized_key)
+
+
+class ExtensionError(RuntimeError):
+    """Raised when an extension misuses the API (e.g. actions before binding)."""
+
+
+_STALE_MESSAGE = (
+    "extension instance is stale after reload: state captured before /reload"
+    " (a saved `rio` API object, context, or ui handle) must not be reused;"
+    " the reloaded extension received a fresh API in its new setup()"
+)
+
+
+class ExtensionGeneration:
+    """Liveness token for one extension load generation.
+
+    Ports Pi's ``assertActive``/``invalidate`` staleness guard: every
+    :class:`ExtensionAPI` method and every :class:`ExtensionContext`/
+    :class:`ExtensionUi` read checks this token before touching the runtime,
+    so state captured before a `/reload` fails loudly instead of silently
+    acting against the new registration set. Only reload invalidates; session
+    rebinding (resume/new/restore) keeps the generation alive by design.
+    """
+
+    __slots__ = ("_id", "_stale_message")
+
+    def __init__(self) -> None:
+        self._id = uuid4().hex
+        self._stale_message: str | None = None
+
+    @property
+    def id(self) -> str:
+        """Return this generation's stable process-local identity."""
+        return self._id
+
+    @property
+    def active(self) -> bool:
+        """Return whether this generation is still the live one."""
+        return self._stale_message is None
+
+    def invalidate(self, message: str | None = None) -> None:
+        """Mark this generation stale; the first message wins (Pi parity)."""
+        if self._stale_message is None:
+            self._stale_message = message or _STALE_MESSAGE
+
+    def assert_active(self) -> None:
+        """Raise :class:`ExtensionError` when this generation is stale."""
+        if self._stale_message is not None:
+            raise ExtensionError(self._stale_message)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionStartEvent:
+    """Payload for the `session_start` lifecycle event."""
+
+    reason: SessionLifecycleReason
+
+
+@dataclass(frozen=True, slots=True)
+class SessionShutdownEvent:
+    """Payload for the `session_shutdown` lifecycle event."""
+
+    reason: SessionLifecycleReason
+
+
+@dataclass(frozen=True, slots=True)
+class InputEvent:
+    """Payload for the `input` hook: raw user prompt text, before expansion.
+
+    Mirrors Pi's `InputEvent`. `source` says where the input came from:
+    ``"interactive"`` for TUI/print-mode user input, ``"extension"`` for a run
+    an extension started via ``send_user_message``. `streaming_behavior` says
+    how the input will be queued when the session is mid-run
+    (``"steer"``/``"follow_up"``), and is ``None`` on the idle prompt path.
+    """
+
+    text: str
+    source: Literal["interactive", "extension"] = "interactive"
+    streaming_behavior: Literal["steer", "follow_up"] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class InputHookResult:
+    """Result of an `input` hook handler.
+
+    `action="continue"` leaves the text unchanged, `"transform"` replaces it
+    with `text` (transforms chain across handlers), and `"handled"` consumes
+    the input entirely, optionally showing `message` to the user.
+    """
+
+    action: Literal["continue", "transform", "handled"] = "continue"
+    text: str | None = None
+    message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallHookEvent:
+    """Payload for the `tool_call` hook, fired just before an action executes.
+
+    Carries no tool-call id: the hook runs inside the action executor seam,
+    which the SKILL.state runtime invokes without one. At most one `tool_call`
+    hook invocation happens per step, matching the one-action-per-step rule.
+    """
+
+    tool_name: str
+    arguments: Mapping[str, JSONValue]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallHookResult:
+    """Result of a `tool_call` hook handler.
+
+    Set `block=True` (with an optional `reason`) to prevent execution, or
+    return replacement `arguments` to rewrite the call. Blocking wins over
+    argument rewrites and short-circuits remaining handlers.
+    """
+
+    block: bool = False
+    reason: str | None = None
+    arguments: Mapping[str, JSONValue] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultHookEvent:
+    """Payload for the `tool_result` hook, fired after an action executes."""
+
+    tool_name: str
+    arguments: Mapping[str, JSONValue]
+    result: AgentToolResult
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultHookResult:
+    """Result of a `tool_result` hook handler; set fields to override."""
+
+    content: str | None = None
+    details: dict[str, JSONValue] | None = None
+
+
+ExtensionHandler = Callable[[object, "ExtensionContext"], object | Awaitable[object]]
+# Command handlers are sync-only: the slash-command dispatch path is
+# synchronous end to end.
+ExtensionCommandHandler = Callable[["str", "ExtensionCommandContext"], "str | None"]
+
+
+@dataclass(frozen=True, slots=True)
+class ExtensionRuntimeDiagnostic:
+    """A runtime failure raised by an extension handler."""
+
+    extension: str
+    event: str
+    message: str
+
+
+class UiBridge(Protocol):
+    """Host-provided UI capabilities available to extensions.
+
+    Dialog methods (`select`/`confirm`/`input`) are async and mirror Pi's
+    `ctx.ui`. Without an interactive frontend they return the Pi no-op
+    defaults (`None`/`False`/`None`). `timeout` (seconds) auto-dismisses a
+    dialog with the no-op default; `None` waits indefinitely.
+    """
+
+    @property
+    def has_ui(self) -> bool:
+        """Return whether an interactive UI is attached."""
+        ...
+
+    def notify(self, message: str, level: NotifyLevel = "info") -> None:
+        """Show a notification to the user (no-op without a UI)."""
+        ...
+
+    async def select(
+        self,
+        title: str,
+        options: Sequence[str],
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Show a picker; return the chosen option, or None on cancel."""
+        ...
+
+    async def confirm(
+        self,
+        title: str,
+        message: str,
+        *,
+        timeout: float | None = None,
+    ) -> bool:
+        """Show a confirmation; return True only if confirmed."""
+        ...
+
+    async def input(
+        self,
+        title: str,
+        placeholder: str = "",
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Show a text prompt; return the entered text, or None on cancel."""
+        ...
+
+    # -- component seam -- see ComponentBridge for docs -----------------------
+
+    @property
+    def supports_components(self) -> bool:
+        """Return whether the frontend can host extension widgets."""
+        ...
+
+    @property
+    def theme(self) -> TuiTheme | None:
+        """Return the live TUI theme handed to widget factories."""
+        ...
+
+    def get_prompt_text(self) -> str:
+        """Return the current prompt-editor text."""
+        ...
+
+    def request_render(self) -> None:
+        """Ask the host to re-render mounted extension widgets."""
+        ...
+
+    def set_slot_widget(
+        self,
+        key: str,
+        content: SlotWidgetContent | None,
+        *,
+        placement: Placement = "above_prompt",
+    ) -> None:
+        """Mount or remove an extension slot widget (factory or string lines)."""
+        ...
+
+    def open_main_view(self, factory: MainViewFactory) -> MainViewHandle:
+        """Open a full main-area extension view."""
+        ...
+
+    def register_key_interceptor(self, handler: KeyInterceptor) -> Callable[[], None]:
+        """Register a pre-dispatch key hook; return an unsubscribe callable.
+
+        See the base bridge protocol: the handler is consulted before the
+        host's priority bindings and the focused widget, fires for every
+        main-screen key regardless of focus, and must self-gate. The hard
+        interrupt/exit keys (``ctrl+c`` and ``ctrl+d``) are reserved and never
+        reach the interceptor.
+        """
+        ...
+
+    @property
+    def supports_sidebar(self) -> bool:
+        """Return whether this frontend can host extension sidebar sections."""
+        ...
+
+    def set_sidebar_section(
+        self,
+        extension_name: str,
+        key: str,
+        *,
+        title: str,
+        content: SidebarContent,
+    ) -> None:
+        """Add or replace one extension-owned, host-framed sidebar section."""
+        ...
+
+    def remove_sidebar_section(self, extension_name: str, key: str) -> None:
+        """Remove one extension-owned sidebar section, if present."""
+        ...
+
+    def clear_components(self) -> None:
+        """Tear down all extension-owned UI (host-driven, not for extensions).
+
+        The runtime drives this on `/reload` (the stale generation's widgets
+        and interceptors must not outlive its registrations) and on session
+        rebinds (resume/new), before ``session_start`` fires so handlers can
+        re-mount. Slot widgets and any main view are unmounted (a pending
+        ``wait()`` resolves with ``None``) and key interceptors are dropped.
+        """
+        ...
+
+
+class _DeadMainViewHandle:
+    """A no-op main-view handle returned when no UI can host a view."""
+
+    def close(self, result: object | None = None) -> None:
+        """Do nothing: there is no view to close (``result`` is ignored)."""
+
+    async def wait(self) -> object | None:
+        """Return None immediately: a dead handle never opens a view."""
+        return None
+
+    @property
+    def is_open(self) -> bool:
+        """Return False: a dead handle is never open."""
+        return False
+
+
+class NullUiBridge:
+    """UI bridge used when no interactive frontend is attached."""
+
+    @property
+    def has_ui(self) -> bool:
+        """Return False: print mode has no interactive UI."""
+        return False
+
+    def notify(self, message: str, level: NotifyLevel = "info") -> None:
+        """Ignore notifications without a UI."""
+
+    async def select(
+        self,
+        title: str,
+        options: Sequence[str],
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Return None: no UI to pick from (Pi no-op default)."""
+        return None
+
+    async def confirm(
+        self,
+        title: str,
+        message: str,
+        *,
+        timeout: float | None = None,
+    ) -> bool:
+        """Return False: no UI to confirm with (Pi no-op default)."""
+        return False
+
+    async def input(
+        self,
+        title: str,
+        placeholder: str = "",
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Return None: no UI to enter text into (Pi no-op default)."""
+        return None
+
+    # -- component seam -------------------------------------------------------
+
+    @property
+    def supports_components(self) -> bool:
+        """Return False: print mode cannot host widgets."""
+        return False
+
+    @property
+    def theme(self) -> TuiTheme | None:
+        """Return None: headless sessions do not own a visual theme."""
+        return None
+
+    def get_prompt_text(self) -> str:
+        """Return an empty prompt: there is no editor in print mode."""
+        return ""
+
+    def request_render(self) -> None:
+        """Do nothing: there is no frontend to re-render."""
+
+    def set_slot_widget(
+        self,
+        key: str,
+        content: SlotWidgetContent | None,
+        *,
+        placement: Placement = "above_prompt",
+    ) -> None:
+        """Do nothing: there is no slot to mount into."""
+
+    def open_main_view(self, factory: MainViewFactory) -> MainViewHandle:
+        """Return a dead handle: there is no main area to host a view."""
+        return _DeadMainViewHandle()
+
+    def register_key_interceptor(self, handler: KeyInterceptor) -> Callable[[], None]:
+        """Return a no-op unsubscribe: no key stream to intercept."""
+        return lambda: None
+
+    @property
+    def supports_sidebar(self) -> bool:
+        """Return False: print mode has no interactive sidebar."""
+        return False
+
+    def set_sidebar_section(
+        self,
+        extension_name: str,
+        key: str,
+        *,
+        title: str,
+        content: SidebarContent,
+    ) -> None:
+        """Do nothing: there is no sidebar in print mode."""
+
+    def remove_sidebar_section(self, extension_name: str, key: str) -> None:
+        """Do nothing: there is no sidebar in print mode."""
+
+    def clear_components(self) -> None:
+        """Do nothing: no components were ever mounted."""
+
+
+class StderrUiBridge(NullUiBridge):
+    """UI bridge that writes extension notifications to stderr (print mode).
+
+    Inherits the Pi no-op dialog defaults from `NullUiBridge`; only
+    `notify` is observable in print mode.
+    """
+
+    def notify(self, message: str, level: NotifyLevel = "info") -> None:
+        """Print the notification to stderr."""
+        print(f"[extension:{level}] {message}", file=sys.stderr)
+
+
+@dataclass(frozen=True, slots=True)
+class ExtensionCommandContext:
+    """Context passed to extension slash-command handlers."""
+
+    name: str
+    args: str
+    api: ExtensionAPI
+
+
+class ExtensionUi:
+    """Interactive UI facade exposed to extensions as `context.ui`.
+
+    Mirrors Pi's `ctx.ui`: async `select`/`confirm`/`input` dialogs plus a
+    synchronous `notify`. Every call delegates to the host UI bridge, which
+    returns the Pi no-op defaults when no interactive frontend is attached.
+    Every member (trivial reads included, matching Pi) asserts the owning
+    load generation is still active and raises :class:`ExtensionError` when
+    the facade was captured before a `/reload`.
+    """
+
+    def __init__(
+        self,
+        runtime: ExtensionRuntime,
+        generation: ExtensionGeneration | None = None,
+        *,
+        extension_name: str = "",
+    ) -> None:
+        self._runtime = runtime
+        self._generation = generation if generation is not None else ExtensionGeneration()
+        self._sidebar = ExtensionSidebar(runtime, extension_name, self._generation)
+
+    @property
+    def has_ui(self) -> bool:
+        """Return whether an interactive UI is attached."""
+        self._generation.assert_active()
+        return self._runtime.ui.has_ui
+
+    async def select(
+        self,
+        title: str,
+        options: Sequence[str],
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Prompt the user to pick an option; None on cancel/no UI."""
+        self._generation.assert_active()
+        return await self._runtime.ui.select(title, options, timeout=timeout)
+
+    async def confirm(
+        self,
+        title: str,
+        message: str,
+        *,
+        timeout: float | None = None,
+    ) -> bool:
+        """Ask the user to confirm; True only if confirmed."""
+        self._generation.assert_active()
+        return await self._runtime.ui.confirm(title, message, timeout=timeout)
+
+    async def input(
+        self,
+        title: str,
+        placeholder: str = "",
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Prompt the user for text; None on cancel/no UI."""
+        self._generation.assert_active()
+        return await self._runtime.ui.input(title, placeholder, timeout=timeout)
+
+    @property
+    def sidebar(self) -> ExtensionSidebar:
+        """Return this extension's host-framed sidebar capability."""
+        self._generation.assert_active()
+        return self._sidebar
+
+    @property
+    def components(self) -> ComponentBridge:
+        """Return the host widget-hosting capability.
+
+        Straight pass-through to the installed UI bridge, which implements the
+        :class:`ComponentBridge` members (a TUI hosts real widgets; the
+        print-mode bridges are no-ops with ``supports_components == False``).
+        Gate widget work on ``context.ui.components.supports_components``.
+        A stale facade raises here, before the bridge is ever reachable.
+        """
+        self._generation.assert_active()
+        return cast("ComponentBridge", self._runtime.ui)
+
+    def notify(self, message: str, level: NotifyLevel = "info") -> None:
+        """Show a notification in the UI, if one is attached."""
+        self._generation.assert_active()
+        self._runtime.ui.notify(message, level)
+
+
+class ExtensionContext:
+    """Read-only session context exposed to extensions.
+
+    Every property (trivial reads included, matching Pi's context getters)
+    asserts the owning load generation is still active, so a context captured
+    before a `/reload` raises :class:`ExtensionError` instead of reading the
+    reloaded world.
+    """
+
+    def __init__(
+        self,
+        runtime: ExtensionRuntime,
+        generation: ExtensionGeneration | None = None,
+        *,
+        extension_name: str = "",
+    ) -> None:
+        self._runtime = runtime
+        self._generation = generation if generation is not None else ExtensionGeneration()
+        self._ui = ExtensionUi(runtime, self._generation, extension_name=extension_name)
+
+    @property
+    def cwd(self) -> Path:
+        """Return the session working directory."""
+        self._generation.assert_active()
+        return self._runtime.session_view.cwd
+
+    @property
+    def model(self) -> str:
+        """Return the active model name."""
+        self._generation.assert_active()
+        return self._runtime.session_view.model
+
+    @property
+    def provider_name(self) -> str | None:
+        """Return the active provider name, if known."""
+        self._generation.assert_active()
+        return self._runtime.session_view.provider_name
+
+    @property
+    def session_name(self) -> str:
+        """Return the session's human-friendly name."""
+        self._generation.assert_active()
+        return self._runtime.session_view.session_name
+
+    @property
+    def thinking_level(self) -> str | None:
+        """Return the active thinking mode for future steps, if set."""
+        self._generation.assert_active()
+        return self._runtime.session_view.thinking_level
+
+    @property
+    def system_prompt(self) -> str:
+        """Return the active skill instructions (`P`)."""
+        self._generation.assert_active()
+        return self._runtime.session_view.system_prompt
+
+    @property
+    def is_running(self) -> bool:
+        """Return whether a run is currently active."""
+        self._generation.assert_active()
+        return self._runtime.session_view.is_running
+
+    @property
+    def state(self) -> dict[str, JSONValue]:
+        """Return a read-only copy of the current SKILL.state execution state.
+
+        This is the SKILL.state analogue of Pi's transcript read
+        (``ctx.sessionManager.getBranch()``): under SKILL.state there is no
+        message history to read, so extensions observe the run through its
+        structured state instead. The returned mapping is a copy; mutating it
+        never affects the live session.
+        """
+        self._generation.assert_active()
+        return deepcopy(self._runtime.session_view.state)
+
+    @property
+    def has_ui(self) -> bool:
+        """Return whether an interactive UI is attached."""
+        self._generation.assert_active()
+        return self._runtime.ui.has_ui
+
+    @property
+    def ui(self) -> ExtensionUi:
+        """Return the interactive UI facade (Pi's `ctx.ui`).
+
+        Use `await context.ui.select/confirm/input(...)` to drive dialogs.
+        Because command handlers are sync (see the docs), a `/command` that
+        needs a dialog should spawn a loop task that awaits `context.ui`.
+        """
+        self._generation.assert_active()
+        return self._ui
+
+
+class ExtensionAPI:
+    """The object handed to each extension's `setup(rio)` entry point.
+
+    Every method and property asserts the load generation first (Pi's
+    ``assertActive`` parity): after `/reload` replaces the registration set,
+    a `rio` object captured by the previous instance raises
+    :class:`ExtensionError` on any use instead of silently acting against
+    the new world.
+    """
+
+    def __init__(
+        self,
+        runtime: ExtensionRuntime,
+        extension_name: str,
+        generation: ExtensionGeneration | None = None,
+        *,
+        source_id: str | None = None,
+    ) -> None:
+        self._runtime = runtime
+        self._extension_name = extension_name
+        self._source_id = source_id or f"extension-name:{extension_name}"
+        self._generation = generation if generation is not None else ExtensionGeneration()
+        self._context = ExtensionContext(
+            runtime,
+            self._generation,
+            extension_name=extension_name,
+        )
+
+    @property
+    def name(self) -> str:
+        """Return this extension's name."""
+        self._generation.assert_active()
+        return self._extension_name
+
+    @property
+    def context(self) -> ExtensionContext:
+        """Return read-only session context."""
+        self._generation.assert_active()
+        return self._context
+
+    def register_tool(self, tool: AgentTool) -> None:
+        """Register an agent tool.
+
+        Under SKILL.state a registered tool becomes an action in the coding
+        skill's action set: the model may choose it as the single action for
+        a step, exactly like a built-in coding tool. First registration per
+        name wins.
+        """
+        self._generation.assert_active()
+        self._runtime.register_tool(self._source_id, self._extension_name, tool)
+
+    def register_provider(self, provider: DynamicProvider) -> None:
+        """Register or atomically replace this source's dynamic provider layer."""
+        self._generation.assert_active()
+        self._runtime.register_provider(self._source_id, provider)
+
+    def update_provider(self, provider: DynamicProvider) -> bool:
+        """Update this source's provider snapshot while preserving its layer token."""
+        self._generation.assert_active()
+        return self._runtime.update_provider(self._source_id, provider)
+
+    def register_local_backend(self, backend: LocalBackend) -> None:
+        """Register a backend paired with this source's provider layer."""
+        self._generation.assert_active()
+        self._runtime.register_local_backend(self._source_id, backend)
+
+    def register_command(
+        self,
+        name: str,
+        handler: ExtensionCommandHandler,
+        *,
+        description: str = "",
+        usage: str | None = None,
+        aliases: tuple[str, ...] = (),
+    ) -> None:
+        """Register a slash command backed by this extension."""
+        self._generation.assert_active()
+        self._runtime.register_command(
+            self._source_id,
+            self._extension_name,
+            name,
+            handler,
+            description=description,
+            usage=usage,
+            aliases=aliases,
+        )
+
+    def add_prompt_guideline(self, guideline: str) -> None:
+        """Add a standalone guideline line to the skill instructions.
+
+        Tool-attached guidance belongs on the tool (`prompt_snippet`,
+        `prompt_guidelines`); this is for behavioral guidance not tied to
+        any action. Duplicate lines are de-duplicated at prompt build time.
+        """
+        self._generation.assert_active()
+        self._runtime.register_prompt_guideline(self._source_id, self._extension_name, guideline)
+
+    def add_prompt_section(self, title: str | None, body: str) -> None:
+        """Append a free-form, optionally titled section to the skill instructions.
+
+        These sections become part of `P`, the fixed instructions built by
+        `rio.coding.system_prompt.build_skill_instructions` -- unlike the rest
+        of a step's prompt, they do not vary with the execution state, so they
+        are the right place for structured, always-on extension context such
+        as procedures, paragraphs, and code blocks. Use
+        :meth:`add_prompt_guideline` for one behavioral bullet instead.
+        """
+        self._generation.assert_active()
+        self._runtime.register_prompt_section(
+            self._source_id,
+            self._extension_name,
+            title,
+            body,
+        )
+
+    def on(
+        self,
+        event: str,
+        handler: ExtensionHandler | None = None,
+    ) -> Callable[[ExtensionHandler], ExtensionHandler] | ExtensionHandler:
+        """Subscribe to an event, directly or as a decorator."""
+        self._generation.assert_active()
+        if handler is not None:
+            self._runtime.subscribe(self._source_id, event, handler)
+            return handler
+
+        def decorator(decorated: ExtensionHandler) -> ExtensionHandler:
+            self._generation.assert_active()
+            self._runtime.subscribe(self._source_id, event, decorated)
+            return decorated
+
+        return decorator
+
+    def send_user_message(
+        self,
+        content: str,
+        *,
+        deliver_as: DeliverAs = "follow_up",
+    ) -> None:
+        """Queue a user message for the active or next run.
+
+        `deliver_as="steer"` folds `content` into the current run's next
+        observation; `"follow_up"` (the default) starts a new run once the
+        current one settles, or immediately if the session is idle.
+        """
+        self._generation.assert_active()
+        self._runtime.send_user_message(content, deliver_as=deliver_as)
+
+    def register_message_renderer(
+        self,
+        custom_type: str,
+        renderer: MessageRenderer,
+    ) -> None:
+        """Register a renderer for custom messages with this ``custom_type``.
+
+        Ports Pi's ``registerMessageRenderer``: the first registration per
+        ``custom_type`` wins. The renderer receives a :class:`CustomMessageView`
+        and :class:`MessageRenderOptions` and returns a Rich-markup string; it
+        must not return a Textual widget (that keeps extensions TUI-free).
+        """
+        self._generation.assert_active()
+        self._runtime.register_message_renderer(
+            self._source_id, self._extension_name, custom_type, renderer
+        )
+
+    def send_custom_message(
+        self,
+        content: str,
+        *,
+        custom_type: str,
+        details: dict[str, JSONValue] | None = None,
+        deliver_as: DeliverAs = "follow_up",
+        trigger_turn: bool = True,
+    ) -> None:
+        """Send a custom message that renders via a registered renderer.
+
+        Ports Pi's ``sendMessage``: ``content`` still enters LLM context, while
+        ``custom_type``/``details`` let a registered renderer format the
+        transcript block. With ``trigger_turn`` (the default) the message starts
+        a turn when the session is idle, mirroring ``send_user_message``; set it
+        to ``False`` to only queue for the next run.
+        """
+        self._generation.assert_active()
+        self._runtime.send_custom_message(
+            content,
+            custom_type=custom_type,
+            details=details,
+            deliver_as=deliver_as,
+            trigger_turn=trigger_turn,
+        )
+
+    async def append_entry(self, namespace: str, data: dict[str, JSONValue]) -> None:
+        """Persist extension-owned data to the session as a custom entry."""
+        self._generation.assert_active()
+        await self._runtime.append_custom_entry(namespace, data)
+
+    def notify(self, message: str, level: NotifyLevel = "info") -> None:
+        """Show a notification in the UI, if one is attached."""
+        self._generation.assert_active()
+        self._runtime.ui.notify(message, level)
+
+
+@dataclass(slots=True)
+class RegisteredExtension:
+    """Book-keeping for one loaded extension inside the runtime."""
+
+    name: str
+    source_id: str
+    path: Path | None
+    api: ExtensionAPI
+    source: Literal["built-in", "user", "explicit", "project"] = "explicit"
+    hidden: bool = False
+    handlers: dict[str, list[ExtensionHandler]] = field(default_factory=dict)
+
+
+__all__ = [
+    "AGENT_EVENT_TYPES",
+    "AGENT_EVENT_WILDCARD",
+    "LIFECYCLE_EVENT_TYPES",
+    "ComponentBridge",
+    "DeliverAs",
+    "ExtensionAPI",
+    "ExtensionCommandContext",
+    "ExtensionCommandHandler",
+    "ExtensionContext",
+    "ExtensionError",
+    "ExtensionGeneration",
+    "ExtensionHandler",
+    "ExtensionRuntimeDiagnostic",
+    "ExtensionSidebar",
+    "ExtensionUi",
+    "InputEvent",
+    "InputHookResult",
+    "KeyInterceptor",
+    "MainViewFactory",
+    "MainViewHandle",
+    "MessageRenderOptions",
+    "NotifyLevel",
+    "NullUiBridge",
+    "Placement",
+    "RegisteredExtension",
+    "SessionLifecycleReason",
+    "SessionShutdownEvent",
+    "SessionStartEvent",
+    "SidebarContent",
+    "SidebarWidgetFactory",
+    "SlotWidgetContent",
+    "SlotWidgetFactory",
+    "StderrUiBridge",
+    "StepEndEvent",
+    "StepStartEvent",
+    "ToolCallHookEvent",
+    "ToolCallHookResult",
+    "ToolResultHookEvent",
+    "ToolResultHookResult",
+    "UiBridge",
+]

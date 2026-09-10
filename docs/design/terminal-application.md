@@ -1,9 +1,9 @@
 # Terminal application
 
-`rio_tui` is a TUI application. 
+`rio.tui` is a TUI application. 
 
-`rio_coding` owns model providers, tools, extensions, and journals.
-`rio_tui` owns all interaction and rendering. 
+`rio.coding` owns model providers, tools, extensions, and journals.
+`rio.tui` owns all interaction and rendering. 
 
 Overall look:
 

@@ -9,15 +9,15 @@ import time
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from rio_coding.catalog_loader import builtin_source_catalog
-from rio_coding.models_dev import (
+from rio.coding.catalog_loader import builtin_source_catalog
+from rio.coding.models_dev import (
     MODELS_DEV_URL,
     NVIDIA_MODELS_URL,
     models_dev_catalog_document,
     nvidia_model_filter,
 )
 
-DEFAULT_OUTPUT = Path("src/rio_coding/data/models-dev-catalog.json")
+DEFAULT_OUTPUT = Path("src/rio/coding/data/models-dev-catalog.json")
 
 
 def _load_source(location: str) -> object:

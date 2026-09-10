@@ -16,12 +16,12 @@ from __future__ import annotations
 import json
 
 from conftest import step_response
-from rio_ai import FakeProvider
-from rio_coding.paths import RioPaths
-from rio_coding.rendering import PlainEventRenderer, render_completed_run
-from rio_coding.resources import RioResourcePaths
-from rio_coding.session import CodingSession, CodingSessionConfig
-from rio_coding.session_store import JsonlSessionStorage, StepEntry
+from rio.ai import FakeProvider
+from rio.coding.paths import RioPaths
+from rio.coding.rendering import PlainEventRenderer, render_completed_run
+from rio.coding.resources import RioResourcePaths
+from rio.coding.session import CodingSession, CodingSessionConfig
+from rio.coding.session_store import JsonlSessionStorage, StepEntry
 
 BUGGY_SOURCE = '''"""A tiny module with a bug."""
 

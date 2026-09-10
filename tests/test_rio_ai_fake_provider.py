@@ -1,15 +1,15 @@
-"""Sanity tests for the ported rio_ai vocabulary and FakeProvider.
+"""Sanity tests for the ported rio.ai vocabulary and FakeProvider.
 
-These don't hit any network; they confirm the tau_ai -> rio_ai port holds
+These don't hit any network; they confirm the tau_ai -> rio.ai port holds
 together end to end (message/tool models construct and round-trip through
-a ModelProvider implementation) before rio_agent builds on top of it.
+a ModelProvider implementation) before rio.agent builds on top of it.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from rio_ai import (
+from rio.ai import (
     AgentToolResult,
     AssistantDoneEvent,
     AssistantMessage,

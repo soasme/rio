@@ -1,4 +1,4 @@
-"""Tests for rio_coding's model/provider catalog stack.
+"""Tests for rio.coding's model/provider catalog stack.
 
 Ported from tau's test_models_dev.py, test_models_dev_store.py, and
 test_provider_catalog.py. Tests that depend on tau_coding.provider_config
@@ -14,9 +14,9 @@ from typing import get_args
 import httpx
 import pytest
 
-import rio_coding.models_dev_store as store
-from rio_coding import models_dev
-from rio_coding.catalog_loader import (
+import rio.coding.models_dev_store as store
+from rio.coding import models_dev
+from rio.coding.catalog_loader import (
     CatalogError,
     builtin_catalog,
     builtin_catalog_resource_text,
@@ -25,7 +25,7 @@ from rio_coding.catalog_loader import (
     save_user_catalog_entries,
     user_catalog_path,
 )
-from rio_coding.models_dev import (
+from rio.coding.models_dev import (
     MODELS_DEV_URL,
     NVIDIA_MODELS_URL,
     bundled_models_dev_catalog_overlay,
@@ -33,13 +33,13 @@ from rio_coding.models_dev import (
     models_dev_catalog_overlay,
     thinking_level_map_from_reasoning_options,
 )
-from rio_coding.models_dev_store import (
+from rio.coding.models_dev_store import (
     ModelsDevRefreshError,
     cached_models_dev_catalog_document,
     refresh_models_dev_catalog,
 )
-from rio_coding.paths import RioPaths
-from rio_coding.provider_catalog import (
+from rio.coding.paths import RioPaths
+from rio.coding.provider_catalog import (
     BUILTIN_PROVIDER_CATALOG,
     ModelCatalogMetadata,
     ModelCostTier,
@@ -48,7 +48,7 @@ from rio_coding.provider_catalog import (
     builtin_provider_entry,
     model_cost_for_input_tokens,
 )
-from rio_coding.thinking import THINKING_LEVELS
+from rio.coding.thinking import THINKING_LEVELS
 
 # A small fixture mirroring models.dev's response shape, inlined so this
 # slice's tests are self-contained in a single file.

@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from rio_coding.extension_installer import (
+from rio.coding.extension_installer import (
     ExtensionInstallError,
     install_extension,
     parse_git_extension_source,
 )
-from rio_coding.extensions import discover_extensions
-from rio_coding.resources import RioResourcePaths
+from rio.coding.extensions import discover_extensions
+from rio.coding.resources import RioResourcePaths
 
 
 def test_install_local_extension_file_is_discovered(tmp_path: Path) -> None:

@@ -3,8 +3,8 @@ from __future__ import annotations
 import itertools
 from collections.abc import Mapping
 
-from rio_agent import STEP_TOOL_NAME, HarnessSpec
-from rio_ai import (
+from rio.agent import STEP_TOOL_NAME, HarnessSpec
+from rio.ai import (
     AgentTool,
     AgentToolResult,
     AssistantDoneEvent,

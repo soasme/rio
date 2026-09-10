@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from conftest import make_skill, step_response
-from rio_agent import Harness, HarnessConfig, HarnessObservation, RunEndEvent
-from rio_ai import FakeProvider
+from rio.agent import Harness, HarnessConfig, HarnessObservation, RunEndEvent
+from rio.ai import FakeProvider
 
 
 @pytest.mark.asyncio

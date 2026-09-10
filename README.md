@@ -1,19 +1,19 @@
 # rio
 
-Four packages:
+One package, four submodules:
 
-- **`rio_ai`** -- a multi-provider LLM streaming SDK (Anthropic, Google
+- **`rio.ai`** -- a multi-provider LLM streaming SDK (Anthropic, Google
   Gemini, Mistral, OpenAI Codex, OpenAI-compatible), ported from
   [huggingface/tau](https://github.com/huggingface/tau)'s `tau_ai` module.
   The message/tool/type vocabulary `tau_ai` depends on (`tau_agent.messages`,
   `tau_agent.tools`, `tau_agent.types`, `tau_agent.provider`,
-  `tau_agent.provider_events` upstream) is folded in here too, so `rio_ai`
+  `tau_agent.provider_events` upstream) is folded in here too, so `rio.ai`
   is self-contained. See [`NOTICE`](NOTICE) for the upstream MIT license.
-- **`rio_agent`** -- a from-scratch runtime implementing
+- **`rio.agent`** -- a from-scratch runtime implementing
   [*SKILL.state: Scalable Long-Horizon Agent Skills*](https://arxiv.org/abs/2608.26263)
-  (Badhe, Tiwari & Chung; EMNLP), built on `rio_ai`.
-- **`rio_coding`** -- the coding backend (CLI, tools, skills, extensions), built on `rio_agent`.
-- **`rio_tui`** -- the terminal application, wired to `rio_coding`. It owns
+  (Badhe, Tiwari & Chung; EMNLP), built on `rio.ai`.
+- **`rio.coding`** -- the coding backend (CLI, tools, skills, extensions), built on `rio.agent`.
+- **`rio.tui`** -- the terminal application, wired to `rio.coding`. It owns
   session tabs, the prompt editor, shell, file navigation, diffs, and settings.
 
 ## Coding agent
@@ -46,9 +46,9 @@ updates structured state and executes one action. Sessions store snapshots for
 resume and checkpoint restoration; they never replay a transcript into the model.
 HTML exports show steps, final state, and estimated token footprints.
 
-See the [installed documentation](src/rio_coding/data/docs/README.md) for
+See the [installed documentation](src/rio/coding/data/docs/README.md) for
 providers, skills, extensions, RPC, and the state-based runtime. The
-[offline example](src/rio_coding/data/examples/offline_session.py) runs a complete
+[offline example](src/rio/coding/data/examples/offline_session.py) runs a complete
 session with a fake provider and requires no credentials.
 
 ## Development
@@ -59,7 +59,7 @@ uv run pytest
 uv run ruff check .
 ```
 
-Tests use scripted providers (`rio_ai.FakeProvider`) and mocked HTTP; no live
+Tests use scripted providers (`rio.ai.FakeProvider`) and mocked HTTP; no live
 provider credentials are required. Headless Textual tests exercise terminal
 interaction, and tool integration tests work in temporary directories. See in
 particular `tests/test_rio_agent_loop.py::test_prompt_footprint_is_bounded_across_steps`,

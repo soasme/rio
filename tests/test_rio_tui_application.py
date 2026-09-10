@@ -9,19 +9,19 @@ import pytest
 from textual.widgets import OptionList, Tabs
 from textual_diff_view import DiffView
 
-import rio_tui
-from rio_agent.events import ActionEndEvent, ActionStartEvent, StateUpdateEvent
-from rio_ai.tools import AgentToolResult
-from rio_coding.events import SessionRunEndEvent
-from rio_coding.paths import RioPaths
-from rio_tui import RioTuiApp, Settings
-from rio_tui.bridge import Question
-from rio_tui.commands import BUILTIN, COMMANDS, help_message, palette_choices
-from rio_tui.dialogs import FilePicker, Picker
-from rio_tui.widget_conversation import Answer, Conversation, Notice, ToolBlock, UserMessage
-from rio_tui.widget_prompt import Editor
-from rio_tui.widget_sidebar import ProjectTree, Sidebar
-from rio_tui.widget_terminal import ShellTerminal
+import rio.tui
+from rio.agent.events import ActionEndEvent, ActionStartEvent, StateUpdateEvent
+from rio.ai.tools import AgentToolResult
+from rio.coding.events import SessionRunEndEvent
+from rio.coding.paths import RioPaths
+from rio.tui import RioTuiApp, Settings
+from rio.tui.bridge import Question
+from rio.tui.commands import BUILTIN, COMMANDS, help_message, palette_choices
+from rio.tui.dialogs import FilePicker, Picker
+from rio.tui.widget_conversation import Answer, Conversation, Notice, ToolBlock, UserMessage
+from rio.tui.widget_prompt import Editor
+from rio.tui.widget_sidebar import ProjectTree, Sidebar
+from rio.tui.widget_terminal import ShellTerminal
 
 EMOJI_RANGES = ((0x1F000, 0x1FAFF), (0x2600, 0x26FF), (0xFE0F, 0xFE0F))
 
@@ -333,7 +333,7 @@ async def test_settings_and_sidebar_persist(tmp_path):
 
 @pytest.mark.asyncio
 async def test_resume_uses_active_branch_only(tmp_path):
-    from rio_coding.session_store import ActionRecord, LeafEntry, StepEntry, TurnEntry
+    from rio.coding.session_store import ActionRecord, LeafEntry, StepEntry, TurnEntry
 
     app = make_app(tmp_path)
     turn = TurnEntry(observation="initial task")
@@ -375,8 +375,8 @@ def test_headless_bridge_does_not_load_ui():
         [
             sys.executable,
             "-c",
-            "from rio_coding.extensions.api import NullUiBridge; "
-            "import sys; assert NullUiBridge().theme is None; assert 'rio_tui' not in sys.modules",
+            "from rio.coding.extensions.api import NullUiBridge; "
+            "import sys; assert NullUiBridge().theme is None; assert 'rio.tui' not in sys.modules",
         ],
         capture_output=True,
         text=True,
@@ -533,7 +533,7 @@ async def test_quit_slash_command_cancels_active_work(tmp_path):
 async def test_diff_review_staged_and_working_tree(tmp_path):
     import subprocess
 
-    from rio_tui.dialogs import Changes
+    from rio.tui.dialogs import Changes
 
     def git(*args):
         subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
@@ -561,7 +561,7 @@ async def test_diff_review_staged_and_working_tree(tmp_path):
 async def test_preferences_save_is_accessible_in_small_terminal(tmp_path):
     from textual.widgets import Checkbox
 
-    from rio_tui.dialogs import Preferences
+    from rio.tui.dialogs import Preferences
 
     app = make_app(tmp_path)
     async with app.run_test(size=(70, 22)) as pilot:
@@ -606,7 +606,7 @@ def test_hotkeys_and_palette_come_from_one_table():
 
 def test_popover_offers_every_backend_command():
     """`/` has to list what the backend answers to, aliases included."""
-    from rio_coding.commands import create_default_command_registry
+    from rio.coding.commands import create_default_command_registry
 
     registry = create_default_command_registry()
     backend = {
@@ -676,6 +676,6 @@ def test_widgets_carry_no_emoji():
     icons = (ProjectTree.ICON_NODE, ProjectTree.ICON_NODE_EXPANDED, ProjectTree.ICON_FILE)
     assert not [char for icon in icons for char in emoji(icon)]
     assert len({len(icon) for icon in icons}) == 1
-    for path in sorted(Path(rio_tui.__file__).parent.rglob("*")):
+    for path in sorted(Path(rio.tui.__file__).parent.rglob("*")):
         if path.is_file():
             assert not emoji(path.read_text(encoding="utf-8", errors="ignore")), path

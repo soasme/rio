@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from rio_coding.paths import RioPaths
-from rio_coding.session_manager import (
+from rio.coding.paths import RioPaths
+from rio.coding.session_manager import (
     CodingSessionRecord,
     SessionManager,
     normalize_session_name,

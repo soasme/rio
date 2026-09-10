@@ -1,7 +1,7 @@
-"""Tests for `rio_coding.rpc`, the JSONL RPC frontend over a coding session.
+"""Tests for `rio.coding.rpc`, the JSONL RPC frontend over a coding session.
 
 rio's session has no transcript and nothing to compact (see
-`rio_coding.session` and `rio_coding.step_footprint`), so unlike tau's RPC
+`rio.coding.session` and `rio.coding.step_footprint`), so unlike tau's RPC
 tests there is nothing here exercising `get_messages`, `get_fork_messages`,
 or `compact` -- those commands do not exist. What is tested instead is the
 protocol's own additions: `get_execution_state` reporting the session's
@@ -17,10 +17,10 @@ from io import StringIO
 import pytest
 
 from conftest import step_response
-from rio_ai import AgentTool, AgentToolResult, FakeProvider, TextContent
-from rio_coding.rpc import RpcServer
-from rio_coding.session import CodingSession, CodingSessionConfig
-from rio_coding.session_store import InMemorySessionStorage, JsonlSessionStorage
+from rio.ai import AgentTool, AgentToolResult, FakeProvider, TextContent
+from rio.coding.rpc import RpcServer
+from rio.coding.session import CodingSession, CodingSessionConfig
+from rio.coding.session_store import InMemorySessionStorage, JsonlSessionStorage
 
 
 async def _read(tool_call_id, arguments, signal=None, on_update=None):
@@ -82,8 +82,8 @@ def project(tmp_path):
 
 async def make_session(project, streams, *, storage=None, **overrides):
     repo, home = project
-    from rio_coding.paths import RioPaths
-    from rio_coding.resources import RioResourcePaths
+    from rio.coding.paths import RioPaths
+    from rio.coding.resources import RioResourcePaths
 
     paths = RioPaths(home=home / ".rio", agents_home=home / ".agents")
     config = CodingSessionConfig(

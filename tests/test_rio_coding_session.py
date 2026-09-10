@@ -13,10 +13,10 @@ from __future__ import annotations
 import pytest
 
 from conftest import step_response
-from rio_ai import AgentTool, AgentToolResult, FakeProvider, TextContent
-from rio_coding.events import EntryAppendedEvent, SessionRunEndEvent
-from rio_coding.session import CodingSession, CodingSessionConfig
-from rio_coding.session_store import (
+from rio.ai import AgentTool, AgentToolResult, FakeProvider, TextContent
+from rio.coding.events import EntryAppendedEvent, SessionRunEndEvent
+from rio.coding.session import CodingSession, CodingSessionConfig
+from rio.coding.session_store import (
     CustomEntry,
     InMemorySessionStorage,
     LabelEntry,
@@ -88,8 +88,8 @@ def project(tmp_path):
 
 async def make_session(project, streams, *, storage=None, monkeypatch=None, **overrides):
     repo, home = project
-    from rio_coding.paths import RioPaths
-    from rio_coding.resources import RioResourcePaths
+    from rio.coding.paths import RioPaths
+    from rio.coding.resources import RioResourcePaths
 
     paths = RioPaths(home=home / ".rio", agents_home=home / ".agents")
     config = CodingSessionConfig(
@@ -455,11 +455,11 @@ class TestCheckpoints:
 
     async def test_a_prepared_session_writes_nothing_until_adopted(self, project) -> None:
         """An abandoned candidate must leave the journal exactly as it found it."""
-        from rio_coding.session_preparation import prepare_coding_session
+        from rio.coding.session_preparation import prepare_coding_session
 
         repo, home = project
-        from rio_coding.paths import RioPaths
-        from rio_coding.resources import RioResourcePaths
+        from rio.coding.paths import RioPaths
+        from rio.coding.resources import RioResourcePaths
 
         storage = InMemorySessionStorage()
         paths = RioPaths(home=home / ".rio", agents_home=home / ".agents")
@@ -486,11 +486,11 @@ class TestCheckpoints:
         assert adopted.cwd == repo.resolve()
 
     async def test_adopting_twice_is_refused(self, project) -> None:
-        from rio_coding.session_preparation import prepare_coding_session
+        from rio.coding.session_preparation import prepare_coding_session
 
         repo, home = project
-        from rio_coding.paths import RioPaths
-        from rio_coding.resources import RioResourcePaths
+        from rio.coding.paths import RioPaths
+        from rio.coding.resources import RioResourcePaths
 
         paths = RioPaths(home=home / ".rio", agents_home=home / ".agents")
         prepared = await prepare_coding_session(
@@ -521,7 +521,7 @@ class TestCheckpoints:
 
 
 async def test_metadata_keeps_journal_connected_and_preserves_resumed_state(project):
-    from rio_coding.session_store import latest_leaf_id, path_to_entry
+    from rio.coding.session_store import latest_leaf_id, path_to_entry
 
     storage = InMemorySessionStorage()
     session = await make_session(project, two_step_streams(), storage=storage)

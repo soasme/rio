@@ -5,13 +5,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from conftest import step_response
-from rio_agent import apply_state_delta, state_size_chars
-from rio_ai import FakeProvider
-from rio_coding.coding_skill import CodingSkillOptions, build_coding_skill
-from rio_coding.file_context import FileContext
-from rio_coding.session_runner import SessionRunner, SessionRunnerConfig
-from rio_coding.session_store import InMemorySessionStorage, StepEntry
-from rio_coding.tools import create_coding_tools
+from rio.agent import apply_state_delta, state_size_chars
+from rio.ai import FakeProvider
+from rio.coding.coding_skill import CodingSkillOptions, build_coding_skill
+from rio.coding.file_context import FileContext
+from rio.coding.session_runner import SessionRunner, SessionRunnerConfig
+from rio.coding.session_store import InMemorySessionStorage, StepEntry
+from rio.coding.tools import create_coding_tools
 
 
 async def check():
