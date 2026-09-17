@@ -353,7 +353,7 @@ class TestBoundedPrompt:
 
 
 class TestSteering:
-    async def test_steering_arrives_as_a_user_message_beside_the_observation(self) -> None:
+    async def test_steering_is_folded_into_the_observation(self) -> None:
         streams = [
             step_response(reasoning="", state_delta={}, action="read", args={"path": "main.py"}),
             step_response(reasoning="", state_delta={}, action="respond", args={"message": "ok"}),
@@ -371,9 +371,10 @@ class TestSteering:
             for _m, _s, messages, _t in provider.calls
             if "actually, focus on error handling" in messages[0].content
         )
-        assert "New User Message:\nactually, focus on error handling" in steered
-        # It reads the run's own last observation in the same prompt.
+        # The steering text is appended after the run's own last observation,
+        # in the same "Latest Observation" section -- one observation, not two.
         assert "Latest Observation:\nread main.py" in steered
+        assert "[user] actually, focus on error handling" in steered
 
     async def test_steering_restarts_from_the_live_state_not_from_scratch(self) -> None:
         """Restarting is free because the state already holds the run's findings."""
@@ -470,15 +471,14 @@ class TestFollowUpTurns:
         assert "main.py:12" in provider.calls[0][2][0].content
         assert runner.state["findings"] == {"entrypoint": "main.py:12"}
 
-    async def test_a_follow_up_asks_as_a_user_not_as_a_tool_result(self) -> None:
+    async def test_a_follow_up_arrives_as_the_first_steps_observation(self) -> None:
         runner = await self._first_turn()
         provider = self._second_turn(runner)
 
         await collect(runner, "what about error handling")
 
         body = provider.calls[0][2][0].content
-        assert "New User Message:\nwhat about error handling" in body
-        assert "Latest Observation:" not in body
+        assert "Latest Observation:\nwhat about error handling" in body
 
     async def test_the_answer_is_the_turn_that_gave_it(self) -> None:
         runner = await self._first_turn()

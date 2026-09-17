@@ -14,7 +14,6 @@ import pytest
 from conftest import make_skill, step_response
 from rio.agent import (
     ActionEndEvent,
-    HarnessObservation,
     ProviderResponseError,
     ReasoningDiscardedEvent,
     RetriesExhaustedError,
@@ -43,7 +42,7 @@ async def test_state_commits_across_steps_until_termination():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
         )
     ]
 
@@ -69,7 +68,7 @@ async def test_termination_comes_from_action_result_not_max_steps():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
             max_steps=100,
         )
     ]
@@ -98,7 +97,7 @@ async def test_reasoning_is_surfaced_once_then_never_resent():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
         )
     ]
 
@@ -134,7 +133,7 @@ async def test_prompt_footprint_is_bounded_across_steps():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
             max_steps=step_count + 1,
         )
     ]
@@ -171,7 +170,7 @@ async def test_invalid_state_delta_rolls_back_and_retries():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
             max_retries=1,
         )
     ]
@@ -202,7 +201,7 @@ async def test_unknown_action_is_rejected():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
             max_retries=1,
         )
     ]
@@ -227,7 +226,7 @@ async def test_retries_exhausted_raises():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
             max_retries=1,
         ):
             pass
@@ -246,7 +245,7 @@ async def test_missing_skill_step_tool_call_is_rejected():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
             max_retries=0,
         ):
             pass
@@ -268,7 +267,7 @@ async def test_a_wrongly_named_tool_call_names_what_was_called():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
             max_retries=0,
         ):
             pass
@@ -292,7 +291,7 @@ async def test_a_provider_error_is_raised_instead_of_retried_as_a_bad_step():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
         ):
             pass
 
@@ -333,7 +332,7 @@ async def test_a_failing_action_becomes_an_observation_instead_of_crashing():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
         )
     ]
 
@@ -368,7 +367,7 @@ async def test_malformed_action_rolls_back_then_retries(action):
             provider=provider,
             model="m",
             skill=make_skill(),
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
         )
     ]
     assert len([event for event in events if isinstance(event, ValidationErrorEvent)]) == 1
@@ -399,7 +398,7 @@ async def test_only_the_first_of_several_step_calls_is_executed():
             provider=provider,
             model="m",
             skill=make_skill(),
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
         )
     ]
     assert not [event for event in events if isinstance(event, ValidationErrorEvent)]
@@ -410,8 +409,12 @@ async def test_only_the_first_of_several_step_calls_is_executed():
     assert events[-1].state == {"counter": 1}
 
 
-async def test_an_observations_inputs_are_labelled_separately():
-    """A user message is not an action result: no action has run to produce one."""
+async def test_a_turns_first_step_observes_only_the_message():
+    """A user message is not an action result: no action has run to produce one.
+
+    It still gets the one `Latest Observation` section every observation
+    does -- a message is not a distinct, labelled channel of its own.
+    """
     skill = make_skill()
     provider = FakeProvider(
         [
@@ -425,19 +428,24 @@ async def test_an_observations_inputs_are_labelled_separately():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="explain main.py"),
+            observation="explain main.py",
         )
     ]
 
     first, second = (messages[0].content for _m, _s, messages, _t in provider.calls)
-    assert "New User Message:\nexplain main.py" in first
-    assert "Latest Observation:" not in first
+    assert "Latest Observation:\nexplain main.py" in first
     # The message is spent once an action has run; the observation replaces it.
-    assert "New User Message:" not in second
+    assert "explain main.py" not in second
     assert "Latest Observation:" in second
 
 
-async def test_a_message_arriving_mid_run_carries_the_observation_with_it():
+async def test_the_observation_is_one_plain_string_however_it_was_assembled():
+    """A message that interrupted a run mid-flight is just text in the observation.
+
+    `rio.agent` does not know or care that this string is a tool result with a
+    user message appended to it -- combining the two, if a caller wants to,
+    happens before the string ever reaches the loop.
+    """
     skill = make_skill()
     provider = FakeProvider(
         [step_response(reasoning="", state_delta={"counter": 1}, action="finish", args={})]
@@ -448,20 +456,12 @@ async def test_a_message_arriving_mid_run_carries_the_observation_with_it():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(
-                user_message="actually, stop", tool_call_result="advance ran"
-            ),
+            observation="advance ran\n\n[user] actually, stop",
         )
     ]
 
     body = provider.calls[0][2][0].content
-    assert "Latest Observation:\nadvance ran" in body
-    assert "New User Message:\nactually, stop" in body
-
-
-async def test_an_observation_of_nothing_is_refused():
-    with pytest.raises(ValueError, match="a step needs something to observe"):
-        HarnessObservation()
+    assert "Latest Observation:\nadvance ran\n\n[user] actually, stop" in body
 
 
 @pytest.mark.asyncio
@@ -497,7 +497,7 @@ async def test_a_truncated_step_call_is_reported_as_truncation_not_bad_shape():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
             max_retries=1,
         )
     ]
@@ -529,7 +529,7 @@ async def test_unparseable_step_arguments_do_not_replay_the_same_call():
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
             max_retries=0,
         ):
             pass
@@ -554,7 +554,7 @@ async def test_a_state_that_outgrows_its_budget_is_rejected_before_it_is_committ
             provider=provider,
             model="m",
             skill=skill,
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
         )
     ]
 
@@ -583,7 +583,7 @@ async def test_action_executor_records_results_and_reports_failures():
             provider=provider,
             model="m",
             skill=make_skill(execute_action=execute),
-            observation=HarnessObservation(user_message="start"),
+            observation="start",
         )
     ]
     assert "observed:a" in provider.calls[1][2][0].content.partition("Latest Observation:")[0]

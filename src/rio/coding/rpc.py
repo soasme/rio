@@ -528,10 +528,7 @@ def _skill_event_wire(event: object) -> dict[str, JSONValue]:
             "type": "step_start",
             "step": event.step,
             "state": event.state,
-            "observation": {
-                "userMessage": event.observation.user_message,
-                "toolCallResult": event.observation.tool_call_result,
-            },
+            "observation": event.observation,
         }
     if isinstance(event, ReasoningDiscardedEvent):
         return {"type": "reasoning_discarded", "step": event.step, "reasoning": event.reasoning}

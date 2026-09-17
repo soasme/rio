@@ -39,12 +39,13 @@ of this. Each step, the model is given exactly three things:
 2. `Sigma_t` -- a structured JSON execution state: the goal, a plan, findings,
    touched files, blockers, and so on (see `rio.coding.coding_skill` for the
    coding skill's exact schema).
-3. `O_t` -- the latest observation, one `rio.agent.HarnessObservation`
-   carrying what arrived and what kind of thing it is: the result of the one
-   action the previous step took, a message from the user, or both when a
-   message interrupts a run. Each gets its own labelled section of the
-   prompt. A turn's first step observes only a message -- no action has run
-   yet.
+3. `O_t` -- the latest observation, one plain string. The runtime does not
+   tag it by kind: it is the result of the one action the previous step
+   took, or a message from the user, whichever arrived. A turn's first step
+   observes only the user's message -- no action has run yet -- and a
+   message that interrupts a run in flight is folded into the same string
+   as the result the run had reached, not carried alongside it as a
+   separate, privileged input.
 
 The model answers with a single mandatory tool call carrying `(reasoning,
 state_delta, action)`. The runtime validates the delta, merges it into the

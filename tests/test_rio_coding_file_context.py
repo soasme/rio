@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from conftest import step_response
-from rio.agent import HarnessObservation, apply_state_delta, run_skill_loop
+from rio.agent import apply_state_delta, run_skill_loop
 from rio.ai import FakeProvider
 from rio.coding.coding_skill import CodingSkillOptions, build_coding_skill
 from rio.coding.file_context import FileContext, short_hash
@@ -285,7 +285,7 @@ async def test_the_next_step_sees_the_file_in_its_state_not_only_in_the_observat
         provider=provider,
         model="m",
         skill=skill,
-        observation=HarnessObservation(user_message="explain calc.py"),
+        observation="explain calc.py",
     ):
         pass
 

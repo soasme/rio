@@ -16,7 +16,6 @@ import pytest
 from rio.agent import (
     ActionEndEvent,
     ActionStartEvent,
-    HarnessObservation,
     ReasoningDiscardedEvent,
     StateUpdateEvent,
     StepEndEvent,
@@ -67,11 +66,7 @@ def test_plain_renderer_marks_discarded_reasoning_as_discarded(
 def test_plain_renderer_renders_step_lifecycle(capsys: pytest.CaptureFixture[str]) -> None:
     renderer = PlainEventRenderer()
 
-    renderer.render(
-        StepStartEvent(
-            step=1, state={"goal": ""}, observation=HarnessObservation(user_message="start")
-        )
-    )
+    renderer.render(StepStartEvent(step=1, state={"goal": ""}, observation="start"))
     renderer.render(StateUpdateEvent(step=1, delta={"goal": "Fix bug"}, state={"goal": "Fix bug"}))
     renderer.render(ActionStartEvent(step=1, name="bash", arguments={"command": "ls"}))
     renderer.render(
@@ -133,11 +128,7 @@ def test_plain_renderer_recovers_after_successful_retry() -> None:
 def test_json_renderer_emits_one_json_object_per_event(capsys: pytest.CaptureFixture[str]) -> None:
     renderer = JsonEventRenderer()
 
-    renderer.render(
-        StepStartEvent(
-            step=1, state={"goal": ""}, observation=HarnessObservation(user_message="start")
-        )
-    )
+    renderer.render(StepStartEvent(step=1, state={"goal": ""}, observation="start"))
     renderer.render(
         ActionEndEvent(step=1, name="bash", result=AgentToolResult(content="ok"), is_error=False)
     )
@@ -148,7 +139,7 @@ def test_json_renderer_emits_one_json_object_per_event(capsys: pytest.CaptureFix
         "type": "step_start",
         "step": 1,
         "state": {"goal": ""},
-        "observation": {"user_message": "start", "tool_call_result": None},
+        "observation": "start",
     }
     assert lines[1]["type"] == "action_end"
     assert lines[1]["is_error"] is False

@@ -1,9 +1,11 @@
 """The SKILL.state execution loop.
 
 At each step, the runtime sends the model only three things: the skill
-instructions, the current state, and the latest observation -- the result the
-last action produced, a message from the user, or, when a message arrives
-mid-run, both. It never sends a growing transcript. The model must respond
+instructions, the current state, and the latest observation -- one plain
+string, whatever text the last step produced. Whether that text is the
+result the last action returned or a message from the user is not the
+runtime's concern: a user message is just this step's observation, the same
+as any other. It never sends a growing transcript. The model must respond
 with one `skill_step` tool call carrying its private reasoning, a state
 update, and an action. The runtime checks the state update and the action --
 including whether the updated state still fits the skill's state budget --
@@ -40,7 +42,6 @@ from rio.agent.events import (
     StepStartEvent,
     ValidationErrorEvent,
 )
-from rio.agent.observation import HarnessObservation
 from rio.agent.prompt import STEP_TOOL_NAME, build_step_messages, skill_step_tool
 from rio.agent.skill import HarnessSpec
 from rio.agent.state import apply_state_delta, check_state_budget, validate_state_delta
@@ -55,7 +56,7 @@ async def run_skill_loop(
     provider: ModelProvider,
     model: str,
     skill: HarnessSpec,
-    observation: HarnessObservation,
+    observation: str,
     state: dict | None = None,
     max_steps: int | None = None,
     max_retries: int = 2,
@@ -63,10 +64,9 @@ async def run_skill_loop(
 ) -> AsyncIterator[SkillEvent]:
     """Run the SKILL.state loop, yielding one event per lifecycle transition.
 
-    `observation` is the first step's `O_0`. A turn started by the user
-    carries only their message; a run steered mid-flight carries the message
-    and the result the run had reached. Every step after the first observes
-    the result of the action the previous one took.
+    `observation` is the first step's `O_0`, one plain string. A turn started
+    by the user carries their message as that text; every step after the
+    first observes the result of the action the previous one took instead.
     """
     state = dict(state if state is not None else skill.initial_state)
     actions = skill.action_by_name()
@@ -201,7 +201,7 @@ async def run_skill_loop(
         step += 1
         if terminated:
             break
-        current_observation = HarnessObservation(tool_call_result=result.text or "(no observation)")
+        current_observation = result.text or "(no observation)"
 
     yield RunEndEvent(steps=step, state=dict(state))
 
