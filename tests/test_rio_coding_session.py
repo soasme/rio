@@ -163,15 +163,14 @@ class TestPrompting:
         assert "plan 1/1" in session.state_summary
 
     async def test_the_user_message_is_a_prompt_section_not_a_transcript(self, project) -> None:
-        """There is nowhere to append it to. It is a labelled section of the one message."""
+        """There is nowhere to append it to. It is this step's one observation."""
         session = await make_session(project, two_step_streams())
         provider = session.provider
         await collect(session, "explain main.py")
 
         _model, _system, first_messages, _tools = provider.calls[0]
         assert len(first_messages) == 1
-        assert "New User Message:\nexplain main.py" in first_messages[0].content
-        assert "Latest Observation:" not in first_messages[0].content
+        assert "Latest Observation:\nexplain main.py" in first_messages[0].content
 
     async def test_the_run_is_journaled_as_steps(self, project) -> None:
         storage = InMemorySessionStorage()

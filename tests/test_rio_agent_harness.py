@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import make_skill, step_response
-from rio.agent import Harness, HarnessConfig, HarnessObservation, RunEndEvent
+from rio.agent import Harness, HarnessConfig, RunEndEvent
 from rio.ai import FakeProvider
 
 
@@ -19,7 +19,7 @@ async def test_harness_tracks_state_and_notifies_listeners():
     received = []
     harness.subscribe(received.append)
 
-    events = [event async for event in harness.run(HarnessObservation(user_message="start"))]
+    events = [event async for event in harness.run("start")]
 
     assert harness.state["counter"] == 1
     assert not harness.is_running
@@ -35,9 +35,9 @@ async def test_harness_rejects_concurrent_run():
     )
     harness = Harness(HarnessConfig(provider=provider, model="m", skill=skill))
 
-    generator = harness.run(HarnessObservation(user_message="start"))
+    generator = harness.run("start")
     with pytest.raises(RuntimeError):
-        harness.run(HarnessObservation(user_message="start-again"))
+        harness.run("start-again")
 
     async for _ in generator:
         pass
@@ -56,7 +56,7 @@ async def test_harness_seeds_from_explicit_state_not_only_skill_default():
         state={"counter": 5},
     )
 
-    events = [event async for event in harness.run(HarnessObservation(user_message="start"))]
+    events = [event async for event in harness.run("start")]
 
     first_call = provider.calls[0]
     assert '"counter": 5' in first_call[2][0].text

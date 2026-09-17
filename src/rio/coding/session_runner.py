@@ -9,10 +9,11 @@ proper. It owns three things the runtime deliberately does not:
   discards reasoning from the prompt, and the journalled copy carries no state
   and never advances the branch tip, so it cannot reach a later step.
 * **Steering.** A message typed while a run is in flight interrupts it and
-  restarts it, observing the message alongside the result the run had
-  reached. Because the state is a complete description of the run, restarting
-  from the current state costs nothing and loses nothing; there is no
-  conversation to rewind.
+  restarts it, observing the message as plain text appended after the result
+  the run had reached -- a user message is just another observation, not a
+  channel of its own. Because the state is a complete description of the
+  run, restarting from the current state costs nothing and loses nothing;
+  there is no conversation to rewind.
 * **Checkpoints.** Any journaled snapshot can be adopted as the live state.
 """
 
@@ -27,7 +28,6 @@ from rio.agent import (
     ActionStartEvent,
     Harness,
     HarnessConfig,
-    HarnessObservation,
     HarnessSpec,
     ReasoningDiscardedEvent,
     RunEndEvent,
@@ -130,7 +130,7 @@ class SessionRunner:
         self._running = False
         self._steps_this_run = 0
         self._terminated = False
-        self._last_result: str | None = None
+        self._last_observation: str | None = None
         self._answer: str | None = None
 
     # -- inspection ----------------------------------------------------------
@@ -220,13 +220,15 @@ class SessionRunner:
 
         The turn starts from the state the session has already built, so a
         second message continues the session instead of restarting it. The
-        message reaches the model as the observation's user message, not as an
-        action result: no action has run yet.
+        message reaches the model as the first step's observation, exactly as
+        plain as any other: no action has run yet, so there is nothing to
+        combine it with.
 
         Steering restarts the underlying loop from the live execution state,
-        observing the queued text alongside the result the run had reached.
-        That restart is lossless: the state already holds everything the model
-        would have been told, so no steps are spent re-establishing context.
+        observing the queued text appended after the result the run had
+        reached -- one observation, not two. That restart is lossless: the
+        state already holds everything the model would have been told, so no
+        steps are spent re-establishing context.
         """
         if self._running:
             raise RuntimeError("SessionRunner is already running")
@@ -235,7 +237,7 @@ class SessionRunner:
         self._terminated = False
         self._answer = None
         try:
-            observation = HarnessObservation(user_message=message)
+            observation = message
             while True:
                 limit = self._config.max_steps
                 if limit is not None:
@@ -248,9 +250,7 @@ class SessionRunner:
                 steering = self._drain_steering()
                 if steering is None or self._terminated:
                     break
-                observation = HarnessObservation(
-                    user_message=steering, tool_call_result=self._last_result
-                )
+                observation = f"{self._last_observation or observation}\n\n[user] {steering}"
 
             yield SessionRunEndEvent(
                 steps=self._steps_this_run,
@@ -264,25 +264,25 @@ class SessionRunner:
         finally:
             self._running = False
 
-    async def _run_once(self, observation: HarnessObservation) -> AsyncIterator[CodingSessionEvent]:
+    async def _run_once(self, observation: str) -> AsyncIterator[CodingSessionEvent]:
         """Run the loop until it terminates, or until steering interrupts it.
 
         Interrupting is a cancel at a step boundary. Nothing has to be saved
         before cancelling: the state up to the last committed step is already
         the whole of what a restarted loop would be told.
         """
-        self._last_result = observation.tool_call_result
+        self._last_observation = observation
         pending: _StepInProgress | None = None
         turn_written = False
 
         iterator = self._harness.run(observation)
         async for event in iterator:
             if isinstance(event, RunStartEvent):
-                if not turn_written and observation.user_message is not None:
+                if not turn_written:
                     turn_written = True
                     entry = TurnEntry(
                         parent_id=self._parent_entry_id,
-                        observation=observation.user_message,
+                        observation=observation,
                         state=dict(self._state),
                     )
                     for written in await self._write([entry]):
@@ -343,7 +343,7 @@ class SessionRunner:
                     limit = self._config.journaled_observation_limit
                     pending.observation_truncated = len(text) > limit
                     pending.observation = text[:limit]
-                    self._last_result = text or None
+                    self._last_observation = text or None
                 yield event
 
             elif isinstance(event, StepEndEvent):

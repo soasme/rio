@@ -6,9 +6,10 @@ past observations, actions, or reasoning traces are ever included, which is
 what keeps the per-step prompt a fixed size no matter how many steps have
 already run.
 
-The observation says which of its inputs arrived, and the prompt gives each
-its own labelled section: the result the last action produced, a message from
-the user, or both when a message interrupts a run.
+The observation is one plain string -- whatever text the step observes,
+whether that is the result the last action produced or a message from the
+user. It gets one section of the prompt regardless of which; the runtime
+does not label it by kind.
 
 The model reports its output for the step -- reasoning, a state update, and
 an action -- by calling a single mandatory `skill_step` tool. Any free text
@@ -21,7 +22,6 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
-from rio.agent.observation import HarnessObservation
 from rio.agent.skill import HarnessSpec
 from rio.ai.messages import AgentMessage, UserMessage
 from rio.ai.tools import AgentTool, AgentToolResult, ToolCancellationToken, ToolUpdateCallback
@@ -88,21 +88,19 @@ def skill_step_tool(skill: HarnessSpec) -> AgentTool:
 
 def build_step_messages(
     state: JSONObject,
-    observation: HarnessObservation,
+    observation: str,
     *,
     error_note: str | None = None,
 ) -> list[AgentMessage]:
-    """Build the non-system half of the prompt: the current state, then the observation's inputs,
-    each under the label that says what it is.
+    """Build the non-system half of the prompt: the current state and the latest observation,
+    nothing else.
     """
-    sections = [
-        "Skill Execution State:\n```json\n" + json.dumps(state, indent=2, sort_keys=True) + "\n```"
-    ]
-    if observation.tool_call_result is not None:
-        sections.append("Latest Observation:\n" + observation.tool_call_result)
-    if observation.user_message is not None:
-        sections.append("New User Message:\n" + observation.user_message)
-    body = "\n\n".join(sections)
+    body = (
+        "Skill Execution State:\n```json\n"
+        + json.dumps(state, indent=2, sort_keys=True)
+        + "\n```\n\nLatest Observation:\n"
+        + observation
+    )
     if error_note:
         body += (
             f"\n\nYour previous {STEP_TOOL_NAME} call was rejected: {error_note}\n"

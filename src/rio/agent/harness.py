@@ -18,7 +18,6 @@ from inspect import isawaitable
 
 from rio.agent.events import RunEndEvent, SkillEvent, StateUpdateEvent
 from rio.agent.loop import run_skill_loop
-from rio.agent.observation import HarnessObservation
 from rio.agent.skill import HarnessSpec
 from rio.ai.provider import ModelProvider
 from rio.ai.types import JSONObject, JSONValue
@@ -86,12 +85,12 @@ class Harness:
         if self._current_signal is not None:
             self._current_signal.cancel()
 
-    def run(self, observation: HarnessObservation) -> AsyncIterator[SkillEvent]:
+    def run(self, observation: str) -> AsyncIterator[SkillEvent]:
         self._ensure_not_running()
         self._running = True
         return self._run(observation)
 
-    async def _run(self, observation: HarnessObservation) -> AsyncIterator[SkillEvent]:
+    async def _run(self, observation: str) -> AsyncIterator[SkillEvent]:
         signal = HarnessCancellationToken()
         self._current_signal = signal
         try:
