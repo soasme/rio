@@ -680,6 +680,16 @@ async def test_respond_tool_requires_a_string_message() -> None:
         await tool.execute("test-call", {})
 
 
+@pytest.mark.parametrize(
+    "message", ["", "   ", "TOOL_CALL_PLACEHOLDER", "  TOOL_CALL_PLACEHOLDER  "]
+)
+async def test_respond_tool_rejects_empty_or_stub_messages(message: str) -> None:
+    tool = create_respond_tool()
+
+    with pytest.raises(ValueError, match="must be a real final answer"):
+        await tool.execute("test-call", {"message": message})
+
+
 # --- image_processing (ported directly, no SKILL.state changes needed) ------
 
 
