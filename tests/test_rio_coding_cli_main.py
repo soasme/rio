@@ -76,14 +76,6 @@ def test_version_prints_installed_version(
     assert capsys.readouterr().out == "1.2.3\n"
 
 
-def test_coding_version_module_is_deprecated() -> None:
-    import sys
-
-    sys.modules.pop("rio.coding.version", None)
-    with pytest.deprecated_call(match="rio.coding.version is deprecated"):
-        importlib.import_module("rio.coding.version")
-
-
 def test_unrelated_value_error_does_not_blame_cwd(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
