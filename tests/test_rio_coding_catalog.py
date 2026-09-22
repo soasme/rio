@@ -515,7 +515,6 @@ def test_builtin_catalog_separates_openai_api_and_codex_context_limits() -> None
                 "kimi-k2.5",
                 "kimi-k2.6",
                 "kimi-k2.7-code",
-                "mimo-v2.5-free",
                 "minimax-m3",
                 "qwen3.5-plus",
                 "qwen3.6-plus",
@@ -735,15 +734,17 @@ def test_builtin_catalog_golden_kimi_entries() -> None:
     }
 
     latest = coding.model_metadata["kimi-for-coding"]
-    assert latest.name == "Kimi K2.7 Code"
+    assert latest.name == "kimi-for-coding"
     assert latest.reasoning is True
-    assert latest.context_window == 262_144
+    assert latest.context_window == 1_048_576
     assert latest.thinking_level_map == {
         "off": None,
         "minimal": None,
-        "low": None,
-        "high": None,
+        "low": "low",
+        "medium": None,
+        "high": "high",
         "xhigh": None,
+        "max": "max",
     }
 
 

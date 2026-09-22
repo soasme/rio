@@ -1,5 +1,5 @@
 {
-  "generated_at": 1790109841020,
+  "generated_at": 1790110173728,
   "providers": {
     "anthropic": {
       "model_metadata": {
@@ -3482,6 +3482,113 @@
         "zai-org/GLM-4.6V-Flash",
         "zai-org/GLM-5.3",
         "zai-org/GLM-5.3-Flash"
+      ]
+    },
+    "kimi-code": {
+      "model_metadata": {
+        "k3": {
+          "context_window": 1048576,
+          "cost": {
+            "cacheRead": 0.0,
+            "cacheWrite": 0.0,
+            "input": 0.0,
+            "output": 0.0
+          },
+          "input": [
+            "text",
+            "image"
+          ],
+          "max_tokens": 131072,
+          "name": "Kimi K3",
+          "reasoning": true,
+          "thinking_level_map": {
+            "high": "high",
+            "low": "low",
+            "max": "max"
+          },
+          "unsupported_thinking_levels": [
+            "off",
+            "minimal",
+            "medium",
+            "xhigh"
+          ]
+        },
+        "k3-256k": {
+          "context_window": 262144,
+          "cost": {
+            "cacheRead": 0.0,
+            "cacheWrite": 0.0,
+            "input": 0.0,
+            "output": 0.0
+          },
+          "input": [
+            "text",
+            "image"
+          ],
+          "max_tokens": 131072,
+          "name": "Kimi K3-256K",
+          "reasoning": true,
+          "thinking_level_map": {
+            "high": "high",
+            "low": "low",
+            "max": "max"
+          },
+          "unsupported_thinking_levels": [
+            "off",
+            "minimal",
+            "medium",
+            "xhigh"
+          ]
+        },
+        "kimi-for-coding": {
+          "context_window": 1048576,
+          "cost": {
+            "cacheRead": 0.0,
+            "cacheWrite": 0.0,
+            "input": 0.0,
+            "output": 0.0
+          },
+          "input": [
+            "text",
+            "image"
+          ],
+          "max_tokens": 32768,
+          "name": "kimi-for-coding",
+          "reasoning": true,
+          "thinking_level_map": {
+            "high": "high",
+            "low": "low",
+            "max": "max"
+          },
+          "unsupported_thinking_levels": [
+            "off",
+            "minimal",
+            "medium",
+            "xhigh"
+          ]
+        },
+        "kimi-for-coding-highspeed": {
+          "context_window": 262144,
+          "cost": {
+            "cacheRead": 0.0,
+            "cacheWrite": 0.0,
+            "input": 0.0,
+            "output": 0.0
+          },
+          "input": [
+            "text",
+            "image"
+          ],
+          "max_tokens": 32768,
+          "name": "Kimi For Coding HighSpeed",
+          "reasoning": true
+        }
+      },
+      "models": [
+        "k3",
+        "kimi-for-coding",
+        "k3-256k",
+        "kimi-for-coding-highspeed"
       ]
     },
     "minimax": {

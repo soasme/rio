@@ -44,7 +44,7 @@ NVIDIA_UNSUPPORTED_MODELS = {
 
 # rio names providers for users; models.dev names them for its own catalog.
 _MODELS_DEV_PROVIDER_KEYS = {
-    "kimi-code": "kimi-for-coding",
+    "kimi-code": "kimi-code-plan-cn",
     "together": "togetherai",
 }
 
