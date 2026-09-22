@@ -2,15 +2,8 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
-from typing import Annotated
-
-import anyio
-import typer
-from rich.console import Console
-from rich.panel import Panel
-from rich.pretty import Pretty
-from rich.text import Text
 
 from rio.ai.provider import ModelProvider
 from rio.coding.extensions.startup import resolve_dynamic_startup
@@ -22,13 +15,12 @@ from rio.coding.provider_config import (
     resolve_startup_thinking_level,
 )
 from rio.coding.provider_runtime import create_model_provider
+from rio.coding.rendering import PlainEventRenderer, PrintOutputMode, create_event_renderer
 from rio.coding.session import CodingSession, CodingSessionConfig
 from rio.coding.session_manager import CodingSessionRecord, SessionManager
 from rio.coding.session_store import InMemorySessionStorage, JsonlSessionStorage, SessionStorage
 from rio.coding.shell_config import load_shell_settings
-from rio.coding.thinking import ThinkingLevel, normalize_thinking_level
-
-console = Console()
+from rio.coding.thinking import ThinkingLevel
 
 
 class SessionNotFoundError(ValueError):
@@ -43,60 +35,6 @@ class CwdNotFoundError(ValueError):
     """Raised when the requested working directory does not exist."""
 
 
-def _resolve_task(parts: list[str]) -> str:
-    """Join task arguments, expanding a sole Markdown task file."""
-    task = " ".join(parts).strip()
-    path = Path(task).expanduser()
-    if path.is_file() and path.suffix.lower() == ".md":
-        return path.read_text(encoding="utf-8")
-    return task
-
-
-def run(
-    task: Annotated[
-        list[str] | None, typer.Argument(help="Task text or a Markdown task file.")
-    ] = None,
-    provider: Annotated[str | None, typer.Option()] = None,
-    model: Annotated[str | None, typer.Option("--model", "-m")] = None,
-    cwd: Annotated[Path | None, typer.Option()] = None,
-    thinking: Annotated[str | None, typer.Option("--thinking", "-t")] = None,
-    extension: Annotated[list[Path] | None, typer.Option("--extension", "-e")] = None,
-    approve: Annotated[bool, typer.Option("--approve", "-a")] = False,
-    no_approve: Annotated[bool, typer.Option("--no-approve")] = False,
-    resume: Annotated[
-        str | None, typer.Option("--resume", "-r", help="Session id to resume.")
-    ] = None,
-) -> None:
-    """Execute a task, optionally resuming a previous session."""
-    if approve and no_approve:
-        raise typer.BadParameter("--approve and --no-approve cannot be used together")
-    prompt = _resolve_task(task or [])
-    if not prompt:
-        raise typer.BadParameter("A task or Markdown task file is required")
-    level = normalize_thinking_level(thinking) if thinking else None
-    try:
-        succeeded, session_id = anyio.run(
-            run_persistent_session,
-            prompt,
-            cwd,
-            provider,
-            model,
-            level,
-            tuple(extension or ()),
-            "approve" if approve else "decline" if no_approve else None,
-            resume,
-        )
-    except SessionNotFoundError as exc:
-        raise typer.BadParameter(str(exc), param_hint="--resume") from exc
-    except (CwdMismatchError, CwdNotFoundError) as exc:
-        raise typer.BadParameter(str(exc), param_hint="--cwd") from exc
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    console.print(f"[dim]Session: {session_id}[/dim]")
-    if not succeeded:
-        raise typer.Exit(1)
-
-
 async def run_persistent_session(
     prompt: str,
     cwd: Path | None = None,
@@ -106,6 +44,7 @@ async def run_persistent_session(
     extension_paths: tuple[Path, ...] = (),
     trust_override: TrustOverride | None = None,
     resume: str | None = None,
+    output_mode: PrintOutputMode = PrintOutputMode.human,
     *,
     session_manager: SessionManager | None = None,
 ) -> tuple[bool, str]:
@@ -134,6 +73,7 @@ async def run_persistent_session(
         thinking_level,
         extension_paths,
         trust_override,
+        output_mode,
         storage=JsonlSessionStorage(record.path),
     )
     manager.touch_session(record.id, model=selected_model, provider_name=selected_name)
@@ -148,6 +88,7 @@ async def run_configured_session(
     thinking_level: ThinkingLevel | None = None,
     extension_paths: tuple[Path, ...] = (),
     trust_override: TrustOverride | None = None,
+    output_mode: PrintOutputMode = PrintOutputMode.human,
     *,
     storage: SessionStorage | None = None,
 ) -> bool:
@@ -160,6 +101,7 @@ async def run_configured_session(
         thinking_level,
         extension_paths,
         trust_override,
+        output_mode,
         storage=storage,
     )
     return succeeded
@@ -173,6 +115,7 @@ async def _run_configured_session(
     thinking_level: ThinkingLevel | None = None,
     extension_paths: tuple[Path, ...] = (),
     trust_override: TrustOverride | None = None,
+    output_mode: PrintOutputMode = PrintOutputMode.human,
     *,
     storage: SessionStorage | None = None,
 ) -> tuple[bool, str, str]:
@@ -209,7 +152,7 @@ async def _run_configured_session(
             cwd, override=trust_override, default=shell.default_project_trust
         )
         for diagnostic in trust.diagnostics:
-            console.print(f"[yellow]{diagnostic}[/yellow]")
+            print(diagnostic, file=sys.stderr)
         session = await CodingSession.load(
             CodingSessionConfig(
                 provider=active_provider,
@@ -224,7 +167,7 @@ async def _run_configured_session(
                 shell_command_prefix=shell.shell_command_prefix,
             )
         )
-        return await _render_run(session, prompt), selected_name, selected_model
+        return await _render_run(session, prompt, output_mode), selected_name, selected_model
     finally:
         if session is not None:
             await session.aclose()
@@ -233,38 +176,16 @@ async def _run_configured_session(
             await dynamic.runtime.aclose()
 
 
-async def _render_run(session: CodingSession, prompt: str) -> bool:
-    """Render committed steps until the run completes or aborts."""
-    from rio.agent import (
-        ActionEndEvent,
-        ActionStartEvent,
-        RunEndEvent,
-        StateUpdateEvent,
-        ValidationErrorEvent,
-    )
-    from rio.coding.events import AutoRetryEndEvent, SessionRunEndEvent
-
-    failed = False
-    console.print(Panel(Text("Running", style="bold"), title="Rio"))
+async def _render_run(
+    session: CodingSession, prompt: str, output_mode: PrintOutputMode = PrintOutputMode.human
+) -> bool:
+    """Render a session run in the requested output format."""
+    renderer = create_event_renderer(output_mode)
+    if isinstance(renderer, PlainEventRenderer):
+        renderer.render_message(prompt)
     async for event in session.run(prompt):
-        if isinstance(event, ActionStartEvent):
-            console.print(f"[cyan]→[/cyan] {event.name}")
-        elif isinstance(event, StateUpdateEvent):
-            console.print(Pretty(event.delta, expand_all=False))
-        elif isinstance(event, ActionEndEvent):
-            status = "red" if event.is_error else "green"
-            console.print(f"[{status}]← {event.name}[/{status}] {event.result.text or ''}")
-        elif isinstance(event, ValidationErrorEvent):
-            console.print(f"[yellow]Retry:[/yellow] {event.error}")
-        elif isinstance(event, AutoRetryEndEvent):
-            failed = not event.success
-            if event.final_error:
-                console.print(f"[red]{event.final_error}[/red]")
-        elif isinstance(event, SessionRunEndEvent) and event.answer:
-            console.print(Panel(event.answer, title="Result", border_style="green"))
-        elif isinstance(event, RunEndEvent):
-            console.print(f"[dim]{event.steps} step(s)[/dim]")
-    return not failed
+        renderer.render(event)
+    return renderer.finish()
 
 
 async def run_print_mode(
@@ -274,6 +195,7 @@ async def run_print_mode(
     cwd: Path,
     provider: ModelProvider,
     storage: SessionStorage | None = None,
+    output_mode: PrintOutputMode = PrintOutputMode.human,
 ) -> bool:
     """Run one task with an injected provider for integration tests."""
     session = await CodingSession.load(
@@ -282,6 +204,6 @@ async def run_print_mode(
         )
     )
     try:
-        return await _render_run(session, prompt)
+        return await _render_run(session, prompt, output_mode)
     finally:
         await session.aclose()

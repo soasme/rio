@@ -6,7 +6,6 @@ import importlib
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
 from rio.cli import app
 from rio.coding.paths import RioPaths
@@ -27,23 +26,48 @@ def test_thinking_flag_reaches_thinking_level_param(monkeypatch: pytest.MonkeyPa
         extension_paths: tuple[Path, ...] = (),
         trust_override: object | None = None,
         resume: str | None = None,
+        output_mode: object | None = None,
     ) -> tuple[bool, str]:
         captured["thinking_level"] = thinking_level
         captured["extension_paths"] = extension_paths
         captured["trust_override"] = trust_override
+        captured["output_mode"] = output_mode
         return True, "session-id"
 
     monkeypatch.setattr(run_module, "run_persistent_session", fake_run_persistent_session)
 
-    result = CliRunner().invoke(app, ["run", "--thinking", "high", "--approve", "do it"])
-
-    assert result.exit_code == 0, result.output
+    app(["run", "--thinking", "high", "--approve", "do it"])
     assert captured["thinking_level"] == "high"
     assert captured["extension_paths"] == ()
     assert captured["trust_override"] == "approve"
+    assert captured["output_mode"] == "human"
 
 
-def test_unrelated_value_error_does_not_blame_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_json_output_reaches_session_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run(*args: object) -> tuple[bool, str]:
+        captured["output_mode"] = args[-1]
+        return True, "session-id"
+
+    monkeypatch.setattr(run_module, "run_persistent_session", fake_run)
+
+    app(["run", "--output", "json", "do it"])
+
+    assert captured["output_mode"] == "json"
+
+
+def test_help_lists_commands(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as error:
+        app(["--help"])
+
+    assert error.value.code == 0
+    assert "commands:" in capsys.readouterr().out
+
+
+def test_unrelated_value_error_does_not_blame_cwd(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     async def fake_run_persistent_session(
         prompt: str,
         cwd: Path,
@@ -53,16 +77,19 @@ def test_unrelated_value_error_does_not_blame_cwd(monkeypatch: pytest.MonkeyPatc
         extension_paths: tuple[Path, ...] = (),
         trust_override: object | None = None,
         resume: str | None = None,
+        output_mode: object | None = None,
     ) -> tuple[bool, str]:
         raise ValueError("Unknown provider: bonsai2")
 
     monkeypatch.setattr(run_module, "run_persistent_session", fake_run_persistent_session)
 
-    result = CliRunner().invoke(app, ["run", "--provider", "bonsai2", "do it"])
+    with pytest.raises(SystemExit) as error:
+        app(["run", "--provider", "bonsai2", "do it"])
 
-    assert result.exit_code != 0
-    assert "Unknown provider: bonsai2" in result.output
-    assert "--cwd" not in result.output
+    assert error.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "Unknown provider: bonsai2" in stderr
+    assert "error: --cwd" not in stderr
 
 
 @pytest.mark.anyio

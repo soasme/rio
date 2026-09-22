@@ -35,8 +35,9 @@ Set `LOCAL_API_KEY` before running rio. Use `openai-responses` for providers
 that implement the Responses API.
 `rio run --thinking LEVEL` selects reasoning effort. `--approve` allows ambient
 project resources for the run; `--no-approve` disables them. Each `rio run`
-creates a durable session and prints its id. Pass it to `--resume` to load its
-state and continue it.
+creates a durable session. Human output prints its id; pass it to `--resume`
+to load its state and continue it. Use `--output json` for one JSON event per line;
+the default `human` format prints messages and tool invocations.
 
 ## RPC mode
 
