@@ -170,7 +170,7 @@ from rio.coding.tools import (
     create_write_tool,
     create_write_tool_definition,
 )
-from rio.coding.version import (
+from rio.version import (
     current_version,
 )
 

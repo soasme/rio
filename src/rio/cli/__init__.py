@@ -13,7 +13,7 @@ from rio.cli import run as run_module
 from rio.cli.login import login
 from rio.coding.rendering import PrintOutputMode
 from rio.coding.thinking import normalize_thinking_level
-from rio.coding.version import current_version
+from rio.version import current_version
 
 
 def build_parser() -> argparse.ArgumentParser:

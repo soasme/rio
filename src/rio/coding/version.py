@@ -1,16 +1,15 @@
-"""Package version helpers."""
+"""Deprecated compatibility exports for package version helpers."""
 
 from __future__ import annotations
 
-from importlib.metadata import PackageNotFoundError, version
+import warnings
 
-_DISTRIBUTION_NAME = "rio"
-_UNKNOWN_VERSION = "0+unknown"
+from rio.version import current_version
 
+warnings.warn(
+    "rio.coding.version is deprecated; use rio.version instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
-def current_version() -> str:
-    """Return rio's installed package version from package metadata."""
-    try:
-        return version(_DISTRIBUTION_NAME)
-    except PackageNotFoundError:
-        return _UNKNOWN_VERSION
+__all__ = ["current_version"]
