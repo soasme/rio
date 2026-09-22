@@ -1,3 +1,10 @@
+# 0.4.4
+
+* fix(coding): reject empty or placeholder-stub respond messages ([#83](https://github.com/soasme/rio/pull/83))
+* fix(cli): drop unused mode param breaking thinking level ([#82](https://github.com/soasme/rio/pull/82))
+* refactor(cli): make coding runs one-shot ([#81](https://github.com/soasme/rio/pull/81))
+* fix(agent): downgrade user messages back to plain observations ([#80](https://github.com/soasme/rio/pull/80))
+
 # 0.4.3
 
 * refactor: consolidate rio_agent/rio_ai/rio_coding/rio_tui into one rio package ([#78](https://github.com/soasme/rio/pull/78))
