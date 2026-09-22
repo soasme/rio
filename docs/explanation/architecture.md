@@ -25,6 +25,7 @@ The package boundaries follow that design:
 | `rio.ai` | Provider-neutral model streaming. |
 | `rio.agent` | Structured-state runtime and step loop. |
 | `rio.coding` | Coding skill, tools, sessions, resources, and CLI support. |
+| `rio.cli` | Public one-shot command-line entry point. |
 
 The coding layer journals committed state snapshots. Resuming a session loads
 the latest snapshot and continues from it; it does not reconstruct a chat

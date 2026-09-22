@@ -49,3 +49,15 @@ rio run task.md
 ```
 
 Rio reads a sole Markdown-file argument as the task text.
+
+## Follow a task file with an additional instruction
+
+Ask Rio to follow an existing task file and add a one-off instruction in the
+same request:
+
+```bash
+rio run "Follow task.md, run the tests, and finish the implementation."
+```
+
+Because this invocation contains more than the file name, Rio receives it as
+task text and reads `task.md` as part of the work.

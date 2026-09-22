@@ -10,6 +10,7 @@ resume its durable session when needed.
 ## Guides
 
 - [Configure providers and models](guides/providers.md)
+- [Use a local llama-server model](guides/local-llama-server.md)
 - [Resume a session](guides/sessions.md)
 - [Trust project resources](guides/project-trust.md)
 
