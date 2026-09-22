@@ -39,6 +39,11 @@ prints a compact human transcript by default. Use `--output json` for one JSON
 event per line. Each human-mode run prints a session id; continue it with
 `rio run --resume SESSION_ID "Next task"`.
 
+## Documentation
+
+See the [documentation](docs/README.md) for tutorials, guides, command-line
+reference, and an explanation of Rio's architecture.
+
 ## Development
 
 ```bash
