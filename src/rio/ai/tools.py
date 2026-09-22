@@ -84,6 +84,7 @@ class AgentTool:
     execute_fn: ToolExecutor
     prompt_snippet: str | None = None
     prompt_guidelines: tuple[str, ...] = ()
+    constrained_sampling: Mapping[str, JSONValue] | None = None
     prepare_arguments: ToolArgumentPreparer | None = None
     execution_mode: ToolExecutionMode = "parallel"
     render_call: ToolCallRenderer | None = None

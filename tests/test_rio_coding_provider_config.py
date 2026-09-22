@@ -1983,6 +1983,28 @@ def test_create_model_provider_uses_codex_model_image_capability(tmp_path: Path)
     assert text_provider._config.supports_images is False
 
 
+def test_create_model_provider_threads_compat_into_openai_codex_config(tmp_path: Path) -> None:
+    store = FileCredentialStore(tmp_path / "credentials.json")
+    config = provider_config_from_catalog_entry("openai-codex")
+
+    provider = create_model_provider(config, credential_store=store, model="gpt-5.6-sol")
+
+    assert isinstance(provider, OpenAICodexProvider)
+    assert "supportsStrictMode" in provider._config.compat
+
+
+def test_anthropic_config_from_provider_includes_compat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    provider = AnthropicProviderConfig()
+
+    config = anthropic_config_from_provider(provider)
+
+    # Direct Anthropic API is expected to support strict/constrained tool schemas.
+    assert config.compat.get("supportsStrictMode") is True
+
+
 def test_direct_openai_runtime_enables_responses_cache_affinity(tmp_path: Path) -> None:
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_api_key("openai", "sk-test")

@@ -32,6 +32,7 @@ from rio.coding.tools import (
     create_read_tool_definition,
     create_respond_tool,
     create_write_tool,
+    create_write_tool_definition,
     describe_action,
 )
 
@@ -94,6 +95,27 @@ def test_tool_definitions_expose_pi_style_prompt_metadata(tmp_path: Path) -> Non
 
     assert definition.prompt_snippet.startswith("Make precise file edits")
     assert len(definition.prompt_guidelines) == 4
+
+
+def test_builtin_tools_opt_into_strict_json_schema_constrained_sampling(tmp_path: Path) -> None:
+    """`path`/`command` argument-name mismatches should be caught by the provider.
+
+    Rio's alias-tolerant parsing (`_PATH_ALIASES`, etc.) stays as a fallback, but
+    strict/constrained decoding on providers that support it should prevent a model
+    from sending the wrong argument name in the first place.
+    """
+    definitions = [
+        create_read_tool_definition(cwd=tmp_path),
+        create_write_tool_definition(cwd=tmp_path),
+        create_edit_tool_definition(cwd=tmp_path),
+        create_bash_tool_definition(cwd=tmp_path),
+    ]
+
+    for definition in definitions:
+        assert definition.constrained_sampling == {"type": "json_schema", "strict": "prefer"}
+        assert definition.to_agent_tool().constrained_sampling == definition.constrained_sampling
+
+    assert create_respond_tool().constrained_sampling is None
 
 
 def test_read_tool_schema_defines_line_controls_as_integers(tmp_path: Path) -> None:

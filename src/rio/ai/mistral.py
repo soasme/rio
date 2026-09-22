@@ -17,6 +17,10 @@ from rio.ai._provider_events import (
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
+from rio.ai.constrained_sampling import (
+    get_json_schema_tool_parameters,
+    resolve_json_schema_strict_sampling,
+)
 from rio.ai.content import (
     NON_VISION_TOOL_IMAGE_PLACEHOLDER,
     NON_VISION_USER_IMAGE_PLACEHOLDER,
@@ -429,13 +433,17 @@ def _message_to_mistral(message: AgentMessage) -> dict[str, JSONValue]:
 
 
 def _tool_to_mistral(tool: AgentTool) -> dict[str, JSONValue]:
+    # Mistral's JSON-schema constrained decoding is always available (pi's
+    # `mistral-conversations.ts` resolves strict sampling unconditionally too).
+    strict = resolve_json_schema_strict_sampling(tool, True)
+    parameters = get_json_schema_tool_parameters(tool.input_schema, strict)
     return {
         "type": "function",
         "function": {
             "name": tool.name,
             "description": tool.description,
-            "parameters": dict(tool.input_schema),
-            "strict": False,
+            "parameters": parameters,
+            "strict": strict if strict is not None else False,
         },
     }
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from json import JSONDecodeError, dumps, loads
 from platform import machine, release, system
 from typing import Any
@@ -18,6 +18,10 @@ from rio.ai._provider_events import (
     ProviderTextDeltaEvent,
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
+)
+from rio.ai.constrained_sampling import (
+    get_json_schema_tool_parameters,
+    resolve_json_schema_strict_sampling,
 )
 from rio.ai.content import (
     NON_VISION_TOOL_IMAGE_PLACEHOLDER,
@@ -80,6 +84,7 @@ class OpenAICodexConfig:
     reasoning_effort: str | None = None
     reasoning_summary: str = "auto"
     supports_images: bool = False
+    compat: Mapping[str, JSONValue] = field(default_factory=dict)
     provider_name: str = "OpenAI Codex"
     # The Codex catalog filters models by the official client's compatibility
     # version. This is the oldest known version that advertises GPT-5.6.
@@ -180,6 +185,7 @@ class OpenAICodexProvider:
                 reasoning_summary=self._config.reasoning_summary,
                 supports_images=self._config.supports_images,
                 prompt_cache_key=cache_key,
+                compat=self._config.compat,
             )
             url = _resolve_codex_url(self._config.base_url)
 
@@ -380,6 +386,7 @@ def _build_codex_payload(
     reasoning_summary: str = "auto",
     supports_images: bool = False,
     prompt_cache_key: str | None = None,
+    compat: Mapping[str, JSONValue] | None = None,
 ) -> dict[str, JSONValue]:
     payload: dict[str, JSONValue] = {
         "model": model,
@@ -400,7 +407,7 @@ def _build_codex_payload(
             "summary": reasoning_summary,
         }
     if tools:
-        payload["tools"] = [_tool_to_codex(tool) for tool in tools]
+        payload["tools"] = [_tool_to_codex(tool, compat) for tool in tools]
     return payload
 
 
@@ -492,13 +499,19 @@ def _codex_input_image(image: ImageContent) -> dict[str, JSONValue]:
     }
 
 
-def _tool_to_codex(tool: AgentTool) -> dict[str, JSONValue]:
+def _tool_to_codex(
+    tool: AgentTool, compat: Mapping[str, JSONValue] | None = None
+) -> dict[str, JSONValue]:
+    resolved_compat = compat or {}
+    supports_strict_mode = resolved_compat.get("supportsStrictMode") is not False
+    strict = resolve_json_schema_strict_sampling(tool, supports_strict_mode)
+    parameters = get_json_schema_tool_parameters(tool.input_schema, strict)
     return {
         "type": "function",
         "name": tool.name,
         "description": tool.description,
-        "parameters": dict(tool.input_schema),
-        "strict": None,
+        "parameters": parameters,
+        "strict": strict if strict is not None else False,
     }
 
 

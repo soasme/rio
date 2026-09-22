@@ -17,6 +17,10 @@ from rio.ai._provider_events import (
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
+from rio.ai.constrained_sampling import (
+    get_json_schema_tool_parameters,
+    resolve_json_schema_strict_sampling,
+)
 from rio.ai.content import (
     NON_VISION_TOOL_IMAGE_PLACEHOLDER,
     NON_VISION_USER_IMAGE_PLACEHOLDER,
@@ -146,6 +150,7 @@ class AnthropicProvider:
                 supports_images=self._config.supports_images,
                 cache_retention=self._config.cache_retention,
                 cache_control_on_tools=self._config.cache_control_on_tools,
+                compat=self._config.compat,
             )
             headers = {
                 "anthropic-version": ANTHROPIC_VERSION,
@@ -437,6 +442,7 @@ def _build_messages_payload(
     supports_images: bool = False,
     cache_retention: CacheRetention = CACHE_RETENTION_SHORT,
     cache_control_on_tools: bool = True,
+    compat: Mapping[str, JSONValue] | None = None,
 ) -> dict[str, JSONValue]:
     resolved_max_tokens = max_tokens or DEFAULT_MAX_TOKENS
     if thinking_budget_tokens is not None:
@@ -475,7 +481,9 @@ def _build_messages_payload(
         last_index = len(tools) - 1
         payload["tools"] = [
             _anthropic_tool(
-                tool, cache_control=tools_cache_control if index == last_index else None
+                tool,
+                cache_control=tools_cache_control if index == last_index else None,
+                compat=compat,
             )
             for index, tool in enumerate(tools)
         ]
@@ -689,11 +697,29 @@ def _anthropic_tool(
     tool: AgentTool,
     *,
     cache_control: dict[str, JSONValue] | None = None,
+    compat: Mapping[str, JSONValue] | None = None,
 ) -> dict[str, JSONValue]:
+    supports_strict_mode = (compat or {}).get("supportsStrictMode") is not False
+    strict = resolve_json_schema_strict_sampling(tool, supports_strict_mode)
+    parameters = get_json_schema_tool_parameters(tool.input_schema, strict)
+    if strict is True:
+        # Anthropic's classic input_schema is just {type, properties, required}. Send
+        # both: the strict-shaped schema (additionalProperties: false, every property
+        # required) merged with the classic view derived from it, so a gateway that
+        # only understands the classic shape still gets a coherent schema.
+        legacy_input_schema: dict[str, JSONValue] = {
+            "type": "object",
+            "properties": parameters.get("properties") or {},
+            "required": parameters.get("required") or [],
+        }
+        input_schema: dict[str, JSONValue] = {**parameters, **legacy_input_schema}
+    else:
+        input_schema = parameters
     payload: dict[str, JSONValue] = {
         "name": tool.name,
         "description": tool.description,
-        "input_schema": dict(tool.input_schema),
+        **({"strict": True} if strict is True else {}),
+        "input_schema": input_schema,
     }
     if cache_control is not None:
         payload["cache_control"] = dict(cache_control)
