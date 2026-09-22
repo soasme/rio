@@ -515,10 +515,6 @@ def load_provider_settings(paths: RioPaths | None = None) -> ProviderSettings:
     if not isinstance(raw, dict):
         raise ProviderConfigError("Provider settings must be a JSON object")
     settings = provider_settings_from_json(raw, paths=resolved_paths)
-    if "provider_preferences" not in raw:
-        settings = _migrate_legacy_provider_settings(settings, paths=resolved_paths)
-        _save_migrated_provider_settings(settings, paths=resolved_paths)
-        return settings
     return _with_builtin_catalog_models(settings, paths=resolved_paths)
 
 
@@ -750,69 +746,6 @@ def _with_builtin_catalog_models(
         providers=providers,
         scoped_models=settings.scoped_models,
     )
-
-
-def _migrate_legacy_provider_settings(
-    settings: ProviderSettings,
-    *,
-    paths: RioPaths,
-) -> ProviderSettings:
-    """Move legacy full provider records onto catalog-owned definitions.
-
-    Built-in and user-catalog provider capabilities come exclusively from the
-    current effective catalog. Legacy records contribute only runtime
-    preferences. Providers absent from the catalog remain intact so the
-    migration can persist them as custom catalog entries.
-    """
-    catalog_configs = {config.name: config for config in _effective_provider_configs(paths)}
-    providers: list[ProviderConfig] = []
-    for legacy in settings.providers:
-        catalog_provider = catalog_configs.get(legacy.name)
-        if catalog_provider is None:
-            providers.append(legacy)
-            continue
-        preferences = _provider_preference_to_json(legacy)
-        if legacy.default_model not in catalog_provider.models:
-            preferences.pop("default_model")
-        preferences["thinking_defaults"] = {
-            model: level
-            for model, level in legacy.thinking_defaults.items()
-            if model in catalog_provider.models
-            and level in provider_thinking_levels(catalog_provider, model=model)
-        }
-        providers.append(_apply_provider_preference(catalog_provider, preferences))
-
-    merged = _append_catalog_providers(tuple(providers), catalog_configs, paths=paths)
-    names = {provider.name for provider in merged}
-    default_provider = settings.default_provider
-    if default_provider not in names:
-        default_provider = merged[0].name if merged else DEFAULT_PROVIDER_NAME
-    return ProviderSettings(
-        default_provider=default_provider,
-        providers=merged,
-        scoped_models=tuple(
-            scoped
-            for scoped in settings.scoped_models
-            if scoped.provider in names
-            and scoped.model
-            in next(provider.models for provider in merged if provider.name == scoped.provider)
-        ),
-    )
-
-
-def _save_migrated_provider_settings(settings: ProviderSettings, *, paths: RioPaths) -> None:
-    """Persist one legacy migration after creating its required recovery backup."""
-    path = provider_settings_path(paths)
-    _backup_provider_settings(path, strict=True)
-    catalog_names = {entry.name for entry in effective_catalog(paths)}
-    custom_entries = [
-        _catalog_entry_from_provider(provider)
-        for provider in settings.providers
-        if provider.name not in catalog_names
-    ]
-    if custom_entries:
-        save_user_catalog_entries(custom_entries, paths=paths)
-    _write_provider_settings(settings, path=path, backup=False)
 
 
 def _backup_provider_settings(path: Path, *, strict: bool) -> None:
@@ -1201,9 +1134,8 @@ def provider_settings_from_json(
     """Parse provider preferences from JSON-compatible data.
 
     The current providers.json shape stores runtime preferences under
-    provider_preferences. The older providers[] shape is still accepted for
-    migration and compatibility; saves rewrite it to provider_preferences and
-    move custom provider definitions to catalog.toml.
+    provider_preferences. Full providers[] entries remain supported for custom
+    provider configuration.
     """
     schema_version = data.get("schema_version")
     if schema_version not in (None, PROVIDER_SETTINGS_SCHEMA_VERSION):

@@ -1640,17 +1640,9 @@ def test_load_provider_settings_does_not_restore_stale_codex_builtin_models(
         "gpt-5.2",
     )
     assert provider.default_model == "gpt-5.5"
-    assert provider_thinking_levels(provider, model="gpt-5.6-sol") == (
-        "off",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-    )
-    migrated = json.loads((rio_home / "providers.json").read_text())
-    assert migrated["schema_version"] == 2
-    assert "providers" not in migrated
-    assert (rio_home / "providers.json.bak").exists()
+    assert provider_thinking_levels(provider, model="gpt-5.6-sol") == ()
+    assert '"providers"' in (rio_home / "providers.json").read_text()
+    assert not (rio_home / "providers.json.bak").exists()
     assert not (rio_home / "catalog.toml").exists()
 
 
@@ -1686,10 +1678,10 @@ def test_load_provider_settings_merges_builtin_model_catalog(tmp_path: Path) -> 
     assert provider.context_windows["MiniMaxAI/MiniMax-M2.7"] == 204_800
     assert "Qwen/Qwen3-Coder-480B-A35B-Instruct" in provider.models
     assert "moonshotai/Kimi-K2.6" in provider.models
-    assert "custom/coder" not in provider.models
+    assert "custom/coder" in provider.models
 
 
-def test_load_provider_settings_migrates_custom_provider_to_catalog(
+def test_load_provider_settings_keeps_custom_provider_in_json(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1719,47 +1711,7 @@ def test_load_provider_settings_migrates_custom_provider_to_catalog(
     provider = settings.get_provider("local")
     assert provider.context_windows == {"qwen": 64_000}
     assert provider.headers == {"X-Test": "yes"}
-    assert json.loads((rio_home / "providers.json.bak").read_text()) == original
-    migrated = json.loads((rio_home / "providers.json").read_text())
-    assert migrated["schema_version"] == 2
-    assert migrated["provider_preferences"]["local"]["default_model"] == "qwen"
-    catalog = (rio_home / "catalog.toml").read_text()
-    assert 'name = "local"' in catalog
-    assert 'models = ["qwen"]' in catalog
-
-
-def test_legacy_migration_aborts_before_changes_when_backup_fails(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(provider_config, "environ", {})
-    rio_home = tmp_path / ".rio"
-    rio_home.mkdir()
-    original = {
-        "default_provider": "local",
-        "providers": [
-            {
-                "type": "openai-compatible",
-                "name": "local",
-                "base_url": "http://localhost:11434/v1",
-                "api_key_env": "LOCAL_API_KEY",
-                "models": ["qwen"],
-                "default_model": "qwen",
-            }
-        ],
-    }
-    settings_path = rio_home / "providers.json"
-    settings_path.write_text(json.dumps(original), encoding="utf-8")
-
-    def fail_backup(*_args: object, **_kwargs: object) -> None:
-        raise PermissionError("backup denied")
-
-    monkeypatch.setattr(provider_config, "copy2", fail_backup)
-
-    with pytest.raises(PermissionError, match="backup denied"):
-        load_provider_settings(RioPaths(home=rio_home))
-
-    assert json.loads(settings_path.read_text()) == original
+    assert json.loads((rio_home / "providers.json").read_text()) == original
     assert not (rio_home / "providers.json.bak").exists()
     assert not (rio_home / "catalog.toml").exists()
 
