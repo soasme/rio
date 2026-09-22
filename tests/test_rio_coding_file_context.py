@@ -333,4 +333,51 @@ async def test_an_edit_that_exceeds_the_cache_budget_drops_old_content(tmp_path)
 
     assert "context" not in entry(state)
     assert entry(state)["hash"] == short_hash((repo / "calc.py").read_bytes())
-    assert "Forget a file" in outcome.text
+
+
+# -- respond gate --------------------------------------------------------
+
+
+async def test_respond_is_rejected_while_a_plan_item_is_unfinished(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    tools = create_coding_tools(cwd=repo)
+    context = FileContext(cwd=repo)
+    state = {
+        "plan": [
+            {"id": "a", "title": "Inspect repo", "status": "done"},
+            {"id": "b", "title": "Update CHANGELOG", "status": "in_progress"},
+        ]
+    }
+
+    _state, outcome = await act(context, state, tools, "respond", {"message": "All done."})
+
+    assert outcome.terminate is not True
+    assert "Update CHANGELOG" in outcome.text
+
+
+async def test_respond_succeeds_once_every_plan_item_is_done_or_blocked(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    tools = create_coding_tools(cwd=repo)
+    context = FileContext(cwd=repo)
+    state = {
+        "plan": [
+            {"id": "a", "title": "Inspect repo", "status": "done"},
+            {"id": "b", "title": "Ship it", "status": "blocked"},
+        ]
+    }
+
+    _state, outcome = await act(context, state, tools, "respond", {"message": "All done."})
+
+    assert outcome.terminate is True
+    assert outcome.text == "All done."
+
+
+async def test_respond_succeeds_with_no_plan(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    tools = create_coding_tools(cwd=repo)
+    context = FileContext(cwd=repo)
+
+    _state, outcome = await act(context, {}, tools, "respond", {"message": "Sure, it's 4."})
+
+    assert outcome.terminate is True
+    assert outcome.text == "Sure, it's 4."

@@ -186,7 +186,9 @@ def format_step_protocol() -> str:
         "field outright. You may only modify the declared state fields.\n"
         "- `action` is exactly one tool call — never zero, never more than one. To "
         "finish the turn, take the `respond` action: its `message` is your answer to "
-        "the user, so there is nothing to write into the state first."
+        "the user, so there is nothing to write into the state first. `respond` is "
+        "rejected if `plan` still has an item that is not `done` or `blocked` — finish "
+        "it, mark it `blocked` with why, or update the plan before responding."
     )
 
 

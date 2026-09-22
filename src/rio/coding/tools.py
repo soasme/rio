@@ -897,14 +897,6 @@ def create_bash_tool(
     ).to_agent_tool()
 
 
-# Stub text a model or an upstream provider has been observed to send as a
-# tool call's arguments when it failed to generate a real one -- most notably
-# GitHub Copilot's backend, which can emit this literal token in place of
-# actual content. Treated the same as an empty message: `respond` must reject
-# it rather than end the run on a fake answer.
-_DEGENERATE_RESPOND_MESSAGES = frozenset({"TOOL_CALL_PLACEHOLDER"})
-
-
 def create_respond_tool() -> AgentTool:
     """Create the `respond` action that ends a SKILL.state coding run.
 
@@ -923,11 +915,8 @@ def create_respond_tool() -> AgentTool:
     ) -> AgentToolResult:
         del tool_call_id, signal, on_update
         message = _str_arg(arguments, "message")
-        stripped = message.strip()
-        if not stripped or stripped in _DEGENERATE_RESPOND_MESSAGES:
-            raise ToolInputError(
-                f"message must be a real final answer, not empty or a stub (got {message!r})"
-            )
+        if not message.strip():
+            raise ToolInputError("message must not be empty")
         return AgentToolResult(content=[TextContent(text=message)], terminate=True)
 
     return AgentTool(
