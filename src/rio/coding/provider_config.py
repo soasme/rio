@@ -1633,6 +1633,11 @@ def provider_model_supports_images(provider: ProviderConfig, model: str | None =
     return metadata is not None and "image" in metadata.input
 
 
+def provider_model_compat(provider: ProviderConfig, model: str | None = None) -> dict[str, Any]:
+    """Return the detected/overridden compat flags for a model (e.g. supportsStrictMode)."""
+    return _model_compat(provider, model)
+
+
 def provider_default_thinking_level(
     provider: ProviderConfig,
     *,
@@ -1710,7 +1715,7 @@ def openai_compatible_config_from_provider(
         model=selected_model,
         thinking_level=thinking_level,
     )
-    compat = _model_compat(provider, selected_model)
+    compat = provider_model_compat(provider, selected_model)
     return OpenAICompatibleConfig(
         api_key=api_key,
         provider_name=provider.name,
@@ -1774,6 +1779,7 @@ def anthropic_config_from_provider(
         thinking_mode=_anthropic_thinking_mode(
             provider, selected_model, thinking_level=thinking_level
         ),
+        compat=provider_model_compat(provider, selected_model),
     )
 
 

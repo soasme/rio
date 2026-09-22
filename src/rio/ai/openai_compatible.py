@@ -26,6 +26,10 @@ from rio.ai._provider_events import (
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
+from rio.ai.constrained_sampling import (
+    get_json_schema_tool_parameters,
+    resolve_json_schema_strict_sampling,
+)
 from rio.ai.content import (
     NON_VISION_TOOL_IMAGE_PLACEHOLDER,
     NON_VISION_USER_IMAGE_PLACEHOLDER,
@@ -209,6 +213,7 @@ class OpenAICompatibleProvider:
             max_tokens=self._config.max_tokens,
             supports_images=self._config.supports_images,
             prompt_cache_key=cache_key,
+            compat=self._config.compat,
         )
         return self._stream(
             model=model,
@@ -841,7 +846,7 @@ def _build_chat_payload(
         include_reasoning_effort_none=include_reasoning_effort_none,
     )
     if tools:
-        payload["tools"] = [_tool_to_openai(tool) for tool in tools]
+        payload["tools"] = [_tool_to_openai(tool, resolved_compat) for tool in tools]
         if resolved_compat.get("zaiToolStream") is True:
             payload["tool_stream"] = True
     return payload
@@ -899,6 +904,7 @@ def _build_responses_payload(
     max_tokens: int | None = None,
     supports_images: bool = False,
     prompt_cache_key: str | None = None,
+    compat: Mapping[str, JSONValue] | None = None,
 ) -> dict[str, JSONValue]:
     payload: dict[str, JSONValue] = {
         "model": model,
@@ -921,7 +927,7 @@ def _build_responses_payload(
         # deltas surfaced on the chat-completions path.
         payload["reasoning"] = {"effort": effort, "summary": "auto"}
     if tools:
-        payload["tools"] = [_tool_to_responses(tool) for tool in tools]
+        payload["tools"] = [_tool_to_responses(tool, compat) for tool in tools]
     return payload
 
 
@@ -1007,12 +1013,18 @@ def _openai_input_image(image: ImageContent) -> dict[str, JSONValue]:
     }
 
 
-def _tool_to_responses(tool: AgentTool) -> dict[str, JSONValue]:
+def _tool_to_responses(
+    tool: AgentTool, compat: Mapping[str, JSONValue] | None = None
+) -> dict[str, JSONValue]:
+    parameters, strict, supports_strict_mode = _resolve_strict_tool_parameters(
+        tool, compat or {}
+    )
     return {
         "type": "function",
         "name": tool.name,
         "description": tool.description,
-        "parameters": dict(tool.input_schema),
+        "parameters": parameters,
+        **({"strict": strict if strict is not None else False} if supports_strict_mode else {}),
     }
 
 
@@ -1233,13 +1245,34 @@ def _message_to_openai(message: AgentMessage) -> dict[str, JSONValue]:
     return _message_to_openai(message_to_user(message))
 
 
-def _tool_to_openai(tool: AgentTool) -> dict[str, JSONValue]:
+def _resolve_strict_tool_parameters(
+    tool: AgentTool, compat: Mapping[str, JSONValue]
+) -> tuple[dict[str, JSONValue], bool | None, bool]:
+    """Return `(parameters, strict, supports_strict_mode)` for one tool.
+
+    `supports_strict_mode` gates whether the `strict` field is sent at all: some
+    OpenAI-compatible endpoints reject unknown request fields, so it is only included
+    when the endpoint hasn't explicitly opted out via `compat["supportsStrictMode"]`.
+    """
+    supports_strict_mode = compat.get("supportsStrictMode") is not False
+    strict = resolve_json_schema_strict_sampling(tool, supports_strict_mode)
+    parameters = get_json_schema_tool_parameters(tool.input_schema, strict)
+    return parameters, strict, supports_strict_mode
+
+
+def _tool_to_openai(
+    tool: AgentTool, compat: Mapping[str, JSONValue] | None = None
+) -> dict[str, JSONValue]:
+    parameters, strict, supports_strict_mode = _resolve_strict_tool_parameters(
+        tool, compat or {}
+    )
     return {
         "type": "function",
         "function": {
             "name": tool.name,
             "description": tool.description,
-            "parameters": dict(tool.input_schema),
+            "parameters": parameters,
+            **({"strict": strict if strict is not None else False} if supports_strict_mode else {}),
         },
     }
 

@@ -39,6 +39,7 @@ from rio.coding.provider_config import (
     anthropic_cache_settings,
     anthropic_config_from_provider,
     openai_compatible_config_from_provider,
+    provider_model_compat,
     provider_model_max_tokens,
     provider_model_supports_images,
     provider_thinking_levels,
@@ -302,6 +303,7 @@ def create_model_provider(
                     thinking_level=thinking_level,
                 ),
                 supports_images=provider_model_supports_images(provider, model),
+                compat=provider_model_compat(provider, model),
             )
         )
     if isinstance(provider, OpenAICompatibleProviderConfig):
@@ -362,6 +364,7 @@ def create_model_provider(
                 # proxying real Claude can opt back in per provider or per model.
                 cache_retention=gateway_retention,
                 cache_control_on_tools=gateway_cache_control_on_tools,
+                compat=compatible_config.compat,
             )
             return AnthropicProvider(anthropic_config)
         if selected_api == "google-generative-ai":

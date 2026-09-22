@@ -85,6 +85,7 @@ class AnthropicConfig:
     oauth_system_prompt: str | None = None
     cache_retention: CacheRetention = CACHE_RETENTION_SHORT
     cache_control_on_tools: bool = True
+    compat: Mapping[str, JSONValue] = field(default_factory=dict)
     credential_resolver: RuntimeProviderAuthResolver | None = None
 
 

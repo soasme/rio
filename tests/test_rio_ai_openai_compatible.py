@@ -6,9 +6,64 @@ import json
 from itertools import count
 
 from rio.ai._provider_events import ProviderResponseEndEvent
-from rio.ai.openai_compatible import _ResponsesStreamParser
+from rio.ai.openai_compatible import _ResponsesStreamParser, _tool_to_openai, _tool_to_responses
+from rio.ai.tools import AgentTool
 
 _opaque_ids = count()
+
+
+async def _noop_execute(tool_call_id, arguments, signal=None, on_update=None):
+    raise NotImplementedError
+
+
+def _read_like_tool() -> AgentTool:
+    return AgentTool(
+        name="read",
+        label="read",
+        description="Read a file",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "offset": {"type": "integer"}},
+            "required": ["path"],
+        },
+        execute_fn=_noop_execute,
+        constrained_sampling={"type": "json_schema", "strict": "prefer"},
+    )
+
+
+def test_tool_to_openai_uses_strict_schema_when_compat_allows_it():
+    payload = _tool_to_openai(_read_like_tool(), {})
+
+    function = payload["function"]
+    assert function["strict"] is True
+    assert function["parameters"]["additionalProperties"] is False
+    assert function["parameters"]["required"] == ["path", "offset"]
+    assert function["parameters"]["properties"]["offset"] == {
+        "anyOf": [{"type": "integer"}, {"type": "null"}]
+    }
+
+
+def test_tool_to_openai_omits_strict_field_when_compat_opts_out():
+    payload = _tool_to_openai(_read_like_tool(), {"supportsStrictMode": False})
+
+    function = payload["function"]
+    assert "strict" not in function
+    # Falls back to the plain schema, unchanged.
+    assert function["parameters"] == _read_like_tool().input_schema
+
+
+def test_tool_to_responses_uses_strict_schema_when_compat_allows_it():
+    payload = _tool_to_responses(_read_like_tool(), {})
+
+    assert payload["strict"] is True
+    assert payload["parameters"]["additionalProperties"] is False
+
+
+def test_tool_to_responses_omits_strict_field_when_compat_opts_out():
+    payload = _tool_to_responses(_read_like_tool(), {"supportsStrictMode": False})
+
+    assert "strict" not in payload
+    assert payload["parameters"] == _read_like_tool().input_schema
 
 
 def _opaque() -> str:

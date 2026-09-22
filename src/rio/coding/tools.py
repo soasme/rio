@@ -54,6 +54,12 @@ DEFAULT_MAX_OUTPUT_LINES = 2_000
 IMAGE_SNIFF_BYTES = 64 * 1024
 UTF8_BOM = "﻿"
 
+# Ask providers that support it (see `rio.ai.constrained_sampling`) for constrained
+# decoding of this tool's arguments. "prefer" degrades to the plain schema instead of
+# failing when a configured provider/model doesn't advertise support -- the alias
+# tolerance in this module's argument parsers stays as a fallback for that case.
+_STRICT_JSON_SCHEMA_SAMPLING: dict[str, JSONValue] = {"type": "json_schema", "strict": "prefer"}
+
 
 class ToolInputError(ValueError):
     """Raised when a tool receives invalid structured arguments."""
@@ -121,6 +127,7 @@ class ToolDefinition:
     executor: Callable[
         [Mapping[str, JSONValue], ToolCancellationToken | None], Awaitable[AgentToolResult]
     ]
+    constrained_sampling: Mapping[str, JSONValue] | None = None
 
     def to_agent_tool(self) -> AgentTool:
         """Convert the coding definition to the Pi-compatible core tool."""
@@ -142,6 +149,7 @@ class ToolDefinition:
             execute_fn=execute,
             prompt_snippet=self.prompt_snippet,
             prompt_guidelines=self.prompt_guidelines,
+            constrained_sampling=self.constrained_sampling,
         )
 
 
@@ -508,6 +516,7 @@ def create_read_tool_definition(
             },
         },
         executor=execute,
+        constrained_sampling=_STRICT_JSON_SCHEMA_SAMPLING,
     )
 
 
@@ -595,6 +604,7 @@ def create_write_tool_definition(*, cwd: str | Path | None = None) -> ToolDefini
             "required": ["path", "content"],
         },
         executor=execute,
+        constrained_sampling=_STRICT_JSON_SCHEMA_SAMPLING,
     )
 
 
@@ -713,6 +723,7 @@ def create_edit_tool_definition(*, cwd: str | Path | None = None) -> ToolDefinit
             "additionalProperties": False,
         },
         executor=execute,
+        constrained_sampling=_STRICT_JSON_SCHEMA_SAMPLING,
     )
 
 
@@ -882,6 +893,7 @@ def create_bash_tool_definition(
             "required": ["command", "description"],
         },
         executor=execute,
+        constrained_sampling=_STRICT_JSON_SCHEMA_SAMPLING,
     )
 
 
