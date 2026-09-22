@@ -1,27 +1,20 @@
 # rio CLI and RPC
 
-rio drives one `rio.coding.session.CodingSession` from a small number of frontends: an interactive TUI, a one-shot print mode, and a JSONL RPC mode for editor/tool integrations. The CLI entry point is `rio.coding.cli:app` (script name `rio`).
+rio drives one `rio.coding.session.CodingSession` from a one-shot print-mode CLI. The CLI entry point is `rio.cli:app` (script name `rio`).
 
 ## Commands
 
 ```bash
-rio providers
 rio login anthropic --method api-key
-rio logout anthropic
-rio -p --provider anthropic --model MODEL "Explain this project"
-rio -p --mode json "Run the relevant tests"
-rio --session SESSION_ID
-rio sessions
-rio export SESSION_ID --format html
-rio install /path/to/extension
-rio update --models
+rio run --provider anthropic --model MODEL "Explain this project"
+rio run --resume SESSION_ID "Continue with the next task"
 ```
 
-`rio setup --provider NAME --base-url URL --model MODEL` saves an
-OpenAI-compatible provider. `--thinking LEVEL` selects reasoning effort.
-`--system-prompt` and repeated `--append-system-prompt` accept literal text or
-an existing UTF-8 file path. `--approve` allows ambient project resources for
-the run; `--no-approve` disables them.
+`rio login PROVIDER` saves credentials for a configured or built-in provider.
+`rio run --thinking LEVEL` selects reasoning effort. `--approve` allows ambient
+project resources for the run; `--no-approve` disables them. Each `rio run`
+creates a durable session and prints its id. Pass it to `--resume` to load its
+state and continue it.
 
 ## RPC mode
 
