@@ -36,7 +36,7 @@ async def main() -> None:
     )
     renderer = PlainEventRenderer()
     try:
-        async for event in session.prompt("Say hello"):
+        async for event in session.run("Say hello"):
             renderer.render(event)
     finally:
         await session.aclose()

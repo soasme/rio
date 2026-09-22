@@ -1,67 +1,49 @@
 # rio
 
-One package, four submodules:
+Rio is a fully autonomous, one-shot coding agent built on
+[*SKILL.state: Scalable Long-Horizon Agent Skills*](https://arxiv.org/abs/2608.26263).
+It has no interactive terminal UI, no conversation history, and no follow-up
+turns. Start a task, let it run, and Rio exits only when the task completes or
+aborts.
 
-- **`rio.ai`** -- a multi-provider LLM streaming SDK (Anthropic, Google
-  Gemini, Mistral, OpenAI Codex, OpenAI-compatible), ported from
-  [huggingface/tau](https://github.com/huggingface/tau)'s `tau_ai` module.
-  The message/tool/type vocabulary `tau_ai` depends on (`tau_agent.messages`,
-  `tau_agent.tools`, `tau_agent.types`, `tau_agent.provider`,
-  `tau_agent.provider_events` upstream) is folded in here too, so `rio.ai`
-  is self-contained. See [`NOTICE`](NOTICE) for the upstream MIT license.
-- **`rio.agent`** -- a from-scratch runtime implementing
-  [*SKILL.state: Scalable Long-Horizon Agent Skills*](https://arxiv.org/abs/2608.26263)
-  (Badhe, Tiwari & Chung; EMNLP), built on `rio.ai`.
-- **`rio.coding`** -- the coding backend (CLI, tools, skills, extensions), built on `rio.agent`.
-- **`rio.tui`** -- the terminal application, wired to `rio.coding`. It owns
-  session tabs, the prompt editor, shell, file navigation, diffs, and settings.
+Each model step receives the fixed skill instructions, current JSON execution
+state, and the result of the previous action. The task is stored in the
+initial state's `goal` field; it is never treated as a user observation.
+Reasoning and prior messages are not replayed.
 
-## Coding agent
+## Use
 
 ```bash
 uv sync
-uv run rio setup --provider local --base-url http://localhost:8080/v1 --model my-model
-uv run rio                         # interactive terminal interface
-uv run rio -p "Inspect this project and explain its entry point"
-uv run rio -p --mode json "Add a regression test for the parser"
-uv run rio --mode rpc              # JSONL commands on stdin
-uv run rio sessions
-uv run rio --session SESSION_ID
-uv run rio export SESSION_ID --format html
+uv run rio "Inspect this project and fix the parser"
+uv run rio task.md
 ```
 
-Choose an existing provider with `--provider NAME --model MODEL`; `rio providers`
-lists the configured catalog. Credentials may come from the provider's environment
-variable or Rio's credential store (`rio login PROVIDER`; use `--method api-key`
-for an API key). A successful login remembers the provider for future launches.
-API keys and OAuth tokens are stored in `~/.rio/credentials.json` with owner-only
-permissions; the file is unencrypted. OAuth tokens refresh automatically.
-Use `rio logout PROVIDER` to remove saved credentials. Configuration and journals
-live under `~/.rio`.
-Use `--approve` to allow ambient project instructions and extensions for a run;
-project trust controls resource loading, not what shell commands can access.
+The normal workflow is to write the task in a Markdown file, then run Rio
+against it. A sole `*.md` argument is loaded as the task:
 
-The coding tools are `read`, `write`, `edit`, `bash`, and `respond`. Each step
-updates structured state and executes one action. Sessions store snapshots for
-resume and checkpoint restoration; they never replay a transcript into the model.
-HTML exports show steps, final state, and estimated token footprints.
+```bash
+uv run rio feature.md
+```
 
-See the [installed documentation](src/rio/coding/data/docs/README.md) for
-providers, skills, extensions, RPC, and the state-based runtime. The
-[offline example](src/rio/coding/data/examples/offline_session.py) runs a complete
-session with a fake provider and requires no credentials.
+You can add a short instruction when invoking it:
+
+```bash
+uv run rio "Follow feature.md, run the tests, and finish the implementation"
+```
+
+Use `--provider NAME --model MODEL` to choose a configured provider and
+`--approve` to allow project instructions and extensions for that run. Rio
+renders committed actions, state changes, retries, and the final result with
+Rich.
 
 ## Development
 
 ```bash
-uv sync
 uv run pytest
 uv run ruff check .
 ```
 
-Tests use scripted providers (`rio.ai.FakeProvider`) and mocked HTTP; no live
-provider credentials are required. Headless Textual tests exercise terminal
-interaction, and tool integration tests work in temporary directories. See in
-particular `tests/test_rio_agent_loop.py::test_prompt_footprint_is_bounded_across_steps`,
-which asserts that per-step prompt size stays constant across many steps
-rather than growing -- a direct runtime check of the paper's core claim.
+`rio.ai` is a multi-provider LLM streaming SDK. `rio.agent` is the
+SKILL.state runtime, and `rio.coding` supplies the autonomous coding skill and
+tools. `rio.cli` is the public one-shot command-line entry point.

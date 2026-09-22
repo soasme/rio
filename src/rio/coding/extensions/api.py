@@ -15,10 +15,6 @@ from rio.ai.tools import AgentTool, AgentToolResult
 from rio.ai.types import JSONValue
 
 if TYPE_CHECKING:
-    from textual import events
-    from textual.theme import Theme as TuiTheme
-    from textual.widget import Widget
-
     from rio.coding.extensions.providers import DynamicProvider
     from rio.coding.extensions.runtime import ExtensionRuntime
     from rio.coding.local_backends import LocalBackend
@@ -127,7 +123,7 @@ Placement = Literal["above_prompt", "below_prompt"]
 
 # Factories run on the UI thread and receive the live theme (theme handoff,
 # mirrors Pi's ``(tui, theme) => Component``).
-SlotWidgetFactory = Callable[["TuiTheme"], "Widget"]
+SlotWidgetFactory = Callable[[object], object]
 # A slot widget may be given as a factory or, for the simple case, as a plain
 # list of display lines the HOST turns into a widget — this lets an extension
 # mount text without importing Textual at all (ports Pi's ``string[]`` form of
@@ -137,16 +133,16 @@ SlotWidgetContent = Sequence[str] | SlotWidgetFactory
 # Sidebar bodies use the same data-first shape: simple sections provide Rich
 # display lines without importing Textual; advanced sections provide a widget
 # factory receiving the live theme.
-SidebarWidgetFactory = Callable[["TuiTheme"], "Widget"]
+SidebarWidgetFactory = Callable[[object], object]
 SidebarContent = Sequence[str] | SidebarWidgetFactory
 # The main-view factory also receives the handle so the widget can close itself.
-MainViewFactory = Callable[["MainViewHandle", "TuiTheme"], "Widget"]
+MainViewFactory = Callable[["MainViewHandle", object], object]
 
 # Pre-dispatch key hook (ports Pi's ``onTerminalInput``). Returns True to
 # consume the key. Fires for every main-screen key regardless of focus; the host
 # passes the Textual ``Key`` event and the current prompt text so the handler
 # can self-gate (Pi gates on ``getEditorText() === ""``).
-KeyInterceptor = Callable[["events.Key", str], bool]
+KeyInterceptor = Callable[[object, str], bool]
 
 
 class MainViewHandle(Protocol):
@@ -200,7 +196,7 @@ class ComponentBridge(Protocol):
         ...
 
     @property
-    def theme(self) -> TuiTheme | None:
+    def theme(self) -> object | None:
         """Return the live TUI theme handed to widget factories."""
         ...
 
@@ -530,7 +526,7 @@ class UiBridge(Protocol):
         ...
 
     @property
-    def theme(self) -> TuiTheme | None:
+    def theme(self) -> object | None:
         """Return the live TUI theme handed to widget factories."""
         ...
 
@@ -664,7 +660,7 @@ class NullUiBridge:
         return False
 
     @property
-    def theme(self) -> TuiTheme | None:
+    def theme(self) -> object | None:
         """Return None: headless sessions do not own a visual theme."""
         return None
 

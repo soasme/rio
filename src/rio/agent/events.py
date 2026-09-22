@@ -22,7 +22,7 @@ class RunStartEvent:
 class StepStartEvent:
     step: int
     state: JSONObject
-    observation: str
+    observation: str | None
 
 
 @dataclass(frozen=True, slots=True)

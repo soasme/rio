@@ -162,15 +162,16 @@ class TestPrompting:
         assert session.touched_files == ["main.py"]
         assert "plan 1/1" in session.state_summary
 
-    async def test_the_user_message_is_a_prompt_section_not_a_transcript(self, project) -> None:
-        """There is nowhere to append it to. It is this step's one observation."""
+    async def test_the_task_is_initial_state_not_an_observation(self, project) -> None:
+        """The task is stored in the state that seeds the one-shot run."""
         session = await make_session(project, two_step_streams())
         provider = session.provider
         await collect(session, "explain main.py")
 
         _model, _system, first_messages, _tools = provider.calls[0]
         assert len(first_messages) == 1
-        assert "Latest Observation:\nexplain main.py" in first_messages[0].content
+        assert '"goal": "explain main.py"' in first_messages[0].content
+        assert "Previous Action Result:" not in first_messages[0].content
 
     async def test_the_run_is_journaled_as_steps(self, project) -> None:
         storage = InMemorySessionStorage()
@@ -180,29 +181,6 @@ class TestPrompting:
         steps = [e for e in await storage.read_all() if isinstance(e, StepEntry)]
         assert [s.action.name for s in steps] == ["read", "respond"]
         assert any(isinstance(e, EntryAppendedEvent) for e in events)
-
-    async def test_continue_runs_a_queued_follow_up(self, project) -> None:
-        streams = [
-            *two_step_streams(),
-            step_response(
-                reasoning="",
-                state_delta={},
-                action="respond",
-                args={"message": "tests pass"},
-            ),
-        ]
-        session = await make_session(project, streams)
-        await collect(session, "explain main.py")
-        session.queue_follow_up_message("now run the tests")
-
-        events = [event async for event in session.continue_()]
-        run_end = next(e for e in events if isinstance(e, SessionRunEndEvent))
-        assert run_end.answer == "tests pass"
-
-    async def test_continue_with_nothing_queued_yields_nothing(self, project) -> None:
-        session = await make_session(project, [])
-        assert [event async for event in session.continue_()] == []
-
 
 def write_skill(root, name: str, body: str = "Body") -> None:
     """Write `<root>/skills/<name>/SKILL.md`, creating the directories."""
@@ -365,26 +343,6 @@ class TestReconfiguration:
         assert changes[-1].model == "another-model"
         # The findings survive the swap because they live in the state.
         assert session.state["findings"] == {"entrypoint": "main.py"}
-
-    async def test_a_new_provider_starts_from_the_existing_state(self, project) -> None:
-        session = await make_session(project, two_step_streams())
-        await collect(session, "explain main.py")
-
-        replacement = FakeProvider(
-            [
-                step_response(
-                    reasoning="",
-                    state_delta={},
-                    action="respond",
-                    args={"message": "still main.py"},
-                )
-            ]
-        )
-        await session.set_provider(replacement, name="other", model="other-model")
-        await collect(session, "are you sure")
-
-        _model, _system, messages, _tools = replacement.calls[0]
-        assert "entrypoint" in messages[0].content
 
     async def test_thinking_level_changes_are_journaled(self, project) -> None:
         storage = InMemorySessionStorage()

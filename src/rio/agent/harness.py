@@ -85,12 +85,13 @@ class Harness:
         if self._current_signal is not None:
             self._current_signal.cancel()
 
-    def run(self, observation: str) -> AsyncIterator[SkillEvent]:
+    def run(self, observation: str | None = None) -> AsyncIterator[SkillEvent]:
+        """Run once. ``observation`` is ignored for source compatibility."""
         self._ensure_not_running()
         self._running = True
-        return self._run(observation)
+        return self._run()
 
-    async def _run(self, observation: str) -> AsyncIterator[SkillEvent]:
+    async def _run(self) -> AsyncIterator[SkillEvent]:
         signal = HarnessCancellationToken()
         self._current_signal = signal
         try:
@@ -98,7 +99,6 @@ class Harness:
                 provider=self._config.provider,
                 model=self._config.model,
                 skill=self._config.skill,
-                observation=observation,
                 state=self._state,
                 max_steps=self._config.max_steps,
                 max_retries=self._config.max_retries,

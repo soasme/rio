@@ -1,15 +1,13 @@
 """The per-step prompt sent to the model.
 
 The skill instructions are sent as the provider's `system` string. The
-current state and the latest observation are the only other inputs -- no
-past observations, actions, or reasoning traces are ever included, which is
+current state and the previous action result are the only other inputs -- no
+past observations, actions, reasoning traces, or user messages are ever included, which is
 what keeps the per-step prompt a fixed size no matter how many steps have
 already run.
 
-The observation is one plain string -- whatever text the step observes,
-whether that is the result the last action produced or a message from the
-user. It gets one section of the prompt regardless of which; the runtime
-does not label it by kind.
+The task is stored in the initial execution state. The first step has no
+observation; later steps receive only the result of their previous action.
 
 The model reports its output for the step -- reasoning, a state update, and
 an action -- by calling a single mandatory `skill_step` tool. Any free text
@@ -88,19 +86,16 @@ def skill_step_tool(skill: HarnessSpec) -> AgentTool:
 
 def build_step_messages(
     state: JSONObject,
-    observation: str,
+    observation: str | None,
     *,
     error_note: str | None = None,
 ) -> list[AgentMessage]:
-    """Build the non-system half of the prompt: the current state and the latest observation,
-    nothing else.
-    """
+    """Build the non-system half of the prompt from state and an action result."""
     body = (
-        "Skill Execution State:\n```json\n"
-        + json.dumps(state, indent=2, sort_keys=True)
-        + "\n```\n\nLatest Observation:\n"
-        + observation
+        "Skill Execution State:\n```json\n" + json.dumps(state, indent=2, sort_keys=True) + "\n```"
     )
+    if observation is not None:
+        body += "\n\nPrevious Action Result:\n" + observation
     if error_note:
         body += (
             f"\n\nYour previous {STEP_TOOL_NAME} call was rejected: {error_note}\n"
