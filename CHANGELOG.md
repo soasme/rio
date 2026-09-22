@@ -1,3 +1,10 @@
+# 0.4.5
+
+* feat(coding): retain providers json config ([#86](https://github.com/soasme/rio/pull/86))
+* feat: add run login and resume commands ([#85](https://github.com/soasme/rio/pull/85))
+* docs: fix usage to use uv tool install ([#84](https://github.com/soasme/rio/pull/84))
+* fix(ai): request strict JSON-schema tool calling from providers that support it ([#84](https://github.com/soasme/rio/pull/84))
+
 # 0.4.4
 
 * fix(coding): reject empty or placeholder-stub respond messages ([#83](https://github.com/soasme/rio/pull/83))
