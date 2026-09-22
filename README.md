@@ -14,13 +14,13 @@ uv tool install rio
 
 Run a adhoc task:
 ```
-rio "Fix gh issue 123."
+rio run "Fix gh issue 123."
 ```
 
 Run a predefined workflow:
 
 ```
-rio task.md
+rio run task.md
 ```
 
 The workflow is to write the task in a Markdown file, then run Rio
@@ -30,13 +30,13 @@ against it.
 You can add a short instruction when invoking it:
 
 ```bash
-uv run rio "Follow feature.md, run the tests, and finish the implementation"
+uv run rio run "Follow feature.md, run the tests, and finish the implementation"
 ```
 
-Use `--provider NAME --model MODEL` to choose a configured provider and
+Use `rio login PROVIDER` to configure a provider. Use `--provider NAME --model MODEL` to choose one and
 `--approve` to allow project instructions and extensions for that run. Rio
 renders committed actions, state changes, retries, and the final result with
-Rich.
+Rich. Each run prints a session id; continue it with `rio run --resume SESSION_ID "Next task"`.
 
 ## Development
 
