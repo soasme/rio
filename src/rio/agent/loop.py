@@ -1,11 +1,9 @@
 """The SKILL.state execution loop.
 
 At each step, the runtime sends the model only three things: the skill
-instructions, the current state, and the latest observation -- one plain
-string, whatever text the last step produced. Whether that text is the
-result the last action returned or a message from the user is not the
-runtime's concern: a user message is just this step's observation, the same
-as any other. It never sends a growing transcript. The model must respond
+instructions, the current state, and the previous action result. The task is
+stored in initial state before the run starts. It never sends a growing
+transcript. The model must respond
 with one `skill_step` tool call carrying its private reasoning, a state
 update, and an action. The runtime checks the state update and the action --
 including whether the updated state still fits the skill's state budget --
@@ -56,7 +54,7 @@ async def run_skill_loop(
     provider: ModelProvider,
     model: str,
     skill: HarnessSpec,
-    observation: str,
+    observation: str | None = None,
     state: dict | None = None,
     max_steps: int | None = None,
     max_retries: int = 2,
@@ -64,9 +62,9 @@ async def run_skill_loop(
 ) -> AsyncIterator[SkillEvent]:
     """Run the SKILL.state loop, yielding one event per lifecycle transition.
 
-    `observation` is the first step's `O_0`, one plain string. A turn started
-    by the user carries their message as that text; every step after the
-    first observes the result of the action the previous one took instead.
+    ``observation`` is accepted for source compatibility and intentionally
+    ignored. The first step has no observation. Every later step observes only the
+    result of the action the previous step took.
     """
     state = dict(state if state is not None else skill.initial_state)
     actions = skill.action_by_name()
@@ -75,7 +73,7 @@ async def run_skill_loop(
     yield RunStartEvent(skill=skill.name)
 
     step = 0
-    current_observation = observation
+    current_observation: str | None = None
     terminated = False
     while max_steps is None or step < max_steps:
         if signal is not None and signal.is_cancelled():

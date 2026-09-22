@@ -201,8 +201,8 @@ class CodingSession:
         self._runner = runner
         self._session_title = config.session_title
         self._thinking_level = config.thinking_level
-        self._last_observation: str | None = None
         self._staged_entries: list[SessionEntry] = []
+        self._has_run = False
 
     # -- construction --------------------------------------------------------
 
@@ -477,7 +477,7 @@ class CodingSession:
         return estimate_step_footprint(
             instructions=self.system_prompt,
             state=self.state,
-            observation=self._last_observation or "",
+            observation="",
             tools=self.tools,
         )
 
@@ -497,33 +497,6 @@ class CodingSession:
     @property
     def is_running(self) -> bool:
         return self._runner.is_running
-
-    @property
-    def queued_message_count(self) -> int:
-        return self._runner.queued_message_count
-
-    @property
-    def queued_steering_messages(self) -> tuple[str, ...]:
-        return self._runner.queued_steering_messages
-
-    @property
-    def queued_follow_up_messages(self) -> tuple[str, ...]:
-        return self._runner.queued_follow_up_messages
-
-    def queue_steering_message(self, text: str, *, custom_type=None, details=None):
-        return self._runner.queue_steering_message(text)
-
-    def queue_follow_up_message(self, text: str, *, custom_type=None, details=None):
-        return self._runner.queue_follow_up_message(text)
-
-    def clear_queued_messages(self):
-        return self._runner.clear_queued_messages()
-
-    def pop_latest_steering_message(self) -> str | None:
-        return self._runner.pop_latest_steering_message()
-
-    def pop_latest_follow_up_message(self) -> str | None:
-        return self._runner.pop_latest_follow_up_message()
 
     def cancel(self) -> None:
         self._runner.cancel()
@@ -545,32 +518,24 @@ class CodingSession:
 
     # -- running -------------------------------------------------------------
 
-    async def prompt(self, text: str) -> AsyncIterator[CodingSessionEvent]:
-        """Run one turn from a user message.
-
-        The message is what the first step observes, labelled as a user
-        message rather than dressed up as an action result -- no action has run
-        yet. It is not appended to anything: on the next step the model sees
-        only what the state retained of it, which is why the instructions tell
-        the model to record the goal. The state itself carries over untouched,
-        so a second message continues the session instead of restarting it.
-        """
+    async def run(self, text: str) -> AsyncIterator[CodingSessionEvent]:
+        """Run one task, placing its text in the initial execution state."""
+        if self._has_run:
+            raise RuntimeError("CodingSession supports one run only")
+        self._has_run = True
         outcome = await self.extensions.run_input_hooks(text)
         if outcome.handled:
             return
-        observation = self.expand_prompt_text(outcome.text)
-        self._last_observation = observation
-        async for event in self._runner.run(observation):
+        state = dict(self._skill.initial_state)
+        state["goal"] = self.expand_prompt_text(outcome.text)
+        await self._runner.reset(state, reason="task initialized")
+        async for event in self._runner.run():
             await self.extensions.emit_event(event)
             yield event
 
-    async def continue_(self) -> AsyncIterator[CodingSessionEvent]:
-        """Run the next queued follow-up message, if there is one."""
-        pending = self._runner.pop_latest_follow_up_message()
-        if pending is None:
-            return
-        async for event in self.prompt(pending):
-            yield event
+    def prompt(self, text: str) -> AsyncIterator[CodingSessionEvent]:
+        """Compatibility alias for the single permitted run."""
+        return self.run(text)
 
     def expand_prompt_text(self, text: str) -> str:
         """Expand a `/skill:<name>` or bare `/<name>` invocation into instructions.
@@ -606,7 +571,6 @@ class CodingSession:
     async def restore(self, entry_id: str, *, reason: str | None = None) -> StateRestoredEvent:
         """Branch: adopt an earlier execution state as the live one."""
         event = await self._runner.restore(entry_id, reason=reason)
-        self._last_observation = None
         return event
 
     async def append_custom_entry(
@@ -714,12 +678,10 @@ class CodingSession:
             initial_coding_state(cwd=self.cwd, environment=_environment(self.cwd)),
             reason="new session",
         )
-        self._last_observation = None
 
     async def resume(self) -> dict[str, JSONValue]:
         """Adopt the state recorded in the journal."""
         state = await self._runner.load()
-        self._last_observation = None
         return state
 
     async def fork_from(
@@ -733,7 +695,6 @@ class CodingSession:
         """
         await self.append_custom_entry("fork", {"parent_session_id": parent_session_id})
         await self._runner.reset(dict(state), reason=f"forked from session {parent_session_id}")
-        self._last_observation = None
 
     async def aclose(self) -> None:
         self._runner.cancel()

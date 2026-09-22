@@ -822,53 +822,6 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
 
 
 @pytest.mark.anyio
-async def test_tui_explicit_dynamic_startup_uses_cached_state_during_downtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import rio.tui.app as tui_app
-    from rio.coding.cli import run_configured_session
-
-    isolate_home(monkeypatch, tmp_path)
-    paths = RioPaths(home=tmp_path / ".rio", agents_home=tmp_path / ".agents")
-    LlamaCppStateStore(paths=paths).save(_state())
-    project = tmp_path / "project"
-    project.mkdir()
-    captured: dict[str, object] = {}
-
-    class HeadlessTui:
-        sessions = {}
-
-        def __init__(self, session: object, **kwargs: object) -> None:
-            del kwargs
-            captured["session"] = session
-
-        async def run_async(self) -> None:
-            return None
-
-    def unavailable_client(*, timeout: float) -> httpx.AsyncClient:
-        def handler(request: httpx.Request) -> Exception:
-            raise httpx.ConnectError("server is down", request=request)
-
-        return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout)
-
-    monkeypatch.setattr(tui_app, "RioTuiApp", HeadlessTui)
-    monkeypatch.setattr(llama_service, "create_async_client", unavailable_client)
-    succeeded = await run_configured_session(
-        prompt="",
-        mode="tui",
-        model="qwen-local",
-        provider_name="llama.cpp",
-        cwd=project,
-        trust_override="untrusted",
-    )
-    assert succeeded
-    session = captured["session"]
-    assert session.provider._config.base_url == f"{SERVER}/v1"  # type: ignore[union-attr]
-    assert session.provider_name == "llama.cpp"  # type: ignore[union-attr]
-    await session.aclose()  # type: ignore[union-attr]
-
-
-@pytest.mark.anyio
 async def test_builtin_source_lifecycle_is_generation_local(tmp_path: Path) -> None:
     runtime, _, _ = _runtime(tmp_path)
     old_registry = runtime.provider_registry

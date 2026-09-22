@@ -18,13 +18,11 @@ dependencies = [
     "pygments>=2.18",
     "pyte>=0.8.2",
     "rich>=13.0",
-    "textual>=8.2.8",
-    "textual-diff-view>=0.1.5",
     "typer>=0.12",
 ]
 
 [project.scripts]
-rio = "rio.coding.cli:app"
+rio = "rio.cli:app"
 
 [project.urls]
 Repository = "https://github.com/soasme/rio"

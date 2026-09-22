@@ -19,7 +19,6 @@ proper. It owns three things the runtime deliberately does not:
 
 from __future__ import annotations
 
-from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
@@ -43,7 +42,6 @@ from rio.coding.events import (
     AgentSettledEvent,
     CodingSessionEvent,
     EntryAppendedEvent,
-    QueueUpdateEvent,
     SessionRunEndEvent,
     StateRestoredEvent,
 )
@@ -55,7 +53,6 @@ from rio.coding.session_store import (
     SessionStorage,
     StateResetEntry,
     StepEntry,
-    TurnEntry,
     ValidationFailureEntry,
     entries_by_id,
     entry_state,
@@ -103,7 +100,7 @@ class _StepInProgress:
 
 
 class SessionRunner:
-    """Runs SKILL.state turns against a journal, with steering and checkpoints."""
+    """Runs one SKILL.state execution against a journal."""
 
     def __init__(
         self,
@@ -125,8 +122,6 @@ class SessionRunner:
             ),
             state=self._state,
         )
-        self._steering: deque[str] = deque()
-        self._follow_up: deque[str] = deque()
         self._running = False
         self._steps_this_run = 0
         self._terminated = False
@@ -163,51 +158,6 @@ class SessionRunner:
         """The journal entry the next write will hang from."""
         return self._parent_entry_id
 
-    @property
-    def queued_steering_messages(self) -> tuple[str, ...]:
-        return tuple(self._steering)
-
-    @property
-    def queued_follow_up_messages(self) -> tuple[str, ...]:
-        return tuple(self._follow_up)
-
-    @property
-    def queued_message_count(self) -> int:
-        return len(self._steering) + len(self._follow_up)
-
-    # -- queues --------------------------------------------------------------
-
-    def queue_steering_message(self, text: str) -> QueueUpdateEvent:
-        """Queue text to be folded into the *current* run's next observation."""
-        self._steering.append(text)
-        return self._queue_event()
-
-    def queue_follow_up_message(self, text: str) -> QueueUpdateEvent:
-        """Queue text to start a new run once the current one settles."""
-        self._follow_up.append(text)
-        return self._queue_event()
-
-    def pop_latest_steering_message(self) -> str | None:
-        return self._steering.pop() if self._steering else None
-
-    def pop_latest_follow_up_message(self) -> str | None:
-        return self._follow_up.pop() if self._follow_up else None
-
-    def clear_queued_messages(self) -> QueueUpdateEvent:
-        self._steering.clear()
-        self._follow_up.clear()
-        return self._queue_event()
-
-    def _queue_event(self) -> QueueUpdateEvent:
-        return QueueUpdateEvent(steering=tuple(self._steering), follow_up=tuple(self._follow_up))
-
-    def _drain_steering(self) -> str | None:
-        if not self._steering:
-            return None
-        merged = "\n".join(self._steering)
-        self._steering.clear()
-        return merged
-
     # -- control -------------------------------------------------------------
 
     def cancel(self) -> None:
@@ -215,21 +165,8 @@ class SessionRunner:
 
     # -- running -------------------------------------------------------------
 
-    async def run(self, message: str) -> AsyncIterator[CodingSessionEvent]:
-        """Run one turn from a user message, yielding step events and journal writes.
-
-        The turn starts from the state the session has already built, so a
-        second message continues the session instead of restarting it. The
-        message reaches the model as the first step's observation, exactly as
-        plain as any other: no action has run yet, so there is nothing to
-        combine it with.
-
-        Steering restarts the underlying loop from the live execution state,
-        observing the queued text appended after the result the run had
-        reached -- one observation, not two. That restart is lossless: the
-        state already holds everything the model would have been told, so no
-        steps are spent re-establishing context.
-        """
+    async def run(self, message: str | None = None) -> AsyncIterator[CodingSessionEvent]:
+        """Run the configured skill once; ``message`` is ignored for compatibility."""
         if self._running:
             raise RuntimeError("SessionRunner is already running")
         self._running = True
@@ -237,20 +174,8 @@ class SessionRunner:
         self._terminated = False
         self._answer = None
         try:
-            observation = message
-            while True:
-                limit = self._config.max_steps
-                if limit is not None:
-                    remaining = limit - self._steps_this_run
-                    if remaining <= 0:
-                        break
-                    self._harness.config.max_steps = remaining
-                async for event in self._run_once(observation):
-                    yield event
-                steering = self._drain_steering()
-                if steering is None or self._terminated:
-                    break
-                observation = f"{self._last_observation or observation}\n\n[user] {steering}"
+            async for event in self._run_once():
+                yield event
 
             yield SessionRunEndEvent(
                 steps=self._steps_this_run,
@@ -259,34 +184,16 @@ class SessionRunner:
             )
             for entry in await self._write_tip_pointer():
                 yield EntryAppendedEvent(entry=entry)
-            if not self._follow_up:
-                yield AgentSettledEvent()
+            yield AgentSettledEvent()
         finally:
             self._running = False
 
-    async def _run_once(self, observation: str) -> AsyncIterator[CodingSessionEvent]:
-        """Run the loop until it terminates, or until steering interrupts it.
-
-        Interrupting is a cancel at a step boundary. Nothing has to be saved
-        before cancelling: the state up to the last committed step is already
-        the whole of what a restarted loop would be told.
-        """
-        self._last_observation = observation
+    async def _run_once(self) -> AsyncIterator[CodingSessionEvent]:
+        """Run the loop until it terminates or is cancelled."""
         pending: _StepInProgress | None = None
-        turn_written = False
-
-        iterator = self._harness.run(observation)
+        iterator = self._harness.run()
         async for event in iterator:
             if isinstance(event, RunStartEvent):
-                if not turn_written:
-                    turn_written = True
-                    entry = TurnEntry(
-                        parent_id=self._parent_entry_id,
-                        observation=observation,
-                        state=dict(self._state),
-                    )
-                    for written in await self._write([entry]):
-                        yield EntryAppendedEvent(entry=written)
                 yield event
 
             elif isinstance(event, StepStartEvent):
@@ -365,12 +272,6 @@ class SessionRunner:
                 pending = None
                 self._terminated = event.terminated
                 yield event
-                if self._steering and not event.terminated:
-                    # Interrupt at the step boundary. The loop sees the cancel
-                    # on its next iteration and unwinds cleanly; `run` then
-                    # restarts it from this same state with the steering text
-                    # appended to the observation.
-                    self._harness.cancel()
 
             elif isinstance(event, RunEndEvent):
                 self._state = dict(event.state)

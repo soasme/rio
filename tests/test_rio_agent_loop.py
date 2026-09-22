@@ -409,12 +409,8 @@ async def test_only_the_first_of_several_step_calls_is_executed():
     assert events[-1].state == {"counter": 1}
 
 
-async def test_a_turns_first_step_observes_only_the_message():
-    """A user message is not an action result: no action has run to produce one.
-
-    It still gets the one `Latest Observation` section every observation
-    does -- a message is not a distinct, labelled channel of its own.
-    """
+async def test_first_step_has_no_user_observation():
+    """The task belongs in state; only action results are observations."""
     skill = make_skill()
     provider = FakeProvider(
         [
@@ -433,19 +429,14 @@ async def test_a_turns_first_step_observes_only_the_message():
     ]
 
     first, second = (messages[0].content for _m, _s, messages, _t in provider.calls)
-    assert "Latest Observation:\nexplain main.py" in first
-    # The message is spent once an action has run; the observation replaces it.
+    assert "explain main.py" not in first
+    assert "Previous Action Result:" not in first
     assert "explain main.py" not in second
-    assert "Latest Observation:" in second
+    assert "Previous Action Result:" in second
 
 
-async def test_the_observation_is_one_plain_string_however_it_was_assembled():
-    """A message that interrupted a run mid-flight is just text in the observation.
-
-    `rio.agent` does not know or care that this string is a tool result with a
-    user message appended to it -- combining the two, if a caller wants to,
-    happens before the string ever reaches the loop.
-    """
+async def test_legacy_observation_argument_is_ignored():
+    """User observations cannot enter a SKILL.state run."""
     skill = make_skill()
     provider = FakeProvider(
         [step_response(reasoning="", state_delta={"counter": 1}, action="finish", args={})]
@@ -461,7 +452,8 @@ async def test_the_observation_is_one_plain_string_however_it_was_assembled():
     ]
 
     body = provider.calls[0][2][0].content
-    assert "Latest Observation:\nadvance ran\n\n[user] actually, stop" in body
+    assert "advance ran" not in body
+    assert "[user]" not in body
 
 
 @pytest.mark.asyncio
@@ -586,7 +578,7 @@ async def test_action_executor_records_results_and_reports_failures():
             observation="start",
         )
     ]
-    assert "observed:a" in provider.calls[1][2][0].content.partition("Latest Observation:")[0]
+    assert "Previous Action Result:\nobserved:a" in provider.calls[1][2][0].content
     assert "advance refused" in provider.calls[2][2][0].content
     assert [e.is_error for e in events if isinstance(e, ActionEndEvent)] == [False, True, False]
     assert events[-1].state["notes"] == "terminal"

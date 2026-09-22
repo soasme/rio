@@ -142,7 +142,7 @@ async def test_each_tool_result_becomes_the_next_observation(tmp_path) -> None:
         pass
 
     observations = [
-        messages[0].content.partition("Latest Observation:")[2]
+        messages[0].content.partition("Previous Action Result:")[2]
         for _m, _s, messages, _t in provider.calls
     ]
     # Step 1 sees the read output; step 2 sees the edit's; step 3 sees bash's.
@@ -273,6 +273,6 @@ async def test_a_file_changed_behind_the_agents_back_must_be_read_again(tmp_path
         pass
 
     provider = session.provider
-    refusal = provider.calls[3][2][0].content.partition("Latest Observation:")[2]
+    refusal = provider.calls[3][2][0].content.partition("Previous Action Result:")[2]
     assert "changed on disk" in refusal
     assert "return a * b" in (repo / "calc.py").read_text(encoding="utf-8")
