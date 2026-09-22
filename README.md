@@ -1,30 +1,31 @@
 # rio
 
-Rio is a fully autonomous, one-shot coding agent built on
-[*SKILL.state: Scalable Long-Horizon Agent Skills*](https://arxiv.org/abs/2608.26263).
-It has no interactive terminal UI, no conversation history, and no follow-up
-turns. Start a task, let it run, and Rio exits only when the task completes or
-aborts.
-
-Each model step receives the fixed skill instructions, current JSON execution
-state, and the result of the previous action. The task is stored in the
-initial state's `goal` field; it is never treated as a user observation.
-Reasoning and prior messages are not replayed.
+Rio is a fully autonomous, one-shot coding agent. It has no interactive terminal UI,
+no conversation history, no human steer in the middle and no follow-up turns.
+Start a task, let it run, and Rio exits only when the task completes or aborts.
 
 ## Use
 
-```bash
-uv sync
-uv run rio "Inspect this project and fix the parser"
-uv run rio task.md
-```
-
-The normal workflow is to write the task in a Markdown file, then run Rio
-against it. A sole `*.md` argument is loaded as the task:
+Install via `uv`:
 
 ```bash
-uv run rio feature.md
+uv tool install rio
 ```
+
+Run a adhoc task:
+```
+rio "Fix gh issue 123."
+```
+
+Run a predefined workflow:
+
+```
+rio task.md
+```
+
+The workflow is to write the task in a Markdown file, then run Rio
+against it.
+
 
 You can add a short instruction when invoking it:
 
@@ -44,6 +45,9 @@ uv run pytest
 uv run ruff check .
 ```
 
-`rio.ai` is a multi-provider LLM streaming SDK. `rio.agent` is the
-SKILL.state runtime, and `rio.coding` supplies the autonomous coding skill and
-tools. `rio.cli` is the public one-shot command-line entry point.
+* `rio.ai` is a multi-provider LLM streaming SDK.
+* `rio.agent` is the [SKILL.state] runtime.
+* `rio.coding` supplies the autonomous coding skill and tools.
+* `rio.cli` is the public one-shot command-line entry point.
+
+[SKILL.state]: https://arxiv.org/abs/2608.26263
