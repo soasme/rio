@@ -1,9 +1,9 @@
 """Credential commands with injectable interaction for terminal frontends."""
 
 from dataclasses import replace
+from getpass import getpass
 
 import anyio
-import typer
 
 from rio.coding.credentials import FileCredentialStore
 from rio.coding.oauth_registry import get_oauth_provider
@@ -25,18 +25,18 @@ def _provider(name):
 
 def terminal_callbacks(method=None):
     async def prompt(value):
-        return await anyio.to_thread.run_sync(lambda: typer.prompt(value.message))
+        return await anyio.to_thread.run_sync(lambda: input(f"{value.message}: "))
 
     async def select(value):
         choices = ", ".join(f"{item.id}: {item.label}" for item in value.options)
-        return await anyio.to_thread.run_sync(lambda: typer.prompt(f"{value.message} ({choices})"))
+        return await anyio.to_thread.run_sync(lambda: input(f"{value.message} ({choices}): "))
 
     return OAuthLoginCallbacks(
-        on_auth=lambda info: typer.echo(f"{info.url}\n{info.instructions or ''}"),
-        on_device_code=lambda info: typer.echo(f"{info.verification_uri}\nCode: {info.user_code}"),
+        on_auth=lambda info: print(f"{info.url}\n{info.instructions or ''}"),
+        on_device_code=lambda info: print(f"{info.verification_uri}\nCode: {info.user_code}"),
         on_prompt=prompt,
         on_select=select,
-        on_progress=typer.echo,
+        on_progress=print,
         method=method,
     )
 
@@ -56,7 +56,7 @@ async def login_provider(name, *, method=None, callbacks=None, api_key=None):
         secret = api_key
         if secret is None:
             secret = await anyio.to_thread.run_sync(
-                lambda: typer.prompt(f"API key for {name}", hide_input=True)
+                lambda: getpass(f"API key for {name}: ")
             )
         if not secret.strip():
             raise ValueError("API key cannot be empty")

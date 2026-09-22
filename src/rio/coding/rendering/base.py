@@ -31,7 +31,7 @@ class PrintOutputMode(StrEnum):
     because it has no live event stream to consume.
     """
 
-    text = "text"
+    human = "human"
     json = "json"
 
 

@@ -15,7 +15,6 @@ import json
 import re
 from dataclasses import fields, is_dataclass
 
-import typer
 from pydantic import BaseModel
 
 from rio.coding.events import AutoRetryEndEvent, CodingSessionEvent
@@ -32,7 +31,7 @@ class JsonEventRenderer:
     def render(self, event: CodingSessionEvent) -> None:
         if isinstance(event, AutoRetryEndEvent):
             self._failed = not event.success
-        typer.echo(event_to_json(event))
+        print(event_to_json(event), flush=True)
 
     def finish(self) -> bool:
         return not self._failed

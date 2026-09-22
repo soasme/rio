@@ -1,7 +1,6 @@
 """One-shot CLI and state-only prompt checks."""
 
 import pytest
-from typer.testing import CliRunner
 
 from conftest import make_skill, step_response
 from rio.agent import run_skill_loop
@@ -10,7 +9,9 @@ from rio.cli import app
 
 
 def test_cli_requires_a_task():
-    assert CliRunner().invoke(app, []).exit_code == 2
+    with pytest.raises(SystemExit) as error:
+        app(["run"])
+    assert error.value.code == 2
 
 
 @pytest.mark.asyncio

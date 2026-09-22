@@ -50,17 +50,16 @@ from rio.coding.session_store import (
 # -- rendering.plain ----------------------------------------------------------
 
 
-def test_plain_renderer_marks_discarded_reasoning_as_discarded(
+def test_plain_renderer_hides_discarded_reasoning(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A reader must never mistake shown-once reasoning for session content."""
+    """Human output contains the transcript, not internal reasoning."""
     renderer = PlainEventRenderer()
 
     renderer.render(ReasoningDiscardedEvent(step=1, reasoning="I will check the file next"))
 
     out = capsys.readouterr().out
-    assert "discarded" in out
-    assert "I will check the file next" in out
+    assert out == ""
 
 
 def test_plain_renderer_renders_step_lifecycle(capsys: pytest.CaptureFixture[str]) -> None:
@@ -80,10 +79,10 @@ def test_plain_renderer_renders_step_lifecycle(capsys: pytest.CaptureFixture[str
     renderer.render(StepEndEvent(step=1, state={"goal": "Fix bug"}, terminated=False))
 
     out = capsys.readouterr().out
-    assert "step 1" in out
-    assert "bash" in out
-    assert "Fix bug" in out
-    assert "file1" in out
+    assert "• Running ls" in out
+    assert "  └ bash: file1" in out
+    assert "step 1" not in out
+    assert "Fix bug" not in out
     assert renderer.finish() is True
 
 
@@ -95,7 +94,7 @@ def test_plain_renderer_renders_validation_error_as_retry(
     renderer.render(ValidationErrorEvent(step=2, attempt=1, error="delta touched unknown field"))
 
     out = capsys.readouterr().out
-    assert "retry" in out
+    assert "Retry" in out
     assert "delta touched unknown field" in out
 
 
@@ -163,7 +162,7 @@ def test_json_renderer_fails_on_unrecovered_auto_retry(capsys: pytest.CaptureFix
 
 def test_create_event_renderer_dispatches_by_mode() -> None:
     assert isinstance(create_event_renderer(PrintOutputMode.json), JsonEventRenderer)
-    assert isinstance(create_event_renderer(PrintOutputMode.text), PlainEventRenderer)
+    assert isinstance(create_event_renderer(PrintOutputMode.human), PlainEventRenderer)
 
 
 # -- rendering.steps --------------------------------------------------------

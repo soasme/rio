@@ -35,8 +35,9 @@ uv run rio run "Follow feature.md, run the tests, and finish the implementation"
 
 Use `rio login PROVIDER` to configure a provider. Use `--provider NAME --model MODEL` to choose one and
 `--approve` to allow project instructions and extensions for that run. Rio
-renders committed actions, state changes, retries, and the final result with
-Rich. Each run prints a session id; continue it with `rio run --resume SESSION_ID "Next task"`.
+prints a compact human transcript by default. Use `--output json` for one JSON
+event per line. Each human-mode run prints a session id; continue it with
+`rio run --resume SESSION_ID "Next task"`.
 
 ## Development
 
