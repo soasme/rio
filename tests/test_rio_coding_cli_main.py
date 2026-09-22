@@ -65,6 +65,17 @@ def test_help_lists_commands(capsys: pytest.CaptureFixture[str]) -> None:
     assert "commands:" in capsys.readouterr().out
 
 
+def test_version_prints_installed_version(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cli_module = importlib.import_module("rio.cli")
+    monkeypatch.setattr(cli_module, "current_version", lambda: "1.2.3")
+
+    app(["version"])
+
+    assert capsys.readouterr().out == "1.2.3\n"
+
+
 def test_unrelated_value_error_does_not_blame_cwd(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
