@@ -84,7 +84,6 @@ async def run_configured_session(
     cwd: Path,
     provider_name: str | None = None,
     model: str | None = None,
-    mode: str | None = None,
     thinking_level: ThinkingLevel | None = None,
     extension_paths: tuple[Path, ...] = (),
     trust_override: TrustOverride | None = None,

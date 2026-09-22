@@ -810,7 +810,6 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
     monkeypatch.setattr(compatible, "create_async_client", fake_client)
     ok = await run_configured_session(
         prompt="say hello",
-        mode="text",
         model="qwen-local",
         cwd=project,
         provider_name="llama.cpp",
