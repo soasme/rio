@@ -1,3 +1,9 @@
+# 0.5.0
+
+* feat(cli): use argparse output modes ([#89](https://github.com/soasme/rio/pull/89))
+* fix(cli): stop blaming --cwd for unrelated run errors ([#88](https://github.com/soasme/rio/pull/88))
+* feat: refresh vendor catalog ([#87](https://github.com/soasme/rio/pull/87))
+
 # 0.4.5
 
 * feat(coding): retain providers json config ([#86](https://github.com/soasme/rio/pull/86))
