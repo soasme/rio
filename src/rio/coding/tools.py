@@ -915,6 +915,8 @@ def create_respond_tool() -> AgentTool:
     ) -> AgentToolResult:
         del tool_call_id, signal, on_update
         message = _str_arg(arguments, "message")
+        if not message.strip():
+            raise ToolInputError("message must not be empty")
         return AgentToolResult(content=[TextContent(text=message)], terminate=True)
 
     return AgentTool(

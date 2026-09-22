@@ -680,6 +680,14 @@ async def test_respond_tool_requires_a_string_message() -> None:
         await tool.execute("test-call", {})
 
 
+@pytest.mark.parametrize("message", ["", "   "])
+async def test_respond_tool_rejects_an_empty_message(message: str) -> None:
+    tool = create_respond_tool()
+
+    with pytest.raises(ValueError, match="message must not be empty"):
+        await tool.execute("test-call", {"message": message})
+
+
 # --- image_processing (ported directly, no SKILL.state changes needed) ------
 
 
