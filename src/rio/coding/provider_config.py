@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
-from json import dumps, loads
+from json import JSONDecodeError, dumps, loads
 from os import environ
 from pathlib import Path
 from shutil import copy2
@@ -511,7 +511,10 @@ def load_provider_settings(paths: RioPaths | None = None) -> ProviderSettings:
     path = provider_settings_path(resolved_paths)
     if not path.exists():
         return ProviderSettings(providers=_effective_provider_configs(resolved_paths))
-    raw = loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = loads(path.read_text(encoding="utf-8"))
+    except JSONDecodeError as error:
+        raise ProviderConfigError(f"{path}: invalid JSON: {error}") from error
     if not isinstance(raw, dict):
         raise ProviderConfigError("Provider settings must be a JSON object")
     settings = provider_settings_from_json(raw, paths=resolved_paths)
