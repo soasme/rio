@@ -31,6 +31,18 @@ from rio.coding.thinking import ThinkingLevel, normalize_thinking_level
 console = Console()
 
 
+class SessionNotFoundError(ValueError):
+    """Raised when a --resume session id does not exist."""
+
+
+class CwdMismatchError(ValueError):
+    """Raised when --cwd conflicts with the resumed session's directory."""
+
+
+class CwdNotFoundError(ValueError):
+    """Raised when the requested working directory does not exist."""
+
+
 def _resolve_task(parts: list[str]) -> str:
     """Join task arguments, expanding a sole Markdown task file."""
     task = " ".join(parts).strip()
@@ -74,8 +86,12 @@ def run(
             "approve" if approve else "decline" if no_approve else None,
             resume,
         )
+    except SessionNotFoundError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--resume") from exc
+    except (CwdMismatchError, CwdNotFoundError) as exc:
+        raise typer.BadParameter(str(exc), param_hint="--cwd") from exc
     except ValueError as exc:
-        raise typer.BadParameter(str(exc), param_hint="--resume" if resume else "--cwd") from exc
+        raise typer.BadParameter(str(exc)) from exc
     console.print(f"[dim]Session: {session_id}[/dim]")
     if not succeeded:
         raise typer.Exit(1)
@@ -100,9 +116,9 @@ async def run_persistent_session(
     if resume is not None:
         record = manager.get_session(resume)
         if record is None:
-            raise ValueError(f"No session found with id '{resume}'")
+            raise SessionNotFoundError(f"No session found with id '{resume}'")
         if cwd is not None and cwd.resolve() != record.cwd:
-            raise ValueError("--cwd must match the resumed session's working directory")
+            raise CwdMismatchError("--cwd must match the resumed session's working directory")
         requested_cwd = record.cwd
         provider_name = provider_name or record.provider_name
         model = model or record.model
@@ -162,7 +178,7 @@ async def _run_configured_session(
 ) -> tuple[bool, str, str]:
     """Construct and execute one coding session."""
     if not cwd.is_dir():
-        raise ValueError(f"Working directory does not exist: {cwd}")
+        raise CwdNotFoundError(f"Working directory does not exist: {cwd}")
     dynamic = None
     try:
         selection = resolve_provider_selection(

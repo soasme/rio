@@ -43,6 +43,28 @@ def test_thinking_flag_reaches_thinking_level_param(monkeypatch: pytest.MonkeyPa
     assert captured["trust_override"] == "approve"
 
 
+def test_unrelated_value_error_does_not_blame_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_run_persistent_session(
+        prompt: str,
+        cwd: Path,
+        provider_name: str | None = None,
+        model: str | None = None,
+        thinking_level: object | None = None,
+        extension_paths: tuple[Path, ...] = (),
+        trust_override: object | None = None,
+        resume: str | None = None,
+    ) -> tuple[bool, str]:
+        raise ValueError("Unknown provider: bonsai2")
+
+    monkeypatch.setattr(run_module, "run_persistent_session", fake_run_persistent_session)
+
+    result = CliRunner().invoke(app, ["run", "--provider", "bonsai2", "do it"])
+
+    assert result.exit_code != 0
+    assert "Unknown provider: bonsai2" in result.output
+    assert "--cwd" not in result.output
+
+
 @pytest.mark.anyio
 async def test_resume_reuses_the_durable_session(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

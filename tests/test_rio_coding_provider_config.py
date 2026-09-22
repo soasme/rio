@@ -137,6 +137,17 @@ def test_load_provider_settings_accepts_huggingface_inference_provider_preferenc
     assert provider.inference_providers == {"zai-org/GLM-5.2": "deepinfra"}
 
 
+def test_load_provider_settings_rejects_malformed_json(tmp_path: Path) -> None:
+    rio_home = tmp_path / ".rio"
+    rio_home.mkdir()
+    settings_path = rio_home / "providers.json"
+    settings_path.write_text('{"schema_version": 2, "default_provider": "openai"')
+
+    with pytest.raises(ProviderConfigError) as excinfo:
+        load_provider_settings(RioPaths(home=rio_home))
+    assert str(settings_path) in str(excinfo.value)
+
+
 def test_load_provider_settings_missing_file_uses_openai_default(tmp_path: Path) -> None:
     settings = load_provider_settings(RioPaths(home=tmp_path / ".rio"))
 
