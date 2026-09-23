@@ -22,7 +22,7 @@ async def check():
         read = next(tool for tool in tools if tool.name == "read")
         state = {"files": {}}
         result, delta = await FileContext(cwd, state_size_chars(state)).execute(
-            read, "read", {"file": "file.py"}, state
+            read, "read", {"path": "file.py"}, state
         )
         assert apply_state_delta(state, delta) == state
         assert "Forget a file" in result.text
