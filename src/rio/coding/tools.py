@@ -238,20 +238,13 @@ def create_read_tool_definition(
     """Create a definition for the `read` tool.
 
     The tool reads a file resolved relative to `cwd` unless an absolute path is
-    supplied. `path` may also be spelled `file` or `file_path`. Text files are
-    decoded as UTF-8 and may be sliced with optional
+    supplied. Text files are decoded as UTF-8 and may be sliced with optional
     1-indexed `offset` and positive integer `limit` arguments. Returned text is
     truncated to `DEFAULT_MAX_OUTPUT_LINES` lines or `DEFAULT_MAX_OUTPUT_BYTES`
     bytes, whichever comes first, and continuation hints are appended when more
     lines remain. Supported images (`jpg`, `png`, `gif`, `webp`, and `bmp`) are
     detected from file content and returned as provider-neutral image blocks.
     Images are validated and resized or converted when needed to fit inline limits.
-
-    A batch form is also accepted: passing `files` (a list of paths) instead of
-    `path` reads each of them with the shared `offset`/`limit` and returns one
-    result block per file, in order. As with a single read, a `ToolInputError`
-    on any entry (missing file, directory, bad offset, ...) aborts the whole
-    call. `path` takes precedence over `files` when both are supplied.
 
     The executor raises `ToolInputError` for invalid arguments, missing files,
     directories, and offsets beyond the end of the file. Successful results
@@ -448,36 +441,9 @@ def create_read_tool_definition(
         if limit is not None and limit < 1:
             raise ToolInputError("limit must be at least 1")
 
-        has_single_path = any(
-            isinstance(arguments.get(key), str) for key in ("path", *_PATH_ALIASES)
-        )
-        files = arguments.get("files")
-        if not has_single_path and files is not None:
-            return await _read_many(files, offset, limit)
-
-        raw_path = _path_str_arg(arguments, "path")
+        raw_path = _str_arg(arguments, "path")
         path = resolve_path_argument(arguments, cwd=root)
         return await _read_one(path, raw_path, offset, limit)
-
-    async def _read_many(
-        files: JSONValue,
-        offset: int | None,
-        limit: int | None,
-    ) -> AgentToolResult:
-        if not isinstance(files, list) or not files:
-            raise ToolInputError("files must be a non-empty list of path strings")
-        combined_content: list[TextContent | ImageContent] = []
-        file_details: list[JSONValue] = []
-        for index, item in enumerate(files):
-            if not isinstance(item, str):
-                raise ToolInputError("files must be a list of path strings")
-            single = await _read_one(_resolve_path(item, cwd=root), item, offset, limit)
-            blocks = list(single.content)
-            if index > 0 and blocks and isinstance(blocks[0], TextContent):
-                blocks[0] = TextContent(text="\n\n" + blocks[0].text)
-            combined_content.extend(blocks)
-            file_details.append(single.details)
-        return AgentToolResult(content=combined_content, details={"files": file_details})
 
     return ToolDefinition(
         name="read",
@@ -488,32 +454,18 @@ def create_read_tool_definition(
             "truncated to "
             f"{DEFAULT_MAX_OUTPUT_LINES} lines or {DEFAULT_MAX_OUTPUT_BYTES // 1024}KB "
             "(whichever is hit first). Use offset/limit for large files. When you need the "
-            "full file, continue with offset until complete. `path` reads a single file; to "
-            "read several files in one call, pass `files` as a list of paths instead and omit "
-            "`path` -- each file comes back as its own result block, and offset/limit apply to "
-            "all of them."
+            "full file, continue with offset until complete."
         ),
         prompt_snippet="Read file contents",
-        prompt_guidelines=(
-            "Use read to examine files instead of cat or sed.",
-            "Reading several files at once? Pass `files` (a list of paths) in one call "
-            "instead of issuing one `read` per file.",
-        ),
+        prompt_guidelines=("Use read to examine files instead of cat or sed.",),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Path to the file to read"},
-                "files": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Multiple file paths to read in one call, each returned as its own "
-                        "result block. Omit `path` when using this."
-                    ),
-                },
                 "offset": {"type": "integer", "description": "Line number to start reading from"},
                 "limit": {"type": "integer", "description": "Maximum number of lines to read"},
             },
+            "required": ["path"],
         },
         executor=execute,
         constrained_sampling=_STRICT_JSON_SCHEMA_SAMPLING,
@@ -1240,36 +1192,11 @@ _BASH_COMMAND_ALIASES = (
     "bashCmd",
 )
 
-_PATH_ALIASES = (
-    "file",
-    "file_path",
-    "filepath",
-    "filePath",
-    "filename",
-    "fileName",
-)
-
-
 def _str_arg(arguments: Mapping[str, JSONValue], name: str) -> str:
     value = arguments.get(name)
     if not isinstance(value, str):
         raise ToolInputError(f"{name} must be a string")
     return value
-
-
-def _path_str_arg(arguments: Mapping[str, JSONValue], name: str) -> str:
-    """Return the path argument, tolerating common aliases for `path`.
-
-    Models sometimes call the tool as `read({"file": ...})` even though the
-    schema names the argument `path`. Accepting the alias spellings keeps a
-    valid path from failing on its parameter name alone.
-    """
-    for key in (name, *_PATH_ALIASES):
-        value = arguments.get(key)
-        if isinstance(value, str):
-            return value
-    accepted = ", ".join((name, *_PATH_ALIASES))
-    raise ToolInputError(f"{name} must be a string; accepted argument names: {accepted}")
 
 
 def _resolve_path(raw_path: str, *, cwd: Path) -> Path:
@@ -1278,8 +1205,8 @@ def _resolve_path(raw_path: str, *, cwd: Path) -> Path:
 
 
 def resolve_path_argument(arguments: Mapping[str, JSONValue], *, cwd: Path) -> Path:
-    """Resolve a file argument, accepting the tools' shared path aliases."""
-    return _resolve_path(_path_str_arg(arguments, "path"), cwd=cwd)
+    """Resolve the `path` argument shared by the read/write/edit tools."""
+    return _resolve_path(_str_arg(arguments, "path"), cwd=cwd)
 
 
 def _optional_int_arg(arguments: Mapping[str, JSONValue], name: str) -> int | None:
@@ -1315,7 +1242,6 @@ def _bash_command_arg(arguments: Mapping[str, JSONValue]) -> str:
 
 
 _MAX_ACTION_TARGET_CHARS = 120
-_MAX_LISTED_FILES = 3
 
 
 def describe_action(
@@ -1327,8 +1253,8 @@ def describe_action(
     """Return the display target of a tool call, resolving argument aliases.
 
     A UI labelling a call has to read the arguments the way the executors do,
-    or a call spelled `read({"filePath": ...})` runs fine yet renders without
-    the file it read. Paths under `cwd` are shortened to a relative path so a
+    or a call spelled `bash({"cmd": ...})` runs fine yet renders without the
+    command it ran. Paths under `cwd` are shortened to a relative path so a
     narrow header shows the part that differs. Unknown tools fall back to their
     first string argument. Returns an empty string when nothing describes the
     call.
@@ -1338,16 +1264,7 @@ def describe_action(
     if name == "bash":
         return _one_line(_first_str(arguments, ("command", *_BASH_COMMAND_ALIASES)))
     if name in ("read", "write", "edit"):
-        path = _first_str(arguments, ("path", *_PATH_ALIASES))
-        if path:
-            return _one_line(_relative_to(path, cwd))
-        files = arguments.get("files")
-        if not isinstance(files, list):
-            return ""
-        paths = [_relative_to(item, cwd) for item in files if isinstance(item, str)]
-        if len(paths) > _MAX_LISTED_FILES:
-            return f"{len(paths)} files"
-        return ", ".join(paths)
+        return _one_line(_relative_to(_first_str(arguments, ("path",)), cwd))
     return _one_line(_first_str(arguments, tuple(arguments)))
 
 

@@ -100,7 +100,7 @@ def test_tool_definitions_expose_pi_style_prompt_metadata(tmp_path: Path) -> Non
 def test_builtin_tools_opt_into_strict_json_schema_constrained_sampling(tmp_path: Path) -> None:
     """`path`/`command` argument-name mismatches should be caught by the provider.
 
-    Rio's alias-tolerant parsing (`_PATH_ALIASES`, etc.) stays as a fallback, but
+    `bash`'s alias-tolerant parsing (`_BASH_COMMAND_ALIASES`) stays as a fallback, but
     strict/constrained decoding on providers that support it should prevent a model
     from sending the wrong argument name in the first place.
     """
@@ -337,100 +337,11 @@ async def test_read_tool_header_names_action_path_and_line_range(tmp_path: Path)
     assert result.text.startswith(f"read {path} (lines 1-4 of 4)\n\n")
 
 
-@pytest.mark.parametrize("alias", ["file", "file_path", "filepath", "filename"])
-async def test_read_tool_accepts_path_aliases(tmp_path: Path, alias: str) -> None:
-    path = tmp_path / "notes.txt"
-    path.write_text("one\n")
-    tool = create_read_tool(cwd=tmp_path)
-
-    result = await tool.execute("test-call", {alias: "notes.txt"})
-
-    assert result.text == f"read {path} (lines 1-2 of 2)\n\none\n"
-    assert result.details is not None
-    assert result.details["path"] == str(path)
-
-
-async def test_read_tool_prefers_path_over_alias(tmp_path: Path) -> None:
-    (tmp_path / "notes.txt").write_text("one\n")
-    (tmp_path / "other.txt").write_text("two\n")
-    tool = create_read_tool(cwd=tmp_path)
-
-    result = await tool.execute("test-call", {"path": "notes.txt", "file": "other.txt"})
-
-    assert result.text.startswith(f"read {tmp_path / 'notes.txt'} ")
-
-
 async def test_read_tool_rejects_missing_path(tmp_path: Path) -> None:
     tool = create_read_tool(cwd=tmp_path)
 
-    with pytest.raises(ValueError, match="path must be a string; accepted argument names: "):
+    with pytest.raises(ValueError, match="path must be a string"):
         await tool.execute("test-call", {})
-
-
-# --- read tool: batch `files` -------------------------------------------------
-
-
-async def test_read_tool_batch_reads_multiple_files_as_separate_blocks(tmp_path: Path) -> None:
-    (tmp_path / "a.txt").write_text("alpha\n")
-    (tmp_path / "b.txt").write_text("bravo\n")
-    tool = create_read_tool(cwd=tmp_path)
-
-    result = await tool.execute("test-call", {"files": ["a.txt", "b.txt"]})
-
-    path_a = tmp_path / "a.txt"
-    path_b = tmp_path / "b.txt"
-    assert result.text == (
-        f"read {path_a} (lines 1-2 of 2)\n\nalpha\n\n\nread {path_b} (lines 1-2 of 2)\n\nbravo\n"
-    )
-    assert len(result.content) == 2
-    assert result.details is not None
-    assert [entry["path"] for entry in result.details["files"]] == [str(path_a), str(path_b)]
-
-
-async def test_read_tool_batch_applies_shared_offset_and_limit(tmp_path: Path) -> None:
-    (tmp_path / "a.txt").write_text("one\ntwo\nthree\n")
-    (tmp_path / "b.txt").write_text("uno\ndos\ntres\n")
-    tool = create_read_tool(cwd=tmp_path)
-
-    result = await tool.execute("test-call", {"files": ["a.txt", "b.txt"], "offset": 2, "limit": 1})
-
-    assert "two" in result.text
-    assert "dos" in result.text
-    assert "three" not in result.text
-    assert "tres" not in result.text
-
-
-async def test_read_tool_batch_propagates_error_for_bad_entry(tmp_path: Path) -> None:
-    (tmp_path / "a.txt").write_text("alpha\n")
-    tool = create_read_tool(cwd=tmp_path)
-
-    with pytest.raises(ValueError, match="File not found"):
-        await tool.execute("test-call", {"files": ["a.txt", "missing.txt"]})
-
-
-async def test_read_tool_batch_rejects_empty_files_list(tmp_path: Path) -> None:
-    tool = create_read_tool(cwd=tmp_path)
-
-    with pytest.raises(ValueError, match="files must be a non-empty list of path strings"):
-        await tool.execute("test-call", {"files": []})
-
-
-async def test_read_tool_batch_rejects_non_string_entries(tmp_path: Path) -> None:
-    tool = create_read_tool(cwd=tmp_path)
-
-    with pytest.raises(ValueError, match="files must be a list of path strings"):
-        await tool.execute("test-call", {"files": [1, "a.txt"]})
-
-
-async def test_read_tool_prefers_path_over_files(tmp_path: Path) -> None:
-    (tmp_path / "a.txt").write_text("alpha\n")
-    (tmp_path / "b.txt").write_text("bravo\n")
-    tool = create_read_tool(cwd=tmp_path)
-
-    result = await tool.execute("test-call", {"path": "a.txt", "files": ["b.txt"]})
-
-    assert result.text.startswith(f"read {tmp_path / 'a.txt'} ")
-    assert "bravo" not in result.text
 
 
 async def test_write_tool_rejects_non_string_path(tmp_path: Path) -> None:
@@ -449,17 +360,6 @@ async def test_write_tool_creates_parent_directories(tmp_path: Path) -> None:
     result = await tool.execute("test-call", {"path": "nested/file.txt", "content": "hello"})
 
     path = tmp_path / "nested" / "file.txt"
-    assert result.text == f"write {path} (5 characters)\n\nSuccessfully wrote to {path}."
-    assert path.read_text() == "hello"
-
-
-@pytest.mark.parametrize("alias", ["file", "file_path", "filepath", "filename"])
-async def test_write_tool_accepts_path_aliases(tmp_path: Path, alias: str) -> None:
-    tool = create_write_tool(cwd=tmp_path)
-
-    result = await tool.execute("test-call", {alias: "file.txt", "content": "hello"})
-
-    path = tmp_path / "file.txt"
     assert result.text == f"write {path} (5 characters)\n\nSuccessfully wrote to {path}."
     assert path.read_text() == "hello"
 
@@ -487,23 +387,6 @@ async def test_edit_tool_applies_multiple_exact_replacements(tmp_path: Path) -> 
         f"edit {path} (2 edit(s))\n\nSuccessfully replaced 2 block(s) in {path}."
     )
     assert path.read_text() == "one\nbeta\nthree\n"
-
-
-@pytest.mark.parametrize("alias", ["file", "file_path", "filepath", "filename"])
-async def test_edit_tool_accepts_path_aliases(tmp_path: Path, alias: str) -> None:
-    path = tmp_path / "file.txt"
-    path.write_text("alpha\n")
-    tool = create_edit_tool(cwd=tmp_path)
-
-    result = await tool.execute(
-        "test-call",
-        {alias: "file.txt", "edits": [{"oldText": "alpha", "newText": "one"}]},
-    )
-
-    assert result.text == (
-        f"edit {path} (1 edit(s))\n\nSuccessfully replaced 1 block(s) in {path}."
-    )
-    assert path.read_text() == "one\n"
 
 
 async def test_edit_tool_rejects_missing_path(tmp_path: Path) -> None:
@@ -846,23 +729,14 @@ def test_decode_failure_returns_safe_failure() -> None:
     assert "could not decode a valid image" in result.message
 
 
-@pytest.mark.parametrize("alias", ["path", "file", "file_path", "filepath", "filePath", "fileName"])
-def test_describe_action_resolves_path_aliases(alias: str) -> None:
-    assert describe_action("read", {alias: "/repo/src/app.py"}) == "/repo/src/app.py"
+def test_describe_action_resolves_read_write_edit_path() -> None:
+    assert describe_action("read", {"path": "/repo/src/app.py"}) == "/repo/src/app.py"
 
 
 def test_describe_action_shortens_paths_under_cwd() -> None:
-    assert describe_action("edit", {"filePath": "/repo/src/app.py"}, cwd="/repo") == "src/app.py"
+    assert describe_action("edit", {"path": "/repo/src/app.py"}, cwd="/repo") == "src/app.py"
     assert describe_action("read", {"path": "/other/app.py"}, cwd="/repo") == "/other/app.py"
     assert describe_action("read", {"path": "src/app.py"}, cwd="/repo") == "src/app.py"
-
-
-def test_describe_action_lists_batch_read_files() -> None:
-    files = ["/repo/a.py", "/repo/b.py"]
-    assert describe_action("read", {"files": files}, cwd="/repo") == "a.py, b.py"
-    assert describe_action("read", {"files": [f"/repo/{index}.py" for index in range(4)]}) == (
-        "4 files"
-    )
 
 
 @pytest.mark.parametrize("alias", ["command", "cmd", "shell_command", "bashCmd"])
