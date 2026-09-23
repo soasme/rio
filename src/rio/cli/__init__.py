@@ -13,6 +13,7 @@ from rio.cli import run as run_module
 from rio.cli.login import login
 from rio.coding.rendering import PrintOutputMode
 from rio.coding.thinking import normalize_thinking_level
+from rio.version import current_version
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -60,6 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     login_parser.add_argument("provider", help="Provider name.")
     login_parser.add_argument("--method", help="Authentication method.")
     login_parser.set_defaults(handler=_login, parser=login_parser)
+
+    version_parser = commands.add_parser("version", help="print the installed version")
+    version_parser.set_defaults(handler=_version)
     return parser
 
 
@@ -104,6 +108,10 @@ def _login(args: argparse.Namespace) -> None:
         print(login(args.provider, args.method))
     except ValueError as exc:
         args.parser.error(str(exc))
+
+
+def _version(args: argparse.Namespace) -> None:
+    print(current_version())
 
 
 def _resolve_task(parts: Sequence[str]) -> str:
