@@ -1,0 +1,6 @@
+name = "rio_agent_verification"
+version = "0.1.0"
+defaultTargets = ["RioAgent"]
+
+[[lean_lib]]
+name = "RioAgent"
