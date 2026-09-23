@@ -51,6 +51,15 @@ uv run pytest
 uv run ruff check .
 ```
 
+To run the Lean 4 verification, install [elan](https://github.com/leanprover/elan)
+and build the pinned toolchain from the repository root:
+
+```bash
+cd tests/lean && lake build
+```
+
+See [the Lean behavior models](tests/lean/README.md) for their scope and limits.
+
 * `rio.ai` is a multi-provider LLM streaming SDK.
 * `rio.agent` is the [SKILL.state] runtime.
 * `rio.coding` supplies the autonomous coding skill and tools.
