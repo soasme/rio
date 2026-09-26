@@ -1,16 +1,14 @@
 # rio architecture
 
-rio is a SKILL.state coding agent: *SKILL.state: Scalable Long-Horizon Agent
-Skills* (arXiv:2608.26263). That paper's design choice is the thing to
-understand before touching any of the three packages below, because it is
-the reason rio's session layer looks nothing like a typical chat-transcript
-agent.
+rio is a SKILL.state coding agent informed by *SKILL.state: Scalable
+Long-Horizon Agent Skills* (arXiv:2608.26263). The runtime materializes state
+while the model receives an append-only history of state patches and observations.
 
 ## The three packages
 
 ```text
 rio.ai      provider/model streaming layer
-rio.agent   SKILL.state runtime (instructions + execution state + observation)
+rio.agent   state-patch runtime and history compaction
 rio.coding  CLI app, resources, skills, extensions, commands, TUI
 ```
 
@@ -27,54 +25,17 @@ rio.coding  CLI app, resources, skills, extensions, commands, TUI
 Keep `rio.agent` free of Typer, Rich, Textual, filesystem layout assumptions,
 and coding-specific vocabulary. `rio.coding` is where all of that lives.
 
-## Sessions hold state, not a transcript
+## Sessions append history and rebuild state
 
-A conventional coding agent keeps an append-only list of every message ever
-exchanged, replays that list into the model on each turn, and eventually has
-to compact or summarize it once it grows too large. rio's session does none
-of this. Each step, the model is given exactly three things:
+Each request contains fixed instructions plus a history beginning with an
+initial or rebuilt state. The runtime appends every accepted RFC 7396 state
+patch and every action observation; private reasoning is never replayed. It
+still owns the materialized state and validates patches before actions run.
 
-1. `P` -- the skill's instructions (the system prompt), fixed for the whole
-   run.
-2. `Sigma_t` -- a structured JSON execution state: the goal, a plan, findings,
-   touched files, blockers, and so on (see `rio.coding.coding_skill` for the
-   coding skill's exact schema).
-3. `O_t` -- the latest observation, one plain string. The runtime does not
-   tag it by kind: it is the result of the one action the previous step
-   took, or a message from the user, whichever arrived. A turn's first step
-   observes only the user's message -- no action has run yet -- and a
-   message that interrupts a run in flight is folded into the same string
-   as the result the run had reached, not carried alongside it as a
-   separate, privileged input.
-
-The model answers with a single mandatory tool call carrying `(reasoning,
-state_delta, action)`. The runtime validates the delta, merges it into the
-state (`Sigma_{t+1} = Sigma_t (merge) DeltaSigma_t`, an RFC 7396 JSON merge
-patch), **discards the reasoning permanently**, executes the one action, and
-feeds its result back as the next observation.
-
-Three consequences follow directly, and they are what make rio's session code
-look different from a transcript-based one:
-
-- **No conversation history.** Nothing a later step needs is "remembered" by
-  being in a message list somewhere -- if it matters, it has to be written
-  into the execution state. `rio.coding.session.CodingSession.prompt()` hands
-  the user's text to the runtime as the first step's input. It is journaled
-  for audit, but previous turns are never appended to future model prompts. A
-  follow-up message therefore continues the session through the state alone:
-  the state carries over untouched, and the run's answer is the terminating
-  action's message rather than a field a later turn could read as its own.
-- **No context compaction.** Compaction exists to bound a transcript that
-  grows without limit. rio's per-step prompt is `P` + `Sigma_t` + `O_t`, and
-  previous turns are excluded. `rio.coding.step_footprint` estimates the
-  current prompt cost. The paper's `O(T)` cumulative scaling assumes bounded
-  state and observations, so the state carries a size budget of its own
-  (`HarnessSpec.state_budget_chars`, a share of the model's context window):
-  a delta that would push the state past it is rejected the same way an
-  invalid one is, and the model frees space before retrying. The cumulative
-  projection assumes the current footprint stays unchanged.
-- **Exactly one action per step.** There is no multi-tool assistant turn and
-  no parallel tool call. One step, one action, one observation.
+At 80% of the configured context window, the runtime replaces the history
+with one exact materialized state. The next steps append normally. State is
+budgeted, so agents must intentionally remove or shorten state fields when a
+useful rebuilt state cannot fit.
 
 ## File context
 

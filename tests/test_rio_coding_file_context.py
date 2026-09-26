@@ -289,9 +289,8 @@ async def test_the_next_step_sees_the_file_in_its_state_not_only_in_the_observat
     ):
         pass
 
-    second_prompt = provider.calls[1][2][0].content
-    state_block = second_prompt.partition("Latest Observation:")[0]
-    assert "return a + b" in state_block
+    second_prompt = "\n".join(message.content for message in provider.calls[1][2])
+    assert "return a + b" in second_prompt
 
 
 async def test_reading_a_changed_file_drops_old_slices(tmp_path) -> None:

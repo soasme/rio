@@ -1,22 +1,21 @@
 # How Rio runs tasks
 
-Rio is built around a structured execution state rather than a growing chat
-transcript. Each step receives the skill instructions, the current state, and
-the latest observation. It produces one action and a state update.
+Rio builds structured execution state in the runtime while the model receives
+an append-only history. Each step adds an accepted state patch and an action
+observation.
 
 ```text
-instructions + state + observation
-                 |
-                 v
-          one action + state update
-                 |
-                 v
-             observation
+instructions + initial/rebuilt state + patches + observations
+                         |
+                         v
+                    one action + state patch
 ```
 
-The state records the task plan, findings, changed files, and blockers. That
-allows Rio to resume a session without replaying a long conversation, while
-keeping the model prompt bounded.
+The runtime applies RFC 7396 patches to build the state (plan, findings,
+files, and blockers). At 80% of the model context window it replaces history
+with one exact materialized-state record, then resumes appending. State fields
+remain intentionally bounded so an agent can decide what to forget when its
+rebuilt state needs more room.
 
 The package boundaries follow that design:
 
@@ -27,6 +26,5 @@ The package boundaries follow that design:
 | `rio.coding` | Coding skill, tools, sessions, resources, and CLI support. |
 | `rio.cli` | Public one-shot command-line entry point. |
 
-The coding layer journals committed state snapshots. Resuming a session loads
-the latest snapshot and continues from it; it does not reconstruct a chat
-history.
+The coding layer journals committed state snapshots. Resuming loads the latest
+snapshot and starts a fresh history baseline.

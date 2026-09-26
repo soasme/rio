@@ -250,6 +250,7 @@ class CodingSession:
                 storage=storage,
                 max_steps=config.max_steps,
                 max_retries=config.max_retries,
+                context_window_tokens=config.context_window_tokens,
             )
         )
         session = cls(config, resources=resources, skill=skill, runner=runner)
@@ -519,7 +520,7 @@ class CodingSession:
     # -- running -------------------------------------------------------------
 
     async def run(self, text: str) -> AsyncIterator[CodingSessionEvent]:
-        """Run one task, placing its text in the initial execution state."""
+        """Run one task, preserving its text as the first history observation."""
         if self._has_run:
             raise RuntimeError("CodingSession supports one run only")
         self._has_run = True
@@ -529,7 +530,7 @@ class CodingSession:
         state = dict(self._skill.initial_state)
         state["goal"] = self.expand_prompt_text(outcome.text)
         await self._runner.reset(state, reason="task initialized")
-        async for event in self._runner.run():
+        async for event in self._runner.run(outcome.text):
             await self.extensions.emit_event(event)
             yield event
 

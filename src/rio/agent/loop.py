@@ -1,9 +1,12 @@
 """The SKILL.state execution loop.
 
-At each step, the runtime sends the model only three things: the skill
-instructions, the current state, and the previous action result. The task is
-stored in initial state before the run starts. It never sends a growing
-transcript. The model must respond
+The runtime materializes state from accepted patches.  The model receives an
+append-only history of those patches and action observations, like a
+traditional agent transcript without replaying private reasoning.  When that
+history reaches 80% of the context window, the runtime replaces it with one
+materialized state rebuild and continues appending from there.
+
+The model must respond
 with one `skill_step` tool call carrying its private reasoning, a state
 update, and an action. The runtime checks the state update and the action --
 including whether the updated state still fits the skill's state budget --
@@ -40,13 +43,29 @@ from rio.agent.events import (
     StepStartEvent,
     ValidationErrorEvent,
 )
-from rio.agent.prompt import STEP_TOOL_NAME, build_step_messages, skill_step_tool
+from rio.agent.prompt import (
+    STEP_TOOL_NAME,
+    build_step_messages,
+    observation_message,
+    skill_step_tool,
+    state_message,
+    state_patch_message,
+)
 from rio.agent.skill import HarnessSpec
 from rio.agent.state import apply_state_delta, check_state_budget, validate_state_delta
-from rio.ai.messages import AssistantMessage, TextContent, raw_tool_arguments
+from rio.ai.messages import (
+    AgentMessage,
+    AssistantMessage,
+    TextContent,
+    message_text,
+    raw_tool_arguments,
+)
 from rio.ai.provider import CancellationToken, ModelProvider
 from rio.ai.provider_events import AssistantDoneEvent, AssistantErrorEvent
-from rio.ai.tools import AgentToolResult
+from rio.ai.tools import AgentTool, AgentToolResult
+
+COMPACTION_THRESHOLD = 0.8
+DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
 
 
 async def run_skill_loop(
@@ -58,13 +77,13 @@ async def run_skill_loop(
     state: dict | None = None,
     max_steps: int | None = None,
     max_retries: int = 2,
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
     signal: CancellationToken | None = None,
 ) -> AsyncIterator[SkillEvent]:
     """Run the SKILL.state loop, yielding one event per lifecycle transition.
 
-    ``observation`` is accepted for source compatibility and intentionally
-    ignored. The first step has no observation. Every later step observes only the
-    result of the action the previous step took.
+    ``observation`` seeds the append-only history for compatibility with the
+    public low-level API. Coding sessions pass the user's task here.
     """
     state = dict(state if state is not None else skill.initial_state)
     actions = skill.action_by_name()
@@ -73,19 +92,30 @@ async def run_skill_loop(
     yield RunStartEvent(skill=skill.name)
 
     step = 0
-    current_observation: str | None = None
+    history: list[AgentMessage] = [state_message(state)]
+    if observation is not None:
+        history.append(observation_message(observation))
     terminated = False
     while max_steps is None or step < max_steps:
         if signal is not None and signal.is_cancelled():
             break
 
-        yield StepStartEvent(step=step, state=dict(state), observation=current_observation)
+        yield StepStartEvent(step=step, state=dict(state), observation=None)
 
         delta, action_name, action_arguments = None, None, None
         error_note: str | None = None
         attempt = 0
         while True:
-            messages = build_step_messages(state, current_observation, error_note=error_note)
+            if _needs_compaction(history, skill.instructions, tool, context_window_tokens):
+                # A rebuild is deliberately computed by the runtime: it is the
+                # exact state obtained by applying every accepted patch, not an
+                # LLM summary that may lose a fact. The state budget reserves
+                # room for this single record; an agent that needs more room
+                # must intentionally delete or shorten state fields in a patch.
+                history = [state_message(state, rebuilt=True)]
+                if _needs_compaction(history, skill.instructions, tool, context_window_tokens):
+                    history = [state_message(state, rebuilt=True, needs_refresh=True)]
+            messages = build_step_messages(history, error_note=error_note)
             assistant = await _call_model(
                 provider, model, skill.instructions, messages, [tool], signal
             )
@@ -166,6 +196,7 @@ async def run_skill_loop(
             break
 
         state = candidate_state
+        history.append(state_patch_message(delta))
         yield StateUpdateEvent(step=step, delta=dict(delta), state=dict(state))
 
         yield ActionStartEvent(step=step, name=action_name, arguments=dict(action_arguments))
@@ -191,6 +222,7 @@ async def run_skill_loop(
 
         if action_delta:
             state = apply_state_delta(state, action_delta)
+            history.append(state_patch_message(action_delta))
             yield StateUpdateEvent(step=step, delta=action_delta, state=dict(state))
 
         terminated = bool(result.terminate)
@@ -199,9 +231,28 @@ async def run_skill_loop(
         step += 1
         if terminated:
             break
-        current_observation = result.text or "(no observation)"
+        history.append(observation_message(result.text or "(no observation)"))
 
     yield RunEndEvent(steps=step, state=dict(state))
+
+
+def _needs_compaction(
+    history: list[AgentMessage], instructions: str, tool: AgentTool, context_window_tokens: int
+) -> bool:
+    """Whether the next normal request would exceed the history budget."""
+    if context_window_tokens <= 0:
+        raise ValueError("context_window_tokens must be positive")
+    # Keep this estimator local to the runtime so `rio.agent` remains usable
+    # without importing the coding domain (and creating a dependency cycle).
+    tokens = _estimate_tokens(instructions)
+    tokens += sum(4 + _estimate_tokens(message_text(message)) for message in history)
+    tokens += 16 + _estimate_tokens(tool.name) + _estimate_tokens(tool.description)
+    tokens += _estimate_tokens(str(tool.input_schema))
+    return tokens > context_window_tokens * COMPACTION_THRESHOLD
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, (len(text) + 3) // 4) if text else 0
 
 
 def _truncated_call_note(raw_arguments: str, *, truncated: bool) -> str:

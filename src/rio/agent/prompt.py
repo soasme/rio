@@ -1,13 +1,9 @@
-"""The per-step prompt sent to the model.
+"""The append-only per-step prompt sent to the model.
 
-The skill instructions are sent as the provider's `system` string. The
-current state and the previous action result are the only other inputs -- no
-past observations, actions, reasoning traces, or user messages are ever included, which is
-what keeps the per-step prompt a fixed size no matter how many steps have
-already run.
-
-The task is stored in the initial execution state. The first step has no
-observation; later steps receive only the result of their previous action.
+The runtime owns the materialized execution state, but the model sees its
+history: the initial state, every accepted state patch, and every observation.
+This keeps state construction deterministic while preserving the ordinary
+agent property that later decisions can inspect earlier evidence.
 
 The model reports its output for the step -- reasoning, a state update, and
 an action -- by calling a single mandatory `skill_step` tool. Any free text
@@ -84,21 +80,44 @@ def skill_step_tool(skill: HarnessSpec) -> AgentTool:
     )
 
 
-def build_step_messages(
-    state: JSONObject,
-    observation: str | None,
-    *,
-    error_note: str | None = None,
-) -> list[AgentMessage]:
-    """Build the non-system half of the prompt from state and an action result."""
-    body = (
-        "Skill Execution State:\n```json\n" + json.dumps(state, indent=2, sort_keys=True) + "\n```"
-    )
-    if observation is not None:
-        body += "\n\nPrevious Action Result:\n" + observation
-    if error_note:
-        body += (
-            f"\n\nYour previous {STEP_TOOL_NAME} call was rejected: {error_note}\n"
-            "Retry with a corrected call."
+def state_message(
+    state: JSONObject, *, rebuilt: bool = False, needs_refresh: bool = False
+) -> UserMessage:
+    """Return the history record that establishes a state baseline."""
+    label = "State rebuild" if rebuilt else "Initial state"
+    content = f"{label}:\n```json\n{json.dumps(state, indent=2, sort_keys=True)}\n```"
+    if needs_refresh:
+        content += (
+            "\nThis state still exceeds the context target. "
+            "Remove nonessential fields in state_delta."
         )
-    return [UserMessage(content=body)]
+    return UserMessage(content=content)
+
+
+def state_patch_message(delta: JSONObject) -> UserMessage:
+    """Return an accepted RFC 7396 patch as an immutable history record."""
+    return UserMessage(
+        content=f"State patch:\n```json\n{json.dumps(delta, indent=2, sort_keys=True)}\n```"
+    )
+
+
+def observation_message(observation: str) -> UserMessage:
+    """Return an action result as an immutable history record."""
+    return UserMessage(content="Observation:\n" + observation)
+
+
+def build_step_messages(
+    history: list[AgentMessage], *, error_note: str | None = None
+) -> list[AgentMessage]:
+    """Return the complete history, plus a transient validation correction."""
+    messages = list(history)
+    if error_note:
+        messages.append(
+            UserMessage(
+                content=(
+                    f"Rejected {STEP_TOOL_NAME} call: {error_note}\n"
+                    "Retry with a corrected call."
+                )
+            )
+        )
+    return messages

@@ -723,13 +723,13 @@ def test_skills_are_included_only_when_read_tool_is_available(tmp_path: Path) ->
 def test_default_prompt_includes_step_protocol_section() -> None:
     prompt = build_skill_instructions(BuildSystemPromptOptions(cwd=Path("/repo")))
 
-    assert "Step protocol:" in prompt
+    assert "Protocol:" in prompt
     assert "skill_step" in prompt
     assert "state_delta" in prompt
     assert "RFC 7396 JSON Merge Patch" in prompt
     assert "reasoning" in prompt
-    assert "is discarded immediately" in prompt
-    assert "`respond` action" in prompt
+    assert "discarded" in prompt
+    assert "`respond`" in prompt
 
 
 def test_default_prompt_includes_state_field_docs_section() -> None:
@@ -743,12 +743,12 @@ def test_default_prompt_includes_state_field_docs_section() -> None:
 def test_format_step_protocol_describes_the_full_contract() -> None:
     text = format_step_protocol()
 
-    assert "exactly one `skill_step` tool call" in text
-    assert "`reasoning`, `state_delta`, and `action`" in text
-    assert "discarded immediately" in text
-    assert "null` deletes that key" in text
-    assert "merges recursively" in text
-    assert "never zero, never more than one" in text
+    assert "initial/rebuilt state" in text
+    assert "State patch" in text
+    assert "observations" in text
+    assert "one `skill_step` call" in text
+    assert "RFC 7396 JSON Merge Patch" in text
+    assert "private and discarded" in text
 
 
 def test_format_state_field_docs_lists_every_declared_field() -> None:

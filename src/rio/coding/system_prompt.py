@@ -153,42 +153,15 @@ def format_prompt_section(section: PromptSection) -> str:
 
 
 def format_step_protocol() -> str:
-    """Format the SKILL.state step protocol section.
-
-    Every step, the model sees only these instructions, the current execution
-    state, and the single latest observation — never earlier observations,
-    earlier actions, or its own earlier reasoning. This section teaches that
-    contract so the model knows what to persist and how.
-    """
+    """Format the minimal state-patch protocol."""
     return (
-        "Step protocol:\n"
-        "- Every step you receive exactly three things: these instructions, the "
-        "current execution state as JSON, and the step's latest input. You never "
-        "see earlier observations, earlier actions, or your own earlier reasoning — "
-        "nothing survives between steps except what you write into the execution "
-        "state.\n"
-        "- That input is the single `Latest Observation` section. Most steps, it is "
-        "what the action you took last step returned. The first step of a turn has "
-        "only the user's message, since no action has run yet — read it the same "
-        "way you would any observation. A message that interrupts a run in flight "
-        "is appended after the result the run had reached, marked `[user]`.\n"
-        "- A session runs many turns and the state survives between them, so a new "
-        "message continues from what you already know: keep your findings, the files "
-        "you have touched and the environment, and do not re-derive them.\n"
-        "- You must reply with exactly one `skill_step` tool call carrying three "
-        "fields: `reasoning`, `state_delta`, and `action`.\n"
-        "- `reasoning` is private scratch space. It is discarded immediately after "
-        "this step; nothing in it persists. Anything that must survive to a later "
-        "step has to be written into `state_delta` instead.\n"
-        "- `state_delta` is an RFC 7396 JSON Merge Patch applied to the execution "
-        "state: setting a field to `null` deletes that key, an object value merges "
-        "recursively into the existing object, and any other value replaces the "
-        "field outright. You may only modify the declared state fields.\n"
-        "- `action` is exactly one tool call — never zero, never more than one. To "
-        "finish the turn, take the `respond` action: its `message` is your answer to "
-        "the user, so there is nothing to write into the state first. `respond` is "
-        "rejected if `plan` still has an item that is not `done` or `blocked` — finish "
-        "it, mark it `blocked` with why, or update the plan before responding."
+        "Protocol:\n"
+        "- History contains an initial/rebuilt state, accepted `State patch` records, "
+        "and observations. It may be rebuilt to one state when full.\n"
+        "- Reply with one `skill_step` call: `state_delta` is an RFC 7396 JSON Merge "
+        "Patch (null deletes; objects merge); then take one `action`.\n"
+        "- `reasoning` is private and discarded. Persist only useful facts in state. "
+        "Use `respond` to finish after completing or blocking the plan."
     )
 
 

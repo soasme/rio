@@ -32,6 +32,7 @@ class HarnessConfig:
     skill: HarnessSpec
     max_steps: int | None = None
     max_retries: int = 2
+    context_window_tokens: int = 128_000
 
 
 class HarnessCancellationToken:
@@ -86,12 +87,12 @@ class Harness:
             self._current_signal.cancel()
 
     def run(self, observation: str | None = None) -> AsyncIterator[SkillEvent]:
-        """Run once. ``observation`` is ignored for source compatibility."""
+        """Run once, appending ``observation`` as the first history record."""
         self._ensure_not_running()
         self._running = True
-        return self._run()
+        return self._run(observation)
 
-    async def _run(self) -> AsyncIterator[SkillEvent]:
+    async def _run(self, observation: str | None) -> AsyncIterator[SkillEvent]:
         signal = HarnessCancellationToken()
         self._current_signal = signal
         try:
@@ -102,6 +103,8 @@ class Harness:
                 state=self._state,
                 max_steps=self._config.max_steps,
                 max_retries=self._config.max_retries,
+                context_window_tokens=self._config.context_window_tokens,
+                observation=observation,
                 signal=signal,
             ):
                 if isinstance(event, (StateUpdateEvent, RunEndEvent)):
