@@ -162,16 +162,16 @@ class TestPrompting:
         assert session.touched_files == ["main.py"]
         assert "plan 1/1" in session.state_summary
 
-    async def test_the_task_is_initial_state_not_an_observation(self, project) -> None:
-        """The task is stored in the state that seeds the one-shot run."""
+    async def test_the_task_is_an_initial_history_observation(self, project) -> None:
+        """The task remains visible beside the initial materialized state."""
         session = await make_session(project, two_step_streams())
         provider = session.provider
         await collect(session, "explain main.py")
 
         _model, _system, first_messages, _tools = provider.calls[0]
-        assert len(first_messages) == 1
+        assert len(first_messages) == 2
         assert '"goal": "explain main.py"' in first_messages[0].content
-        assert "Previous Action Result:" not in first_messages[0].content
+        assert first_messages[1].content == "Observation:\nexplain main.py"
 
     async def test_the_run_is_journaled_as_steps(self, project) -> None:
         storage = InMemorySessionStorage()

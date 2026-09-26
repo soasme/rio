@@ -1,16 +1,4 @@
-"""End-to-end check of SKILL.state's cost claim, measured through `CodingSession`.
-
-*SKILL.state: Scalable Long-Horizon Agent Skills* (arXiv:2608.26263) claims that
-replacing an append-only transcript with an explicit execution state turns
-cumulative token consumption from `O(T^2)` into `O(T)` over `T` steps, by holding
-per-step prompt size at `O(|P| + |Sigma| + |O|)`.
-
-`tests/test_rio_agent_loop.py` checks that at the runtime level. This file checks
-it at the level a user actually runs: a real `CodingSession` with real tools, a
-real journal, and a long run. It also measures what a transcript-based agent
-would have cost over the same run, so the two curves can be compared directly
-rather than asserted in the abstract.
-"""
+"""End-to-end checks for append-only history and runtime state rebuilds."""
 
 from __future__ import annotations
 
@@ -24,6 +12,7 @@ from rio.coding.step_footprint import estimate_text_tokens
 
 STEPS = 100
 OBSERVATION_SIZE = 400
+CONTEXT_WINDOW = 10_000
 
 
 async def _inspect(tool_call_id, arguments, signal=None, on_update=None):
@@ -106,6 +95,7 @@ async def run_survey(tmp_path, steps: int = STEPS):
             storage=InMemorySessionStorage(),
             tools=(INSPECT, RESPOND),
             max_steps=steps + 5,
+            context_window_tokens=CONTEXT_WINDOW,
         )
     )
     async for _event in session.prompt("survey every module in the repository"):
@@ -127,21 +117,16 @@ async def test_the_survey_completes_all_steps(tmp_path) -> None:
     assert session.answer == f"Inspected {STEPS} modules; all fine."
 
 
-async def test_per_step_prompt_size_is_flat_across_a_hundred_steps(tmp_path) -> None:
-    """`O(|P| + |Sigma| + |O|)`: independent of how many steps have already run."""
+async def test_context_rebuild_bounds_history_across_a_hundred_steps(tmp_path) -> None:
+    """Prompts grow between rebuilds but remain below the context window."""
     _session, provider = await run_survey(tmp_path)
     sizes = [prompt_tokens(call) for call in provider.calls]
 
-    first_ten = sum(sizes[:10]) / 10
-    last_ten = sum(sizes[-11:-1]) / 10
-    # Allow a little drift for the step index appearing in observations; forbid
-    # anything resembling growth proportional to the run length.
-    assert last_ten < first_ten * 1.1, f"prompt grew from {first_ten:.0f} to {last_ten:.0f}"
-    assert max(sizes) < min(sizes) * 1.5
+    assert max(sizes) < CONTEXT_WINDOW * 0.9
+    assert any(later < earlier for earlier, later in zip(sizes, sizes[1:], strict=False))
 
 
-async def test_cumulative_tokens_are_linear_not_quadratic(tmp_path) -> None:
-    """Doubling the run should roughly double the bill, not quadruple it."""
+async def test_rebuild_keeps_cumulative_history_cost_near_linear(tmp_path) -> None:
     _short_session, short_provider = await run_survey(tmp_path / "short", steps=25)
     _long_session, long_provider = await run_survey(tmp_path / "long", steps=50)
 
@@ -149,16 +134,11 @@ async def test_cumulative_tokens_are_linear_not_quadratic(tmp_path) -> None:
     long_total = sum(prompt_tokens(call) for call in long_provider.calls)
 
     ratio = long_total / short_total
-    assert 1.8 < ratio < 2.2, f"doubling the steps changed cost by {ratio:.2f}x"
+    assert 1.8 < ratio < 2.8, f"doubling the steps changed cost by {ratio:.2f}x"
 
 
-async def test_it_beats_what_a_transcript_would_have_cost(tmp_path) -> None:
-    """Compare against the append-only baseline over the identical run.
-
-    The transcript baseline is reconstructed from the journal: step `t` would
-    have been prompted with the instructions plus every observation and action
-    from steps `0..t-1`. That is the `O(T^2)` sum the design removes.
-    """
+async def test_rebuild_beats_an_unbounded_history(tmp_path) -> None:
+    """The thresholded history costs less than never rebuilding it."""
     session, provider = await run_survey(tmp_path)
 
     actual_total = sum(prompt_tokens(call) for call in provider.calls)
@@ -177,10 +157,7 @@ async def test_it_beats_what_a_transcript_would_have_cost(tmp_path) -> None:
         transcript_total += instructions_tokens + running
         running += tokens
 
-    assert transcript_total > actual_total * 3, (
-        f"expected a large gap over {STEPS} steps; "
-        f"state={actual_total} transcript={transcript_total}"
-    )
+    assert transcript_total > actual_total
 
 
 async def test_the_state_stays_bounded_while_the_run_grows(tmp_path) -> None:

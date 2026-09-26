@@ -54,6 +54,23 @@ def applyDelta (state : State) (delta : Delta) : State :=
   | .object fields => fields
   | _ => []
 
+/-- The runtime's prompt history: a materialized baseline followed by accepted patches.
+Observations are intentionally omitted because they do not alter execution state. -/
+structure StateHistory where
+  baseline : State
+  patches : List Delta
+
+def buildState : StateHistory → State
+  | ⟨baseline, patches⟩ => patches.foldl applyDelta baseline
+
+/-- Compaction keeps exactly the materialized state and drops only replayable history. -/
+def rebuildHistory (history : StateHistory) : StateHistory :=
+  ⟨buildState history, []⟩
+
+theorem rebuild_history_preserves_state (history : StateHistory) :
+    buildState (rebuildHistory history) = buildState history := by
+  simp [rebuildHistory, buildState]
+
 theorem lookup_put_same (key : String) (value : Json) (fields : Object) :
     lookup key (put key value fields) = some value := by
   simp [lookup, put]

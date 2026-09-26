@@ -111,7 +111,7 @@ async def test_reasoning_is_surfaced_once_then_never_resent():
 
 
 @pytest.mark.asyncio
-async def test_prompt_footprint_is_bounded_across_steps():
+async def test_history_appends_patches_and_observations_across_steps():
     skill = make_skill()
     step_count = 25
     responses = [
@@ -140,8 +140,9 @@ async def test_prompt_footprint_is_bounded_across_steps():
     assert isinstance(events[-1], RunEndEvent)
     assert len(provider.calls) == step_count + 1
 
-    message_counts = {len(messages) for _, _, messages, _ in provider.calls}
-    assert message_counts == {1}, "each step must send exactly Σ_t + O_t, never a transcript"
+    message_counts = [len(messages) for _, _, messages, _ in provider.calls]
+    assert message_counts == sorted(message_counts)
+    assert message_counts[-1] > message_counts[0]
 
     system_lengths = {len(system) for _, system, _, _ in provider.calls}
     assert system_lengths == {len(skill.instructions)}, "P (system) must never grow"
@@ -342,7 +343,7 @@ async def test_a_failing_action_becomes_an_observation_instead_of_crashing():
 
     # The run continued, and the failure was handed to the next step verbatim.
     _model, _system, second_messages, _tools = provider.calls[1]
-    assert "disk is on fire" in second_messages[0].content
+    assert "disk is on fire" in "\n".join(message.content for message in second_messages)
 
     run_end = events[-1]
     assert isinstance(run_end, RunEndEvent)
@@ -409,8 +410,8 @@ async def test_only_the_first_of_several_step_calls_is_executed():
     assert events[-1].state == {"counter": 1}
 
 
-async def test_first_step_has_no_user_observation():
-    """The task belongs in state; only action results are observations."""
+async def test_first_step_records_the_user_observation():
+    """The task is an ordinary first history observation."""
     skill = make_skill()
     provider = FakeProvider(
         [
@@ -428,11 +429,10 @@ async def test_first_step_has_no_user_observation():
         )
     ]
 
-    first, second = (messages[0].content for _m, _s, messages, _t in provider.calls)
-    assert "explain main.py" not in first
-    assert "Previous Action Result:" not in first
-    assert "explain main.py" not in second
-    assert "Previous Action Result:" in second
+    first, second = (messages for _m, _s, messages, _t in provider.calls)
+    assert "explain main.py" in "\n".join(message.content for message in first)
+    assert "explain main.py" in "\n".join(message.content for message in second)
+    assert "Observation:\nobserved:" in "\n".join(message.content for message in second)
 
 
 async def test_legacy_observation_argument_is_ignored():
@@ -578,7 +578,9 @@ async def test_action_executor_records_results_and_reports_failures():
             observation="start",
         )
     ]
-    assert "Previous Action Result:\nobserved:a" in provider.calls[1][2][0].content
-    assert "advance refused" in provider.calls[2][2][0].content
+    assert "Observation:\nobserved:a" in "\n".join(
+        message.content for message in provider.calls[1][2]
+    )
+    assert "advance refused" in "\n".join(message.content for message in provider.calls[2][2])
     assert [e.is_error for e in events if isinstance(e, ActionEndEvent)] == [False, True, False]
     assert events[-1].state["notes"] == "terminal"

@@ -83,6 +83,7 @@ class SessionRunnerConfig:
     storage: SessionStorage | None = None
     max_steps: int | None = None
     max_retries: int = 2
+    context_window_tokens: int = 128_000
     journaled_observation_limit: int = DEFAULT_JOURNALED_OBSERVATION_LIMIT
     journaled_reasoning_limit: int = DEFAULT_JOURNALED_REASONING_LIMIT
 
@@ -119,6 +120,7 @@ class SessionRunner:
                 skill=config.skill,
                 max_steps=config.max_steps,
                 max_retries=config.max_retries,
+                context_window_tokens=config.context_window_tokens,
             ),
             state=self._state,
         )
@@ -166,7 +168,7 @@ class SessionRunner:
     # -- running -------------------------------------------------------------
 
     async def run(self, message: str | None = None) -> AsyncIterator[CodingSessionEvent]:
-        """Run the configured skill once; ``message`` is ignored for compatibility."""
+        """Run the configured skill once with ``message`` in its history."""
         if self._running:
             raise RuntimeError("SessionRunner is already running")
         self._running = True
@@ -174,7 +176,7 @@ class SessionRunner:
         self._terminated = False
         self._answer = None
         try:
-            async for event in self._run_once():
+            async for event in self._run_once(message):
                 yield event
 
             yield SessionRunEndEvent(
@@ -188,10 +190,10 @@ class SessionRunner:
         finally:
             self._running = False
 
-    async def _run_once(self) -> AsyncIterator[CodingSessionEvent]:
+    async def _run_once(self, message: str | None) -> AsyncIterator[CodingSessionEvent]:
         """Run the loop until it terminates or is cancelled."""
         pending: _StepInProgress | None = None
-        iterator = self._harness.run()
+        iterator = self._harness.run(message)
         async for event in iterator:
             if isinstance(event, RunStartEvent):
                 yield event
@@ -407,6 +409,7 @@ class SessionRunner:
                 skill=self._config.skill,
                 max_steps=self._config.max_steps,
                 max_retries=self._config.max_retries,
+                context_window_tokens=self._config.context_window_tokens,
             ),
             state=self._state,
         )
