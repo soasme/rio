@@ -1,3 +1,13 @@
+# 0.6.0
+
+* feat(agent): append state patches to history ([#97](https://github.com/soasme/rio/pull/97))
+* test(coding): model core behavior in Lean ([#96](https://github.com/soasme/rio/pull/96))
+* test(agent): verify loop transitions in Lean ([#94](https://github.com/soasme/rio/pull/94))
+* chore: add release bump script ([#93](https://github.com/soasme/rio/pull/93))
+* fix(coding): require path for read/write/edit, drop batch files mode ([#92](https://github.com/soasme/rio/pull/92))
+* feat(cli): add rio version command ([#91](https://github.com/soasme/rio/pull/91))
+* docs: add documentation structure ([#90](https://github.com/soasme/rio/pull/90))
+
 # 0.5.0
 
 * feat(cli): use argparse output modes ([#89](https://github.com/soasme/rio/pull/89))
