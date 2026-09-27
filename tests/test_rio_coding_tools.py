@@ -31,7 +31,6 @@ from rio.coding.tools import (
     create_edit_tool_definition,
     create_read_tool,
     create_read_tool_definition,
-    create_respond_tool,
     create_write_tool,
     create_write_tool_definition,
     describe_action,
@@ -68,17 +67,11 @@ class FakeCancellationToken:
 async def test_create_coding_tools_returns_initial_tool_set(tmp_path: Path) -> None:
     tools = create_coding_tools(cwd=tmp_path)
 
-    assert [tool.name for tool in tools] == ["read", "write", "edit", "bash", "codemode", "respond"]
+    assert [tool.name for tool in tools] == ["read", "write", "edit", "bash", "codemode"]
     edit_tool = tools[2]
     assert edit_tool.prompt_snippet is not None
     assert "Use edit for precise changes" in edit_tool.prompt_guidelines[0]
     assert "present-participle description" in tools[3].prompt_guidelines[0]
-
-
-async def test_create_coding_tools_can_exclude_respond(tmp_path: Path) -> None:
-    tools = create_coding_tools(cwd=tmp_path, include_respond=False)
-
-    assert [tool.name for tool in tools] == ["read", "write", "edit", "bash", "codemode"]
 
 
 def test_bash_tool_schema_requires_display_description(tmp_path: Path) -> None:
@@ -115,8 +108,6 @@ def test_builtin_tools_opt_into_strict_json_schema_constrained_sampling(tmp_path
     for definition in definitions:
         assert definition.constrained_sampling == {"type": "json_schema", "strict": "prefer"}
         assert definition.to_agent_tool().constrained_sampling == definition.constrained_sampling
-
-    assert create_respond_tool().constrained_sampling is None
 
 
 def test_read_tool_schema_defines_line_controls_as_integers(tmp_path: Path) -> None:
@@ -577,7 +568,7 @@ def codemode_args(code: str, *, timeout: float = 10) -> dict[str, object]:
 async def test_codemode_orchestrates_tools_and_returns_filtered_output(tmp_path: Path) -> None:
     (tmp_path / "a.py").write_text("x = 1\n# TODO a\n", encoding="utf-8")
     (tmp_path / "b.py").write_text("# TODO b\ny = 2\n", encoding="utf-8")
-    tools = create_coding_tools(cwd=tmp_path, include_respond=False)
+    tools = create_coding_tools(cwd=tmp_path)
     codemode = next(tool for tool in tools if tool.name == "codemode")
 
     result = await codemode.execute(
@@ -666,42 +657,15 @@ async def test_codemode_has_no_direct_filesystem_access() -> None:
 
 
 async def test_codemode_rejects_extra_positional_arguments() -> None:
-    codemode = create_codemode_tool([create_respond_tool()])
+    codemode = create_codemode_tool([create_bash_tool()])
 
-    with pytest.raises(ValueError, match="takes at most 1 arguments"):
-        await codemode.execute("call", codemode_args("await respond('a', 'b')"))
+    with pytest.raises(ValueError, match="takes at most"):
+        await codemode.execute("call", codemode_args("await bash(1, 2, 3, 4, 5, 6, 7, 8)"))
 
 
 def test_describe_action_uses_the_codemode_docstring() -> None:
     assert describe_action("codemode", codemode_args("1")) == "Test snippet."
     assert describe_action("codemode", {"code": "x = ("}) == ""
-
-
-# --- respond tool --------------------------------------------------------
-
-
-async def test_respond_tool_terminates_the_run_with_the_final_message() -> None:
-    tool = create_respond_tool()
-
-    result = await tool.execute("test-call", {"message": "The tests are green."})
-
-    assert result.terminate is True
-    assert result.text == "The tests are green."
-
-
-async def test_respond_tool_requires_a_string_message() -> None:
-    tool = create_respond_tool()
-
-    with pytest.raises(ValueError, match="message must be a string"):
-        await tool.execute("test-call", {})
-
-
-@pytest.mark.parametrize("message", ["", "   "])
-async def test_respond_tool_rejects_an_empty_message(message: str) -> None:
-    tool = create_respond_tool()
-
-    with pytest.raises(ValueError, match="message must not be empty"):
-        await tool.execute("test-call", {"message": message})
 
 
 # --- image_processing (ported directly, no SKILL.state changes needed) ------

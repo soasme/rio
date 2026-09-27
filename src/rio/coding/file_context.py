@@ -39,23 +39,15 @@ def file_entry(state: Mapping[str, JSONValue], key: str) -> Mapping[str, JSONVal
 _TERMINAL_PLAN_STATUSES = ("done", "blocked")
 
 
-def _unfinished_plan_items(state: Mapping[str, JSONValue]) -> list[str]:
-    """Return the title of every plan item not yet `done` or `blocked`.
-
-    A run that ends while its own plan still says there is work left is a
-    fake answer regardless of what the message says -- checking the plan
-    catches that class of failure without having to guess what "bad" text
-    looks like. A run with no plan (or one that never used the field) is
-    unaffected.
-    """
+def plan_complete(state: Mapping[str, JSONValue]) -> bool:
+    """Whether every plan item is done or blocked; an empty plan is complete."""
     plan = state.get("plan")
     if not isinstance(plan, list):
-        return []
-    titles = []
-    for item in plan:
-        if isinstance(item, Mapping) and item.get("status") not in _TERMINAL_PLAN_STATUSES:
-            titles.append(str(item.get("title") or item.get("id") or item))
-    return titles
+        return True
+    return all(
+        not isinstance(item, Mapping) or item.get("status") in _TERMINAL_PLAN_STATUSES
+        for item in plan
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,17 +66,6 @@ class FileContext:
         signal: ToolCancellationToken | None = None,
     ) -> tuple[AgentToolResult, JSONObject]:
         name = action.name
-        if name == "respond":
-            unfinished = _unfinished_plan_items(state)
-            if unfinished:
-                note = (
-                    "respond was rejected: the plan still has unfinished item(s) -- "
-                    + "; ".join(unfinished)
-                    + ". Finish them, mark them `blocked` with why, or update the plan, "
-                    "then respond."
-                )
-                return AgentToolResult(content=[TextContent(text=note)]), {}
-            return await action.execute(call_id, arguments, signal), {}
         if name not in ("read", "write", "edit"):
             return await action.execute(call_id, arguments, signal), {}
 

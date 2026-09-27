@@ -73,6 +73,7 @@ class StepEndEvent:
     step: int
     state: JSONObject
     terminated: bool
+    answer: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,10 +16,6 @@ and its key argument (for example `read /path/to/file.py (lines 1-120 of
 `codemode` runs a model-written Python snippet in the pydantic-monty sandbox
 with the other tools exposed as async functions, so one step can read, filter,
 and combine several tool results before the model sees them.
-
-This module also defines `respond`, the terminal action a SKILL.state coding
-run uses to end a turn: it sets `AgentToolResult.terminate=True` instead of
-returning control for another step.
 """
 
 from __future__ import annotations
@@ -208,21 +204,17 @@ def create_coding_tools(
     cwd: str | Path | None = None,
     shell_command_prefix: str | None = None,
     image_support: ImageSupportState | None = None,
-    include_respond: bool = True,
 ) -> list[AgentTool]:
     """Create the default coding-tool set for a local project.
 
     The returned tools are ordered as `read`, `write`, `edit`, `bash`, and
-    `codemode`, followed by `respond` unless `include_respond` is `False`. Relative paths
+    `codemode`. Relative paths
     used with those tools are resolved against `cwd`; when `cwd` is omitted,
     the process current working directory at factory-call time is used. The
     tools share per-path write/edit locks within this process so concurrent
     mutations of the same file do not interleave. When configured,
     `shell_command_prefix` is prepended to every bash tool command.
 
-    `respond` is the SKILL.state coding skill's terminal action: it sets
-    `AgentToolResult.terminate=True` and ends the run with a final message
-    instead of producing another observation.
     """
     root = Path.cwd() if cwd is None else Path(cwd)
     tools = [
@@ -232,8 +224,6 @@ def create_coding_tools(
         create_bash_tool(cwd=root, shell_command_prefix=shell_command_prefix),
     ]
     tools.append(create_codemode_tool(tools))
-    if include_respond:
-        tools.append(create_respond_tool())
     return tools
 
 
@@ -982,7 +972,7 @@ def create_codemode_tool(tools: Sequence[AgentTool]) -> AgentTool:
         description=(
             "Run a Python snippet in a sandbox to orchestrate several tool calls in one step. "
             "The code must start with a short one-line module docstring stating its purpose, "
-            "such as \"\"\"Find TODOs in src.\"\"\". "
+            'such as """Find TODOs in src.""". '
             f"The tools {names} are async functions: `text = await read('a.py')`, "
             "`await bash(command='ls', description='Listing files')`. Each returns the "
             "tool's result text and raises on tool errors. Returns printed output and the "
@@ -1016,46 +1006,6 @@ def create_codemode_tool(tools: Sequence[AgentTool]) -> AgentTool:
             "When codemode needs Python features or modules the sandbox lacks, write a "
             "script with write and run it with bash from codemode.",
         ),
-    )
-
-
-def create_respond_tool() -> AgentTool:
-    """Create the `respond` action that ends a SKILL.state coding run.
-
-    Under SKILL.state there is no "assistant produced text with no tool
-    calls" stop condition -- every step is exactly one action. `respond` is
-    how a coding run ends a turn: its result sets
-    `AgentToolResult.terminate=True`, and its text is the final answer shown
-    to the user.
-    """
-
-    async def execute(
-        tool_call_id: str,
-        arguments: Mapping[str, JSONValue],
-        signal: ToolCancellationToken | None = None,
-        on_update: ToolUpdateCallback | None = None,
-    ) -> AgentToolResult:
-        del tool_call_id, signal, on_update
-        message = _str_arg(arguments, "message")
-        if not message.strip():
-            raise ToolInputError("message must not be empty")
-        return AgentToolResult(content=[TextContent(text=message)], terminate=True)
-
-    return AgentTool(
-        name="respond",
-        label="respond",
-        description="Send the final response to the user and end the run.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string",
-                    "description": "The final response to show the user.",
-                }
-            },
-            "required": ["message"],
-        },
-        execute_fn=execute,
     )
 
 
@@ -1349,6 +1299,7 @@ _BASH_COMMAND_ALIASES = (
     "shellCmd",
     "bashCmd",
 )
+
 
 def _str_arg(arguments: Mapping[str, JSONValue], name: str) -> str:
     value = arguments.get(name)

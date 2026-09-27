@@ -770,6 +770,7 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
                         "choices": [
                             {
                                 "delta": {
+                                    "content": "hello",
                                     "tool_calls": [
                                         {
                                             "index": 0,
@@ -781,14 +782,14 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
                                                     {
                                                         "state_delta": {"goal": "say hello"},
                                                         "action": {
-                                                            "name": "respond",
-                                                            "arguments": {"message": "hello"},
+                                                            "name": "bash",
+                                                            "arguments": {"command": "true"},
                                                         },
                                                     }
                                                 ),
                                             },
                                         }
-                                    ]
+                                    ],
                                 },
                                 "finish_reason": "tool_calls",
                             }
