@@ -1,3 +1,7 @@
+# 0.6.3
+
+* refactor(coding): remove codemode ([#108](https://github.com/soasme/rio/pull/108))
+
 # 0.6.2
 
 * fix: Session ID must be printed as the first line ([#105](https://github.com/soasme/rio/pull/105))
