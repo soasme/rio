@@ -3,11 +3,11 @@ import RioCoding
 
 namespace RioCodingLifecycle
 
-/- session.py: only codemode is exposed by default; an explicit tool list replaces it. -/
+/- session.py: direct tools are exposed by default; an explicit tool list replaces it. -/
 def exposedTools (requested : Option (List RioCoding.FileAction)) : List RioCoding.FileAction :=
-  requested.getD [.codemode]
+  requested.getD [.read, .write, .edit, .bash]
 
-theorem default_exposes_only_codemode : exposedTools none = [.codemode] := by
+theorem default_exposes_direct_tools : exposedTools none = [.read, .write, .edit, .bash] := by
   rfl
 
 theorem explicit_tools_replace_default (tools : List RioCoding.FileAction) :

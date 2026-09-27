@@ -12,28 +12,21 @@ step, because there is no message transcript to replay. Every tool below
 therefore prefixes its returned text with a compact header naming the action
 and its key argument (for example `read /path/to/file.py (lines 1-120 of
 400)`), so the observation is self-describing on its own.
-
-`codemode` runs a model-written Python snippet in the pydantic-monty sandbox
-with the other tools exposed as async functions, so one step can read, filter,
-and combine several tool results before the model sees them.
 """
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import difflib
 import json
 import os
 import signal
 import tempfile
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import monotonic
 from typing import Any
-
-import pydantic_monty
 
 from rio.ai.messages import ImageContent, TextContent
 from rio.ai.tools import (
@@ -207,8 +200,7 @@ def create_coding_tools(
 ) -> list[AgentTool]:
     """Create the default coding-tool set for a local project.
 
-    The returned tools are ordered as `read`, `write`, `edit`, `bash`, and
-    `codemode`. Relative paths
+    The returned tools are ordered as `read`, `write`, `edit`, and `bash`. Relative paths
     used with those tools are resolved against `cwd`; when `cwd` is omitted,
     the process current working directory at factory-call time is used. The
     tools share per-path write/edit locks within this process so concurrent
@@ -223,7 +215,6 @@ def create_coding_tools(
         create_edit_tool(cwd=root),
         create_bash_tool(cwd=root, shell_command_prefix=shell_command_prefix),
     ]
-    tools.append(create_codemode_tool(tools))
     return tools
 
 
@@ -859,156 +850,6 @@ def create_bash_tool(
     ).to_agent_tool()
 
 
-def create_codemode_tool(tools: Sequence[AgentTool]) -> AgentTool:
-    """Create the `codemode` tool that runs Python orchestrating `tools`.
-
-    The code must open with a module docstring naming its purpose; code that
-    does not parse or lacks one is rejected before it runs. The code runs in a
-    fresh pydantic-monty sandbox with no filesystem, network, or environment
-    access, under the required wall-clock `timeout`, which also covers nested
-    tool calls. Each tool in `tools` is exposed as an
-    async function of the same name: positional arguments bind to the tool's
-    schema properties in order, keyword arguments bind by name, and the
-    awaited value is the tool's result text. A tool error is raised inside
-    the sandbox as an exception the code may catch. The result text holds the
-    printed output followed by the value of the last expression, tail-truncated
-    like bash output, under a `codemode <docstring>` header and a `⎿ <code>`
-    preview line. Errors and timeouts fail the step with printed output kept.
-    """
-    by_name = {tool.name: tool for tool in tools}
-
-    async def execute(
-        tool_call_id: str,
-        arguments: Mapping[str, JSONValue],
-        signal: ToolCancellationToken | None = None,
-        on_update: ToolUpdateCallback | None = None,
-    ) -> AgentToolResult:
-        del on_update
-        code = _str_arg(arguments, "code")
-        timeout = _optional_float_arg(arguments, "timeout")
-        if timeout is None or timeout <= 0:
-            raise ToolInputError("timeout must be a number greater than 0")
-        try:
-            module = ast.parse(code)
-        except (SyntaxError, ValueError) as exc:
-            raise ToolInputError(f"codemode rejected: code does not parse: {exc}") from exc
-        docstring = ast.get_docstring(module)
-        if not docstring:
-            raise ToolInputError("codemode rejected: code must start with a module docstring")
-        body = module.body[1:]
-        rest = code.splitlines()[body[0].lineno - 1 :] if body else []
-        preview = _one_line(rest[0]) if rest else ""
-        if len(rest) > 1:
-            preview += f" (+{len(rest) - 1} lines)"
-        calls: list[str] = []
-        printed: list[str] = []
-        # Monty does not cancel host coroutines when a feed is cancelled; track them here.
-        running: set[asyncio.Task[AgentToolResult]] = set()
-
-        def external(tool: AgentTool) -> Callable[..., Awaitable[str]]:
-            properties = tool.parameters.get("properties")
-            names = list(properties) if isinstance(properties, Mapping) else []
-
-            async def call(*args: JSONValue, **kwargs: JSONValue) -> str:
-                if len(args) > len(names):
-                    raise TypeError(f"{tool.name}() takes at most {len(names)} arguments")
-                bound = {**dict(zip(names, args, strict=False)), **kwargs}
-                if signal is not None and signal.is_cancelled():
-                    raise ToolInputError("codemode cancelled")
-                calls.append(tool.name)
-                task = asyncio.ensure_future(
-                    tool.execute(f"{tool_call_id}:{len(calls)}", bound, signal)
-                )
-                running.add(task)
-                try:
-                    return (await task).text
-                finally:
-                    running.discard(task)
-
-            return call
-
-        value, error = None, None
-        async with pydantic_monty.AsyncMonty() as pool, pool.checkout() as session:
-            try:
-                async with asyncio.timeout(timeout):
-                    value = await session.feed_run(
-                        code,
-                        external_lookup={name: external(tool) for name, tool in by_name.items()},
-                        print_callback=lambda _stream, text: printed.append(text),
-                    )
-            except pydantic_monty.MontyError as exc:
-                error = str(exc)
-            except TimeoutError:
-                error = f"timed out after {timeout:g}s"
-            finally:
-                for task in running:
-                    task.cancel()
-                await asyncio.gather(*running, return_exceptions=True)
-
-        output = "".join(printed)
-        if value is not None:
-            output = append_status_block(output.rstrip("\n"), repr(value))
-        if error is not None:
-            output = append_status_block(output.rstrip("\n"), f"Error: {error}")
-        truncation = truncate_tail(output)
-        detail = ", ".join(
-            part
-            for part in (f"{len(calls)} tool calls", "error" if error is not None else None)
-            if part
-        )
-        header = f"{_tool_header('codemode', _one_line(docstring), detail)}\n⎿ {preview}".rstrip()
-        text = _with_header(header, truncation.content)
-        if error is not None:
-            raise ToolInputError(text)
-        return AgentToolResult(
-            content=[TextContent(text=text)],
-            details={"calls": calls, "truncation": truncation.to_json()},
-        )
-
-    names = ", ".join(by_name)
-    return AgentTool(
-        name="codemode",
-        label="codemode",
-        description=(
-            "Run a Python snippet in a sandbox to orchestrate several tool calls in one step. "
-            "The code must start with a short one-line module docstring stating its purpose, "
-            'such as """Find TODOs in src.""". '
-            f"The tools {names} are async functions: `text = await read('a.py')`, "
-            "`await bash(command='ls', description='Listing files')`. Each returns the "
-            "tool's result text and raises on tool errors. Returns printed output and the "
-            "value of the last expression. The sandbox supports a Python subset with no "
-            "filesystem, network, or third-party modules; use asyncio.gather for concurrency."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "code": {
-                    "type": "string",
-                    "description": (
-                        "Python code to run, starting with a short one-line module docstring"
-                    ),
-                },
-                "timeout": {
-                    "type": "number",
-                    "description": (
-                        "Timeout in seconds for the whole run, including nested tool calls. "
-                        "Size it to the slowest command the code runs."
-                    ),
-                },
-            },
-            "required": ["code", "timeout"],
-        },
-        execute_fn=execute,
-        prompt_snippet="Run Python that calls the other tools, to batch and filter their results",
-        prompt_guidelines=(
-            "Use codemode to read, search, or process several files in one step and "
-            "return only the relevant part.",
-            "When codemode needs Python features or modules the sandbox lacks, write a "
-            "script with write and run it with bash from codemode.",
-        ),
-    )
-
-
 def _prefixed_shell_command(command: str, prefix: str | None) -> str:
     """Return a shell command with an opt-in setup prefix applied."""
     if prefix is None:
@@ -1374,11 +1215,6 @@ def describe_action(
         return _one_line(_first_str(arguments, ("command", *_BASH_COMMAND_ALIASES)))
     if name in ("read", "write", "edit"):
         return _one_line(_relative_to(_first_str(arguments, ("path",)), cwd))
-    if name == "codemode":
-        try:
-            return _one_line(ast.get_docstring(ast.parse(_first_str(arguments, ("code",)))) or "")
-        except (SyntaxError, ValueError):
-            return ""
     return _one_line(_first_str(arguments, tuple(arguments)))
 
 

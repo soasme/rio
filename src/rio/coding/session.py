@@ -112,7 +112,7 @@ class CodingSessionConfig:
     resource_paths: RioResourcePaths | None = None
     project_resources_trusted: bool = True
     tools: Sequence[AgentTool] | None = None
-    exposed_tools: tuple[str, ...] = ("codemode",)
+    exposed_tools: tuple[str, ...] = ("read", "write", "edit", "bash")
     shell_command_prefix: str | None = None
     image_support: ImageSupportState | None = None
     custom_prompt: str | None = None

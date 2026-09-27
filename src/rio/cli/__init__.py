@@ -38,10 +38,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--tools",
         type=_parse_tools,
-        default=("codemode",),
+        default=("read", "write", "edit", "bash"),
         help=(
-            "Comma-separated tools to expose (default: codemode; "
-            "available: read,write,edit,bash,codemode)."
+            "Comma-separated tools to expose (default: read,write,edit,bash; "
+            "available: read,write,edit,bash)."
         ),
     )
     run_parser.add_argument("-t", "--thinking", help="Reasoning effort level.")
@@ -144,9 +144,9 @@ def _resolve_task(parts: Sequence[str]) -> str:
 
 def _parse_tools(value: str) -> tuple[str, ...]:
     names = tuple(name.strip() for name in value.split(","))
-    available = {"read", "write", "edit", "bash", "codemode"}
+    available = {"read", "write", "edit", "bash"}
     if not names or any(name not in available for name in names):
-        raise argparse.ArgumentTypeError("--tools must list read, write, edit, bash, or codemode")
+        raise argparse.ArgumentTypeError("--tools must list read, write, edit, or bash")
     return tuple(dict.fromkeys(names))
 
 
