@@ -13,30 +13,25 @@ schema_version = 1
 
 [[providers]]
 name = "local-llama"
-display_name = "Local llama-server"
-kind = "openai-compatible"
 base_url = "http://127.0.0.1:8080/v1"
-api_key_env = "LLAMA_SERVER_API_KEY"
 models = ["MODEL_ID"]
-default_model = "MODEL_ID"
-docs_url = "https://github.com/ggml-org/llama.cpp"
 ```
 
 The default `llama-server` endpoint is `http://127.0.0.1:8080`; Rio needs the
 OpenAI-compatible `/v1` base URL. Change the host or port in `base_url` if your
 server uses a different endpoint.
 
-## Set the API-key variable
+## If the server requires a key
 
-Rio requires an API-key environment variable for OpenAI-compatible providers.
-If your local server does not validate a key, any non-empty placeholder works:
+Add `api_key_env = "LLAMA_SERVER_API_KEY"` to the provider table and set the variable:
 
 ```bash
-export LLAMA_SERVER_API_KEY=local
+export LLAMA_SERVER_API_KEY=your-key
 ```
 
-If the server is configured to require authentication, set this variable to its
-actual key instead.
+If the variable is unset, Rio sends an empty key. `models` is optional too; when
+omitted, Rio uses the provider name as the model ID. When models are listed,
+the first is the default.
 
 ## Run Rio
 
