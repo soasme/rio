@@ -42,7 +42,9 @@ def long_run_streams(steps: int = STEPS):
     streams = [
         step_response(
             reasoning=(
-                "" if index == steps - 1 else "Thinking at length about what to inspect next. " * 20
+                f"Inspected {steps} modules; all fine."
+                if index == steps - 1
+                else "Thinking at length about what to inspect next. " * 20
             ),
             state_delta={
                 "plan": [
@@ -53,7 +55,6 @@ def long_run_streams(steps: int = STEPS):
             },
             action="inspect",
             args={"path": f"module_{index}.py"},
-            final_text=f"Inspected {steps} modules; all fine." if index == steps - 1 else None,
         )
         for index in range(steps)
     ]

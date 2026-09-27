@@ -44,7 +44,7 @@ READ = AgentTool(
 def two_step_streams():
     return [
         step_response(
-            reasoning="",
+            reasoning="main.py starts the server.",
             state_delta={
                 "goal": "explain main.py",
                 "files": {"main.py": {"status": "read", "note": "entry point"}},
@@ -53,7 +53,6 @@ def two_step_streams():
             },
             action="read",
             args={"path": "main.py"},
-            final_text="main.py starts the server.",
         ),
     ]
 

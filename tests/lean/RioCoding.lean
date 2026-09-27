@@ -66,8 +66,8 @@ inductive Preflight where
   | proceed | readFirst | reread
 deriving DecidableEq, Repr
 
-def preflight (action : FileAction) (fileExists : Bool) (recorded actual : Option Nat)
-    (_plan : List PlanItem) : Preflight :=
+def preflight (action : FileAction) (fileExists : Bool) (recorded actual : Option Nat) :
+    Preflight :=
   if (action == .write || action == .edit) && fileExists then
     match recorded, actual with
     | none, _ => .readFirst
@@ -75,21 +75,21 @@ def preflight (action : FileAction) (fileExists : Bool) (recorded actual : Optio
     | some _, none => .reread
   else .proceed
 
-theorem write_existing_unread_requires_read (hash : Option Nat) (plan : List PlanItem) :
-    preflight .write true none hash plan = .readFirst := by
+theorem write_existing_unread_requires_read (hash : Option Nat) :
+    preflight .write true none hash = .readFirst := by
   simp [preflight]
 
-theorem edit_stale_requires_reread (old current : Nat) (plan : List PlanItem)
+theorem edit_stale_requires_reread (old current : Nat)
     (h : old ≠ current) :
-    preflight .edit true (some old) (some current) plan = .reread := by
+    preflight .edit true (some old) (some current) = .reread := by
   simp [preflight, h]
 
-theorem fresh_edit_proceeds (hash : Nat) (plan : List PlanItem) :
-    preflight .edit true (some hash) (some hash) plan = .proceed := by
+theorem fresh_edit_proceeds (hash : Nat) :
+    preflight .edit true (some hash) (some hash) = .proceed := by
   simp [preflight]
 
-theorem new_file_does_not_require_hash (plan : List PlanItem) :
-    preflight .write false none none plan = .proceed := by
+theorem new_file_does_not_require_hash :
+    preflight .write false none none = .proceed := by
   simp [preflight]
 
 inductive CacheResult where
@@ -146,18 +146,17 @@ def toolOutcome (guard : Preflight) (plan : List PlanItem)
 
 theorem final_action_is_terminal_after_plan_complete (plan : List PlanItem)
     (h : planComplete plan = true) :
-    toolOutcome (preflight .bash false none none plan) plan true true = .termination := by
+    toolOutcome (preflight .bash false none none) plan true true = .termination := by
   simp [toolOutcome, preflight, h]
 
 /- tools.py: codemode runs its code once and returns one observation. It does not
 pass the write/edit hash preflight, so nested writes are not checked. -/
-theorem codemode_skips_file_preflight (fileExists : Bool) (recorded actual : Option Nat)
-    (plan : List PlanItem) :
-    preflight .codemode fileExists recorded actual plan = .proceed := by
+theorem codemode_skips_file_preflight (fileExists : Bool) (recorded actual : Option Nat) :
+    preflight .codemode fileExists recorded actual = .proceed := by
   simp [preflight]
 
 theorem codemode_is_observation (plan : List PlanItem) :
-    toolOutcome (preflight .codemode false none none plan) plan true false = .observation := by
+    toolOutcome (preflight .codemode false none none) plan true false = .observation := by
   simp [toolOutcome, preflight]
 
 /-- Code must parse and open with a docstring, and the model must give a positive

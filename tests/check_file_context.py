@@ -44,11 +44,10 @@ async def check():
                     reasoning="", state_delta={}, action="read", args={"path": "file.py"}
                 ),
                 step_response(
-                    reasoning="",
+                    reasoning="ok",
                     state_delta=forget,
                     action="write",
                     args={"path": "file.py", "content": "updated"},
-                    final_text="ok",
                 ),
             ]
         )

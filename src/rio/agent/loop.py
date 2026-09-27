@@ -159,9 +159,6 @@ async def run_skill_loop(
                     raise RetriesExhaustedError(error_note)
                 continue
 
-            if assistant.text and skill.is_complete is None:
-                yield ReasoningDiscardedEvent(step=step, reasoning=assistant.text)
-
             proposed_delta = call.arguments.get("state_delta")
             proposed_action = call.arguments.get("action")
             try:
@@ -225,12 +222,13 @@ async def run_skill_loop(
             history.append(state_patch_message(action_delta))
             yield StateUpdateEvent(step=step, delta=action_delta, state=dict(state))
 
-        answer = None
-        if skill.is_complete is not None:
-            if not is_error and skill.is_complete(state) and assistant.text.strip():
-                answer = assistant.text.strip()
-            elif assistant.text:
-                yield ReasoningDiscardedEvent(step=step, reasoning=assistant.text)
+        # The assistant text of a successful step that completes the skill is
+        # the answer; any other text is reasoning, dropped from the prompt.
+        answer = assistant.text.strip() or None
+        if is_error or skill.is_complete is None or not skill.is_complete(state):
+            answer = None
+        if assistant.text and answer is None:
+            yield ReasoningDiscardedEvent(step=step, reasoning=assistant.text)
         terminated = bool(result.terminate) or answer is not None
         yield StepEndEvent(step=step, state=dict(state), terminated=terminated, answer=answer)
 

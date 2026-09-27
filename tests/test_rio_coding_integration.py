@@ -88,7 +88,7 @@ def fix_the_bug_streams():
             },
         ),
         step_response(
-            reasoning="",
+            reasoning="Fixed calc.add: it subtracted instead of adding. Verified 2+3=5.",
             state_delta={
                 "plan": [
                     {"id": "1", "title": "read calc.py", "status": "done"},
@@ -98,7 +98,6 @@ def fix_the_bug_streams():
             },
             action="bash",
             args={"command": 'python -c "import calc; print(calc.add(2, 3))"'},
-            final_text="Fixed calc.add: it subtracted instead of adding. Verified 2+3=5.",
         ),
     ]
 
@@ -247,21 +246,19 @@ async def test_a_file_changed_behind_the_agents_back_must_be_read_again(tmp_path
             },
         ),
         step_response(
-            reasoning="",
+            reasoning="Done.",
             state_delta={},
             action="edit",
             args={
                 "path": "calc.py",
                 "edits": [{"oldText": "return a - b", "newText": "return a + b"}],
             },
-            final_text="Done.",
         ),
         step_response(
-            reasoning="",
+            reasoning="Stopped after the stale edit was rejected.",
             state_delta={},
             action="read",
             args={"path": "calc.py"},
-            final_text="Stopped after the stale edit was rejected.",
         ),
     ]
     session, repo = await build_session(tmp_path, streams)
