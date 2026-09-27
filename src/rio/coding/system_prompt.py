@@ -161,7 +161,8 @@ def format_step_protocol() -> str:
         "- Reply with one `skill_step` call: `state_delta` is an RFC 7396 JSON Merge "
         "Patch (null deletes; objects merge); then take one `action`.\n"
         "- `reasoning` is private and discarded. Persist only useful facts in state. "
-        "Use `respond` with a `message` to finish after completing or blocking the plan."
+        "On the final action, mark the plan done or blocked and include your final "
+        "answer as assistant text alongside the `skill_step` call."
     )
 
 

@@ -88,19 +88,7 @@ def fix_the_bug_streams():
             },
         ),
         step_response(
-            reasoning="Confirm the fix by running it.",
-            state_delta={
-                "plan": [
-                    {"id": "1", "title": "read calc.py", "status": "done"},
-                    {"id": "2", "title": "fix the operator", "status": "done"},
-                    {"id": "3", "title": "verify", "status": "in_progress"},
-                ],
-            },
-            action="bash",
-            args={"command": 'python -c "import calc; print(calc.add(2, 3))"'},
-        ),
-        step_response(
-            reasoning="It prints 5. Done.",
+            reasoning="",
             state_delta={
                 "plan": [
                     {"id": "1", "title": "read calc.py", "status": "done"},
@@ -108,8 +96,9 @@ def fix_the_bug_streams():
                     {"id": "3", "title": "verify", "status": "done"},
                 ],
             },
-            action="respond",
-            args={"message": "Fixed calc.add: it subtracted instead of adding. Verified 2+3=5."},
+            action="bash",
+            args={"command": 'python -c "import calc; print(calc.add(2, 3))"'},
+            final_text="Fixed calc.add: it subtracted instead of adding. Verified 2+3=5.",
         ),
     ]
 
@@ -120,8 +109,9 @@ async def test_the_agent_actually_fixes_the_file(tmp_path) -> None:
         pass
 
     assert "return a + b" in (repo / "calc.py").read_text(encoding="utf-8")
-    # The answer is the terminating action's message, not a copy kept in state.
+    # The answer is the final step's assistant text, not a copy kept in state.
     assert session.answer == "Fixed calc.add: it subtracted instead of adding. Verified 2+3=5."
+    assert len(session.provider.calls) == 3
 
 
 async def test_the_plan_progresses_through_the_state(tmp_path) -> None:
@@ -145,20 +135,18 @@ async def test_each_tool_result_becomes_the_next_observation(tmp_path) -> None:
         "\n".join(message.content for message in messages)
         for _m, _s, messages, _t in provider.calls
     ]
-    # Step 1 sees the read output; step 2 sees the edit's; step 3 sees bash's.
+    # Step 1 sees the read output; step 2 sees the edit's.
     assert "return a - b" in observations[1]
     assert "calc.py" in observations[2]
-    assert "5" in observations[3]
 
 
 async def test_the_bash_action_really_runs(tmp_path) -> None:
     session, _repo = await build_session(tmp_path, fix_the_bug_streams())
-    provider = session.provider
     async for _event in session.prompt("fix calc.add"):
         pass
 
-    final_observation = "\n".join(message.content for message in provider.calls[-1][2])
-    assert "exit 0" in final_observation
+    steps = [e for e in await session.session_entries() if isinstance(e, StepEntry)]
+    assert "exit 0" in steps[-1].observation
 
 
 async def test_the_journal_survives_the_process(tmp_path) -> None:
@@ -194,7 +182,8 @@ async def test_the_journal_records_the_actions_that_changed_the_file(tmp_path) -
         pass
 
     steps = [e for e in await session.session_entries() if isinstance(e, StepEntry)]
-    assert [s.action.name for s in steps] == ["read", "edit", "bash", "respond"]
+    assert [s.action.name for s in steps] == ["read", "edit", "bash"]
+    assert steps[-1].terminated
     edit = steps[1]
     assert edit.action.arguments["path"] == "calc.py"
     assert json.dumps(edit.state_delta)  # serializable, as the journal requires
@@ -265,8 +254,15 @@ async def test_a_file_changed_behind_the_agents_back_must_be_read_again(tmp_path
                 "path": "calc.py",
                 "edits": [{"oldText": "return a - b", "newText": "return a + b"}],
             },
+            final_text="Done.",
         ),
-        step_response(reasoning="", state_delta={}, action="respond", args={"message": "stopped"}),
+        step_response(
+            reasoning="",
+            state_delta={},
+            action="read",
+            args={"path": "calc.py"},
+            final_text="Stopped after the stale edit was rejected.",
+        ),
     ]
     session, repo = await build_session(tmp_path, streams)
     async for _event in session.prompt("fix calc.add"):

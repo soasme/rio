@@ -48,9 +48,7 @@ async def check():
                     state_delta=forget,
                     action="write",
                     args={"path": "file.py", "content": "updated"},
-                ),
-                step_response(
-                    reasoning="", state_delta={}, action="respond", args={"message": "ok"}
+                    final_text="ok",
                 ),
             ]
         )

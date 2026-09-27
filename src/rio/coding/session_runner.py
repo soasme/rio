@@ -145,7 +145,7 @@ class SessionRunner:
     def answer(self) -> str | None:
         """What the last run answered, or `None` if the current turn has not answered yet.
 
-        The answer is the message the terminating action carried, not a state
+        The answer is the assistant text on the final step, not a state
         field: keeping a copy in the state only made it possible for a later
         turn to read an answer that was never its own.
         """
@@ -257,6 +257,8 @@ class SessionRunner:
 
             elif isinstance(event, StepEndEvent):
                 self._state = dict(event.state)
+                if event.answer is not None:
+                    self._answer = event.answer
                 self._steps_this_run += 1
                 if pending is not None and pending.action is not None:
                     entry = StepEntry(

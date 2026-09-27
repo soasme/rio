@@ -22,25 +22,12 @@ async def _inspect(tool_call_id, arguments, signal=None, on_update=None):
     return AgentToolResult(content=[TextContent(text=body)])
 
 
-async def _respond(tool_call_id, arguments, signal=None, on_update=None):
-    return AgentToolResult(
-        content=[TextContent(text=str(arguments.get("message", "")))], terminate=True
-    )
-
-
 INSPECT = AgentTool(
     name="inspect",
     label="Inspect",
     description="Inspect one file in the repository.",
     parameters={"type": "object", "properties": {"path": {"type": "string"}}},
     execute_fn=_inspect,
-)
-RESPOND = AgentTool(
-    name="respond",
-    label="Respond",
-    description="Answer the user and end the turn.",
-    parameters={"type": "object", "properties": {"message": {"type": "string"}}},
-    execute_fn=_respond,
 )
 
 
@@ -54,24 +41,22 @@ def long_run_streams(steps: int = STEPS):
     """
     streams = [
         step_response(
-            reasoning="Thinking at length about what to inspect next. " * 20,
+            reasoning=(
+                "" if index == steps - 1 else "Thinking at length about what to inspect next. " * 20
+            ),
             state_delta={
+                "plan": [
+                    {"id": "survey", "status": "done" if index == steps - 1 else "in_progress"}
+                ],
                 "scratch": {"last_inspected": f"module_{index}.py"},
                 "findings": {"latest": f"module_{index}.py looks fine"},
             },
             action="inspect",
             args={"path": f"module_{index}.py"},
+            final_text=f"Inspected {steps} modules; all fine." if index == steps - 1 else None,
         )
         for index in range(steps)
     ]
-    streams.append(
-        step_response(
-            reasoning="Survey complete.",
-            state_delta={},
-            action="respond",
-            args={"message": f"Inspected {steps} modules; all fine."},
-        )
-    )
     return streams
 
 
@@ -93,7 +78,7 @@ async def run_survey(tmp_path, steps: int = STEPS):
                 root=home / ".rio", cwd=repo, agents_root=home / ".agents", paths=paths
             ),
             storage=InMemorySessionStorage(),
-            tools=(INSPECT, RESPOND),
+            tools=(INSPECT,),
             max_steps=steps + 5,
             context_window_tokens=CONTEXT_WINDOW,
         )
@@ -113,7 +98,7 @@ def prompt_tokens(call) -> int:
 
 async def test_the_survey_completes_all_steps(tmp_path) -> None:
     session, provider = await run_survey(tmp_path)
-    assert len(provider.calls) == STEPS + 1
+    assert len(provider.calls) == STEPS
     assert session.answer == f"Inspected {STEPS} modules; all fine."
 
 
@@ -208,7 +193,7 @@ async def test_recovery_needs_no_catch_up_steps(tmp_path) -> None:
                 root=home / ".rio", cwd=repo, agents_root=home / ".agents", paths=paths
             ),
             storage=storage,
-            tools=(INSPECT, RESPOND),
+            tools=(INSPECT,),
         )
     )
 

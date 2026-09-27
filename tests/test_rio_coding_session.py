@@ -32,12 +32,6 @@ async def _read(tool_call_id, arguments, signal=None, on_update=None):
     return AgentToolResult(content=[TextContent(text=f"read {path}\ncontents of {path}")])
 
 
-async def _respond(tool_call_id, arguments, signal=None, on_update=None):
-    return AgentToolResult(
-        content=[TextContent(text=str(arguments.get("message", "")))], terminate=True
-    )
-
-
 READ = AgentTool(
     name="read",
     label="Read",
@@ -45,32 +39,21 @@ READ = AgentTool(
     parameters={"type": "object", "properties": {"path": {"type": "string"}}},
     execute_fn=_read,
 )
-RESPOND = AgentTool(
-    name="respond",
-    label="Respond",
-    description="Answer the user and end the turn.",
-    parameters={"type": "object", "properties": {"message": {"type": "string"}}},
-    execute_fn=_respond,
-)
 
 
 def two_step_streams():
     return [
         step_response(
-            reasoning="Check the entry point.",
+            reasoning="",
             state_delta={
                 "goal": "explain main.py",
                 "files": {"main.py": {"status": "read", "note": "entry point"}},
                 "findings": {"entrypoint": "main.py"},
+                "plan": [{"id": "1", "title": "explain", "status": "done"}],
             },
             action="read",
             args={"path": "main.py"},
-        ),
-        step_response(
-            reasoning="Ready to answer.",
-            state_delta={"plan": [{"id": "1", "title": "explain", "status": "done"}]},
-            action="respond",
-            args={"message": "main.py starts the server."},
+            final_text="main.py starts the server.",
         ),
     ]
 
@@ -101,7 +84,7 @@ async def make_session(project, streams, *, storage=None, monkeypatch=None, **ov
             root=home / ".rio", cwd=repo, agents_root=home / ".agents", paths=paths
         ),
         storage=storage if storage is not None else InMemorySessionStorage(),
-        tools=(READ, RESPOND),
+        tools=(READ,),
         **overrides,
     )
     return await CodingSession.load(config)
@@ -127,7 +110,7 @@ class TestLoad:
 
     async def test_declared_actions_are_the_session_tools(self, project) -> None:
         session = await make_session(project, [])
-        assert [tool.name for tool in session.tools] == ["read", "respond"]
+        assert [tool.name for tool in session.tools] == ["read"]
         assert session.skill.actions == session.tools
 
     async def test_state_starts_seeded_with_every_declared_field(self, project) -> None:
@@ -179,8 +162,10 @@ class TestPrompting:
         events = await collect(session, "explain main.py")
 
         steps = [e for e in await storage.read_all() if isinstance(e, StepEntry)]
-        assert [s.action.name for s in steps] == ["read", "respond"]
+        assert [s.action.name for s in steps] == ["read"]
+        assert steps[-1].terminated
         assert any(isinstance(e, EntryAppendedEvent) for e in events)
+
 
 def write_skill(root, name: str, body: str = "Body") -> None:
     """Write `<root>/skills/<name>/SKILL.md`, creating the directories."""
@@ -429,7 +414,7 @@ class TestCheckpoints:
                 root=home / ".rio", cwd=repo, agents_root=home / ".agents", paths=paths
             ),
             storage=storage,
-            tools=(READ, RESPOND),
+            tools=(READ,),
         )
 
         prepared = await prepare_coding_session(config)
@@ -460,7 +445,7 @@ class TestCheckpoints:
                     root=home / ".rio", cwd=repo, agents_root=home / ".agents", paths=paths
                 ),
                 storage=InMemorySessionStorage(),
-                tools=(READ, RESPOND),
+                tools=(READ,),
             )
         )
         await prepared.adopt()

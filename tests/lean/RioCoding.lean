@@ -39,19 +39,19 @@ deriving DecidableEq, Repr
 def planProgress (plan : List PlanItem) : Nat × Nat :=
   ((plan.filter (fun item => item.status == .done)).length, plan.length)
 
-def canRespond (plan : List PlanItem) : Bool :=
+def planComplete (plan : List PlanItem) : Bool :=
   plan.all (fun item => item.status == .done || item.status == .blocked)
 
-theorem empty_plan_can_respond : canRespond [] = true := by rfl
+theorem empty_plan_is_complete : planComplete [] = true := by rfl
 
-theorem pending_plan_blocks_respond (rest : List PlanItem) :
-    canRespond ({ status := .pending } :: rest) = false := by
-  simp [canRespond]
+theorem pending_plan_is_incomplete (rest : List PlanItem) :
+    planComplete ({ status := .pending } :: rest) = false := by
+  simp [planComplete]
 
-theorem completed_and_blocked_plan_can_respond (items : List PlanItem)
+theorem completed_and_blocked_plan_is_complete (items : List PlanItem)
     (h : ∀ item ∈ items, item.status = .done ∨ item.status = .blocked) :
-    canRespond items = true := by
-  simp only [canRespond, List.all_eq_true]
+    planComplete items = true := by
+  simp only [planComplete, List.all_eq_true]
   intro item hi
   rcases h item hi with hd | hb
   · simp [hd]
@@ -59,17 +59,16 @@ theorem completed_and_blocked_plan_can_respond (items : List PlanItem)
 
 /- file_context.py: existing files require a matching recorded hash before a write. -/
 inductive FileAction where
-  | read | write | edit | bash | codemode | respond
+  | read | write | edit | bash | codemode
 deriving DecidableEq, Repr
 
 inductive Preflight where
-  | proceed | readFirst | reread | finishPlan
+  | proceed | readFirst | reread
 deriving DecidableEq, Repr
 
 def preflight (action : FileAction) (fileExists : Bool) (recorded actual : Option Nat)
-    (plan : List PlanItem) : Preflight :=
-  if action == .respond && !canRespond plan then .finishPlan
-  else if (action == .write || action == .edit) && fileExists then
+    (_plan : List PlanItem) : Preflight :=
+  if (action == .write || action == .edit) && fileExists then
     match recorded, actual with
     | none, _ => .readFirst
     | some old, some current => if old == current then .proceed else .reread
@@ -93,10 +92,6 @@ theorem new_file_does_not_require_hash (plan : List PlanItem) :
     preflight .write false none none plan = .proceed := by
   simp [preflight]
 
-theorem respond_with_pending_work_rejected (rest : List PlanItem) :
-    preflight .respond false none none ({ status := .pending } :: rest) = .finishPlan := by
-  simp [preflight, pending_plan_blocks_respond]
-
 inductive CacheResult where
   | full | metadataOnly | unchanged
 deriving DecidableEq, Repr
@@ -118,7 +113,7 @@ theorem cache_never_exceeds_budget (fullSize metadataSize budget : Nat) :
   · exact fun _ => h
   · by_cases hm : metadataSize <= budget <;> simp [cacheResult, h, hm]
 
-/- tools.py: edit validation and terminal response decisions. -/
+/- tools.py: edit validation and final-step decisions. -/
 inductive EditError where
   | emptyOldText | notFound | duplicate | overlap | noChange
 deriving DecidableEq, Repr
@@ -144,13 +139,14 @@ inductive ToolOutcome where
   | observation | termination | rejected
 deriving DecidableEq, Repr
 
-def toolOutcome (action : FileAction) (guard : Preflight) : ToolOutcome :=
+def toolOutcome (guard : Preflight) (plan : List PlanItem)
+    (actionSucceeded assistantText : Bool) : ToolOutcome :=
   if guard != .proceed then .rejected
-  else if action == .respond then .termination else .observation
+  else if actionSucceeded && planComplete plan && assistantText then .termination else .observation
 
-theorem respond_is_terminal_after_plan_complete (plan : List PlanItem)
-    (h : canRespond plan = true) :
-    toolOutcome .respond (preflight .respond false none none plan) = .termination := by
+theorem final_action_is_terminal_after_plan_complete (plan : List PlanItem)
+    (h : planComplete plan = true) :
+    toolOutcome (preflight .bash false none none plan) plan true true = .termination := by
   simp [toolOutcome, preflight, h]
 
 /- tools.py: codemode runs its code once and returns one observation. It does not
@@ -161,7 +157,7 @@ theorem codemode_skips_file_preflight (fileExists : Bool) (recorded actual : Opt
   simp [preflight]
 
 theorem codemode_is_observation (plan : List PlanItem) :
-    toolOutcome .codemode (preflight .codemode false none none plan) = .observation := by
+    toolOutcome (preflight .codemode false none none plan) plan true false = .observation := by
   simp [toolOutcome, preflight]
 
 /-- Code must parse and open with a docstring, and the model must give a positive
@@ -217,6 +213,13 @@ theorem bindArgs_keyword_wins :
     bindArgs ["path"] [.string "a.py"] [("path", .string "b.py")] =
       some [("path", .string "b.py")] := by
   rfl
+theorem pending_plan_does_not_finish (rest : List PlanItem) :
+    toolOutcome .proceed ({ status := .pending } :: rest) true true = .observation := by
+  simp [toolOutcome, pending_plan_is_incomplete]
+
+theorem failed_final_action_does_not_finish (plan : List PlanItem) :
+    toolOutcome .proceed plan false true = .observation := by
+  simp [toolOutcome]
 
 /- session_store/tree.py: explicit leaf pointers and latest branch checkpoint. -/
 structure JournalEntry where

@@ -16,11 +16,18 @@ from rio.ai import (
 _call_ids = itertools.count()
 
 
-def step_response(*, reasoning: str, state_delta: Mapping, action: str, args: Mapping):
+def step_response(
+    *,
+    reasoning: str,
+    state_delta: Mapping,
+    action: str,
+    args: Mapping,
+    final_text: str | None = None,
+):
     """Build one FakeProvider stream: a single skill_step tool call."""
     content = []
-    if reasoning:
-        content.append(TextContent(text=reasoning))
+    if final_text is not None or reasoning:
+        content.append(TextContent(text=final_text if final_text is not None else reasoning))
     content.append(
         ToolCall(
             id=f"call-{next(_call_ids)}",
