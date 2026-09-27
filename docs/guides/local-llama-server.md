@@ -31,7 +31,8 @@ export LLAMA_SERVER_API_KEY=your-key
 
 If the variable is unset, Rio sends an empty key. `models` is optional too; when
 omitted, Rio uses the provider name as the model ID. When models are listed,
-the first is the default.
+the first is the default. See [Catalog keys](providers.md#catalog-keys) for
+every supported setting.
 
 ## Run Rio
 
