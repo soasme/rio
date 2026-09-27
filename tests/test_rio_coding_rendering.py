@@ -72,7 +72,7 @@ def test_plain_renderer_renders_step_lifecycle(capsys: pytest.CaptureFixture[str
         ActionEndEvent(
             step=1,
             name="bash",
-            result=AgentToolResult(content="file1\nfile2"),
+            result=AgentToolResult(content="file1\nfile2", details={"exit_code": 0}),
             is_error=False,
         )
     )
@@ -80,10 +80,167 @@ def test_plain_renderer_renders_step_lifecycle(capsys: pytest.CaptureFixture[str
 
     out = capsys.readouterr().out
     assert "Running ls" in out
-    assert "  └ bash: file1" in out
+    assert "  └" in out and "bash: file1" in out
     assert "step 1" not in out
     assert "Fix bug" not in out
     assert renderer.finish() is True
+
+
+def _bash_result(text: str, *, exit_code: int | None, **extra: object) -> AgentToolResult:
+    return AgentToolResult(content=text, details={"exit_code": exit_code, **extra})
+
+
+def test_plain_renderer_shows_green_dot_for_successful_bash(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+
+    from rio.coding.rendering.ansi import GREEN, RESET
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    renderer = PlainEventRenderer()
+    renderer.render(
+        ActionEndEvent(
+            step=1,
+            name="bash",
+            result=_bash_result("bash ls (exit 0)\n\nfile1\nfile2", exit_code=0),
+            is_error=False,
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert f"{GREEN}●{RESET}" in out
+    assert "file1" in out
+
+
+def test_plain_renderer_shows_red_dot_for_failed_bash(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+
+    from rio.coding.rendering.ansi import RED, RESET
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    renderer = PlainEventRenderer()
+    renderer.render(
+        ActionEndEvent(
+            step=1,
+            name="bash",
+            result=_bash_result(
+                "bash false (exit 1)\n\nboom\n\nCommand exited with code 1", exit_code=1
+            ),
+            is_error=False,
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert f"{RED}●{RESET}" in out
+    assert "boom" in out
+
+
+def test_plain_renderer_treats_timeout_as_failure_even_without_exit_code(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+
+    from rio.coding.rendering.ansi import RED, RESET
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    renderer = PlainEventRenderer()
+    renderer.render(
+        ActionEndEvent(
+            step=1,
+            name="bash",
+            result=_bash_result(
+                "bash sleep 100 (timed out)\n\n(no output)\n\nCommand timed out after 5 seconds",
+                exit_code=None,
+                timed_out=True,
+            ),
+            is_error=False,
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert f"{RED}●{RESET}" in out
+    assert "Command timed out after 5 seconds" in out
+
+
+def test_plain_renderer_hides_bash_header_and_exit_status_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The command is already shown by the start line and the dot conveys pass/fail."""
+    renderer = PlainEventRenderer()
+    renderer.render(
+        ActionEndEvent(
+            step=1,
+            name="bash",
+            result=_bash_result(
+                "bash false (exit 1)\n\nboom\n\nCommand exited with code 1", exit_code=1
+            ),
+            is_error=False,
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert "bash false (exit 1)" not in out
+    assert "Command exited with code 1" not in out
+    assert "boom" in out
+
+
+def test_plain_renderer_hides_no_output_placeholder(capsys: pytest.CaptureFixture[str]) -> None:
+    renderer = PlainEventRenderer()
+    renderer.render(
+        ActionEndEvent(
+            step=1,
+            name="bash",
+            result=_bash_result("bash true (exit 0)\n\n(no output)", exit_code=0),
+            is_error=False,
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert "(no output)" not in out
+    assert "bash" in out
+
+
+def test_plain_renderer_caps_bash_output_to_three_lines(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    renderer = PlainEventRenderer()
+    renderer.render(
+        ActionEndEvent(
+            step=1,
+            name="bash",
+            result=_bash_result(
+                "bash seq 5 (exit 0)\n\n1\n2\n3\n4\n5",
+                exit_code=0,
+            ),
+            is_error=False,
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert "1" in out and "2" in out and "3" in out
+    assert "4" not in out
+    assert "5" not in out
+    assert "+2 more lines" in out
+
+
+def test_plain_renderer_does_not_alter_model_facing_result_text() -> None:
+    """The renderer must never mutate `result.text` -- that is the model's next observation."""
+    result = _bash_result("bash false (exit 1)\n\nboom\n\nCommand exited with code 1", exit_code=1)
+    original_text = result.text
+
+    renderer = PlainEventRenderer()
+    renderer.render(ActionEndEvent(step=1, name="bash", result=result, is_error=False))
+
+    assert result.text == original_text
 
 
 def test_plain_renderer_renders_validation_error_as_retry(
