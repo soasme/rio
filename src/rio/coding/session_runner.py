@@ -246,8 +246,6 @@ class SessionRunner:
 
             elif isinstance(event, ActionEndEvent):
                 text = event.result.text or ""
-                if event.result.terminate and not event.is_error:
-                    self._answer = text or None
                 if pending is not None:
                     limit = self._config.journaled_observation_limit
                     pending.observation_truncated = len(text) > limit
