@@ -59,7 +59,7 @@ theorem completed_and_blocked_plan_can_respond (items : List PlanItem)
 
 /- file_context.py: existing files require a matching recorded hash before a write. -/
 inductive FileAction where
-  | read | write | edit | bash | respond
+  | read | write | edit | bash | codemode | respond
 deriving DecidableEq, Repr
 
 inductive Preflight where
@@ -152,6 +152,71 @@ theorem respond_is_terminal_after_plan_complete (plan : List PlanItem)
     (h : canRespond plan = true) :
     toolOutcome .respond (preflight .respond false none none plan) = .termination := by
   simp [toolOutcome, preflight, h]
+
+/- tools.py: codemode runs its code once and returns one observation. It does not
+pass the write/edit hash preflight, so nested writes are not checked. -/
+theorem codemode_skips_file_preflight (fileExists : Bool) (recorded actual : Option Nat)
+    (plan : List PlanItem) :
+    preflight .codemode fileExists recorded actual plan = .proceed := by
+  simp [preflight]
+
+theorem codemode_is_observation (plan : List PlanItem) :
+    toolOutcome .codemode (preflight .codemode false none none plan) = .observation := by
+  simp [toolOutcome, preflight]
+
+/-- Code must parse and open with a docstring, and the model must give a positive
+wall-clock timeout, before the sandbox runs. A raised error or timeout fails the step. -/
+inductive CodemodeRun where
+  | completed | raised | timedOut
+deriving DecidableEq, Repr
+
+def codemodeOutcome (parses hasDocstring : Bool) (timeoutMs : Nat) (run : CodemodeRun) :
+    ToolOutcome :=
+  if !parses || !hasDocstring || timeoutMs == 0 then .rejected
+  else if run == .completed then .observation else .rejected
+
+theorem codemode_bad_code_rejected (hasDocstring : Bool) (timeoutMs : Nat) (run : CodemodeRun) :
+    codemodeOutcome false hasDocstring timeoutMs run = .rejected := by
+  simp [codemodeOutcome]
+
+theorem codemode_requires_docstring (timeoutMs : Nat) (run : CodemodeRun) :
+    codemodeOutcome true false timeoutMs run = .rejected := by
+  simp [codemodeOutcome]
+
+theorem codemode_requires_timeout (run : CodemodeRun) :
+    codemodeOutcome true true 0 run = .rejected := by
+  simp [codemodeOutcome]
+
+theorem codemode_timeout_fails_step (timeoutMs : Nat) :
+    codemodeOutcome true true timeoutMs .timedOut = .rejected := by
+  simp [codemodeOutcome]
+
+theorem codemode_observation_only_when_valid_and_completed (parses hasDocstring : Bool)
+    (timeoutMs : Nat) (run : CodemodeRun)
+    (h : codemodeOutcome parses hasDocstring timeoutMs run = .observation) :
+    parses = true ∧ hasDocstring = true ∧ 0 < timeoutMs ∧ run = .completed := by
+  cases parses <;> cases hasDocstring <;> cases run <;>
+    simp_all [codemodeOutcome, Nat.pos_iff_ne_zero] <;> split at h <;> simp_all
+
+/-- Sandbox call arguments: positionals bind to schema properties in order, then
+keywords override by name. Extra positionals are rejected. -/
+def bindArgs (names : List String) (positional : List Json) (keywords : Object) :
+    Option Object :=
+  if names.length < positional.length then none
+  else some ((names.zip positional).filter (fun p => !(keywords.any (·.1 == p.1))) ++ keywords)
+
+theorem bindArgs_rejects_extra (names : List String) (positional : List Json) (kw : Object)
+    (h : names.length < positional.length) : bindArgs names positional kw = none := by
+  simp [bindArgs, h]
+
+theorem bindArgs_positional_path :
+    bindArgs ["path", "offset"] [.string "a.py"] [] = some [("path", .string "a.py")] := by
+  rfl
+
+theorem bindArgs_keyword_wins :
+    bindArgs ["path"] [.string "a.py"] [("path", .string "b.py")] =
+      some [("path", .string "b.py")] := by
+  rfl
 
 /- session_store/tree.py: explicit leaf pointers and latest branch checkpoint. -/
 structure JournalEntry where
