@@ -27,7 +27,7 @@ def test_thinking_flag_reaches_thinking_level_param(monkeypatch: pytest.MonkeyPa
         trust_override: object | None = None,
         resume: str | None = None,
         output_mode: object | None = None,
-        exposed_tools: tuple[str, ...] = ("codemode",),
+        exposed_tools: tuple[str, ...] = ("read", "write", "edit", "bash"),
     ) -> tuple[bool, str]:
         captured["thinking_level"] = thinking_level
         captured["extension_paths"] = extension_paths
@@ -43,7 +43,7 @@ def test_thinking_flag_reaches_thinking_level_param(monkeypatch: pytest.MonkeyPa
     assert captured["extension_paths"] == ()
     assert captured["trust_override"] == "approve"
     assert captured["output_mode"] == "human"
-    assert captured["exposed_tools"] == ("codemode",)
+    assert captured["exposed_tools"] == ("read", "write", "edit", "bash")
 
 
 def test_json_output_reaches_session_runner(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -67,9 +67,10 @@ def test_tools_flag_selects_direct_tools() -> None:
     assert args.tools == ("read", "write", "edit", "bash")
 
 
-def test_tools_flag_rejects_unknown_tool() -> None:
+@pytest.mark.parametrize("tool", ["unknown", "codemode"])
+def test_tools_flag_rejects_unknown_tool(tool: str) -> None:
     with pytest.raises(SystemExit) as error:
-        build_parser().parse_args(["run", "--tools=unknown", "do it"])
+        build_parser().parse_args(["run", f"--tools={tool}", "do it"])
     assert error.value.code == 2
 
 
@@ -105,7 +106,7 @@ def test_unrelated_value_error_does_not_blame_cwd(
         trust_override: object | None = None,
         resume: str | None = None,
         output_mode: object | None = None,
-        exposed_tools: tuple[str, ...] = ("codemode",),
+        exposed_tools: tuple[str, ...] = ("read", "write", "edit", "bash"),
     ) -> tuple[bool, str]:
         raise ValueError("Unknown provider: bonsai2")
 

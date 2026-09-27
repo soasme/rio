@@ -45,7 +45,7 @@ async def run_persistent_session(
     trust_override: TrustOverride | None = None,
     resume: str | None = None,
     output_mode: PrintOutputMode = PrintOutputMode.human,
-    exposed_tools: tuple[str, ...] = ("codemode",),
+    exposed_tools: tuple[str, ...] = ("read", "write", "edit", "bash"),
     *,
     session_manager: SessionManager | None = None,
 ) -> tuple[bool, str]:
@@ -92,7 +92,7 @@ async def run_configured_session(
     trust_override: TrustOverride | None = None,
     output_mode: PrintOutputMode = PrintOutputMode.human,
     *,
-    exposed_tools: tuple[str, ...] = ("codemode",),
+    exposed_tools: tuple[str, ...] = ("read", "write", "edit", "bash"),
     storage: SessionStorage | None = None,
 ) -> bool:
     """Construct and execute one coding session."""
@@ -121,7 +121,7 @@ async def _run_configured_session(
     trust_override: TrustOverride | None = None,
     output_mode: PrintOutputMode = PrintOutputMode.human,
     *,
-    exposed_tools: tuple[str, ...] = ("codemode",),
+    exposed_tools: tuple[str, ...] = ("read", "write", "edit", "bash"),
     storage: SessionStorage | None = None,
 ) -> tuple[bool, str, str]:
     """Construct and execute one coding session."""
