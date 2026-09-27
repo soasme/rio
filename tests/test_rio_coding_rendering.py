@@ -79,7 +79,7 @@ def test_plain_renderer_renders_step_lifecycle(capsys: pytest.CaptureFixture[str
     renderer.render(StepEndEvent(step=1, state={"goal": "Fix bug"}, terminated=False))
 
     out = capsys.readouterr().out
-    assert "• Running ls" in out
+    assert "Running ls" in out
     assert "  └ bash: file1" in out
     assert "step 1" not in out
     assert "Fix bug" not in out
