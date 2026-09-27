@@ -1,0 +1,1 @@
+Add a `slugify(text: str) -> str` function to `text_utils.py`. Lowercase the text, replace each run of non-alphanumeric characters with one hyphen, and remove leading and trailing hyphens. An empty input should return an empty string.
