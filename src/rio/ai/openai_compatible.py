@@ -266,7 +266,7 @@ class OpenAICompatibleProvider:
                     request_url = f"{auth.base_url.rstrip('/')}{endpoint}"
             if not self._config.omit_authorization_header:
                 has_authorization = any(key.casefold() == "authorization" for key in headers)
-                if not has_authorization:
+                if not has_authorization and api_key is not None:
                     headers["Authorization"] = f"Bearer {api_key}"
             _apply_session_affinity_headers(headers, session_id, session_affinity_format)
 
