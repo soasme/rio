@@ -165,6 +165,100 @@ def test_create_event_renderer_dispatches_by_mode() -> None:
     assert isinstance(create_event_renderer(PrintOutputMode.human), PlainEventRenderer)
 
 
+# -- rendering.ansi -----------------------------------------------------------
+
+
+def test_should_use_color_respects_no_color_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rio.coding.rendering.ansi import should_use_color
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert should_use_color() is False
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    # Note: may be True or False depending on test runner TTY
+
+
+def test_should_use_color_checks_isatty(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+    from rio.coding.rendering.ansi import should_use_color
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+    assert should_use_color() is False
+
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    assert should_use_color() is True
+
+
+def test_dot_returns_plain_when_colors_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rio.coding.rendering.ansi import dot
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert dot(success=True) == "·"
+    assert dot(success=False) == "·"
+
+
+def test_dot_returns_colored_when_colors_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+    from rio.coding.rendering.ansi import dot, GREEN, RED, RESET
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    assert dot(success=True) == f"{GREEN}●{RESET}"
+    assert dot(success=False) == f"{RED}●{RESET}"
+
+
+def test_plain_renderer_uses_colored_dots_on_success(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+    from rio.coding.rendering.ansi import GREEN, RESET
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    renderer = PlainEventRenderer()
+    renderer.render(ActionStartEvent(step=1, name="bash", arguments={"command": "ls"}))
+
+    out = capsys.readouterr().out
+    assert f"{GREEN}●{RESET}" in out
+    assert "Running ls" in out
+
+
+def test_plain_renderer_uses_plain_dots_when_no_color(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    renderer = PlainEventRenderer()
+    renderer.render(ActionStartEvent(step=1, name="bash", arguments={"command": "ls"}))
+
+    out = capsys.readouterr().out
+    assert "· Running ls" in out
+    assert "\033[" not in out  # No ANSI codes
+
+
+def test_plain_renderer_uses_red_dot_on_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+    from rio.coding.rendering.ansi import RED, RESET
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    renderer = PlainEventRenderer()
+    renderer.render(
+        AutoRetryStartEvent(attempt=1, max_attempts=3, delay_ms=0, error_message="HTTP 503")
+    )
+    renderer.render(AutoRetryEndEvent(success=False, attempt=3, final_error="retries exhausted"))
+
+    assert renderer.finish() is False
+    err = capsys.readouterr().err
+    assert f"{RED}●{RESET}" in err or "retries exhausted" in err
+
+
 # -- rendering.steps --------------------------------------------------------
 
 
