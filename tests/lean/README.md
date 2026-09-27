@@ -10,7 +10,7 @@ Python tests remain necessary to check that implementation behavior matches.
 | Lean file | Python behavior represented |
 | --- | --- |
 | `RioAgent.lean` | Agent state merge, validation, retries, action execution, event order, cancellation, termination |
-| `RioCoding.lean` | Initial coding state and plan gate; file write preflight and cache budget; edit validation; journal checkpoints; codemode preflight and argument binding; command routing; thinking cycle |
+| `RioCoding.lean` | Initial coding state and plan gate; file write preflight and cache budget; edit validation; journal checkpoints; codemode gate, preflight, and argument binding; command routing; thinking cycle |
 | `RioCodingLifecycle.lean` | Prepared session adoption; one-run guard; model and thinking selection; prompt expansion precedence; extension input hooks |
 
 The models deliberately omit transport, OAuth, filesystem and JSONL I/O,

@@ -570,6 +570,10 @@ async def test_bash_tool_header_truncates_long_commands(tmp_path: Path) -> None:
 # --- codemode tool -------------------------------------------------------
 
 
+def codemode_args(code: str, *, timeout: float = 10) -> dict[str, object]:
+    return {"code": '"""Test snippet."""\n' + code, "timeout": timeout}
+
+
 async def test_codemode_orchestrates_tools_and_returns_filtered_output(tmp_path: Path) -> None:
     (tmp_path / "a.py").write_text("x = 1\n# TODO a\n", encoding="utf-8")
     (tmp_path / "b.py").write_text("# TODO b\ny = 2\n", encoding="utf-8")
@@ -578,17 +582,18 @@ async def test_codemode_orchestrates_tools_and_returns_filtered_output(tmp_path:
 
     result = await codemode.execute(
         "call",
-        {
-            "code": (
-                "import asyncio\n"
-                "texts = await asyncio.gather(read('a.py'), read(path='b.py'))\n"
-                "print(len(texts))\n"
-                "[line for t in texts for line in t.splitlines() if 'TODO' in line]"
-            )
-        },
+        codemode_args(
+            "import asyncio\n"
+            "texts = await asyncio.gather(read('a.py'), read(path='b.py'))\n"
+            "print(len(texts))\n"
+            "[line for t in texts for line in t.splitlines() if 'TODO' in line]"
+        ),
     )
 
-    assert result.text.splitlines()[0] == "codemode import asyncio (2 tool calls)"
+    assert result.text.splitlines()[:2] == [
+        "codemode Test snippet. (2 tool calls)",
+        "⎿ import asyncio (+3 lines)",
+    ]
     assert result.text.endswith("2\n\n['# TODO a', '# TODO b']")
     assert result.details["calls"] == ["read", "read"]
 
@@ -598,31 +603,78 @@ async def test_codemode_raises_tool_errors_inside_the_sandbox(tmp_path: Path) ->
 
     result = await codemode.execute(
         "call",
-        {"code": "try:\n    await read('missing.py')\nexcept ValueError:\n    r = 'caught'\nr"},
+        codemode_args(
+            "try:\n    await read('missing.py')\nexcept ValueError:\n    r = 'caught'\nr"
+        ),
     )
 
     assert result.text.endswith("'caught'")
 
 
-async def test_codemode_reports_uncaught_errors(tmp_path: Path) -> None:
+async def test_codemode_reports_uncaught_errors_with_printed_output(tmp_path: Path) -> None:
     codemode = create_codemode_tool([create_read_tool(cwd=tmp_path)])
 
-    with pytest.raises(ValueError, match="ZeroDivisionError"):
-        await codemode.execute("call", {"code": "print('before')\n1 / 0"})
+    with pytest.raises(ValueError, match=r"(?s)before.*ZeroDivisionError"):
+        await codemode.execute("call", codemode_args("print('before')\n1 / 0"))
 
 
-async def test_codemode_has_no_direct_filesystem_access(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [("x = (", "does not parse"), ("print('no docstring')", "module docstring")],
+)
+async def test_codemode_rejects_bad_code_before_running(code: str, message: str) -> None:
+    codemode = create_codemode_tool([])
+
+    with pytest.raises(ValueError, match=message):
+        await codemode.execute("call", {"code": code, "timeout": 10})
+
+
+@pytest.mark.parametrize("timeout", [None, 0])
+async def test_codemode_requires_a_positive_timeout(timeout: float | None) -> None:
+    codemode = create_codemode_tool([])
+    arguments = codemode_args("1")
+    arguments["timeout"] = timeout
+
+    with pytest.raises(ValueError, match="timeout must be a number greater than 0"):
+        await codemode.execute("call", arguments)
+
+
+async def test_codemode_timeout_covers_nested_tool_calls_and_keeps_output(
+    tmp_path: Path,
+) -> None:
+    codemode = create_codemode_tool([create_bash_tool(cwd=tmp_path)])
+
+    with pytest.raises(ValueError, match=r"(?s)started.*timed out after 0.5s"):
+        await codemode.execute(
+            "call",
+            codemode_args(
+                "print('started')\n"
+                "await bash(command='sleep 1 && touch done', description='Sleeping')",
+                timeout=0.5,
+            ),
+        )
+
+    await asyncio.sleep(1)
+    assert not (tmp_path / "done").exists()
+
+
+async def test_codemode_has_no_direct_filesystem_access() -> None:
     codemode = create_codemode_tool([])
 
     with pytest.raises(ValueError, match="PermissionError"):
-        await codemode.execute("call", {"code": "open('/etc/passwd').read()"})
+        await codemode.execute("call", codemode_args("open('/etc/passwd').read()"))
 
 
-async def test_codemode_rejects_extra_positional_arguments(tmp_path: Path) -> None:
+async def test_codemode_rejects_extra_positional_arguments() -> None:
     codemode = create_codemode_tool([create_respond_tool()])
 
     with pytest.raises(ValueError, match="takes at most 1 arguments"):
-        await codemode.execute("call", {"code": "await respond('a', 'b')"})
+        await codemode.execute("call", codemode_args("await respond('a', 'b')"))
+
+
+def test_describe_action_uses_the_codemode_docstring() -> None:
+    assert describe_action("codemode", codemode_args("1")) == "Test snippet."
+    assert describe_action("codemode", {"code": "x = ("}) == ""
 
 
 # --- respond tool --------------------------------------------------------

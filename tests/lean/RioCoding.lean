@@ -164,6 +164,40 @@ theorem codemode_is_observation (plan : List PlanItem) :
     toolOutcome .codemode (preflight .codemode false none none plan) = .observation := by
   simp [toolOutcome, preflight]
 
+/-- Code must parse and open with a docstring, and the model must give a positive
+wall-clock timeout, before the sandbox runs. A raised error or timeout fails the step. -/
+inductive CodemodeRun where
+  | completed | raised | timedOut
+deriving DecidableEq, Repr
+
+def codemodeOutcome (parses hasDocstring : Bool) (timeoutMs : Nat) (run : CodemodeRun) :
+    ToolOutcome :=
+  if !parses || !hasDocstring || timeoutMs == 0 then .rejected
+  else if run == .completed then .observation else .rejected
+
+theorem codemode_bad_code_rejected (hasDocstring : Bool) (timeoutMs : Nat) (run : CodemodeRun) :
+    codemodeOutcome false hasDocstring timeoutMs run = .rejected := by
+  simp [codemodeOutcome]
+
+theorem codemode_requires_docstring (timeoutMs : Nat) (run : CodemodeRun) :
+    codemodeOutcome true false timeoutMs run = .rejected := by
+  simp [codemodeOutcome]
+
+theorem codemode_requires_timeout (run : CodemodeRun) :
+    codemodeOutcome true true 0 run = .rejected := by
+  simp [codemodeOutcome]
+
+theorem codemode_timeout_fails_step (timeoutMs : Nat) :
+    codemodeOutcome true true timeoutMs .timedOut = .rejected := by
+  simp [codemodeOutcome]
+
+theorem codemode_observation_only_when_valid_and_completed (parses hasDocstring : Bool)
+    (timeoutMs : Nat) (run : CodemodeRun)
+    (h : codemodeOutcome parses hasDocstring timeoutMs run = .observation) :
+    parses = true ∧ hasDocstring = true ∧ 0 < timeoutMs ∧ run = .completed := by
+  cases parses <;> cases hasDocstring <;> cases run <;>
+    simp_all [codemodeOutcome, Nat.pos_iff_ne_zero] <;> split at h <;> simp_all
+
 /-- Sandbox call arguments: positionals bind to schema properties in order, then
 keywords override by name. Extra positionals are rejected. -/
 def bindArgs (names : List String) (positional : List Json) (keywords : Object) :
