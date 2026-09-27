@@ -16,6 +16,7 @@ from rio.coding.events import (
     CodingSessionEvent,
     SessionRunEndEvent,
 )
+from rio.coding.rendering.ansi import dot
 
 _ARGUMENT_CHARS = 200
 
@@ -62,7 +63,8 @@ class PlainEventRenderer:
         lines = text.splitlines() or [""]
         if self._has_entries:
             print()
-        print(f"• {lines[0]}", flush=True)
+        indicator = dot(success=not self._failed)
+        print(f"{indicator} {lines[0]}", flush=True)
         for line in lines[1:]:
             print(f"  {line}", flush=True)
         self._has_entries = True
