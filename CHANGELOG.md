@@ -1,3 +1,15 @@
+# 0.6.1
+
+* neat: ruff fix
+* neat: vendor model update
+* feat(coding): finish on final action text ([#102](https://github.com/soasme/rio/pull/102))
+* feat(coding): add codemode tool backed by pydantic-monty ([#101](https://github.com/soasme/rio/pull/101))
+* feat(cli): add colored dot indicator for session status ([#98](https://github.com/soasme/rio/pull/98))
+* fix(catalog): allow minimal provider entries and blank API keys ([#100](https://github.com/soasme/rio/pull/100))
+* fix(coding): respond should come with message
+* docs: add a lean verification rule to agents.md
+* docs(guides): add library usage documentation ([#99](https://github.com/soasme/rio/pull/99))
+
 # 0.6.0
 
 * feat(agent): append state patches to history ([#97](https://github.com/soasme/rio/pull/97))
