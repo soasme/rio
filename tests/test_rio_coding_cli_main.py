@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from rio.cli import app
+from rio.cli import app, build_parser
 from rio.coding.paths import RioPaths
 from rio.coding.session_manager import SessionManager
 
@@ -27,11 +27,13 @@ def test_thinking_flag_reaches_thinking_level_param(monkeypatch: pytest.MonkeyPa
         trust_override: object | None = None,
         resume: str | None = None,
         output_mode: object | None = None,
+        exposed_tools: tuple[str, ...] = ("codemode",),
     ) -> tuple[bool, str]:
         captured["thinking_level"] = thinking_level
         captured["extension_paths"] = extension_paths
         captured["trust_override"] = trust_override
         captured["output_mode"] = output_mode
+        captured["exposed_tools"] = exposed_tools
         return True, "session-id"
 
     monkeypatch.setattr(run_module, "run_persistent_session", fake_run_persistent_session)
@@ -41,20 +43,34 @@ def test_thinking_flag_reaches_thinking_level_param(monkeypatch: pytest.MonkeyPa
     assert captured["extension_paths"] == ()
     assert captured["trust_override"] == "approve"
     assert captured["output_mode"] == "human"
+    assert captured["exposed_tools"] == ("codemode",)
 
 
 def test_json_output_reaches_session_runner(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
-    async def fake_run(*args: object) -> tuple[bool, str]:
-        captured["output_mode"] = args[-1]
+    async def fake_run(*args: object, **kwargs: object) -> tuple[bool, str]:
+        captured["output_mode"] = args[-2]
+        captured["exposed_tools"] = args[-1]
         return True, "session-id"
 
     monkeypatch.setattr(run_module, "run_persistent_session", fake_run)
 
-    app(["run", "--output", "json", "do it"])
+    app(["run", "--output", "json", "--tools=read,write,edit,bash", "do it"])
 
     assert captured["output_mode"] == "json"
+    assert captured["exposed_tools"] == ("read", "write", "edit", "bash")
+
+
+def test_tools_flag_selects_direct_tools() -> None:
+    args = build_parser().parse_args(["run", "--tools=read,write,edit,bash", "do it"])
+    assert args.tools == ("read", "write", "edit", "bash")
+
+
+def test_tools_flag_rejects_unknown_tool() -> None:
+    with pytest.raises(SystemExit) as error:
+        build_parser().parse_args(["run", "--tools=unknown", "do it"])
+    assert error.value.code == 2
 
 
 def test_help_lists_commands(capsys: pytest.CaptureFixture[str]) -> None:
@@ -89,6 +105,7 @@ def test_unrelated_value_error_does_not_blame_cwd(
         trust_override: object | None = None,
         resume: str | None = None,
         output_mode: object | None = None,
+        exposed_tools: tuple[str, ...] = ("codemode",),
     ) -> tuple[bool, str]:
         raise ValueError("Unknown provider: bonsai2")
 

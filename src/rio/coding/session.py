@@ -112,6 +112,7 @@ class CodingSessionConfig:
     resource_paths: RioResourcePaths | None = None
     project_resources_trusted: bool = True
     tools: Sequence[AgentTool] | None = None
+    exposed_tools: tuple[str, ...] = ("codemode",)
     shell_command_prefix: str | None = None
     image_support: ImageSupportState | None = None
     custom_prompt: str | None = None
@@ -215,15 +216,7 @@ class CodingSession:
             trusted=config.project_resources_trusted,
         )
         resources = _discover(resource_paths, config)
-        tools = tuple(
-            config.tools
-            if config.tools is not None
-            else create_coding_tools(
-                cwd=cwd,
-                shell_command_prefix=config.shell_command_prefix,
-                image_support=config.image_support,
-            )
-        )
+        tools = tuple(config.tools if config.tools is not None else _default_tools(config, cwd))
         runtime = config.extension_runtime or ExtensionRuntime(paths=config.paths)
         if config.load_extensions:
             runtime.load(
@@ -652,11 +645,7 @@ class CodingSession:
         resources = _discover(resource_paths, self._config)
         builtin_tools = self._config.tools
         if builtin_tools is None:
-            builtin_tools = create_coding_tools(
-                cwd=cwd,
-                shell_command_prefix=self._config.shell_command_prefix,
-                image_support=self._config.image_support,
-            )
+            builtin_tools = _default_tools(self._config, cwd)
         candidate_config = replace(self._config, extension_runtime=successor)
         skill = _build_skill(
             candidate_config, resources, successor.compose_tools(builtin_tools), cwd
@@ -775,6 +764,18 @@ def _discover(resource_paths: RioResourcePaths, config: CodingSessionConfig) -> 
             *prompt_resources.diagnostics,
         ),
     )
+
+
+def _default_tools(config: CodingSessionConfig, cwd: Path) -> list[AgentTool]:
+    tools = create_coding_tools(
+        cwd=cwd,
+        shell_command_prefix=config.shell_command_prefix,
+        image_support=config.image_support,
+    )
+    unknown = set(config.exposed_tools) - {tool.name for tool in tools}
+    if unknown:
+        raise ValueError(f"Unknown coding tools: {', '.join(sorted(unknown))}")
+    return [tool for tool in tools if tool.name in config.exposed_tools]
 
 
 def _build_skill(

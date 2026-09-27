@@ -24,6 +24,7 @@ text; otherwise the positional arguments are joined into the task.
 | `--provider NAME` | Provider to use. |
 | `-m`, `--model MODEL` | Model to use. |
 | `--cwd PATH` | Project directory. |
+| `--tools NAMES` | Comma-separated tools to expose. Defaults to `codemode`; supports `read`, `write`, `edit`, `bash`, and `codemode`. |
 | `-t`, `--thinking LEVEL` | Reasoning-effort level. |
 | `-e`, `--extension PATH` | Load an extension path. Repeatable. |
 | `-a`, `--approve` | Trust project resources. |
@@ -33,3 +34,5 @@ text; otherwise the positional arguments are joined into the task.
 
 `human` prints a compact transcript and session ID. `json` emits one JSON
 event per line and is intended for programmatic consumers.
+
+Use `--tools=read,write,edit,bash` to expose the direct file and shell tools.
