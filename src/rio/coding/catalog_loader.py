@@ -91,14 +91,14 @@ class _CatalogProvider(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: _NonEmptyString
-    display_name: _NonEmptyString
-    kind: ProviderKind
     base_url: _NonEmptyString
-    api_key_env: _NonEmptyString
+    display_name: _NonEmptyString | None = None
+    kind: ProviderKind = "openai-compatible"
+    api_key_env: _NonEmptyString | None = None
     credential_name: _NonEmptyString | None = None
-    models: _NonEmptyStringTuple
-    default_model: _NonEmptyString
-    docs_url: _NonEmptyString
+    models: _NonEmptyStringTuple | None = None
+    default_model: _NonEmptyString | None = None
+    docs_url: _NonEmptyString | None = None
     api: ProviderApi | None = None
     context_windows: dict[_NonEmptyString, _PositiveInt] | None = None
     headers: dict[_NonEmptyString, _NonEmptyString] = {}
@@ -425,16 +425,18 @@ def _entries_from_raw(raw: dict[str, Any], *, source: str) -> tuple[ProviderCata
 
 def _entry_from_provider(provider: _CatalogProvider, *, source: str) -> ProviderCatalogEntry:
     prefix = f"{source}: providers.{provider.name}"
-    if provider.default_model not in provider.models:
+    models = provider.models or (provider.default_model or provider.name,)
+    default_model = provider.default_model or models[0]
+    if default_model not in models:
         raise CatalogError(f"{prefix}.default_model: {provider.default_model!r} is not in models")
     for model in provider.thinking_models:
-        if model not in provider.models:
+        if model not in models:
             raise CatalogError(f"{prefix}.thinking_models: {model!r} is not in models")
     for model in provider.context_windows or {}:
-        if model not in provider.models:
+        if model not in models:
             raise CatalogError(f"{prefix}.context_windows: {model!r} is not in models")
     for model in provider.model_metadata:
-        if model not in provider.models:
+        if model not in models:
             raise CatalogError(f"{prefix}.model_metadata: {model!r} is not in models")
     if provider.thinking_default is not None and (
         provider.thinking_levels is None
@@ -461,14 +463,14 @@ def _entry_from_provider(provider: _CatalogProvider, *, source: str) -> Provider
 
     return ProviderCatalogEntry(
         name=provider.name,
-        display_name=provider.display_name,
+        display_name=provider.display_name or provider.name,
         kind=provider.kind,
         base_url=provider.base_url,
-        api_key_env=provider.api_key_env,
+        api_key_env=provider.api_key_env or "",
         credential_name=provider.credential_name,
-        models=provider.models,
-        default_model=provider.default_model,
-        docs_url=provider.docs_url,
+        models=models,
+        default_model=default_model,
+        docs_url=provider.docs_url or "",
         api=provider.api,
         context_windows=context_windows or None,
         headers=dict(provider.headers),

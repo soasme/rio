@@ -1038,6 +1038,16 @@ def test_openai_compatible_config_from_provider_uses_configured_env_var(
     assert config.response_provider_header is None
 
 
+@pytest.mark.parametrize("api_key_env", ["", "UNSET_LOCAL_API_KEY"])
+def test_openai_compatible_config_allows_missing_api_key(
+    monkeypatch: pytest.MonkeyPatch, api_key_env: str
+) -> None:
+    monkeypatch.delenv("UNSET_LOCAL_API_KEY", raising=False)
+    provider = OpenAICompatibleProviderConfig(name="local", api_key_env=api_key_env)
+
+    assert openai_compatible_config_from_provider(provider).api_key == ""
+
+
 def test_huggingface_runtime_config_captures_inference_provider_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -91,6 +91,13 @@ theorem declared_default_selected (provider : Provider)
     selectModel provider none = .ok provider.defaultModel := by
   simp [selectModel, nonempty, declared]
 
+/- provider_config.py: a missing environment variable supplies a blank key. -/
+def providerApiKey (envKey : Option String) : String :=
+  envKey.getD ""
+
+theorem missing_provider_api_key_is_blank : providerApiKey none = "" := by
+  rfl
+
 inductive ThinkingError where
   | unavailable | unsupportedOverride
 deriving DecidableEq, Repr
