@@ -180,6 +180,7 @@ def test_should_use_color_respects_no_color_env(monkeypatch: pytest.MonkeyPatch)
 
 def test_should_use_color_checks_isatty(monkeypatch: pytest.MonkeyPatch) -> None:
     import sys
+
     from rio.coding.rendering.ansi import should_use_color
 
     monkeypatch.delenv("NO_COLOR", raising=False)
@@ -200,7 +201,8 @@ def test_dot_returns_plain_when_colors_disabled(monkeypatch: pytest.MonkeyPatch)
 
 def test_dot_returns_colored_when_colors_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     import sys
-    from rio.coding.rendering.ansi import dot, GREEN, RED, RESET
+
+    from rio.coding.rendering.ansi import GREEN, RED, RESET, dot
 
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
@@ -213,6 +215,7 @@ def test_plain_renderer_uses_colored_dots_on_success(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     import sys
+
     from rio.coding.rendering.ansi import GREEN, RESET
 
     monkeypatch.delenv("NO_COLOR", raising=False)
@@ -243,6 +246,7 @@ def test_plain_renderer_uses_red_dot_on_failure(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     import sys
+
     from rio.coding.rendering.ansi import RED, RESET
 
     monkeypatch.delenv("NO_COLOR", raising=False)
