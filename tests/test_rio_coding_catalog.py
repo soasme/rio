@@ -48,6 +48,12 @@ from rio.coding.provider_catalog import (
     builtin_provider_entry,
     model_cost_for_input_tokens,
 )
+from rio.coding.provider_config import (
+    ProviderSettings,
+    openai_compatible_config_from_provider,
+    provider_config_from_entry,
+    resolve_provider_selection,
+)
 from rio.coding.thinking import THINKING_LEVELS
 
 # A small fixture mirroring models.dev's response shape, inlined so this
@@ -805,6 +811,33 @@ def test_user_catalog_adds_new_provider(tmp_path: Path) -> None:
     assert entry.default_model == "deepseek-ai/DeepSeek-V4-Pro"
     assert entry.context_windows == {"deepseek-ai/DeepSeek-V4-Pro": 163_840}
     assert entry.thinking_levels == ("off", "low", "medium", "high")
+
+
+def test_user_catalog_accepts_minimal_provider(tmp_path: Path) -> None:
+    paths = _write_user_catalog(
+        tmp_path / ".rio",
+        '[[providers]]\nname = "local-llama"\nbase_url = "http://localhost:8080/v1"\n',
+    )
+    entry = effective_catalog(paths)[-1]
+    assert entry.display_name == "local-llama"
+    assert entry.kind == "openai-compatible"
+    assert entry.api_key_env == ""
+    assert entry.docs_url == ""
+    assert entry.models == ("local-llama",)
+    assert entry.default_model == "local-llama"
+    provider = provider_config_from_entry(entry)
+    settings = ProviderSettings(default_provider="local-llama", providers=(provider,))
+    assert resolve_provider_selection(settings).model == "local-llama"
+    assert openai_compatible_config_from_provider(provider).api_key == ""
+
+
+def test_user_catalog_defaults_to_first_model(tmp_path: Path) -> None:
+    paths = _write_user_catalog(
+        tmp_path / ".rio",
+        '[[providers]]\nname = "local-llama"\nbase_url = "http://localhost:8080/v1"\n'
+        'models = ["qwen", "llama"]\n',
+    )
+    assert effective_catalog(paths)[-1].default_model == "qwen"
 
 
 def test_user_catalog_overlays_builtin_provider(tmp_path: Path) -> None:

@@ -2064,11 +2064,7 @@ def _api_key_from_provider(
                 if isinstance(access, str) and access:
                     return access
 
-    api_key = environ.get(provider.api_key_env)
-    if api_key:
-        return api_key
-    credential_hint = f" or run /login {provider.name}" if provider.credential_name else ""
-    raise RuntimeError(f"Missing provider API key. Set {provider.api_key_env}{credential_hint}.")
+    return environ.get(provider.api_key_env, "") if provider.api_key_env else ""
 
 
 def _validate_provider_numbers(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -51,6 +52,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--output", choices=tuple(PrintOutputMode), default=PrintOutputMode.human,
         help="Output format (default: human).",
     )
+    run_parser.add_argument(
+        "--no-color", action="store_true", help="Disable ANSI color output."
+    )
     run_parser.set_defaults(handler=_run, parser=run_parser)
 
     login_parser = commands.add_parser(
@@ -81,6 +85,8 @@ def _run(args: argparse.Namespace) -> None:
     prompt = _resolve_task(args.task)
     if not prompt:
         args.parser.error("a task or Markdown task file is required")
+    if args.no_color:
+        os.environ["NO_COLOR"] = "1"
     try:
         level = normalize_thinking_level(args.thinking) if args.thinking else None
         succeeded, session_id = anyio.run(
@@ -98,7 +104,9 @@ def _run(args: argparse.Namespace) -> None:
     except ValueError as exc:
         args.parser.error(str(exc))
     if args.output == PrintOutputMode.human:
-        print(f"\nSession: {session_id}")
+        from rio.coding.rendering.ansi import dot
+        indicator = dot(success=succeeded)
+        print(f"\n{indicator} Session: {session_id}")
     if not succeeded:
         raise SystemExit(1)
 
