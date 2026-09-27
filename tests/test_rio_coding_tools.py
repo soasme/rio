@@ -25,6 +25,7 @@ from rio.coding.tools import (
     ReadOperations,
     create_bash_tool,
     create_bash_tool_definition,
+    create_codemode_tool,
     create_coding_tools,
     create_edit_tool,
     create_edit_tool_definition,
@@ -67,7 +68,7 @@ class FakeCancellationToken:
 async def test_create_coding_tools_returns_initial_tool_set(tmp_path: Path) -> None:
     tools = create_coding_tools(cwd=tmp_path)
 
-    assert [tool.name for tool in tools] == ["read", "write", "edit", "bash", "respond"]
+    assert [tool.name for tool in tools] == ["read", "write", "edit", "bash", "codemode", "respond"]
     edit_tool = tools[2]
     assert edit_tool.prompt_snippet is not None
     assert "Use edit for precise changes" in edit_tool.prompt_guidelines[0]
@@ -77,7 +78,7 @@ async def test_create_coding_tools_returns_initial_tool_set(tmp_path: Path) -> N
 async def test_create_coding_tools_can_exclude_respond(tmp_path: Path) -> None:
     tools = create_coding_tools(cwd=tmp_path, include_respond=False)
 
-    assert [tool.name for tool in tools] == ["read", "write", "edit", "bash"]
+    assert [tool.name for tool in tools] == ["read", "write", "edit", "bash", "codemode"]
 
 
 def test_bash_tool_schema_requires_display_description(tmp_path: Path) -> None:
@@ -564,6 +565,64 @@ async def test_bash_tool_header_truncates_long_commands(tmp_path: Path) -> None:
     assert header_line.endswith("(exit 0)")
     assert "..." in header_line
     assert len(header_line) < len(long_command)
+
+
+# --- codemode tool -------------------------------------------------------
+
+
+async def test_codemode_orchestrates_tools_and_returns_filtered_output(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("x = 1\n# TODO a\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("# TODO b\ny = 2\n", encoding="utf-8")
+    tools = create_coding_tools(cwd=tmp_path, include_respond=False)
+    codemode = next(tool for tool in tools if tool.name == "codemode")
+
+    result = await codemode.execute(
+        "call",
+        {
+            "code": (
+                "import asyncio\n"
+                "texts = await asyncio.gather(read('a.py'), read(path='b.py'))\n"
+                "print(len(texts))\n"
+                "[line for t in texts for line in t.splitlines() if 'TODO' in line]"
+            )
+        },
+    )
+
+    assert result.text.splitlines()[0] == "codemode import asyncio (2 tool calls)"
+    assert result.text.endswith("2\n\n['# TODO a', '# TODO b']")
+    assert result.details["calls"] == ["read", "read"]
+
+
+async def test_codemode_raises_tool_errors_inside_the_sandbox(tmp_path: Path) -> None:
+    codemode = create_codemode_tool([create_read_tool(cwd=tmp_path)])
+
+    result = await codemode.execute(
+        "call",
+        {"code": "try:\n    await read('missing.py')\nexcept ValueError:\n    r = 'caught'\nr"},
+    )
+
+    assert result.text.endswith("'caught'")
+
+
+async def test_codemode_reports_uncaught_errors(tmp_path: Path) -> None:
+    codemode = create_codemode_tool([create_read_tool(cwd=tmp_path)])
+
+    with pytest.raises(ValueError, match="ZeroDivisionError"):
+        await codemode.execute("call", {"code": "print('before')\n1 / 0"})
+
+
+async def test_codemode_has_no_direct_filesystem_access(tmp_path: Path) -> None:
+    codemode = create_codemode_tool([])
+
+    with pytest.raises(ValueError, match="PermissionError"):
+        await codemode.execute("call", {"code": "open('/etc/passwd').read()"})
+
+
+async def test_codemode_rejects_extra_positional_arguments(tmp_path: Path) -> None:
+    codemode = create_codemode_tool([create_respond_tool()])
+
+    with pytest.raises(ValueError, match="takes at most 1 arguments"):
+        await codemode.execute("call", {"code": "await respond('a', 'b')"})
 
 
 # --- respond tool --------------------------------------------------------
