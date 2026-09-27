@@ -3,6 +3,17 @@ import RioCoding
 
 namespace RioCodingLifecycle
 
+/- session.py: only codemode is exposed by default; an explicit tool list replaces it. -/
+def exposedTools (requested : Option (List RioCoding.FileAction)) : List RioCoding.FileAction :=
+  requested.getD [.codemode]
+
+theorem default_exposes_only_codemode : exposedTools none = [.codemode] := by
+  rfl
+
+theorem explicit_tools_replace_default (tools : List RioCoding.FileAction) :
+    exposedTools (some tools) = tools := by
+  rfl
+
 /- session_preparation.py: staged writes become authoritative only on adoption. -/
 inductive Preparation where
   | prepared | adopted | aborted

@@ -17,6 +17,12 @@ Run a adhoc task:
 rio run "Fix gh issue 123."
 ```
 
+Rio exposes `codemode` by default. To expose the direct file and shell tools instead:
+
+```bash
+rio run --tools=read,write,edit,bash "Fix gh issue 123."
+```
+
 Run a predefined workflow:
 
 ```

@@ -94,6 +94,32 @@ async def collect(session, text):
 
 
 class TestLoad:
+    async def test_default_exposes_only_codemode(self, project) -> None:
+        repo, _ = project
+        session = await CodingSession.load(
+            CodingSessionConfig(
+                provider=FakeProvider([]), model="test", cwd=repo, load_extensions=False
+            )
+        )
+        assert [tool.name for tool in session.tools] == ["codemode"]
+        await session.reload()
+        assert [tool.name for tool in session.tools] == ["codemode"]
+        await session.aclose()
+
+    async def test_explicit_tools_replace_default(self, project) -> None:
+        repo, _ = project
+        session = await CodingSession.load(
+            CodingSessionConfig(
+                provider=FakeProvider([]),
+                model="test",
+                cwd=repo,
+                exposed_tools=("read", "write", "edit", "bash"),
+                load_extensions=False,
+            )
+        )
+        assert [tool.name for tool in session.tools] == ["read", "write", "edit", "bash"]
+        await session.aclose()
+
     async def test_discovers_project_context(self, project) -> None:
         session = await make_session(project, [])
         bodies = [f.content for f in session.context_files]

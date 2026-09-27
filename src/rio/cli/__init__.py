@@ -35,6 +35,15 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--provider", help="Provider name.")
     run_parser.add_argument("-m", "--model", help="Model name.")
     run_parser.add_argument("--cwd", type=Path, help="Working directory.")
+    run_parser.add_argument(
+        "--tools",
+        type=_parse_tools,
+        default=("codemode",),
+        help=(
+            "Comma-separated tools to expose (default: codemode; "
+            "available: read,write,edit,bash,codemode)."
+        ),
+    )
     run_parser.add_argument("-t", "--thinking", help="Reasoning effort level.")
     run_parser.add_argument(
         "-e",
@@ -49,12 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
     trust.add_argument("--no-approve", action="store_true", help="Do not trust project resources.")
     run_parser.add_argument("-r", "--resume", help="Session ID to resume.")
     run_parser.add_argument(
-        "--output", choices=tuple(PrintOutputMode), default=PrintOutputMode.human,
+        "--output",
+        choices=tuple(PrintOutputMode),
+        default=PrintOutputMode.human,
         help="Output format (default: human).",
     )
-    run_parser.add_argument(
-        "--no-color", action="store_true", help="Disable ANSI color output."
-    )
+    run_parser.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     run_parser.set_defaults(handler=_run, parser=run_parser)
 
     login_parser = commands.add_parser(
@@ -100,11 +109,13 @@ def _run(args: argparse.Namespace) -> None:
             "approve" if args.approve else "decline" if args.no_approve else None,
             args.resume,
             PrintOutputMode(args.output),
+            args.tools,
         )
     except ValueError as exc:
         args.parser.error(str(exc))
     if args.output == PrintOutputMode.human:
         from rio.coding.rendering.ansi import dot
+
         indicator = dot(success=succeeded)
         print(f"\n{indicator} Session: {session_id}")
     if not succeeded:
@@ -129,6 +140,14 @@ def _resolve_task(parts: Sequence[str]) -> str:
     if path.is_file() and path.suffix.lower() == ".md":
         return path.read_text(encoding="utf-8")
     return task
+
+
+def _parse_tools(value: str) -> tuple[str, ...]:
+    names = tuple(name.strip() for name in value.split(","))
+    available = {"read", "write", "edit", "bash", "codemode"}
+    if not names or any(name not in available for name in names):
+        raise argparse.ArgumentTypeError("--tools must list read, write, edit, bash, or codemode")
+    return tuple(dict.fromkeys(names))
 
 
 def main() -> None:

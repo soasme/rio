@@ -44,6 +44,7 @@ async def build_session(tmp_path, streams):
             provider=FakeProvider(streams),
             model="test-model",
             cwd=repo,
+            exposed_tools=("read", "write", "edit", "bash"),
             paths=paths,
             resource_paths=RioResourcePaths(
                 root=home / ".rio", cwd=repo, agents_root=home / ".agents", paths=paths
