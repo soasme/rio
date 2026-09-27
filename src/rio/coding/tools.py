@@ -981,7 +981,8 @@ def create_codemode_tool(tools: Sequence[AgentTool]) -> AgentTool:
         label="codemode",
         description=(
             "Run a Python snippet in a sandbox to orchestrate several tool calls in one step. "
-            "The code must start with a module docstring stating its purpose. "
+            "The code must start with a short one-line module docstring stating its purpose, "
+            "such as \"\"\"Find TODOs in src.\"\"\". "
             f"The tools {names} are async functions: `text = await read('a.py')`, "
             "`await bash(command='ls', description='Listing files')`. Each returns the "
             "tool's result text and raises on tool errors. Returns printed output and the "
@@ -993,7 +994,9 @@ def create_codemode_tool(tools: Sequence[AgentTool]) -> AgentTool:
             "properties": {
                 "code": {
                     "type": "string",
-                    "description": "Python code to run, starting with a module docstring",
+                    "description": (
+                        "Python code to run, starting with a short one-line module docstring"
+                    ),
                 },
                 "timeout": {
                     "type": "number",
