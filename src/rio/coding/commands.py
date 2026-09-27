@@ -520,7 +520,12 @@ def _export_command(context: CommandContext) -> CommandResult:
 
 def _status_command(context: CommandContext) -> CommandResult:
     session = context.session
-    lines = [
+    lines = []
+    if session.session_id is not None:
+        lines.append(f"Session: {session.session_id}")
+    if session.session_title:
+        lines.append(f"Session name: {session.session_title}")
+    lines.extend([
         f"Model: {session.model}",
         f"Provider: {session.provider_name}",
         f"CWD: {session.cwd}",
@@ -529,7 +534,7 @@ def _status_command(context: CommandContext) -> CommandResult:
         f"Prompt templates: {len(session.prompt_templates)}",
         f"Context files: {len(session.context_files)}",
         f"Context window: {session.context_window_tokens}",
-    ]
+    ])
     lines.extend(_footprint_lines(session))
     if session.provider_name == "huggingface":
         route = getattr(session, "inference_provider", None)
@@ -547,10 +552,6 @@ def _status_command(context: CommandContext) -> CommandResult:
         lines.append(f"Model limit discovery: unavailable ({discovery_error})")
     lines.extend(_thinking_status_lines(session))
     lines.append(f"Resource diagnostics: {len(session.resource_diagnostics)}")
-    if session.session_id is not None:
-        lines.append(f"Session: {session.session_id}")
-    if session.session_title:
-        lines.append(f"Session name: {session.session_title}")
     return CommandResult(handled=True, message="\n".join(lines))
 
 
