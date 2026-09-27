@@ -1,3 +1,9 @@
+# 0.6.2
+
+* fix: Session ID must be printed as the first line ([#105](https://github.com/soasme/rio/pull/105))
+* feat(coding): expose codemode by default ([#107](https://github.com/soasme/rio/pull/107))
+* fix: omit Authorization header when api_key is not set ([#104](https://github.com/soasme/rio/pull/104))
+
 # 0.6.1
 
 * neat: ruff fix
