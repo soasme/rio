@@ -3,7 +3,7 @@
 import asyncio
 from pathlib import Path
 
-from rio.ai import AssistantDoneEvent, AssistantMessage, FakeProvider, TextContent, ToolCall
+from rio.ai import AssistantDoneEvent, AssistantMessage, FakeProvider, ToolCall
 from rio.coding import CodingSession, CodingSessionConfig
 from rio.coding.rendering import PlainEventRenderer
 from rio.coding.session_store import InMemorySessionStorage
@@ -12,15 +12,14 @@ from rio.coding.session_store import InMemorySessionStorage
 async def main() -> None:
     message = AssistantMessage(
         content=[
-            TextContent(text="Hello from Rio."),
             ToolCall(
                 id="example-step",
                 name="skill_step",
                 arguments={
                     "state_delta": {"goal": "greet the user"},
-                    "action": {"name": "bash", "arguments": {"command": "true"}},
+                    "action": {"name": "respond", "arguments": {"message": "Hello from Rio."}},
                 },
-            ),
+            )
         ],
         stop_reason="toolUse",
     )

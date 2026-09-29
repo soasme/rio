@@ -35,7 +35,6 @@ class HarnessSpec:
         ]
         | None
     ) = None
-    is_complete: Callable[[JSONObject], bool] | None = None
 
     def action_by_name(self) -> dict[str, AgentTool]:
         return {action.name: action for action in self.actions}

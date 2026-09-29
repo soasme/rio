@@ -30,6 +30,7 @@ from rio.coding.tools import (
     create_edit_tool_definition,
     create_read_tool,
     create_read_tool_definition,
+    create_respond_tool,
     create_write_tool,
     create_write_tool_definition,
     describe_action,
@@ -66,11 +67,17 @@ class FakeCancellationToken:
 async def test_create_coding_tools_returns_initial_tool_set(tmp_path: Path) -> None:
     tools = create_coding_tools(cwd=tmp_path)
 
-    assert [tool.name for tool in tools] == ["read", "write", "edit", "bash"]
+    assert [tool.name for tool in tools] == ["read", "write", "edit", "bash", "respond"]
     edit_tool = tools[2]
     assert edit_tool.prompt_snippet is not None
     assert "Use edit for precise changes" in edit_tool.prompt_guidelines[0]
     assert "present-participle description" in tools[3].prompt_guidelines[0]
+
+
+async def test_create_coding_tools_can_exclude_respond(tmp_path: Path) -> None:
+    tools = create_coding_tools(cwd=tmp_path, include_respond=False)
+
+    assert [tool.name for tool in tools] == ["read", "write", "edit", "bash"]
 
 
 def test_bash_tool_schema_requires_display_description(tmp_path: Path) -> None:
@@ -107,6 +114,8 @@ def test_builtin_tools_opt_into_strict_json_schema_constrained_sampling(tmp_path
     for definition in definitions:
         assert definition.constrained_sampling == {"type": "json_schema", "strict": "prefer"}
         assert definition.to_agent_tool().constrained_sampling == definition.constrained_sampling
+
+    assert create_respond_tool().constrained_sampling is None
 
 
 def test_read_tool_schema_defines_line_controls_as_integers(tmp_path: Path) -> None:
@@ -555,6 +564,33 @@ async def test_bash_tool_header_truncates_long_commands(tmp_path: Path) -> None:
     assert header_line.endswith("(exit 0)")
     assert "..." in header_line
     assert len(header_line) < len(long_command)
+
+
+# --- respond tool --------------------------------------------------------
+
+
+async def test_respond_tool_terminates_the_run_with_the_final_message() -> None:
+    tool = create_respond_tool()
+
+    result = await tool.execute("test-call", {"message": "The tests are green."})
+
+    assert result.terminate is True
+    assert result.text == "The tests are green."
+
+
+async def test_respond_tool_requires_a_string_message() -> None:
+    tool = create_respond_tool()
+
+    with pytest.raises(ValueError, match="message must be a string"):
+        await tool.execute("test-call", {})
+
+
+@pytest.mark.parametrize("message", ["", "   "])
+async def test_respond_tool_rejects_an_empty_message(message: str) -> None:
+    tool = create_respond_tool()
+
+    with pytest.raises(ValueError, match="message must not be empty"):
+        await tool.execute("test-call", {"message": message})
 
 
 # --- image_processing (ported directly, no SKILL.state changes needed) ------

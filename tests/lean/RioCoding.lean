@@ -39,19 +39,19 @@ deriving DecidableEq, Repr
 def planProgress (plan : List PlanItem) : Nat × Nat :=
   ((plan.filter (fun item => item.status == .done)).length, plan.length)
 
-def planComplete (plan : List PlanItem) : Bool :=
+def canRespond (plan : List PlanItem) : Bool :=
   plan.all (fun item => item.status == .done || item.status == .blocked)
 
-theorem empty_plan_is_complete : planComplete [] = true := by rfl
+theorem empty_plan_can_respond : canRespond [] = true := by rfl
 
-theorem pending_plan_is_incomplete (rest : List PlanItem) :
-    planComplete ({ status := .pending } :: rest) = false := by
-  simp [planComplete]
+theorem pending_plan_blocks_respond (rest : List PlanItem) :
+    canRespond ({ status := .pending } :: rest) = false := by
+  simp [canRespond]
 
-theorem completed_and_blocked_plan_is_complete (items : List PlanItem)
+theorem completed_and_blocked_plan_can_respond (items : List PlanItem)
     (h : ∀ item ∈ items, item.status = .done ∨ item.status = .blocked) :
-    planComplete items = true := by
-  simp only [planComplete, List.all_eq_true]
+    canRespond items = true := by
+  simp only [canRespond, List.all_eq_true]
   intro item hi
   rcases h item hi with hd | hb
   · simp [hd]
@@ -59,38 +59,43 @@ theorem completed_and_blocked_plan_is_complete (items : List PlanItem)
 
 /- file_context.py: existing files require a matching recorded hash before a write. -/
 inductive FileAction where
-  | read | write | edit | bash
+  | read | write | edit | bash | respond
 deriving DecidableEq, Repr
 
 inductive Preflight where
-  | proceed | readFirst | reread
+  | proceed | readFirst | reread | finishPlan
 deriving DecidableEq, Repr
 
-def preflight (action : FileAction) (fileExists : Bool) (recorded actual : Option Nat) :
-    Preflight :=
-  if (action == .write || action == .edit) && fileExists then
+def preflight (action : FileAction) (fileExists : Bool) (recorded actual : Option Nat)
+    (plan : List PlanItem) : Preflight :=
+  if action == .respond && !canRespond plan then .finishPlan
+  else if (action == .write || action == .edit) && fileExists then
     match recorded, actual with
     | none, _ => .readFirst
     | some old, some current => if old == current then .proceed else .reread
     | some _, none => .reread
   else .proceed
 
-theorem write_existing_unread_requires_read (hash : Option Nat) :
-    preflight .write true none hash = .readFirst := by
+theorem write_existing_unread_requires_read (hash : Option Nat) (plan : List PlanItem) :
+    preflight .write true none hash plan = .readFirst := by
   simp [preflight]
 
-theorem edit_stale_requires_reread (old current : Nat)
+theorem edit_stale_requires_reread (old current : Nat) (plan : List PlanItem)
     (h : old ≠ current) :
-    preflight .edit true (some old) (some current) = .reread := by
+    preflight .edit true (some old) (some current) plan = .reread := by
   simp [preflight, h]
 
-theorem fresh_edit_proceeds (hash : Nat) :
-    preflight .edit true (some hash) (some hash) = .proceed := by
+theorem fresh_edit_proceeds (hash : Nat) (plan : List PlanItem) :
+    preflight .edit true (some hash) (some hash) plan = .proceed := by
   simp [preflight]
 
-theorem new_file_does_not_require_hash :
-    preflight .write false none none = .proceed := by
+theorem new_file_does_not_require_hash (plan : List PlanItem) :
+    preflight .write false none none plan = .proceed := by
   simp [preflight]
+
+theorem respond_with_pending_work_rejected (rest : List PlanItem) :
+    preflight .respond false none none ({ status := .pending } :: rest) = .finishPlan := by
+  simp [preflight, pending_plan_blocks_respond]
 
 inductive CacheResult where
   | full | metadataOnly | unchanged
@@ -113,7 +118,7 @@ theorem cache_never_exceeds_budget (fullSize metadataSize budget : Nat) :
   · exact fun _ => h
   · by_cases hm : metadataSize <= budget <;> simp [cacheResult, h, hm]
 
-/- tools.py: edit validation and final-step decisions. -/
+/- tools.py: edit validation and terminal response decisions. -/
 inductive EditError where
   | emptyOldText | notFound | duplicate | overlap | noChange
 deriving DecidableEq, Repr
@@ -139,23 +144,14 @@ inductive ToolOutcome where
   | observation | termination | rejected
 deriving DecidableEq, Repr
 
-def toolOutcome (guard : Preflight) (plan : List PlanItem)
-    (actionSucceeded assistantText : Bool) : ToolOutcome :=
+def toolOutcome (action : FileAction) (guard : Preflight) : ToolOutcome :=
   if guard != .proceed then .rejected
-  else if actionSucceeded && planComplete plan && assistantText then .termination else .observation
+  else if action == .respond then .termination else .observation
 
-theorem final_action_is_terminal_after_plan_complete (plan : List PlanItem)
-    (h : planComplete plan = true) :
-    toolOutcome (preflight .bash false none none) plan true true = .termination := by
+theorem respond_is_terminal_after_plan_complete (plan : List PlanItem)
+    (h : canRespond plan = true) :
+    toolOutcome .respond (preflight .respond false none none plan) = .termination := by
   simp [toolOutcome, preflight, h]
-
-theorem pending_plan_does_not_finish (rest : List PlanItem) :
-    toolOutcome .proceed ({ status := .pending } :: rest) true true = .observation := by
-  simp [toolOutcome, pending_plan_is_incomplete]
-
-theorem failed_final_action_does_not_finish (plan : List PlanItem) :
-    toolOutcome .proceed plan false true = .observation := by
-  simp [toolOutcome]
 
 /- session_store/tree.py: explicit leaf pointers and latest branch checkpoint. -/
 structure JournalEntry where

@@ -20,7 +20,7 @@ from conftest import step_response
 from rio.agent import apply_state_delta, run_skill_loop
 from rio.ai import FakeProvider
 from rio.coding.coding_skill import CodingSkillOptions, build_coding_skill
-from rio.coding.file_context import FileContext, plan_complete, short_hash
+from rio.coding.file_context import FileContext, short_hash
 from rio.coding.tools import ToolInputError, create_coding_tools
 
 CALC = '"""A tiny module."""\n\n\ndef add(a, b):\n    return a + b\n'
@@ -277,7 +277,7 @@ async def test_the_next_step_sees_the_file_in_its_state_not_only_in_the_observat
     provider = FakeProvider(
         [
             step_response(reasoning="", state_delta={}, action="read", args={"path": "calc.py"}),
-            step_response(reasoning="ok", state_delta={}, action="read", args={"path": "calc.py"}),
+            step_response(reasoning="", state_delta={}, action="respond", args={"message": "ok"}),
         ]
     )
 
@@ -334,10 +334,13 @@ async def test_an_edit_that_exceeds_the_cache_budget_drops_old_content(tmp_path)
     assert entry(state)["hash"] == short_hash((repo / "calc.py").read_bytes())
 
 
-# -- completion gate -----------------------------------------------------
+# -- respond gate --------------------------------------------------------
 
 
-async def test_plan_is_incomplete_while_an_item_is_unfinished() -> None:
+async def test_respond_is_rejected_while_a_plan_item_is_unfinished(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    tools = create_coding_tools(cwd=repo)
+    context = FileContext(cwd=repo)
     state = {
         "plan": [
             {"id": "a", "title": "Inspect repo", "status": "done"},
@@ -345,10 +348,16 @@ async def test_plan_is_incomplete_while_an_item_is_unfinished() -> None:
         ]
     }
 
-    assert not plan_complete(state)
+    _state, outcome = await act(context, state, tools, "respond", {"message": "All done."})
+
+    assert outcome.terminate is not True
+    assert "Update CHANGELOG" in outcome.text
 
 
-async def test_plan_is_complete_once_every_item_is_done_or_blocked() -> None:
+async def test_respond_succeeds_once_every_plan_item_is_done_or_blocked(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    tools = create_coding_tools(cwd=repo)
+    context = FileContext(cwd=repo)
     state = {
         "plan": [
             {"id": "a", "title": "Inspect repo", "status": "done"},
@@ -356,8 +365,18 @@ async def test_plan_is_complete_once_every_item_is_done_or_blocked() -> None:
         ]
     }
 
-    assert plan_complete(state)
+    _state, outcome = await act(context, state, tools, "respond", {"message": "All done."})
+
+    assert outcome.terminate is True
+    assert outcome.text == "All done."
 
 
-async def test_empty_plan_is_complete() -> None:
-    assert plan_complete({})
+async def test_respond_succeeds_with_no_plan(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    tools = create_coding_tools(cwd=repo)
+    context = FileContext(cwd=repo)
+
+    _state, outcome = await act(context, {}, tools, "respond", {"message": "Sure, it's 4."})
+
+    assert outcome.terminate is True
+    assert outcome.text == "Sure, it's 4."
