@@ -86,6 +86,98 @@ def test_plain_renderer_renders_step_lifecycle(capsys: pytest.CaptureFixture[str
     assert renderer.finish() is True
 
 
+def test_plain_renderer_read_shows_path_and_line_range_not_content(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    renderer = PlainEventRenderer()
+
+    renderer.render(ActionStartEvent(step=1, name="read", arguments={"path": "a.py"}))
+    renderer.render(
+        ActionEndEvent(
+            step=1,
+            name="read",
+            result=AgentToolResult(
+                content="read a.py (lines 1-3 of 3)\n\ndef add(a, b):\n    return a + b",
+                details={"path": "a.py", "start_line": 1, "end_line": 3},
+            ),
+            is_error=False,
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert "read a.py:1:3" in out
+    assert "def add" not in out
+    assert "{" not in out
+
+
+def test_plain_renderer_write_shows_path_only(capsys: pytest.CaptureFixture[str]) -> None:
+    renderer = PlainEventRenderer()
+
+    renderer.render(
+        ActionStartEvent(step=1, name="write", arguments={"path": "a.py", "content": "x"})
+    )
+    renderer.render(
+        ActionEndEvent(
+            step=1,
+            name="write",
+            result=AgentToolResult(
+                content="write a.py (1 characters)\n\nSuccessfully wrote to a.py.",
+                details={"path": "a.py", "characters": 1},
+            ),
+            is_error=False,
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert out.strip().endswith("write a.py")
+    assert "Successfully wrote" not in out
+
+
+def test_plain_renderer_edit_shows_diff_not_success_message(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    renderer = PlainEventRenderer()
+    patch = "--- a.py\n+++ a.py\n@@ -1,2 +1,2 @@\n-def add(a, b):\n+def add(a, b):  # sum\n"
+
+    renderer.render(ActionStartEvent(step=1, name="edit", arguments={"path": "a.py", "edits": []}))
+    renderer.render(
+        ActionEndEvent(
+            step=1,
+            name="edit",
+            result=AgentToolResult(
+                content="edit a.py (1 edit(s))\n\nSuccessfully replaced 1 block(s) in a.py.",
+                details={"path": "a.py", "edits": 1, "diff": "...", "patch": patch},
+            ),
+            is_error=False,
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert "edit a.py" in out
+    assert "+def add(a, b):  # sum" in out
+    assert "Successfully replaced" not in out
+
+
+def test_plain_renderer_file_tool_failure_shows_arguments_and_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    renderer = PlainEventRenderer()
+
+    renderer.render(ActionStartEvent(step=1, name="read", arguments={"path": "missing.py"}))
+    renderer.render(
+        ActionEndEvent(
+            step=1,
+            name="read",
+            result=AgentToolResult(content="read failed: File not found: missing.py"),
+            is_error=True,
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert '"path":"missing.py"' in out
+    assert "File not found: missing.py" in out
+
+
 def test_plain_renderer_renders_validation_error_as_retry(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

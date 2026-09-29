@@ -15,6 +15,29 @@ do not obscure which tool produced the output. All content is literal text, incl
 • The tests passed.
 ```
 
+`read`, `write`, and `edit` are special-cased: their arguments are not shown
+up front, and a successful call collapses to a single line instead of the
+`Running <args>` / `└ <result>` pair. A read shows the path and the 1-indexed
+line range it read, never the file content; a write shows only the path; an
+edit shows its unified diff instead of a "Successfully replaced N block(s)"
+message, since the diff already says what changed. Arguments and the raw
+result text are only printed when the call fails, so the path or edit that
+caused the failure is still there to read.
+
+```text
+• read src/calc.py:1:40
+
+• edit src/calc.py
+  --- src/calc.py
+  +++ src/calc.py
+  @@ -10,3 +10,3 @@
+  -    return a - b
+  +    return a + b
+
+• read {"path":"missing.py"}
+  └ read: read failed: File not found: missing.py
+```
+
 The separate status row below the history (never stored in `entries`):
 
 ```text
