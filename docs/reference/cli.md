@@ -24,7 +24,7 @@ text; otherwise the positional arguments are joined into the task.
 | `--provider NAME` | Provider to use. |
 | `-m`, `--model MODEL` | Model to use. |
 | `--cwd PATH` | Project directory. |
-| `--tools NAMES` | Comma-separated tools to expose. Defaults to `read,write,edit,bash`; supports any subset of those tools. |
+| `--tools NAMES` | Comma-separated tools to expose. Defaults to `read,write,edit,bash,respond`; supports any subset of those tools. |
 | `-t`, `--thinking LEVEL` | Reasoning-effort level. |
 | `-e`, `--extension PATH` | Load an extension path. Repeatable. |
 | `-a`, `--approve` | Trust project resources. |
@@ -35,4 +35,6 @@ text; otherwise the positional arguments are joined into the task.
 `human` prints a compact transcript and session ID. `json` emits one JSON
 event per line and is intended for programmatic consumers.
 
-Use `--tools=read,bash` to expose only the read and shell tools.
+Use `--tools=read,bash,respond` to expose only the read and shell tools.
+`respond` is how a run reports its answer and ends; excluding it leaves the
+run with no way to finish on its own.

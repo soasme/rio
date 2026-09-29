@@ -770,7 +770,6 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
                         "choices": [
                             {
                                 "delta": {
-                                    "content": "hello",
                                     "tool_calls": [
                                         {
                                             "index": 0,
@@ -782,14 +781,14 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
                                                     {
                                                         "state_delta": {"goal": "say hello"},
                                                         "action": {
-                                                            "name": "bash",
-                                                            "arguments": {"command": "true"},
+                                                            "name": "respond",
+                                                            "arguments": {"message": "hello"},
                                                         },
                                                     }
                                                 ),
                                             },
                                         }
-                                    ],
+                                    ]
                                 },
                                 "finish_reason": "tool_calls",
                             }
@@ -815,7 +814,7 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
         cwd=project,
         provider_name="llama.cpp",
         trust_override="untrusted",
-        exposed_tools=("bash",),
+        exposed_tools=("bash", "respond"),
     )
     assert ok is True
     assert "hello" in capsys.readouterr().out

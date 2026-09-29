@@ -27,7 +27,7 @@ def test_thinking_flag_reaches_thinking_level_param(monkeypatch: pytest.MonkeyPa
         trust_override: object | None = None,
         resume: str | None = None,
         output_mode: object | None = None,
-        exposed_tools: tuple[str, ...] = ("read", "write", "edit", "bash"),
+        exposed_tools: tuple[str, ...] = ("read", "write", "edit", "bash", "respond"),
     ) -> tuple[bool, str]:
         captured["thinking_level"] = thinking_level
         captured["extension_paths"] = extension_paths
@@ -43,7 +43,7 @@ def test_thinking_flag_reaches_thinking_level_param(monkeypatch: pytest.MonkeyPa
     assert captured["extension_paths"] == ()
     assert captured["trust_override"] == "approve"
     assert captured["output_mode"] == "human"
-    assert captured["exposed_tools"] == ("read", "write", "edit", "bash")
+    assert captured["exposed_tools"] == ("read", "write", "edit", "bash", "respond")
 
 
 def test_json_output_reaches_session_runner(monkeypatch: pytest.MonkeyPatch) -> None:

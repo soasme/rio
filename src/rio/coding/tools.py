@@ -12,6 +12,10 @@ step, because there is no message transcript to replay. Every tool below
 therefore prefixes its returned text with a compact header naming the action
 and its key argument (for example `read /path/to/file.py (lines 1-120 of
 400)`), so the observation is self-describing on its own.
+
+This module also defines `respond`, the terminal action a SKILL.state coding
+run uses to end a turn: it sets `AgentToolResult.terminate=True` instead of
+returning control for another step.
 """
 
 from __future__ import annotations
@@ -197,16 +201,21 @@ def create_coding_tools(
     cwd: str | Path | None = None,
     shell_command_prefix: str | None = None,
     image_support: ImageSupportState | None = None,
+    include_respond: bool = True,
 ) -> list[AgentTool]:
     """Create the default coding-tool set for a local project.
 
-    The returned tools are ordered as `read`, `write`, `edit`, and `bash`. Relative paths
+    The returned tools are ordered as `read`, `write`, `edit`, and `bash`,
+    followed by `respond` unless `include_respond` is `False`. Relative paths
     used with those tools are resolved against `cwd`; when `cwd` is omitted,
     the process current working directory at factory-call time is used. The
     tools share per-path write/edit locks within this process so concurrent
     mutations of the same file do not interleave. When configured,
     `shell_command_prefix` is prepended to every bash tool command.
 
+    `respond` is the SKILL.state coding skill's terminal action: it sets
+    `AgentToolResult.terminate=True` and ends the run with a final message
+    instead of producing another observation.
     """
     root = Path.cwd() if cwd is None else Path(cwd)
     tools = [
@@ -215,6 +224,8 @@ def create_coding_tools(
         create_edit_tool(cwd=root),
         create_bash_tool(cwd=root, shell_command_prefix=shell_command_prefix),
     ]
+    if include_respond:
+        tools.append(create_respond_tool())
     return tools
 
 
@@ -848,6 +859,46 @@ def create_bash_tool(
         cwd=cwd,
         shell_command_prefix=shell_command_prefix,
     ).to_agent_tool()
+
+
+def create_respond_tool() -> AgentTool:
+    """Create the `respond` action that ends a SKILL.state coding run.
+
+    Under SKILL.state there is no "assistant produced text with no tool
+    calls" stop condition -- every step is exactly one action. `respond` is
+    how a coding run ends a turn: its result sets
+    `AgentToolResult.terminate=True`, and its text is the final answer shown
+    to the user.
+    """
+
+    async def execute(
+        tool_call_id: str,
+        arguments: Mapping[str, JSONValue],
+        signal: ToolCancellationToken | None = None,
+        on_update: ToolUpdateCallback | None = None,
+    ) -> AgentToolResult:
+        del tool_call_id, signal, on_update
+        message = _str_arg(arguments, "message")
+        if not message.strip():
+            raise ToolInputError("message must not be empty")
+        return AgentToolResult(content=[TextContent(text=message)], terminate=True)
+
+    return AgentTool(
+        name="respond",
+        label="respond",
+        description="Send the final response to the user and end the run.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The final response to show the user.",
+                }
+            },
+            "required": ["message"],
+        },
+        execute_fn=execute,
+    )
 
 
 def _prefixed_shell_command(command: str, prefix: str | None) -> str:

@@ -729,7 +729,7 @@ def test_default_prompt_includes_step_protocol_section() -> None:
     assert "RFC 7396 JSON Merge Patch" in prompt
     assert "reasoning" in prompt
     assert "discarded" in prompt
-    assert "final answer as assistant text" in prompt
+    assert "`respond`" in prompt
 
 
 def test_default_prompt_includes_state_field_docs_section() -> None:

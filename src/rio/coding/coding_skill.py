@@ -19,7 +19,7 @@ from pathlib import Path
 from rio.agent import HarnessSpec
 from rio.ai.tools import AgentTool
 from rio.ai.types import JSONObject, JSONValue
-from rio.coding.file_context import FileContext, plan_complete
+from rio.coding.file_context import FileContext
 from rio.coding.step_footprint import CHARS_PER_TOKEN, DEFAULT_CONTEXT_WINDOW_TOKENS
 
 #: The coding skill's declared state schema, in the order it is documented to
@@ -41,6 +41,8 @@ CODING_STATE_FIELDS: tuple[str, ...] = (
 #: that lives in the transcript has to be restated every turn, whereas one that
 #: lives in the state is simply there.
 PLAN_STATUSES: tuple[str, ...] = ("pending", "in_progress", "done", "blocked")
+
+RESPOND_ACTION = "respond"
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +99,6 @@ def build_coding_skill(options: CodingSkillOptions) -> HarnessSpec:
         actions=tuple(options.tools),
         state_budget_chars=budget,
         execute_action=FileContext(cwd=Path(options.cwd), state_budget_chars=budget).execute,
-        is_complete=plan_complete,
     )
 
 
