@@ -117,6 +117,19 @@ async def test_markdown_only_patches_run_nothing():
 
 
 @pytest.mark.asyncio
+async def test_a_blank_reply_does_not_end_the_run():
+    provider = FakeProvider(
+        [step_response(patch=[add_markdown("a note")], reply=" "), step_response(reply="ok")]
+    )
+
+    events = await _run(provider, observation="task")
+
+    run_end = events[-1]
+    assert (run_end.steps, run_end.reply) == (2, "ok")
+    assert [c["source"] for c in run_end.notebook["cells"][1:]] == ["a note", "ok"]
+
+
+@pytest.mark.asyncio
 async def test_a_reply_ends_the_run_and_is_kept_as_a_cell():
     provider = FakeProvider([step_response(reply="all done")])
 

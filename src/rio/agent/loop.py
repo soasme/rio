@@ -5,8 +5,8 @@ runnable notebook rather than a transcript. Each step the model sees the whole
 notebook and replies with one `skill_step` call carrying a JSON Patch. The
 runtime applies it, rejects it through the retry path if the result is not a
 valid notebook or outgrows the limit, then runs the changed code cells. The
-notebook with their outputs is the next step's context. A step that sets
-`reply` ends the run.
+notebook with their outputs is the next step's context. A step that sets a
+non-blank `reply` ends the run.
 
 Validity is the runtime's job; strategy is the model's. The runtime never
 summarizes or drops cells. It only caps each new output's size.
@@ -132,7 +132,8 @@ async def run_notebook_loop(
         notebook = patched
 
         reply = call.arguments.get("reply")  # type: ignore[assignment]
-        if not isinstance(reply, str):
+        if not isinstance(reply, str) or not reply.strip():
+            # A blank reply is no answer; ending on it would stop the run silently.
             reply = None
         if reply is not None:
             notebook = append_cell(notebook, markdown_cell(reply, role="assistant"))

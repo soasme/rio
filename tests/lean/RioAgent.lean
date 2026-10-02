@@ -244,6 +244,15 @@ def commit (kernel : Kernel) (notebook patched : Notebook) (reply : Option Strin
   { notebook := merge notebook kernel patched ++ (reply.map replyCell).toList,
     ran := changed notebook patched, reply := reply }
 
+def blank (text : String) : Bool := text.toList.all Char.isWhitespace
+
+/-- A blank reply is no answer. -/
+def answer (reply : Option String) : Option String := reply.filter (!blank ·)
+
+theorem answer_keeps_text (text : String) (h : blank text = false) :
+    answer (some text) = some text := by
+  simp [answer, Option.filter, h]
+
 inductive AttemptResult where
   | retry (error : ReplyError)
   | providerError
@@ -256,7 +265,8 @@ def runAttempt (limit : Nat) (kernel : Kernel) (notebook : Notebook) :
   | .malformedArguments => .retry .malformedArguments
   | .step none _ => .retry .invalidPatch
   | .step (some patched) reply =>
-      if accepts limit notebook patched then .committed (commit kernel notebook patched reply)
+      if accepts limit notebook patched then
+        .committed (commit kernel notebook patched (answer reply))
       else .retry .overLimit
 
 theorem invalid_patches_are_retried (limit : Nat) (kernel : Kernel)
@@ -270,11 +280,19 @@ theorem oversized_patches_are_retried (limit : Nat) (kernel : Kernel)
   simp [runAttempt, h]
 
 theorem a_reply_is_kept_as_the_last_cell (limit : Nat) (kernel : Kernel)
-    (notebook patched : Notebook) (text : String) (h : accepts limit notebook patched = true) :
+    (notebook patched : Notebook) (text : String) (h : accepts limit notebook patched = true)
+    (hText : blank text = false) :
     runAttempt limit kernel notebook (.step (some patched) (some text)) =
       .committed { notebook := merge notebook kernel patched ++ [replyCell text],
                    ran := changed notebook patched, reply := some text } := by
-  simp [runAttempt, commit, h]
+  simp [runAttempt, commit, answer_keeps_text text hText, h]
+
+theorem a_blank_reply_is_no_reply (limit : Nat) (kernel : Kernel)
+    (notebook patched : Notebook) (h : accepts limit notebook patched = true) :
+    runAttempt limit kernel notebook (.step (some patched) (some "")) =
+      .committed { notebook := merge notebook kernel patched,
+                   ran := changed notebook patched, reply := none } := by
+  simp [runAttempt, commit, answer, blank, h]
 
 inductive StepStop where
   | committed (result : StepResult)
@@ -371,9 +389,10 @@ theorem step_limit_prevents_model_calls (limit retries : Nat) (kernel : Kernel)
     runLoop limit retries kernel 0 notebook cancelled responses =
       { notebook, steps := 0, stop := .stepLimit } := rfl
 
-theorem a_reply_ends_the_run (limit retries : Nat) (kernel : Kernel) (text : String) :
+theorem a_reply_ends_the_run (limit retries : Nat) (kernel : Kernel) (text : String)
+    (hText : blank text = false) :
     runLoop limit retries kernel 1 [] [] [[.step (some []) (some text)]] =
       { notebook := [replyCell text], steps := 1, stop := .replied } := by
-  cases retries <;> rfl
+  cases retries <;> simp [runLoop, runStep, runAttempt, commit, answer_keeps_text text hText, accepts, merge, changed, size]
 
 end RioAgent
