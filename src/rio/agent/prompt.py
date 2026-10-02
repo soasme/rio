@@ -53,7 +53,10 @@ def skill_step_tool() -> AgentTool:
             },
             "reply": {
                 "type": "string",
-                "description": "Your answer to the user. Setting it ends the run.",
+                "description": (
+                    "Your answer to the user. A non-blank reply ends the run; omit it to "
+                    "keep working."
+                ),
             },
         },
         "required": ["patch"],
