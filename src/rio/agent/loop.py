@@ -38,6 +38,7 @@ from rio.agent.notebook import (
     markdown_cell,
     new_notebook,
     notebook_tokens,
+    with_kernel,
 )
 from rio.agent.prompt import STEP_TOOL_NAME, build_messages, notebook_protocol, skill_step_tool
 from rio.agent.skill import HarnessSpec
@@ -88,6 +89,8 @@ async def run_notebook_loop(
     while max_steps is None or step < max_steps:
         if signal is not None and signal.is_cancelled():
             break
+        executor = skill.executor
+        notebook = with_kernel(notebook, executor.kernel_id, running=executor.is_running)
         yield StepStartEvent(step=step, notebook=notebook)
 
         error_note: str | None = None

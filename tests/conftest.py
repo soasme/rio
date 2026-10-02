@@ -5,6 +5,7 @@ import io
 import itertools
 
 from rio.agent import HarnessSpec, Notebook
+from rio.agent.notebook import with_kernel
 from rio.ai import AssistantDoneEvent, AssistantMessage, TextContent, ToolCall
 from rio.ai.types import JSONObject
 
@@ -34,33 +35,42 @@ def step_response(*, reasoning: str = "", patch: list | None = None, reply: str 
     return [AssistantDoneEvent(reason="toolUse", message=message)]
 
 
-async def fake_executor(notebook: Notebook, changed: list[int]) -> Notebook:
-    """Run changed code cells in-process with `exec`, replaying earlier cells first."""
-    namespace: dict = {}
-    for index, cell in enumerate(notebook["cells"][: max(changed, default=-1) + 1]):
-        if cell["cell_type"] != "code":
-            continue
-        stdout = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(stdout):
-                exec(cell["source"], namespace)
-            outputs = [{"output_type": "stream", "name": "stdout", "text": stdout.getvalue()}]
-        except Exception as exc:
-            outputs = [
-                {
-                    "output_type": "error",
-                    "ename": type(exc).__name__,
-                    "evalue": str(exc),
-                    "traceback": [],
-                }
-            ]
-        if index in changed:
+class FakeExecutor:
+    """Run changed code cells in-process with `exec`, in one namespace per "kernel"."""
+
+    def __init__(self) -> None:
+        self.kernel_id = "k1"
+        self.is_running = False
+        self.namespace: dict = {}
+
+    def restart(self, kernel_id: str) -> None:
+        self.kernel_id, self.is_running, self.namespace = kernel_id, False, {}
+
+    async def __call__(self, notebook: Notebook, changed: list[int]) -> Notebook:
+        self.is_running = True
+        for index in changed:
+            cell = notebook["cells"][index]
+            stdout = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(stdout):
+                    exec(cell["source"], self.namespace)
+                outputs = [{"output_type": "stream", "name": "stdout", "text": stdout.getvalue()}]
+            except Exception as exc:
+                outputs = [
+                    {
+                        "output_type": "error",
+                        "ename": type(exc).__name__,
+                        "evalue": str(exc),
+                        "traceback": [],
+                    }
+                ]
             cell["outputs"] = outputs
             cell["execution_count"] = index + 1
-    return notebook
+            cell["metadata"].setdefault("rio", {})["kernel"] = self.kernel_id
+        return with_kernel(notebook, self.kernel_id, running=True)
 
 
 def make_skill(**overrides) -> HarnessSpec:
-    defaults = dict(name="demo", instructions="You are the demo skill.", executor=fake_executor)
+    defaults = dict(name="demo", instructions="You are the demo skill.", executor=FakeExecutor())
     defaults.update(overrides)
     return HarnessSpec(**defaults)

@@ -6,6 +6,7 @@ import pytest
 
 from conftest import add_code, add_markdown
 from rio.agent import KernelExecutor, NotebookError, apply_patch, changed_cells, new_notebook
+from rio.agent.notebook import stale_cells, with_kernel
 
 
 def test_added_cells_get_ids_metadata_and_outputs():
@@ -67,6 +68,28 @@ def test_changed_cells_are_new_or_edited_code_cells():
     assert changed_cells(before, after) == [1, 4]
 
 
+def _stamped(*kernels: str | None) -> dict:
+    notebook = apply_patch(new_notebook(), [add_code(f"c{i}") for i in range(len(kernels))])
+    for cell, kernel in zip(notebook["cells"], kernels, strict=True):
+        if kernel:
+            cell["metadata"] = {"rio": {"kernel": kernel}}
+    return notebook
+
+
+def test_removing_a_kernel_stamp_runs_the_cell_again():
+    before = _stamped("k1", "k1")
+    after = apply_patch(before, [{"op": "remove", "path": "/cells/1/metadata/rio/kernel"}])
+
+    assert changed_cells(before, after) == [1]
+
+
+def test_stale_cells_ran_in_another_kernel():
+    notebook = with_kernel(_stamped("k1", "k2", None), "k2", running=False)
+
+    assert notebook["metadata"]["rio"]["kernel"] == {"id": "k2", "running": False}
+    assert stale_cells(notebook) == [0]
+
+
 @pytest.fixture
 async def kernel(tmp_path):
     executor = KernelExecutor(tmp_path)
@@ -97,6 +120,8 @@ async def test_a_failing_cell_stops_the_changed_cells_after_it(kernel):
     result = await kernel(notebook, [0, 1])
 
     assert result["cells"][0]["outputs"][0]["ename"] == "ZeroDivisionError"
+    assert result["cells"][0]["metadata"] == {"rio": {"kernel": kernel.kernel_id}}
+    assert result["cells"][1]["metadata"] == {}
     assert "\x1b[" not in "".join(result["cells"][0]["outputs"][0]["traceback"])
     assert result["cells"][1]["outputs"] == []
 
@@ -104,13 +129,17 @@ async def test_a_failing_cell_stops_the_changed_cells_after_it(kernel):
 @pytest.mark.asyncio
 async def test_shutdown_starts_the_next_run_with_an_empty_kernel(kernel):
     notebook = apply_patch(new_notebook(), [add_code("y = 1")])
-    await kernel(notebook, [0])
+    notebook = await kernel(notebook, [0])
+    old_id = kernel.kernel_id
     await kernel.shutdown()
     check = apply_patch(notebook, [add_code("print('y' in globals())")])
 
     result = await kernel(check, [1])
 
     assert _text(result["cells"][1]) == "False\n"
+    assert kernel.kernel_id != old_id
+    assert result["metadata"]["rio"]["kernel"] == {"id": kernel.kernel_id, "running": True}
+    assert stale_cells(result) == [0]
 
 
 @pytest.mark.asyncio

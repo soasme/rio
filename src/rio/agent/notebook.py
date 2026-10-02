@@ -16,8 +16,8 @@ import json
 import re
 import tempfile
 import uuid
-from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Protocol
 
 import jsonpatch
 import nbformat
@@ -26,7 +26,23 @@ from nbclient import NotebookClient
 from rio.ai.types import JSONObject, JSONValue
 
 type Notebook = JSONObject
-type NotebookExecutor = Callable[[Notebook, list[int]], Awaitable[Notebook]]
+
+
+class NotebookExecutor(Protocol):
+    """Runs changed cells in a kernel identified by `kernel_id`.
+
+    Each cell that runs is stamped with the id. A new kernel gets a new id, so
+    a cell stamped with another id ran in a kernel whose state is gone.
+    """
+
+    @property
+    def kernel_id(self) -> str: ...
+
+    @property
+    def is_running(self) -> bool: ...
+
+    async def __call__(self, notebook: Notebook, changed: list[int]) -> Notebook: ...
+
 
 CHARS_PER_TOKEN = 4
 #: The largest text a single output keeps; the rest is cut with a note.
@@ -102,13 +118,60 @@ def diff(before: Notebook, after: Notebook) -> list[JSONObject]:
 
 
 def changed_cells(before: Notebook, after: Notebook) -> list[int]:
-    """Return the indices of code cells in `after` that are new or whose source changed."""
-    sources = {cell["id"]: cell["source"] for cell in before["cells"]}  # type: ignore[union-attr]
+    """Return the indices of code cells in `after` to run.
+
+    A code cell runs when it is new, its source changed, or the patch removed
+    its kernel stamp -- the way to run a cell again without editing it.
+    """
+    earlier = {cell["id"]: cell for cell in before["cells"]}  # type: ignore[union-attr]
+    result = []
+    for index, cell in enumerate(after["cells"]):  # type: ignore[arg-type]
+        old = earlier.get(cell["id"])
+        if cell["cell_type"] != "code":
+            continue
+        unstamped = cell_kernel(old) is not None and cell_kernel(cell) is None if old else False
+        if old is None or old["source"] != cell["source"] or unstamped:
+            result.append(index)
+    return result
+
+
+def cell_kernel(cell: JSONObject) -> str | None:
+    """Return the id of the kernel that last ran `cell`, or None."""
+    kernel = cell.get("metadata", {}).get("rio", {}).get("kernel")  # type: ignore[union-attr]
+    return kernel if isinstance(kernel, str) else None
+
+
+def stale_cells(notebook: Notebook) -> list[int]:
+    """Return code cells that ran in a kernel other than the notebook's current one.
+
+    Their variables, open files, and subprocesses may no longer exist.
+    """
+    current = notebook["metadata"].get("rio", {}).get("kernel", {}).get("id")  # type: ignore[union-attr]
     return [
         index
-        for index, cell in enumerate(after["cells"])  # type: ignore[arg-type]
-        if cell["cell_type"] == "code" and sources.get(cell["id"]) != cell["source"]
+        for index, cell in enumerate(notebook["cells"])  # type: ignore[arg-type]
+        if cell["cell_type"] == "code" and cell_kernel(cell) not in (None, current)
     ]
+
+
+def with_kernel(notebook: Notebook, kernel_id: str, *, running: bool) -> Notebook:
+    """Record the current kernel in the notebook's metadata."""
+    status = {"id": kernel_id, "running": running}
+    if notebook["metadata"].get("rio", {}).get("kernel") == status:  # type: ignore[union-attr]
+        return notebook
+    result = copy.deepcopy(notebook)
+    result["metadata"].setdefault("rio", {})["kernel"] = status  # type: ignore[union-attr]
+    return result
+
+
+def _stamp(cell: dict, kernel_id: str | None) -> None:
+    rio = cell["metadata"].setdefault("rio", {})
+    if kernel_id is None:
+        rio.pop("kernel", None)
+        if not rio:
+            del cell["metadata"]["rio"]
+    else:
+        rio["kernel"] = kernel_id
 
 
 def render_notebook(notebook: Notebook) -> str:
@@ -151,6 +214,7 @@ class KernelExecutor:
         self.output_chars = output_chars
         self._client: NotebookClient | None = None
         self._sockets: tempfile.TemporaryDirectory | None = None
+        self._kernel_id = _new_id()
 
     async def __call__(self, notebook: Notebook, changed: list[int]) -> Notebook:
         result = copy.deepcopy(notebook)
@@ -162,21 +226,29 @@ class KernelExecutor:
             cell = result["cells"][index]  # type: ignore[index]
             if failed:
                 cell["outputs"], cell["execution_count"] = [], None
+                _stamp(cell, None)
                 continue
             node = await _execute(client, cell)
             outputs = [_clean_output(dict(item), self.output_chars) for item in node.outputs]
             cell["outputs"] = outputs
             cell["execution_count"] = node.get("execution_count")
+            _stamp(cell, self._kernel_id)
             failed = any(item["output_type"] == "error" for item in cell["outputs"])
-        return result
+        return with_kernel(result, self._kernel_id, running=True)
+
+    @property
+    def kernel_id(self) -> str:
+        """The id of the live kernel, or of the one the next call starts."""
+        return self._kernel_id
 
     @property
     def is_running(self) -> bool:
         return self._client is not None
 
     async def shutdown(self) -> None:
-        """Stop the kernel. The next call starts a fresh one with no variables."""
+        """Stop the kernel. The next call starts a fresh one, with a new id and no variables."""
         client, self._client = self._client, None
+        self._kernel_id = _new_id()
         if client is not None:
             client.kc.stop_channels()
             await client.km.shutdown_kernel(now=True)

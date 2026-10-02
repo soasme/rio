@@ -44,6 +44,16 @@ unless its source changes. A resume, rewind, or new session starts an empty
 kernel. Only the cells that ran get new outputs; every other cell keeps its own.
 Outputs lose terminal colors and binary data, and long text is cut.
 
+The notebook records the kernel. `metadata.rio.kernel` holds the current
+kernel's `id` and whether it is `running`, and each code cell that ran has
+`metadata.rio.kernel` set to the id of the kernel that ran it. A new kernel gets
+a new id, so after a resume, rewind, or new session every cell that ran before
+is stale: its variables, open files, and subprocesses may be gone. Each request
+lists the stale cells, and the model re-runs the ones later work depends on
+before doing anything else. Removing a cell's stamp
+(`{"op": "remove", "path": "/cells/3/metadata/rio/kernel"}`) runs it again
+without editing it.
+
 Cells are Python run by IPython: `!cmd` and `%%bash` run shell commands, plain
 Python reads and writes files, and the `%%edit PATH` cell magic
 (`rio.coding.edit_magic`) applies SEARCH/REPLACE blocks with the `edit` tool's

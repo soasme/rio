@@ -101,3 +101,12 @@ async def test_the_agent_fixes_the_file_and_the_journal_rebuilds_the_notebook(tm
     assert reopened.notebook == session.notebook
     assert reopened.provider.calls == []
     assert not reopened.kernel.is_running
+
+    # The resumed kernel is new, so every cell that ran is reported stale.
+    followup = FakeProvider([step_response(reply="noted")])
+    resumed = await CodingSession.load(_config(tmp_path, repo, followup))
+    async for _event in resumed.prompt("add a test"):
+        pass
+    request = followup.calls[0][2][0].text
+    assert "[stale cells [1, 2, 3, 4]" in request
+    assert resumed.kernel.kernel_id in request

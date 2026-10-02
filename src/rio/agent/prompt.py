@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from rio.agent.notebook import Notebook, notebook_tokens, render_notebook
+from rio.agent.notebook import Notebook, notebook_tokens, render_notebook, stale_cells
 from rio.ai.messages import AgentMessage, UserMessage
 from rio.ai.tools import AgentTool, AgentToolResult, ToolCancellationToken, ToolUpdateCallback
 from rio.ai.types import JSONObject, JSONValue
@@ -79,8 +79,14 @@ def notebook_protocol(limit_tokens: int) -> str:
         "outputs appear in the notebook. A cell that fails stops the ones after it. Other "
         "cells keep their outputs and never run again.\n"
         "- All cells share one live kernel, so variables build up across steps. Editing a "
-        "cell's source runs it again; editing only its outputs does not. After a resume or "
-        "rewind the kernel starts empty.\n"
+        "cell's source runs it again; editing only its outputs does not.\n"
+        "- `metadata.rio.kernel` holds the current kernel's `id` and whether it is `running`. "
+        "Each code cell that ran has `metadata.rio.kernel` set to the id of the kernel that "
+        "ran it. After a resume, rewind, or new session the kernel is new and empty: a cell "
+        "stamped with another id is stale, and the variables, open files, and subprocesses "
+        "it created may be gone. Each request lists stale cells. Before any other action, "
+        "run again the stale cells that later work depends on, by removing their stamp "
+        '(`{"op": "remove", "path": "/cells/<i>/metadata/rio/kernel"}`), or replace them.\n'
         "- A new cell needs only `cell_type` and `source`, e.g. "
         '`{"op": "add", "path": "/cells/-", "value": {"cell_type": "code", "source": "..."}}`.\n'
         "- Markdown cells are notes. Cells with `metadata.rio.role` are user messages and "
@@ -100,6 +106,12 @@ def build_messages(
         f"```json\n{render_notebook(notebook)}\n```\n"
         f"[notebook: ~{notebook_tokens(notebook)}/{limit_tokens} tokens]"
     )
+    stale = stale_cells(notebook)
+    if stale:
+        text += (
+            f"\n[stale cells {stale}: they ran in an older kernel. Run again the ones "
+            "later work depends on before anything else.]"
+        )
     if error_note:
         text += f"\n\nRejected reply: {error_note}\nRetry with a corrected reply."
     return [UserMessage(content=text)]

@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from conftest import add_code, add_markdown, make_skill, step_response
+from conftest import FakeExecutor, add_code, add_markdown, make_skill, step_response
 from rio.agent import (
     ExecutionEvent,
     PatchEvent,
@@ -211,12 +211,13 @@ async def test_a_provider_error_is_raised_instead_of_retried():
 
 @pytest.mark.asyncio
 async def test_a_failing_executor_becomes_an_output_instead_of_crashing():
-    async def broken(notebook, changed):
-        raise RuntimeError("no kernel")
+    class Broken(FakeExecutor):
+        async def __call__(self, notebook, changed):
+            raise RuntimeError("no kernel")
 
     provider = FakeProvider([step_response(patch=[add_code("1")]), step_response(reply="ok")])
 
-    await _run(provider, skill=make_skill(executor=broken), observation="start")
+    await _run(provider, skill=make_skill(executor=Broken()), observation="start")
 
     output = _request_notebook(provider, 1)["cells"][1]["outputs"][0]
     assert (output["ename"], output["evalue"]) == ("RuntimeError", "no kernel")
@@ -247,3 +248,38 @@ async def test_max_steps_stops_a_run_without_a_reply():
     events = await _run(provider, observation="start", max_steps=1)
 
     assert (events[-1].steps, events[-1].reply) == (1, None)
+
+
+@pytest.mark.asyncio
+async def test_the_notebook_records_the_kernel_and_stamps_cells_that_ran():
+    provider = FakeProvider([step_response(patch=[add_code("x = 1")]), step_response(reply="ok")])
+
+    await _run(provider, observation="task")
+
+    first, second = _request_notebook(provider, 0), _request_notebook(provider, 1)
+    assert first["metadata"]["rio"]["kernel"] == {"id": "k1", "running": False}
+    assert second["metadata"]["rio"]["kernel"] == {"id": "k1", "running": True}
+    assert second["cells"][1]["metadata"] == {"rio": {"kernel": "k1"}}
+
+
+@pytest.mark.asyncio
+async def test_cells_from_an_older_kernel_are_listed_and_rerun_by_removing_the_stamp():
+    executor = FakeExecutor()
+    skill = make_skill(executor=executor)
+    provider = FakeProvider([step_response(patch=[add_code("x = 41")], reply="set")])
+    events = await _run(provider, skill=skill, observation="task")
+    executor.restart("k2")
+
+    unstamp = {"op": "remove", "path": "/cells/1/metadata/rio/kernel"}
+    provider = FakeProvider(
+        [
+            step_response(patch=[unstamp]),
+            step_response(patch=[add_code("print(x + 1)")], reply="ok"),
+        ]
+    )
+    events = await _run(provider, skill=skill, notebook=events[-1].notebook, observation="more")
+
+    assert "[stale cells [1]" in provider.calls[0][2][0].text
+    assert next(e for e in events if isinstance(e, PatchEvent)).cells == [1]
+    assert "stale cells" not in provider.calls[1][2][0].text
+    assert events[-1].notebook["cells"][4]["outputs"][0]["text"] == "42\n"

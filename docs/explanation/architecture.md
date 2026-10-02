@@ -24,6 +24,16 @@ build up across steps. Rio's own executor (`KernelExecutor`, built on nbclient)
 keeps that kernel alive; it talks to it over local sockets. A resume, rewind,
 or new session starts an empty kernel.
 
+The notebook records the kernel. `metadata.rio.kernel` holds the current
+kernel's `id` and whether it is `running`, and each code cell that ran has
+`metadata.rio.kernel` set to the id of the kernel that ran it. A new kernel gets
+a new id, so after a resume, rewind, or new session every cell that ran before
+is stale: its variables, open files, and subprocesses may be gone. Each request
+lists the stale cells, and the model re-runs the ones later work depends on
+before doing anything else. Removing a cell's stamp
+(`{"op": "remove", "path": "/cells/3/metadata/rio/kernel"}`) runs it again
+without editing it.
+
 A cell can read and write files with plain Python, run `!cmd` or `%%bash`, or
 change part of a file with `%%edit`:
 

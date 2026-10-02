@@ -3,7 +3,7 @@
 The context is a notebook: a list of cells. The model abstracts provider I/O,
 JSON Patch application, nbformat validation, and kernel execution. A patch is
 given as its result (`none` when it fails to apply or leaves an invalid
-notebook), and `run` gives the outputs of a cell that runs. Notebook size is
+notebook), and `kernel.run` gives the outputs of a cell that runs. Notebook size is
 total text length rather than a token estimate.
 
 Cells run in one live kernel, so a cell that did not change never runs again.
@@ -18,7 +18,14 @@ structure Cell where
   code : Bool
   source : String
   outputs : List String
+  /-- The id of the kernel that last ran the cell. -/
+  kernel : Option Nat := none
 deriving DecidableEq, Repr
+
+/-- The live kernel: its id, and the outputs a cell produces when it runs. -/
+structure Kernel where
+  id : Nat
+  run : Cell → List String
 
 abbrev Notebook := List Cell
 
@@ -31,9 +38,13 @@ def size (notebook : Notebook) : Nat := (notebook.map cellSize).sum
 def sourceOf (before : Notebook) (id : Nat) : Option String :=
   (before.find? (·.id == id)).map (·.source)
 
-/-- A code cell runs when it is new or its source changed. -/
+/-- The patch removed the cell's kernel stamp: the way to run it again unedited. -/
+def stampRemoved (before : Notebook) (cell : Cell) : Bool :=
+  ((before.find? (·.id == cell.id)).bind (·.kernel)).isSome && cell.kernel.isNone
+
+/-- A code cell runs when it is new, its source changed, or its stamp was removed. -/
 def isChanged (before : Notebook) (cell : Cell) : Bool :=
-  cell.code && sourceOf before cell.id != some cell.source
+  cell.code && (sourceOf before cell.id != some cell.source || stampRemoved before cell)
 
 def changed (before after : Notebook) : List Cell := after.filter (isChanged before)
 
@@ -43,55 +54,81 @@ theorem markdown_cells_never_run (before after : Notebook) (cell : Cell)
   exact h.2.1
 
 theorem same_source_does_not_run (before : Notebook) (cell : Cell)
-    (h : sourceOf before cell.id = some cell.source) : isChanged before cell = false := by
-  simp [isChanged, h]
+    (h : sourceOf before cell.id = some cell.source) (stamped : stampRemoved before cell = false) :
+    isChanged before cell = false := by
+  simp [isChanged, h, stamped]
 
 theorem edited_outputs_do_not_run (before : Notebook) (cell : Cell) (outputs : List String)
-    (h : sourceOf before cell.id = some cell.source) :
+    (h : sourceOf before cell.id = some cell.source) (stamped : stampRemoved before cell = false) :
     isChanged before { cell with outputs := outputs } = false := by
-  simp [isChanged, h]
+  simp [isChanged, stampRemoved] at stamped ⊢
+  simp [h]
+  exact fun _ => stamped
+
+theorem removing_the_stamp_runs_the_cell (before : Notebook) (old cell : Cell) (k : Nat)
+    (found : before.find? (·.id == cell.id) = some old) (stamped : old.kernel = some k)
+    (code : cell.code = true) (removed : cell.kernel = none) : isChanged before cell = true := by
+  simp [isChanged, stampRemoved, found, stamped, code, removed]
+
+/-! ## Stale cells -/
+
+/-- A code cell that ran in another kernel: its variables, files, and processes may be gone. -/
+def isStale (current : Nat) (cell : Cell) : Bool :=
+  cell.code && cell.kernel.isSome && cell.kernel != some current
+
+theorem a_new_kernel_makes_cells_that_ran_stale (old new : Nat) (cell : Cell)
+    (code : cell.code = true) (ran : cell.kernel = some old) (fresh : old ≠ new) :
+    isStale new cell = true := by
+  simp [isStale, code, ran, fresh]
 
 /-! ## Merging outputs -/
 
 /-- Changed cells take the outputs of their run; every other cell keeps its own. -/
-def mergeCell (before : Notebook) (run : Cell → List String) (cell : Cell) : Cell :=
-  if isChanged before cell then { cell with outputs := run cell } else cell
+def mergeCell (before : Notebook) (kernel : Kernel) (cell : Cell) : Cell :=
+  if isChanged before cell then { cell with outputs := kernel.run cell, kernel := some kernel.id }
+  else cell
 
-def merge (before : Notebook) (run : Cell → List String) (after : Notebook) : Notebook :=
-  after.map (mergeCell before run)
+def merge (before : Notebook) (kernel : Kernel) (after : Notebook) : Notebook :=
+  after.map (mergeCell before kernel)
 
-theorem unchanged_cells_keep_their_outputs (before : Notebook) (run : Cell → List String)
-    (cell : Cell) (h : isChanged before cell = false) : mergeCell before run cell = cell := by
+theorem unchanged_cells_keep_their_outputs (before : Notebook) (kernel : Kernel)
+    (cell : Cell) (h : isChanged before cell = false) : mergeCell before kernel cell = cell := by
   simp [mergeCell, h]
 
-theorem changed_cells_get_new_outputs (before : Notebook) (run : Cell → List String)
+theorem changed_cells_get_new_outputs (before : Notebook) (kernel : Kernel)
     (cell : Cell) (h : isChanged before cell = true) :
-    (mergeCell before run cell).outputs = run cell := by
+    (mergeCell before kernel cell).outputs = kernel.run cell := by
   simp [mergeCell, h]
 
-theorem merge_keeps_every_cell (before : Notebook) (run : Cell → List String)
-    (after : Notebook) : ((merge before run after).map (·.id)) = after.map (·.id) := by
+theorem merge_keeps_every_cell (before : Notebook) (kernel : Kernel)
+    (after : Notebook) : ((merge before kernel after).map (·.id)) = after.map (·.id) := by
   simp [merge, mergeCell, Function.comp_def]
   intro cell _
   split <;> rfl
 
+theorem cells_that_ran_are_not_stale (before : Notebook) (kernel : Kernel) (cell : Cell)
+    (h : isChanged before cell = true) : isStale kernel.id (mergeCell before kernel cell) = false := by
+  simp [mergeCell, h, isStale]
+
 /-! ## Running changed cells in order -/
 
 /-- Changed cells run in order; after the first failing cell, the rest get no outputs. -/
-def runInOrder (fails : Cell → Bool) (run : Cell → List String) : List Cell → List Cell
+def runInOrder (fails : Cell → Bool) (kernel : Kernel) : List Cell → List Cell
   | [] => []
   | cell :: rest =>
       if fails cell then
-        { cell with outputs := run cell } :: rest.map (fun later => { later with outputs := [] })
-      else { cell with outputs := run cell } :: runInOrder fails run rest
+        { cell with outputs := kernel.run cell, kernel := some kernel.id } ::
+          rest.map (fun later => { later with outputs := [], kernel := none })
+      else { cell with outputs := kernel.run cell, kernel := some kernel.id } ::
+        runInOrder fails kernel rest
 
-theorem cells_after_a_failure_get_no_outputs (fails : Cell → Bool) (run : Cell → List String)
+theorem cells_after_a_failure_get_no_outputs (fails : Cell → Bool) (kernel : Kernel)
     (cell : Cell) (rest : List Cell) (h : fails cell = true) :
-    (runInOrder fails run (cell :: rest)).tail.all (·.outputs.isEmpty) := by
+    (runInOrder fails kernel (cell :: rest)).tail.all (·.outputs.isEmpty) := by
   simp [runInOrder, h]
 
-theorem run_in_order_keeps_every_cell (fails : Cell → Bool) (run : Cell → List String)
-    (cells : List Cell) : (runInOrder fails run cells).map (·.id) = cells.map (·.id) := by
+theorem run_in_order_keeps_every_cell (fails : Cell → Bool) (kernel : Kernel)
+    (cells : List Cell) : (runInOrder fails kernel cells).map (·.id) = cells.map (·.id) := by
   induction cells with
   | nil => rfl
   | cons cell rest ih =>
@@ -133,9 +170,9 @@ structure StepResult where
   ran : List Cell
   reply : Option String
 
-def commit (run : Cell → List String) (notebook patched : Notebook) (reply : Option String) :
+def commit (kernel : Kernel) (notebook patched : Notebook) (reply : Option String) :
     StepResult :=
-  { notebook := merge notebook run patched ++ (reply.map replyCell).toList,
+  { notebook := merge notebook kernel patched ++ (reply.map replyCell).toList,
     ran := changed notebook patched, reply := reply }
 
 inductive AttemptResult where
@@ -143,30 +180,30 @@ inductive AttemptResult where
   | providerError
   | committed (result : StepResult)
 
-def runAttempt (limit : Nat) (run : Cell → List String) (notebook : Notebook) :
+def runAttempt (limit : Nat) (kernel : Kernel) (notebook : Notebook) :
     Response → AttemptResult
   | .providerError => .providerError
   | .noStepCall => .retry .noStepCall
   | .malformedArguments => .retry .malformedArguments
   | .step none _ => .retry .invalidPatch
   | .step (some patched) reply =>
-      if accepts limit notebook patched then .committed (commit run notebook patched reply)
+      if accepts limit notebook patched then .committed (commit kernel notebook patched reply)
       else .retry .overLimit
 
-theorem invalid_patches_are_retried (limit : Nat) (run : Cell → List String)
+theorem invalid_patches_are_retried (limit : Nat) (kernel : Kernel)
     (notebook : Notebook) (reply : Option String) :
-    runAttempt limit run notebook (.step none reply) = .retry .invalidPatch := rfl
+    runAttempt limit kernel notebook (.step none reply) = .retry .invalidPatch := rfl
 
-theorem oversized_patches_are_retried (limit : Nat) (run : Cell → List String)
+theorem oversized_patches_are_retried (limit : Nat) (kernel : Kernel)
     (notebook patched : Notebook) (reply : Option String)
     (h : accepts limit notebook patched = false) :
-    runAttempt limit run notebook (.step (some patched) reply) = .retry .overLimit := by
+    runAttempt limit kernel notebook (.step (some patched) reply) = .retry .overLimit := by
   simp [runAttempt, h]
 
-theorem a_reply_is_kept_as_the_last_cell (limit : Nat) (run : Cell → List String)
+theorem a_reply_is_kept_as_the_last_cell (limit : Nat) (kernel : Kernel)
     (notebook patched : Notebook) (text : String) (h : accepts limit notebook patched = true) :
-    runAttempt limit run notebook (.step (some patched) (some text)) =
-      .committed { notebook := merge notebook run patched ++ [replyCell text],
+    runAttempt limit kernel notebook (.step (some patched) (some text)) =
+      .committed { notebook := merge notebook kernel patched ++ [replyCell text],
                    ran := changed notebook patched, reply := some text } := by
   simp [runAttempt, commit, h]
 
@@ -177,27 +214,27 @@ inductive StepStop where
   | inputExhausted
 
 /-- Try at most `maxRetries + 1` responses for a step. -/
-def runStep (limit : Nat) (run : Cell → List String) (notebook : Notebook) (maxRetries : Nat) :
+def runStep (limit : Nat) (kernel : Kernel) (notebook : Notebook) (maxRetries : Nat) :
     List Response → StepStop
   | [] => .inputExhausted
   | response :: rest =>
-      match runAttempt limit run notebook response with
+      match runAttempt limit kernel notebook response with
       | .committed result => .committed result
       | .providerError => .providerError
       | .retry _ =>
           match maxRetries with
           | 0 => .retriesExhausted
-          | retries + 1 => runStep limit run notebook retries rest
+          | retries + 1 => runStep limit kernel notebook retries rest
 
-theorem provider_failures_are_not_retried (limit retries : Nat) (run : Cell → List String)
+theorem provider_failures_are_not_retried (limit retries : Nat) (kernel : Kernel)
     (notebook : Notebook) (responses : List Response) :
-    runStep limit run notebook retries (.providerError :: responses) = .providerError := by
+    runStep limit kernel notebook retries (.providerError :: responses) = .providerError := by
   unfold runStep
   rfl
 
-theorem retry_limit_is_max_retries_plus_one (limit : Nat) (run : Cell → List String)
+theorem retry_limit_is_max_retries_plus_one (limit : Nat) (kernel : Kernel)
     (notebook : Notebook) (responses : List Response) :
-    runStep limit run notebook 0 (.noStepCall :: responses) = .retriesExhausted := rfl
+    runStep limit kernel notebook 0 (.noStepCall :: responses) = .retriesExhausted := rfl
 
 /-! ## Events -/
 
@@ -237,36 +274,36 @@ structure RunResult where
   stop : RunStop
 
 /-- Each cancellation flag is checked before its step. -/
-def runLoop (limit maxRetries : Nat) (run : Cell → List String) :
+def runLoop (limit maxRetries : Nat) (kernel : Kernel) :
     Nat → Notebook → List Bool → List (List Response) → RunResult
   | 0, notebook, _, _ => { notebook, steps := 0, stop := .stepLimit }
   | _ + 1, notebook, true :: _, _ => { notebook, steps := 0, stop := .cancelled }
   | _ + 1, notebook, _, [] => { notebook, steps := 0, stop := .inputExhausted }
   | remaining + 1, notebook, flags, responses :: rest =>
-      match runStep limit run notebook maxRetries responses with
+      match runStep limit kernel notebook maxRetries responses with
       | .committed result =>
           if result.reply.isSome then
             { notebook := result.notebook, steps := 1, stop := .replied }
           else
-            let next := runLoop limit maxRetries run remaining result.notebook flags.tail rest
+            let next := runLoop limit maxRetries kernel remaining result.notebook flags.tail rest
             { next with steps := next.steps + 1 }
       | .providerError => { notebook, steps := 0, stop := .providerError }
       | .retriesExhausted => { notebook, steps := 0, stop := .retriesExhausted }
       | .inputExhausted => { notebook, steps := 0, stop := .inputExhausted }
 
-theorem cancellation_preserves_the_notebook (limit retries : Nat) (run : Cell → List String)
+theorem cancellation_preserves_the_notebook (limit retries : Nat) (kernel : Kernel)
     (notebook : Notebook) (responses : List (List Response)) :
-    runLoop limit retries run 1 notebook [true] responses =
+    runLoop limit retries kernel 1 notebook [true] responses =
       { notebook, steps := 0, stop := .cancelled } := by
   simp [runLoop]
 
-theorem step_limit_prevents_model_calls (limit retries : Nat) (run : Cell → List String)
+theorem step_limit_prevents_model_calls (limit retries : Nat) (kernel : Kernel)
     (notebook : Notebook) (cancelled : List Bool) (responses : List (List Response)) :
-    runLoop limit retries run 0 notebook cancelled responses =
+    runLoop limit retries kernel 0 notebook cancelled responses =
       { notebook, steps := 0, stop := .stepLimit } := rfl
 
-theorem a_reply_ends_the_run (limit retries : Nat) (run : Cell → List String) (text : String) :
-    runLoop limit retries run 1 [] [] [[.step (some []) (some text)]] =
+theorem a_reply_ends_the_run (limit retries : Nat) (kernel : Kernel) (text : String) :
+    runLoop limit retries kernel 1 [] [] [[.step (some []) (some text)]] =
       { notebook := [replyCell text], steps := 1, stop := .replied } := by
   cases retries <;> rfl
 
