@@ -96,9 +96,10 @@ def main() -> int:
     args = parser.parse_args()
     if args.trials < 1 or args.timeout < 1:
         parser.error("--trials and --timeout must be positive")
-    names = args.case or sorted(path.name for path in CASES.iterdir() if path.is_dir())
+    cases = sorted(path.name for path in CASES.iterdir() if (path / "task.md").is_file())
+    names = args.case or cases
     for name in names:
-        if not name.isidentifier() or not (CASES / name / "task.md").is_file():
+        if name not in cases:
             parser.error(f"unknown case: {name}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     results = []
