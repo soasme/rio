@@ -5,8 +5,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import add_code, add_markdown
-from rio.agent import NotebookError, PapermillExecutor, apply_patch, changed_cells, new_notebook
-from rio.agent.notebook import merge_outputs
+from rio.agent import KernelExecutor, NotebookError, apply_patch, changed_cells, new_notebook
 
 
 def test_added_cells_get_ids_metadata_and_outputs():
@@ -68,55 +67,78 @@ def test_changed_cells_are_new_or_edited_code_cells():
     assert changed_cells(before, after) == [1, 4]
 
 
-def test_merge_keeps_old_outputs_of_replayed_cells_unless_they_failed():
-    notebook = apply_patch(new_notebook(), [add_code("a"), add_code("b"), add_code("c")])
-    notebook["cells"][0]["outputs"] = [{"output_type": "stream", "name": "stdout", "text": "old"}]
-    stream = {"output_type": "stream", "name": "stdout", "text": "x" * 20}
-    failed = {
-        "output_type": "error",
-        "ename": "E",
-        "evalue": "",
-        "traceback": ["\x1b[31mred\x1b[0m"],
-    }
-    executed = [
-        {"metadata": {"papermill": {"status": "completed"}}, "outputs": [stream]},
-        {"metadata": {"papermill": {"status": "failed"}}, "outputs": [failed]},
-        {"metadata": {"papermill": {"status": "pending"}}, "outputs": []},
-    ]
-
-    merged = merge_outputs(notebook, executed, [2], output_chars=10)
-
-    assert merged["cells"][0]["outputs"][0]["text"] == "old"
-    assert merged["cells"][1]["outputs"][0]["traceback"] == ["red"]
-    assert merged["cells"][2]["outputs"] == []
+@pytest.fixture
+async def kernel(tmp_path):
+    executor = KernelExecutor(tmp_path)
+    yield executor
+    await executor.shutdown()
 
 
-def test_merge_cuts_long_output_and_drops_binary_data():
-    notebook = apply_patch(new_notebook(), [add_code("a")])
-    result = {
-        "output_type": "execute_result",
-        "execution_count": 1,
-        "metadata": {},
-        "data": {"text/plain": "y" * 20, "image/png": "AAAA"},
-    }
-
-    merged = merge_outputs(notebook, [{"metadata": {}, "outputs": [result]}], [0], output_chars=10)
-
-    data = merged["cells"][0]["outputs"][0]["data"]
-    assert list(data) == ["text/plain"]
-    assert data["text/plain"].startswith("y" * 10 + "\n[10 more characters cut")
+def _text(cell) -> str:
+    return "".join(output.get("text", "") for output in cell["outputs"])
 
 
 @pytest.mark.asyncio
-async def test_papermill_runs_changed_cells_with_variables_from_replayed_cells(tmp_path):
-    first = apply_patch(new_notebook(), [add_code("x = 41\nprint('once')")])
-    executor = PapermillExecutor(tmp_path)
-    first = await executor(first, [0])
-    second = apply_patch(first, [add_code("import os\nprint(x + 1, os.getcwd())"), add_code("1/0")])
+async def test_variables_build_up_and_earlier_cells_never_run_again(kernel, tmp_path):
+    first = apply_patch(new_notebook(), [add_code("x = 41\nopen('log', 'a').write('ran\\n')")])
+    first = await kernel(first, [0])
+    second = apply_patch(first, [add_code("import os\nprint(x + 1, os.getcwd())")])
 
-    result = await executor(second, changed_cells(first, second))
+    result = await kernel(second, changed_cells(first, second))
 
-    cells = result["cells"]
-    assert cells[0]["outputs"][0]["text"] == "once\n"
-    assert cells[1]["outputs"][0]["text"] == f"42 {tmp_path.resolve()}\n"
-    assert cells[2]["outputs"][0]["ename"] == "ZeroDivisionError"
+    assert _text(result["cells"][1]) == f"42 {tmp_path.resolve()}\n"
+    assert (tmp_path / "log").read_text() == "ran\n"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_cell_stops_the_changed_cells_after_it(kernel):
+    notebook = apply_patch(new_notebook(), [add_code("1/0"), add_code("print('skipped')")])
+
+    result = await kernel(notebook, [0, 1])
+
+    assert result["cells"][0]["outputs"][0]["ename"] == "ZeroDivisionError"
+    assert "\x1b[" not in "".join(result["cells"][0]["outputs"][0]["traceback"])
+    assert result["cells"][1]["outputs"] == []
+
+
+@pytest.mark.asyncio
+async def test_shutdown_starts_the_next_run_with_an_empty_kernel(kernel):
+    notebook = apply_patch(new_notebook(), [add_code("y = 1")])
+    await kernel(notebook, [0])
+    await kernel.shutdown()
+    check = apply_patch(notebook, [add_code("print('y' in globals())")])
+
+    result = await kernel(check, [1])
+
+    assert _text(result["cells"][1]) == "False\n"
+
+
+@pytest.mark.asyncio
+async def test_long_output_is_cut_and_binary_data_dropped(tmp_path):
+    kernel = KernelExecutor(tmp_path, output_chars=10)
+    source = (
+        "from IPython.display import display\n"
+        "print('y' * 20)\n"
+        "display({'image/png': 'AAAA', 'text/plain': 'img'}, raw=True)"
+    )
+    notebook = apply_patch(new_notebook(), [add_code(source)])
+    try:
+        result = await kernel(notebook, [0])
+    finally:
+        await kernel.shutdown()
+
+    stream, image = result["cells"][0]["outputs"]
+    assert stream["text"].startswith("y" * 10 + "\n[11 more characters cut")
+    assert image["data"] == {"text/plain": "img"}
+
+
+@pytest.mark.asyncio
+async def test_startup_code_runs_once_when_the_kernel_starts(tmp_path):
+    kernel = KernelExecutor(tmp_path, startup="started = True")
+    notebook = apply_patch(new_notebook(), [add_code("print(started)")])
+    try:
+        result = await kernel(notebook, [0])
+    finally:
+        await kernel.shutdown()
+
+    assert _text(result["cells"][0]) == "True\n"

@@ -8,21 +8,36 @@ manages its own context, and the context is a runnable Jupyter notebook.
 notebook ───────────────────────────▶ patched notebook
    ▲                                       │ valid nbformat v4?
    │ outputs of the changed code cells     │ under the size limit?
-   └──────── papermill runs them ◀─────────┘
+   └──── the live kernel runs them ◀───────┘
 ```
 
 Each step the model sees fixed instructions plus the whole notebook as JSON. It
 replies with one `skill_step` call carrying an RFC 6902 JSON Patch. The runtime
 applies the patch and checks that the result is a valid notebook that fits the
-limit. If it is not valid, the runtime asks the model to retry. Then papermill
-runs the code cells the patch added or changed. Those cells get fresh outputs;
-every other cell keeps its own. The notebook with the new outputs is the next
-step's context.
+limit. If it is not valid, the runtime asks the model to retry. Then the code
+cells the patch added or changed run in order; the first one that fails stops
+the rest. Those cells get fresh outputs; every other cell keeps its own and
+never runs again. The notebook with the new outputs is the next step's context.
 
-Cells are Python run by IPython, so a cell can read, write, and edit files, run
-`!cmd` or `%%bash`, or compute anything else. Each step starts a fresh kernel
-and replays the cells before the last changed one, so the variables they define
-are available. Replayed cells repeat their side effects.
+All cells run in one IPython kernel that lives for the session, so variables
+build up across steps. Rio's own executor (`KernelExecutor`, built on nbclient)
+keeps that kernel alive; it talks to it over local sockets. A resume, rewind,
+or new session starts an empty kernel.
+
+A cell can read and write files with plain Python, run `!cmd` or `%%bash`, or
+change part of a file with `%%edit`:
+
+```text
+%%edit calc.py
+<<<<<<< SEARCH
+    return a - b
+=======
+    return a + b
+>>>>>>> REPLACE
+```
+
+Each search text must match the file exactly once, blocks must not overlap,
+and nothing is written unless every block applies. The cell prints a diff.
 
 The model manages the notebook itself: it removes stale outputs and cells and
 keeps notes in markdown cells. The runtime never summarizes. It only caps each

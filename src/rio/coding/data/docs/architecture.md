@@ -36,16 +36,19 @@ the retry path when the patch fails, the result is not a valid notebook, cell
 ids repeat, or the notebook would grow past the limit. A patch that shrinks an
 oversized notebook is accepted.
 
-Code cells the patch added or whose source changed then run through papermill
-in the session's working directory. Each step starts a fresh kernel and replays
-the cells before the last changed one, so earlier variables are defined. Only
-changed cells, and replayed cells that fail, get new outputs; every other cell
-keeps its own. Outputs lose terminal colors and binary data, and long text is
-cut. Replayed cells repeat their side effects.
+Code cells the patch added or whose source changed then run in order, in the
+session's working directory; the first one that fails stops the rest. All cells
+share one IPython kernel that lives for the session (`rio.agent.KernelExecutor`,
+built on nbclient), so variables build up across steps and no cell runs twice
+unless its source changes. A resume, rewind, or new session starts an empty
+kernel. Only the cells that ran get new outputs; every other cell keeps its own.
+Outputs lose terminal colors and binary data, and long text is cut.
 
-Cells are Python run by IPython: `!cmd` and `%%bash` run shell commands, and
-plain Python reads, writes, and edits files. Markdown cells are notes. User
-tasks are markdown cells with `metadata.rio.role = "user"`.
+Cells are Python run by IPython: `!cmd` and `%%bash` run shell commands, plain
+Python reads and writes files, and the `%%edit PATH` cell magic
+(`rio.coding.edit_magic`) applies SEARCH/REPLACE blocks with the `edit` tool's
+rules. Markdown cells are notes. User tasks are markdown cells with
+`metadata.rio.role = "user"`.
 
 Validity is the runtime's job; strategy is the model's. The runtime never
 summarizes or drops cells. The model keeps the notebook small by removing stale

@@ -16,7 +16,7 @@ class CodingSkillOptions:
     """Inputs that vary per session but not per step."""
 
     instructions: str
-    executor: NotebookExecutor | None = None
+    executor: NotebookExecutor
     name: str = "rio-coding"
 
 

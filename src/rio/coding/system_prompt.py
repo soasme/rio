@@ -46,6 +46,20 @@ class BuildSystemPromptOptions:
     extra_sections: Sequence[PromptSection] = field(default_factory=tuple)
 
 
+EDIT_MAGIC_HELP = """To change part of a file, use a `%%edit` cell. Each SEARCH text must \
+match the original file exactly once; blocks must not overlap; nothing is written unless \
+every block applies. The cell prints a diff.
+
+```
+%%edit path/to/file.py
+<<<<<<< SEARCH
+exact old text
+=======
+new text
+>>>>>>> REPLACE
+```"""
+
+
 def build_skill_instructions(options: BuildSystemPromptOptions) -> str:
     """Build the deterministic skill instructions for a rio coding skill."""
     current_date = options.current_date or date.today()
@@ -68,6 +82,7 @@ def build_skill_instructions(options: BuildSystemPromptOptions) -> str:
         "context is a Jupyter notebook it manages itself. You help users by reading files, "
         "executing commands, editing code, and writing new files from notebook cells."
         f"\n\nGuidelines:\n{format_guidelines(options.extra_guidelines)}"
+        f"\n\n{EDIT_MAGIC_HELP}"
     )
 
     prompt += append_section

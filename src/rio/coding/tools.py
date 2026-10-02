@@ -589,21 +589,8 @@ def create_edit_tool_definition(*, cwd: str | Path | None = None) -> ToolDefinit
         path = resolve_path_argument(prepared, cwd=root)
         edits = _edits_arg(prepared)
 
-        if not path.exists():
-            raise ToolInputError(f"Could not edit file: {path}. File not found.")
-        if path.is_dir():
-            raise ToolInputError(f"Could not edit file: {path}. Path is a directory.")
-
         async with _file_lock(path):
-            raw_content = path.read_text(encoding="utf-8")
-            bom, content = _strip_bom(raw_content)
-            original_ending = detect_line_ending(content)
-            normalized = normalize_to_lf(content)
-            base_content, new_content = apply_edits_to_normalized_content(
-                normalized, edits, str(path)
-            )
-            final_content = bom + restore_line_endings(new_content, original_ending)
-            path.write_text(final_content, encoding="utf-8")
+            base_content, new_content = edit_file(path, edits)
 
         diff_text, first_changed_line = generate_diff_string(base_content, new_content)
         patch = generate_unified_patch(str(path), base_content, new_content)
@@ -671,6 +658,25 @@ def create_edit_tool_definition(*, cwd: str | Path | None = None) -> ToolDefinit
         executor=execute,
         constrained_sampling=_STRICT_JSON_SCHEMA_SAMPLING,
     )
+
+
+def edit_file(path: Path, edits: list[dict[str, str]]) -> tuple[str, str]:
+    """Apply exact `oldText`/`newText` replacements to `path` and write it.
+
+    Every edit is checked before anything is written. Line endings and a UTF-8
+    byte-order mark are preserved. Returns the old and new content, LF-normalized.
+    """
+    if not path.exists():
+        raise ToolInputError(f"Could not edit file: {path}. File not found.")
+    if path.is_dir():
+        raise ToolInputError(f"Could not edit file: {path}. Path is a directory.")
+    bom, content = _strip_bom(path.read_text(encoding="utf-8"))
+    original_ending = detect_line_ending(content)
+    base_content, new_content = apply_edits_to_normalized_content(
+        normalize_to_lf(content), edits, str(path)
+    )
+    path.write_text(bom + restore_line_endings(new_content, original_ending), encoding="utf-8")
+    return base_content, new_content
 
 
 def create_edit_tool(*, cwd: str | Path | None = None) -> AgentTool:

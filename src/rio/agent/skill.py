@@ -11,6 +11,6 @@ from rio.agent.notebook import NotebookExecutor
 class HarnessSpec:
     name: str
     instructions: str
-    #: Runs the changed cells of a patched notebook. `None` runs them with
-    #: papermill in the current directory.
-    executor: NotebookExecutor | None = None
+    #: Runs the changed cells of a patched notebook, e.g. a `KernelExecutor`.
+    #: The caller owns its lifetime.
+    executor: NotebookExecutor

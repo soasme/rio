@@ -17,8 +17,8 @@ Run a adhoc task:
 rio run "Fix gh issue 123."
 ```
 
-Rio works in a Jupyter notebook: it acts by adding Python and shell cells,
-which run in the project directory.
+Rio works in a Jupyter notebook: it acts by adding Python, shell, and `%%edit`
+cells, which run in one live kernel in the project directory.
 
 Run a predefined workflow:
 

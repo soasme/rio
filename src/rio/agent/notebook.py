@@ -5,25 +5,23 @@ sends an RFC 6902 JSON Patch against it. The runtime applies the patch, checks
 that the result is still a valid notebook, and runs the code cells the patch
 added or changed. Their outputs land in the notebook the model sees next.
 
-Only changed cells get new outputs. To give them the variables earlier cells
-defined, the executor replays every cell before the last changed one in a fresh
-kernel, then keeps the old outputs of the replayed cells.
+Only changed cells run, in one kernel that lives across steps, so variables
+build up and no cell runs twice by accident. Other cells keep their outputs.
 """
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import copy
 import json
 import re
 import tempfile
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import jsonpatch
 import nbformat
+from nbclient import NotebookClient
 
 from rio.ai.types import JSONObject, JSONValue
 
@@ -33,9 +31,10 @@ type NotebookExecutor = Callable[[Notebook, list[int]], Awaitable[Notebook]]
 CHARS_PER_TOKEN = 4
 #: The largest text a single output keeps; the rest is cut with a note.
 DEFAULT_OUTPUT_CHARS = 8_000
+#: How long one cell may run before the kernel is interrupted.
+DEFAULT_TIMEOUT_SECONDS = 600
 KERNEL_NAME = "python3"
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-_PAPERMILL_ERROR_TAG = "papermill-error-cell-tag"
 
 
 class NotebookError(ValueError):
@@ -129,87 +128,102 @@ def error_output(exc: BaseException) -> JSONObject:
     }
 
 
-class PapermillExecutor:
-    """Run changed cells with papermill in a fresh kernel started in `cwd`."""
+class KernelExecutor:
+    """Run changed cells in one live kernel, so variables build up across steps.
+
+    The kernel starts on first use in `cwd` and lives until `shutdown()`. Only
+    the cells passed in run; earlier cells never run again. Cells run in
+    notebook order, and the first one that fails stops the rest. `startup` is
+    code run once when the kernel starts, such as `%load_ext` for magics.
+    """
 
     def __init__(
         self,
         cwd: Path | None = None,
         *,
-        timeout_seconds: int | None = None,
+        startup: str = "",
+        timeout_seconds: int | None = DEFAULT_TIMEOUT_SECONDS,
         output_chars: int = DEFAULT_OUTPUT_CHARS,
     ) -> None:
         self.cwd = cwd
+        self.startup = startup
         self.timeout_seconds = timeout_seconds
         self.output_chars = output_chars
+        self._client: NotebookClient | None = None
+        self._sockets: tempfile.TemporaryDirectory | None = None
 
     async def __call__(self, notebook: Notebook, changed: list[int]) -> Notebook:
+        result = copy.deepcopy(notebook)
         if not changed:
-            return notebook
-        executed = await asyncio.to_thread(self._execute, notebook, max(changed) + 1)
-        return merge_outputs(notebook, executed, changed, output_chars=self.output_chars)
+            return result
+        client = await self._started()
+        failed = False
+        for index in changed:
+            cell = result["cells"][index]  # type: ignore[index]
+            if failed:
+                cell["outputs"], cell["execution_count"] = [], None
+                continue
+            node = await _execute(client, cell)
+            outputs = [_clean_output(dict(item), self.output_chars) for item in node.outputs]
+            cell["outputs"] = outputs
+            cell["execution_count"] = node.get("execution_count")
+            failed = any(item["output_type"] == "error" for item in cell["outputs"])
+        return result
 
-    def _execute(self, notebook: Notebook, count: int) -> list[JSONObject]:
-        import papermill
+    @property
+    def is_running(self) -> bool:
+        return self._client is not None
 
-        ipc_manager = _ipc_kernel_manager()
+    async def shutdown(self) -> None:
+        """Stop the kernel. The next call starts a fresh one with no variables."""
+        client, self._client = self._client, None
+        if client is not None:
+            client.kc.stop_channels()
+            await client.km.shutdown_kernel(now=True)
+        if self._sockets is not None:
+            self._sockets.cleanup()
+            self._sockets = None
 
-        run = copy.deepcopy(notebook)
-        run["cells"] = run["cells"][:count]  # type: ignore[index]
-        with tempfile.TemporaryDirectory(prefix="rio-nb-") as directory:
-            output = Path(directory) / "out.ipynb"
-            # The failing cell's outputs are in the written notebook.
-            with contextlib.suppress(papermill.PapermillExecutionError):
-                papermill.execute_notebook(
-                    nbformat.from_dict(run),
-                    str(output),
-                    kernel_name=KERNEL_NAME,
-                    cwd=str(self.cwd) if self.cwd is not None else None,
-                    progress_bar=False,
-                    execution_timeout=self.timeout_seconds,
-                    kernel_manager_class=ipc_manager,
-                )
-            cells = json.loads(output.read_text(encoding="utf-8"))["cells"]
-        return [
-            cell for cell in cells if _PAPERMILL_ERROR_TAG not in cell["metadata"].get("tags", [])
-        ]
+    async def _started(self) -> NotebookClient:
+        if self._client is not None:
+            return self._client
+        from jupyter_client.manager import AsyncKernelManager
+
+        # Local sockets in a private directory: no open TCP ports, and no
+        # socket files in the project.
+        self._sockets = tempfile.TemporaryDirectory(prefix="rio-kernel-")
+        manager = AsyncKernelManager(
+            kernel_name=KERNEL_NAME,
+            transport="ipc",
+            ip=str(Path(self._sockets.name) / "kernel"),
+        )
+        await manager.start_kernel(cwd=str(self.cwd) if self.cwd is not None else None)
+        client = NotebookClient(
+            nbformat.v4.new_notebook(),
+            km=manager,
+            kernel_name=KERNEL_NAME,
+            allow_errors=True,
+            timeout=self.timeout_seconds,
+            interrupt_on_timeout=True,
+        )
+        client.kc = manager.client()
+        client.kc.start_channels()
+        await client.kc.wait_for_ready(timeout=60)
+        self._client = client
+        if self.startup:
+            setup = await _execute(client, nbformat.v4.new_code_cell(self.startup), history=False)
+            errors = [item for item in setup.outputs if item["output_type"] == "error"]
+            if errors:
+                await self.shutdown()
+                raise RuntimeError(f"kernel startup failed: {errors[0]['evalue']}")
+        return client
 
 
-def _ipc_kernel_manager() -> type:
-    from jupyter_client.manager import AsyncKernelManager
-
-    class IpcKernelManager(AsyncKernelManager):
-        """Talk to the kernel over local sockets instead of unencrypted TCP."""
-
-        def __init__(self, **kwargs: object) -> None:
-            super().__init__(transport="ipc", **kwargs)
-
-    return IpcKernelManager
-
-
-def merge_outputs(
-    notebook: Notebook,
-    executed: Sequence[JSONObject],
-    changed: list[int],
-    *,
-    output_chars: int = DEFAULT_OUTPUT_CHARS,
-) -> Notebook:
-    """Copy outputs of changed cells, and of replayed cells that failed, into `notebook`.
-
-    `executed` lines up with the first cells of `notebook`.
-    """
-    result = copy.deepcopy(notebook)
-    cells = result["cells"]
-    for index, ran in enumerate(executed):
-        status = ran.get("metadata", {}).get("papermill", {}).get("status")  # type: ignore[union-attr]
-        if index not in changed and status != "failed":
-            continue
-        cell = cells[index]  # type: ignore[index]
-        if cell["cell_type"] != "code":
-            continue
-        cell["outputs"] = [_clean_output(item, output_chars) for item in ran.get("outputs", [])]  # type: ignore[union-attr]
-        cell["execution_count"] = ran.get("execution_count")
-    return result
+async def _execute(client: NotebookClient, cell: JSONObject, *, history: bool = True):
+    """Run one cell. nbclient writes the result into its own notebook, so give it one."""
+    node = nbformat.from_dict(cell)
+    client.nb = nbformat.v4.new_notebook(cells=[node])
+    return await client.async_execute_cell(node, 0, store_history=history)
 
 
 def _clean_output(output: JSONObject, limit: int) -> JSONObject:

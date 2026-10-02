@@ -31,7 +31,6 @@ from rio.agent.events import (
 from rio.agent.notebook import (
     Notebook,
     NotebookError,
-    PapermillExecutor,
     append_cell,
     apply_patch,
     changed_cells,
@@ -78,7 +77,6 @@ async def run_notebook_loop(
     limit = context_limit(context_window_tokens)
     system = skill.instructions + "\n\n" + notebook_protocol(limit)
     tool = skill_step_tool()
-    executor = skill.executor or PapermillExecutor()
     notebook = notebook if notebook is not None else new_notebook()
     if observation is not None:
         notebook = append_cell(notebook, markdown_cell(observation, role="user"))
@@ -122,7 +120,7 @@ async def run_notebook_loop(
         yield PatchEvent(step=step, patch=patch, cells=cells)
         if cells:
             try:
-                patched = await executor(patched, cells)
+                patched = await skill.executor(patched, cells)
             except Exception as exc:
                 # A kernel that fails to start is an observation, not a crash.
                 patched["cells"][cells[0]]["outputs"] = [error_output(exc)]  # type: ignore[index]

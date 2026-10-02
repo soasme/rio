@@ -23,10 +23,10 @@ from rio.agent.events import (
 from rio.agent.harness import EventListener, Harness, HarnessCancellationToken, HarnessConfig
 from rio.agent.loop import context_limit, run_notebook_loop
 from rio.agent.notebook import (
+    KernelExecutor,
     Notebook,
     NotebookError,
     NotebookExecutor,
-    PapermillExecutor,
     apply_patch,
     changed_cells,
     diff,

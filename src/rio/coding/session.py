@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from rio.agent import HarnessSpec, Notebook, PapermillExecutor, context_limit
+from rio.agent import HarnessSpec, KernelExecutor, Notebook, context_limit
 from rio.ai.provider import ModelProvider
 from rio.ai.types import JSONValue
 from rio.coding.coding_skill import CodingSkillOptions, build_coding_skill
@@ -73,6 +73,9 @@ from rio.coding.system_prompt import (
     PromptSection,
     build_skill_instructions,
 )
+
+#: Run once when a session's kernel starts: adds the `%%edit` cell magic.
+KERNEL_STARTUP = "%load_ext rio.coding.edit_magic"
 
 #: A coding run is bounded so a runaway loop cannot burn tokens indefinitely.
 DEFAULT_MAX_STEPS = 200
@@ -199,7 +202,8 @@ class CodingSession:
         if config.command_registry is None:
             config.command_registry = runtime.build_command_registry()
         resources = _with_shadow_diagnostics(resources, config.command_registry)
-        skill = _build_skill(config, resources, cwd)
+        kernel = KernelExecutor(cwd, startup=KERNEL_STARTUP)
+        skill = _build_skill(config, resources, kernel)
 
         storage = config.storage
         if storage is None:
@@ -375,6 +379,12 @@ class CodingSession:
         return self._skill
 
     @property
+    def kernel(self) -> KernelExecutor:
+        """The live kernel the notebook's cells run in. It lives as long as the notebook."""
+        assert isinstance(self._skill.executor, KernelExecutor)
+        return self._skill.executor
+
+    @property
     def system_prompt(self) -> str:
         """The instructions half of every step's prompt."""
         return self._skill.instructions
@@ -508,8 +518,9 @@ class CodingSession:
         return checkpoints(await self.session_entries())
 
     async def restore(self, entry_id: str, *, reason: str | None = None) -> StateRestoredEvent:
-        """Branch: adopt an earlier notebook as the live one."""
+        """Branch: adopt an earlier notebook as the live one, with a fresh kernel."""
         event = await self._runner.restore(entry_id, reason=reason)
+        await self.kernel.shutdown()
         return event
 
     async def append_custom_entry(
@@ -585,7 +596,7 @@ class CodingSession:
             )
         resources = _discover(resource_paths, self._config)
         candidate_config = replace(self._config, extension_runtime=successor)
-        skill = _build_skill(candidate_config, resources, cwd)
+        skill = _build_skill(candidate_config, resources, self.kernel)
         await runtime.emit_session_shutdown("reload")
         await runtime.aclose()
         self._config.extension_runtime = successor
@@ -599,20 +610,25 @@ class CodingSession:
         return self._resources
 
     async def new_session(self) -> None:
-        """Clear the notebook and start over in the same directory."""
+        """Clear the notebook and start over in the same directory, with a fresh kernel."""
         await self._runner.reset(reason="new session")
+        await self.kernel.shutdown()
 
     async def resume(self) -> Notebook:
-        """Adopt the notebook recorded in the journal."""
-        return await self._runner.load()
+        """Adopt the notebook recorded in the journal, with a fresh kernel."""
+        notebook = await self._runner.load()
+        await self.kernel.shutdown()
+        return notebook
 
     async def fork_from(self, notebook: Notebook, *, parent_session_id: str | None) -> None:
         """Adopt `notebook` as the live one, journaling the session forked from."""
         await self.append_custom_entry("fork", {"parent_session_id": parent_session_id})
         await self._runner.reset(notebook, reason=f"forked from session {parent_session_id}")
+        await self.kernel.shutdown()
 
     async def aclose(self) -> None:
         self._runner.cancel()
+        await self.kernel.shutdown()
         await self.extensions.emit_session_shutdown("quit")
         await self.extensions.aclose()
 
@@ -682,11 +698,12 @@ def _discover(resource_paths: RioResourcePaths, config: CodingSessionConfig) -> 
 
 
 def _build_skill(
-    config: CodingSessionConfig, resources: SessionResources, cwd: Path
+    config: CodingSessionConfig, resources: SessionResources, kernel: KernelExecutor
 ) -> HarnessSpec:
+    assert kernel.cwd is not None
     instructions = build_skill_instructions(
         BuildSystemPromptOptions(
-            cwd=cwd,
+            cwd=kernel.cwd,
             skills=resources.skills,
             custom_prompt=config.custom_prompt,
             append_system_prompt=config.append_system_prompt,
@@ -697,9 +714,7 @@ def _build_skill(
             + (config.extension_runtime.prompt_sections if config.extension_runtime else ()),
         )
     )
-    return build_coding_skill(
-        CodingSkillOptions(instructions=instructions, executor=PapermillExecutor(cwd))
-    )
+    return build_coding_skill(CodingSkillOptions(instructions=instructions, executor=kernel))
 
 
 def default_session_path(cwd: Path, *, paths: RioPaths | None = None) -> Path:

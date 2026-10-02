@@ -1,7 +1,7 @@
 """End-to-end: a real coding session doing real work on a real directory.
 
 Everything here is genuine except the model. The skill instructions are the
-ones a real run would get, cells run in a real kernel through papermill, the
+ones a real run would get, cells run in the session's live kernel, the
 journal is a real JSONL file on disk, and the edits actually land. Only the
 model's patches are scripted, so the run is deterministic.
 """
@@ -40,21 +40,25 @@ def _config(tmp_path, repo, provider) -> CodingSessionConfig:
 
 
 def fix_the_bug_streams():
-    """Read the file, fix it with Python, verify with a shell command, then answer."""
+    """Read the file, fix it with `%%edit`, verify with a shell command, then answer."""
     return [
         step_response(
             reasoning="I need to see calc.py before changing anything.",
             patch=[add_code("source = open('calc.py').read()\nprint(source)")],
         ),
         step_response(
-            reasoning="add() subtracts. Swap the operator, reusing `source`.",
+            reasoning="add() subtracts. Swap the operator.",
             patch=[
-                {"op": "replace", "path": "/cells/1/outputs", "value": []},
                 add_code(
-                    "open('calc.py', 'w').write(source.replace('a - b', 'a + b'))\n"
-                    "!python -c 'import calc; print(calc.add(2, 3))'"
+                    "%%edit calc.py\n<<<<<<< SEARCH\n    return a - b\n=======\n"
+                    "    return a + b\n>>>>>>> REPLACE\n"
                 ),
+                add_code("!python -c 'import calc; print(calc.add(2, 3))'"),
             ],
+        ),
+        step_response(
+            reasoning="`source` is still defined: the kernel keeps variables.",
+            patch=[add_code("print('a - b' in source, source == open('calc.py').read())")],
         ),
         step_response(
             reasoning="It prints 5. Done.",
@@ -80,15 +84,20 @@ async def test_the_agent_fixes_the_file_and_the_journal_rebuilds_the_notebook(tm
     # Each request carries the outputs of the cells the previous patch ran.
     assert "return a - b" in provider.calls[1][2][0].text
     cells = session.notebook["cells"]
-    assert cells[1]["outputs"] == []
-    assert cells[2]["outputs"][0]["text"].strip() == "5"
+    assert "+    return a + b" in cells[2]["outputs"][0]["text"]
+    assert cells[3]["outputs"][0]["text"].strip() == "5"
+    assert cells[4]["outputs"][0]["text"] == "True False\n"
+    # Earlier cells never run again: the first read's output is unchanged.
+    assert "return a - b" in cells[1]["outputs"][0]["text"]
 
     entries = await session.session_entries()
     steps = [entry for entry in entries if isinstance(entry, StepEntry)]
-    assert [step.cells for step in steps] == [[1], [2], []]
+    assert [step.cells for step in steps] == [[1], [2, 3], [4], []]
     assert "calc.py" in render_completed_run(entries)
 
     # The notebook lives only in the journal: a fresh session rebuilds it.
+    await session.aclose()
     reopened = await CodingSession.load(_config(tmp_path, repo, FakeProvider([])))
     assert reopened.notebook == session.notebook
     assert reopened.provider.calls == []
+    assert not reopened.kernel.is_running

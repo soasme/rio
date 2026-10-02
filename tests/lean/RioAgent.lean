@@ -6,8 +6,9 @@ given as its result (`none` when it fails to apply or leaves an invalid
 notebook), and `run` gives the outputs of a cell that runs. Notebook size is
 total text length rather than a token estimate.
 
+Cells run in one live kernel, so a cell that did not change never runs again.
 It retains the loop's decisions: which cells run, which outputs are kept, the
-size gate on patches, retries for unusable replies, provider failures, event
+stop after a failing cell, the size gate on patches, retries for unusable replies, provider failures, event
 order, the reply that ends a run, cancellation, and the step limit.
 -/
 namespace RioAgent
@@ -73,6 +74,30 @@ theorem merge_keeps_every_cell (before : Notebook) (run : Cell → List String)
   simp [merge, mergeCell, Function.comp_def]
   intro cell _
   split <;> rfl
+
+/-! ## Running changed cells in order -/
+
+/-- Changed cells run in order; after the first failing cell, the rest get no outputs. -/
+def runInOrder (fails : Cell → Bool) (run : Cell → List String) : List Cell → List Cell
+  | [] => []
+  | cell :: rest =>
+      if fails cell then
+        { cell with outputs := run cell } :: rest.map (fun later => { later with outputs := [] })
+      else { cell with outputs := run cell } :: runInOrder fails run rest
+
+theorem cells_after_a_failure_get_no_outputs (fails : Cell → Bool) (run : Cell → List String)
+    (cell : Cell) (rest : List Cell) (h : fails cell = true) :
+    (runInOrder fails run (cell :: rest)).tail.all (·.outputs.isEmpty) := by
+  simp [runInOrder, h]
+
+theorem run_in_order_keeps_every_cell (fails : Cell → Bool) (run : Cell → List String)
+    (cells : List Cell) : (runInOrder fails run cells).map (·.id) = cells.map (·.id) := by
+  induction cells with
+  | nil => rfl
+  | cons cell rest ih =>
+      by_cases h : fails cell
+      · simp [runInOrder, h, Function.comp_def]
+      · simp [runInOrder, h, ih]
 
 /-! ## The size gate -/
 
