@@ -11,6 +11,7 @@ build up and no cell runs twice by accident. Other cells keep their outputs.
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import re
@@ -152,6 +153,57 @@ def stale_cells(notebook: Notebook) -> list[int]:
         for index, cell in enumerate(notebook["cells"])  # type: ignore[arg-type]
         if cell["cell_type"] == "code" and cell_kernel(cell) not in (None, current)
     ]
+
+
+def stale_uses(before: Notebook, after: Notebook) -> list[str]:
+    """Explain each name a cell about to run reads that only a stale cell defines.
+
+    Leaving a cell stale is fine; reading a variable from one is not, because
+    the current kernel does not have it. Names are found statically, after
+    IPython turns magics and `!cmd` into Python, so this misses dynamic access.
+    """
+    current = after["metadata"].get("rio", {}).get("kernel", {}).get("id")  # type: ignore[union-attr]
+    run = changed_cells(before, after)
+    stale: dict[str, int] = {}
+    live: set[str] = set()
+    for index, cell in enumerate(after["cells"]):  # type: ignore[arg-type]
+        if cell["cell_type"] != "code" or index in run:
+            continue
+        kernel = cell_kernel(cell)
+        if kernel == current:
+            live |= cell_names(cell["source"])[0]
+        elif kernel is not None:
+            stale.update(dict.fromkeys(cell_names(cell["source"])[0], index))
+    problems = []
+    for index in run:
+        defined, used = cell_names(after["cells"][index]["source"])  # type: ignore[index]
+        for name in sorted((used - defined) & stale.keys() - live):
+            problems.append(
+                f"cell {index} reads `{name}`, which only stale cell {stale[name]} defines; "
+                "that cell ran in an older kernel"
+            )
+        live |= defined
+    return problems
+
+
+def cell_names(source: str) -> tuple[set[str], set[str]]:
+    """Return the names a code cell defines and the names it reads."""
+    from IPython.core.inputtransformer2 import TransformerManager
+
+    try:
+        tree = ast.parse(TransformerManager().transform_cell(source))
+    except SyntaxError:
+        return set(), set()
+    defined: set[str] = set()
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            (used if isinstance(node.ctx, ast.Load) else defined).add(node.id)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            defined.add(node.name)
+        elif isinstance(node, ast.Import | ast.ImportFrom):
+            defined |= {(alias.asname or alias.name).split(".")[0] for alias in node.names}
+    return defined, used
 
 
 def with_kernel(notebook: Notebook, kernel_id: str, *, running: bool) -> Notebook:

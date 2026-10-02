@@ -38,6 +38,7 @@ from rio.agent.notebook import (
     markdown_cell,
     new_notebook,
     notebook_tokens,
+    stale_uses,
     with_kernel,
 )
 from rio.agent.prompt import STEP_TOOL_NAME, build_messages, notebook_protocol, skill_step_tool
@@ -170,6 +171,14 @@ def _check(
         return None, (
             f"the patched notebook would be ~{size} tokens, over the ~{limit}-token limit. "
             "Remove stale outputs and cells, keeping short notes of what you still need."
+        )
+    problems = stale_uses(notebook, patched)
+    if problems:
+        return None, (
+            "; ".join(problems)
+            + ". Run those stale cells again first (remove their `metadata.rio.kernel` "
+            "stamp in the same patch, before the cells that read them), or define the "
+            "names again."
         )
     return patched, None
 

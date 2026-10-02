@@ -283,3 +283,25 @@ async def test_cells_from_an_older_kernel_are_listed_and_rerun_by_removing_the_s
     assert next(e for e in events if isinstance(e, PatchEvent)).cells == [1]
     assert "stale cells" not in provider.calls[1][2][0].text
     assert events[-1].notebook["cells"][4]["outputs"][0]["text"] == "42\n"
+
+
+@pytest.mark.asyncio
+async def test_a_patch_that_reads_a_variable_from_a_stale_cell_is_rejected():
+    executor = FakeExecutor()
+    skill = make_skill(executor=executor)
+    provider = FakeProvider([step_response(patch=[add_code("x = 41")], reply="set")])
+    events = await _run(provider, skill=skill, observation="task")
+    executor.restart("k2")
+
+    unstamp = {"op": "remove", "path": "/cells/1/metadata/rio/kernel"}
+    provider = FakeProvider(
+        [
+            step_response(patch=[add_code("print(x + 1)")]),
+            step_response(patch=[unstamp, add_code("print(x + 1)")], reply="ok"),
+        ]
+    )
+    events = await _run(provider, skill=skill, notebook=events[-1].notebook, observation="more")
+
+    error = next(e for e in events if isinstance(e, ValidationErrorEvent)).error
+    assert error.startswith("cell 4 reads `x`, which only stale cell 1 defines")
+    assert events[-1].notebook["cells"][4]["outputs"][0]["text"] == "42\n"

@@ -6,7 +6,7 @@ import pytest
 
 from conftest import add_code, add_markdown
 from rio.agent import KernelExecutor, NotebookError, apply_patch, changed_cells, new_notebook
-from rio.agent.notebook import stale_cells, with_kernel
+from rio.agent.notebook import cell_names, stale_cells, stale_uses, with_kernel
 
 
 def test_added_cells_get_ids_metadata_and_outputs():
@@ -88,6 +88,57 @@ def test_stale_cells_ran_in_another_kernel():
 
     assert notebook["metadata"]["rio"]["kernel"] == {"id": "k2", "running": False}
     assert stale_cells(notebook) == [0]
+
+
+def test_cell_names_see_through_magics_and_shell_commands():
+    source = "import os.path as p\nfrom x import y\ndef f(): return z\n!ls\nw = v + 1"
+
+    defined, used = cell_names(source)
+
+    assert {"p", "y", "f", "w"} <= defined
+    assert {"z", "v"} <= used
+    assert cell_names("%%edit a.py\n<<<<<<< SEARCH\nq\n") == (set(), {"get_ipython"})
+    assert cell_names("def (") == (set(), set())
+
+
+def _with_stale_source(*sources: str) -> dict:
+    notebook = apply_patch(new_notebook(), [add_code(source) for source in sources])
+    for cell in notebook["cells"]:
+        cell["metadata"] = {"rio": {"kernel": "old"}}
+    return with_kernel(notebook, "new", running=False)
+
+
+def test_reading_a_variable_only_a_stale_cell_defines_is_reported():
+    before = _with_stale_source("data = load()", "print('hi')")
+    after = apply_patch(before, [add_code("total = sum(data)")])
+
+    assert stale_uses(before, after) == [
+        "cell 2 reads `data`, which only stale cell 0 defines; that cell ran in an older kernel"
+    ]
+
+
+def test_stale_cells_may_be_left_alone():
+    before = _with_stale_source("data = load()")
+    after = apply_patch(before, [add_code("total = 1")])
+
+    assert stale_uses(before, after) == []
+
+
+def test_running_the_stale_cell_first_or_redefining_the_name_is_accepted():
+    before = _with_stale_source("data = load()")
+    rerun = {"op": "remove", "path": "/cells/0/metadata/rio/kernel"}
+
+    assert stale_uses(before, apply_patch(before, [rerun, add_code("sum(data)")])) == []
+    redefine = add_code("data = [1]\nprint(sum(data))")
+    assert stale_uses(before, apply_patch(before, [redefine])) == []
+
+
+def test_a_live_cell_that_defines_the_name_satisfies_the_read():
+    before = _with_stale_source("data = load()", "data = [2]")
+    before["cells"][1]["metadata"] = {"rio": {"kernel": "new"}}
+    after = apply_patch(before, [add_code("sum(data)")])
+
+    assert stale_uses(before, after) == []
 
 
 @pytest.fixture

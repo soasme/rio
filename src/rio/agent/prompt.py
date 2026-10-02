@@ -84,9 +84,11 @@ def notebook_protocol(limit_tokens: int) -> str:
         "Each code cell that ran has `metadata.rio.kernel` set to the id of the kernel that "
         "ran it. After a resume, rewind, or new session the kernel is new and empty: a cell "
         "stamped with another id is stale, and the variables, open files, and subprocesses "
-        "it created may be gone. Each request lists stale cells. Before any other action, "
-        "run again the stale cells that later work depends on, by removing their stamp "
-        '(`{"op": "remove", "path": "/cells/<i>/metadata/rio/kernel"}`), or replace them.\n'
+        "it created may be gone. Each request lists stale cells. Leaving a cell stale is "
+        "fine, but a patch whose cells read a variable only a stale cell defines is "
+        "rejected. Run such a cell again first, in the same patch, by removing its stamp "
+        '(`{"op": "remove", "path": "/cells/<i>/metadata/rio/kernel"}`), or define the '
+        "variable again.\n"
         "- A new cell needs only `cell_type` and `source`, e.g. "
         '`{"op": "add", "path": "/cells/-", "value": {"cell_type": "code", "source": "..."}}`.\n'
         "- Markdown cells are notes. Cells with `metadata.rio.role` are user messages and "
@@ -109,8 +111,8 @@ def build_messages(
     stale = stale_cells(notebook)
     if stale:
         text += (
-            f"\n[stale cells {stale}: they ran in an older kernel. Run again the ones "
-            "later work depends on before anything else.]"
+            f"\n[stale cells {stale}: they ran in an older kernel. Run one again before "
+            "reading its variables.]"
         )
     if error_note:
         text += f"\n\nRejected reply: {error_note}\nRetry with a corrected reply."

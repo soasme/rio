@@ -20,6 +20,9 @@ structure Cell where
   outputs : List String
   /-- The id of the kernel that last ran the cell. -/
   kernel : Option Nat := none
+  /-- Names the cell's source defines and reads, as found statically. -/
+  defines : List String := []
+  reads : List String := []
 deriving DecidableEq, Repr
 
 /-- The live kernel: its id, and the outputs a cell produces when it runs. -/
@@ -80,6 +83,48 @@ theorem a_new_kernel_makes_cells_that_ran_stale (old new : Nat) (cell : Cell)
     (code : cell.code = true) (ran : cell.kernel = some old) (fresh : old ≠ new) :
     isStale new cell = true := by
   simp [isStale, code, ran, fresh]
+
+/-! ## Reading variables from stale cells -/
+
+def staleDefines (current : Nat) (others : List Cell) (name : String) : Bool :=
+  others.any (fun other => isStale current other && other.defines.contains name)
+
+def liveDefines (current : Nat) (others : List Cell) (name : String) : Bool :=
+  others.any (fun other => other.kernel == some current && other.defines.contains name)
+
+/-- A patch is rejected when a cell about to run reads a name only stale cells define. -/
+def readsStale (current : Nat) (others : List Cell) (cell : Cell) : Bool :=
+  cell.reads.any fun name =>
+    !cell.defines.contains name && staleDefines current others name &&
+      !liveDefines current others name
+
+theorem leaving_cells_stale_is_allowed (current : Nat) (others : List Cell) (cell : Cell)
+    (h : cell.reads = []) : readsStale current others cell = false := by
+  simp [readsStale, h]
+
+theorem reading_a_stale_only_name_is_rejected (old current : Nat) (name : String)
+    (fresh : old ≠ current) :
+    readsStale current
+      [{ id := 0, code := true, source := "", outputs := [], kernel := some old,
+         defines := [name] }]
+      { id := 1, code := true, source := "", outputs := [], reads := [name] } = true := by
+  simp [readsStale, staleDefines, liveDefines, isStale, fresh]
+
+theorem a_live_definition_satisfies_the_read (old current : Nat) (name : String) :
+    readsStale current
+      [{ id := 0, code := true, source := "", outputs := [], kernel := some old,
+         defines := [name] },
+       { id := 2, code := true, source := "", outputs := [], kernel := some current,
+         defines := [name] }]
+      { id := 1, code := true, source := "", outputs := [], reads := [name] } = false := by
+  simp [readsStale, liveDefines]
+
+theorem redefining_the_name_satisfies_the_read (current : Nat) (others : List Cell)
+    (name : String) :
+    readsStale current others
+      { id := 1, code := true, source := "", outputs := [], defines := [name],
+        reads := [name] } = false := by
+  simp [readsStale]
 
 /-! ## Merging outputs -/
 

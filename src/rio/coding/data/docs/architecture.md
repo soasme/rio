@@ -49,10 +49,13 @@ kernel's `id` and whether it is `running`, and each code cell that ran has
 `metadata.rio.kernel` set to the id of the kernel that ran it. A new kernel gets
 a new id, so after a resume, rewind, or new session every cell that ran before
 is stale: its variables, open files, and subprocesses may be gone. Each request
-lists the stale cells, and the model re-runs the ones later work depends on
-before doing anything else. Removing a cell's stamp
+lists the stale cells. A cell may stay stale, but a patch is rejected when a
+cell it runs reads a name that only stale cells define and no cell from the
+current kernel does. Names are found statically, after IPython turns magics and
+`!cmd` into Python, so dynamic access is not caught. Removing a cell's stamp
 (`{"op": "remove", "path": "/cells/3/metadata/rio/kernel"}`) runs it again
-without editing it.
+without editing it, so the model can re-run a stale cell before the cells that
+read its variables in the same patch.
 
 Cells are Python run by IPython: `!cmd` and `%%bash` run shell commands, plain
 Python reads and writes files, and the `%%edit PATH` cell magic
