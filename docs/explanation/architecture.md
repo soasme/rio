@@ -1,7 +1,10 @@
 # How Rio runs tasks
 
-Rio is a Context Language Model (CLM) agent ([arXiv:2609.37725]): the model
-manages its own context, and the context is a runnable Jupyter notebook.
+Rio treats LLM context as a runnable Jupyter notebook and lets he model manages
+its own context. The agent core is inspired by
+
+* [SKILL.state](https://arxiv.org/html/2608.26263v2)
+* [Context Language Models](https://arxiv.org/abs/2609.37725).
 
 ```text
             JSON Patch (skill_step)
@@ -62,13 +65,11 @@ The package boundaries follow that design:
 | Package | Responsibility |
 | --- | --- |
 | `rio.ai` | Provider-neutral model streaming. |
-| `rio.agent` | CLM runtime: the notebook, patch checks, cell execution, and the step loop. |
-| `rio.coding` | Coding skill, sessions, resources, and CLI support. |
+| `rio.agent` | Runtime: the notebook, patch checks, cell execution, and the step loop. |
+| `rio.coding` | Coding skill, sessions, resources. |
 | `rio.cli` | Public one-shot command-line entry point. |
 
 The coding layer journals each step as the JSON Patch from the previous
 notebook to the new one, outputs included. The notebook is never stored
 elsewhere: resuming replays the patches on the active branch and appends the
 new task as a user cell.
-
-[arXiv:2609.37725]: https://arxiv.org/abs/2609.37725
