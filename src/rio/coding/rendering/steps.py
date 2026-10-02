@@ -1,7 +1,7 @@
-"""Render a completed CLM run from its journal.
+"""Render a completed notebook run from its journal.
 
 Takes the finished `SessionEntry` list a `rio.coding.session_store.SessionStorage`
-produced and renders it after the fact, ending with the context the run settled
+produced and renders it after the fact, ending with the notebook the run settled
 on -- the session's entire memory of what happened.
 """
 
@@ -10,8 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from rio.agent import render_context
-from rio.ai.types import JSONValue
+from rio.agent import render_notebook
 from rio.coding.session_store import (
     BranchSummaryEntry,
     CustomEntry,
@@ -26,12 +25,11 @@ from rio.coding.session_store import (
     ThinkingLevelChangeEntry,
     TurnEntry,
     ValidationFailureEntry,
-    entry_context,
     latest_leaf_id,
-    state_at_entry,
+    notebook_at_entry,
 )
 
-__all__ = ["render_completed_run", "render_final_context", "render_run_steps"]
+__all__ = ["render_completed_run", "render_final_notebook", "render_run_steps"]
 
 _OBSERVATION_CHARS = 400
 
@@ -44,20 +42,18 @@ def render_run_steps(entries: Sequence[SessionEntry]) -> str:
     return "\n".join(lines)
 
 
-def render_final_context(entries: Sequence[SessionEntry]) -> str:
-    """Render the context at the active branch's newest snapshot, as the model sees it."""
+def render_final_notebook(entries: Sequence[SessionEntry]) -> str:
+    """Render the notebook at the active branch's tip, as the model sees it."""
     leaf = latest_leaf_id(entries)
     if leaf is None:
         return ""
-    _state, snapshot = state_at_entry(entries, leaf)
-    context = entry_context(snapshot) if snapshot is not None else None
-    return render_context(context) if context else ""
+    return render_notebook(notebook_at_entry(entries, leaf))
 
 
 def render_completed_run(entries: Sequence[SessionEntry]) -> str:
-    """Render a run's step account followed by the final context."""
+    """Render a run's step account followed by the final notebook."""
     entries = list(entries)
-    return render_run_steps(entries) + "\n\nFinal context:\n" + render_final_context(entries)
+    return render_run_steps(entries) + "\n\nFinal notebook:\n" + render_final_notebook(entries)
 
 
 def _render_entry(entry: SessionEntry) -> list[str]:
@@ -71,7 +67,7 @@ def _render_entry(entry: SessionEntry) -> list[str]:
         return [f"  reasoning: {_truncate(entry.reasoning)}"]
     if isinstance(entry, StateResetEntry):
         reason = f": {entry.reason}" if entry.reason else ""
-        return [f"# context reset{reason}"]
+        return [f"# notebook reset{reason}"]
     if isinstance(entry, ModelChangeEntry):
         return [f"# model changed to {entry.model}"]
     if isinstance(entry, ThinkingLevelChangeEntry):
@@ -92,17 +88,12 @@ def _render_entry(entry: SessionEntry) -> list[str]:
 
 
 def _render_step(entry: StepEntry) -> list[str]:
-    lines = [f"## step {entry.step}: {entry.action.name}({_render_json(entry.action.arguments)})"]
-    if entry.observation:
-        suffix = " (truncated)" if entry.observation_truncated else ""
-        lines.append(f"   observation{suffix}: {_truncate(entry.observation)}")
-    if entry.terminated:
-        lines.append("   (terminated)")
+    ran = f", ran cells {entry.cells}" if entry.cells else ""
+    lines = [f"## step {entry.step}: {len(entry.patch)} patch operation(s){ran}"]
+    lines.append(f"   patch: {_truncate(json.dumps(entry.patch, sort_keys=True))}")
+    if entry.reply is not None:
+        lines.append(f"   reply: {_truncate(entry.reply)}")
     return lines
-
-
-def _render_json(value: dict[str, JSONValue]) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def _truncate(text: str, *, limit: int = _OBSERVATION_CHARS) -> str:

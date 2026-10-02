@@ -1,16 +1,15 @@
-"""Events emitted by `rio.agent.loop.run_context_loop`.
+"""Events emitted by `rio.agent.loop.run_notebook_loop`.
 
 A flat stream of small, typed records a UI or logger can subscribe to. Each
-step is one model call and one action; `context` is the full list of turns the
-model will see next.
+step is one model call, one patch, and one run of the changed cells;
+`notebook` is the full context the model will see next.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rio.agent.context import Turn
-from rio.ai.tools import AgentToolResult
+from rio.agent.notebook import Notebook
 from rio.ai.types import JSONObject
 
 
@@ -22,12 +21,12 @@ class RunStartEvent:
 @dataclass(frozen=True, slots=True)
 class StepStartEvent:
     step: int
-    context: list[Turn]
+    notebook: Notebook
 
 
 @dataclass(frozen=True, slots=True)
 class ReasoningEvent:
-    """The text the model wrote before its action. It stays in the context."""
+    """The text the model wrote before its patch. It is not kept in the notebook."""
 
     step: int
     reasoning: str
@@ -35,7 +34,7 @@ class ReasoningEvent:
 
 @dataclass(frozen=True, slots=True)
 class ValidationErrorEvent:
-    """The reply had no usable action; a retry with a correction follows."""
+    """The reply had no usable patch; a retry with a correction follows."""
 
     step: int
     attempt: int
@@ -43,42 +42,39 @@ class ValidationErrorEvent:
 
 
 @dataclass(frozen=True, slots=True)
-class ActionStartEvent:
+class PatchEvent:
+    """The model's patch was applied; `cells` are the indices of code cells about to run."""
+
     step: int
-    name: str
-    arguments: JSONObject
+    patch: list[JSONObject]
+    cells: list[int]
 
 
 @dataclass(frozen=True, slots=True)
-class ActionEndEvent:
-    step: int
-    name: str
-    result: AgentToolResult
-    is_error: bool
-
-
-@dataclass(frozen=True, slots=True)
-class ContextEditEvent:
-    """The model edited its context file; `accepted` says whether the edit was adopted."""
+class ExecutionEvent:
+    """The changed cells ran; their outputs are in `notebook`."""
 
     step: int
-    accepted: bool
-    before_tokens: int
-    after_tokens: int
-    turns: int
+    cells: list[int]
+    notebook: Notebook
 
 
 @dataclass(frozen=True, slots=True)
 class StepEndEvent:
     step: int
-    context: list[Turn]
-    terminated: bool
+    notebook: Notebook
+    reply: str | None
+
+    @property
+    def terminated(self) -> bool:
+        return self.reply is not None
 
 
 @dataclass(frozen=True, slots=True)
 class RunEndEvent:
     steps: int
-    context: list[Turn]
+    notebook: Notebook
+    reply: str | None
 
 
 type AgentEvent = (
@@ -86,9 +82,8 @@ type AgentEvent = (
     | StepStartEvent
     | ReasoningEvent
     | ValidationErrorEvent
-    | ActionStartEvent
-    | ActionEndEvent
-    | ContextEditEvent
+    | PatchEvent
+    | ExecutionEvent
     | StepEndEvent
     | RunEndEvent
 )

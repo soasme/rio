@@ -1,9 +1,9 @@
-"""The coding-agent environment: resources, tools, and a CLM run loop.
+"""The coding-agent environment: resources, a notebook context, and a run loop.
 
-The model manages its own context, so the session never summarizes or
-compacts. Its own work is discovering project resources, assembling the skill
-instructions from them, owning the tools that become actions, and driving
-`SessionRunner` over a durable journal.
+The model manages its own context, a Jupyter notebook whose code cells run in
+the session's working directory, so the session never summarizes or compacts.
+Its own work is discovering project resources, assembling the skill
+instructions from them, and driving `SessionRunner` over a durable journal.
 """
 
 from __future__ import annotations
@@ -12,9 +12,8 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from rio.agent import HarnessSpec, Turn, context_limit
+from rio.agent import HarnessSpec, Notebook, PapermillExecutor, context_limit
 from rio.ai.provider import ModelProvider
-from rio.ai.tools import AgentTool
 from rio.ai.types import JSONValue
 from rio.coding.coding_skill import CodingSkillOptions, build_coding_skill
 from rio.coding.context import discover_project_context_with_diagnostics
@@ -54,7 +53,6 @@ from rio.coding.session_store import (
     SessionStorage,
     ThinkingLevelChangeEntry,
     checkpoints,
-    entry_context,
 )
 from rio.coding.skills import (
     Skill,
@@ -75,7 +73,6 @@ from rio.coding.system_prompt import (
     PromptSection,
     build_skill_instructions,
 )
-from rio.coding.tools import ImageSupportState, create_coding_tools
 
 #: A coding run is bounded so a runaway loop cannot burn tokens indefinitely.
 DEFAULT_MAX_STEPS = 200
@@ -93,10 +90,6 @@ class CodingSessionConfig:
     paths: RioPaths = field(default_factory=RioPaths)
     resource_paths: RioResourcePaths | None = None
     project_resources_trusted: bool = True
-    tools: Sequence[AgentTool] | None = None
-    exposed_tools: tuple[str, ...] = ("read", "write", "edit", "bash", "respond")
-    shell_command_prefix: str | None = None
-    image_support: ImageSupportState | None = None
     custom_prompt: str | None = None
     append_system_prompt: str | None = None
     extra_guidelines: Sequence[str] = ()
@@ -187,14 +180,13 @@ class CodingSession:
 
     @classmethod
     async def load(cls, config: CodingSessionConfig) -> CodingSession:
-        """Discover resources, build the skill specification, and resume the context."""
+        """Discover resources, build the skill specification, and resume the notebook."""
         cwd = config.cwd.resolve()
         resource_paths = resource_paths_with_project_trust(
             resource_paths_with_cwd(config.resource_paths, cwd),
             trusted=config.project_resources_trusted,
         )
         resources = _discover(resource_paths, config)
-        tools = tuple(config.tools if config.tools is not None else _default_tools(config, cwd))
         runtime = config.extension_runtime or ExtensionRuntime(paths=config.paths)
         if config.load_extensions:
             runtime.load(
@@ -207,7 +199,7 @@ class CodingSession:
         if config.command_registry is None:
             config.command_registry = runtime.build_command_registry()
         resources = _with_shadow_diagnostics(resources, config.command_registry)
-        skill = _build_skill(config, resources, runtime.compose_tools(tools), cwd)
+        skill = _build_skill(config, resources, cwd)
 
         storage = config.storage
         if storage is None:
@@ -388,11 +380,6 @@ class CodingSession:
         return self._skill.instructions
 
     @property
-    def tools(self) -> tuple[AgentTool, ...]:
-        """The declared actions. Exactly one of these runs per step."""
-        return self._skill.actions
-
-    @property
     def skills(self) -> tuple[Skill, ...]:
         return self._resources.skills
 
@@ -417,17 +404,12 @@ class CodingSession:
         assert self._config.extension_runtime is not None
         return self._config.extension_runtime
 
-    # -- context -------------------------------------------------------------
+    # -- notebook ------------------------------------------------------------
 
     @property
-    def context(self) -> list[Turn]:
-        """The context the model sees next. This is the session's entire memory of the run."""
-        return self._runner.context
-
-    @property
-    def context_file(self) -> Path:
-        """The file the model edits to manage its context."""
-        return self._runner.context_file
+    def notebook(self) -> Notebook:
+        """The notebook the model sees next. This is the session's entire memory of the run."""
+        return self._runner.notebook
 
     @property
     def answer(self) -> str | None:
@@ -439,9 +421,7 @@ class CodingSession:
     @property
     def step_footprint(self) -> StepFootprint:
         """The token cost of the next step's prompt."""
-        return estimate_step_footprint(
-            instructions=self.system_prompt, context=self.context, tools=self.tools
-        )
+        return estimate_step_footprint(instructions=self.system_prompt, notebook=self.notebook)
 
     @property
     def context_usage(self) -> ContextUsage:
@@ -481,7 +461,7 @@ class CodingSession:
     # -- running -------------------------------------------------------------
 
     async def run(self, text: str) -> AsyncIterator[CodingSessionEvent]:
-        """Run one task, appending its text to the context as a user turn."""
+        """Run one task, appending its text to the notebook as a user cell."""
         if self._has_run:
             raise RuntimeError("CodingSession supports one run only")
         self._has_run = True
@@ -528,7 +508,7 @@ class CodingSession:
         return checkpoints(await self.session_entries())
 
     async def restore(self, entry_id: str, *, reason: str | None = None) -> StateRestoredEvent:
-        """Branch: adopt an earlier context as the live one."""
+        """Branch: adopt an earlier notebook as the live one."""
         event = await self._runner.restore(entry_id, reason=reason)
         return event
 
@@ -561,7 +541,7 @@ class CodingSession:
     async def set_model(self, model: str, *, provider_name: str | None = None) -> None:
         """Point the session at a different model.
 
-        Nothing has to be converted: the context is provider-neutral text.
+        Nothing has to be converted: the notebook is provider-neutral JSON.
         """
         self._config.model = model
         if provider_name is not None:
@@ -604,13 +584,8 @@ class CodingSession:
                 include_project_dir=self._config.project_resources_trusted,
             )
         resources = _discover(resource_paths, self._config)
-        builtin_tools = self._config.tools
-        if builtin_tools is None:
-            builtin_tools = _default_tools(self._config, cwd)
         candidate_config = replace(self._config, extension_runtime=successor)
-        skill = _build_skill(
-            candidate_config, resources, successor.compose_tools(builtin_tools), cwd
-        )
+        skill = _build_skill(candidate_config, resources, cwd)
         await runtime.emit_session_shutdown("reload")
         await runtime.aclose()
         self._config.extension_runtime = successor
@@ -624,17 +599,17 @@ class CodingSession:
         return self._resources
 
     async def new_session(self) -> None:
-        """Clear the context and start over in the same directory."""
+        """Clear the notebook and start over in the same directory."""
         await self._runner.reset(reason="new session")
 
-    async def resume(self) -> list[Turn]:
-        """Adopt the context recorded in the journal."""
+    async def resume(self) -> Notebook:
+        """Adopt the notebook recorded in the journal."""
         return await self._runner.load()
 
-    async def fork_from(self, context: list[Turn], *, parent_session_id: str | None) -> None:
-        """Adopt `context` as the live context, journaling the session forked from."""
+    async def fork_from(self, notebook: Notebook, *, parent_session_id: str | None) -> None:
+        """Adopt `notebook` as the live one, journaling the session forked from."""
         await self.append_custom_entry("fork", {"parent_session_id": parent_session_id})
-        await self._runner.reset(context, reason=f"forked from session {parent_session_id}")
+        await self._runner.reset(notebook, reason=f"forked from session {parent_session_id}")
 
     async def aclose(self) -> None:
         self._runner.cancel()
@@ -706,28 +681,12 @@ def _discover(resource_paths: RioResourcePaths, config: CodingSessionConfig) -> 
     )
 
 
-def _default_tools(config: CodingSessionConfig, cwd: Path) -> list[AgentTool]:
-    tools = create_coding_tools(
-        cwd=cwd,
-        shell_command_prefix=config.shell_command_prefix,
-        image_support=config.image_support,
-    )
-    unknown = set(config.exposed_tools) - {tool.name for tool in tools}
-    if unknown:
-        raise ValueError(f"Unknown coding tools: {', '.join(sorted(unknown))}")
-    return [tool for tool in tools if tool.name in config.exposed_tools]
-
-
 def _build_skill(
-    config: CodingSessionConfig,
-    resources: SessionResources,
-    tools: Sequence[AgentTool],
-    cwd: Path,
+    config: CodingSessionConfig, resources: SessionResources, cwd: Path
 ) -> HarnessSpec:
     instructions = build_skill_instructions(
         BuildSystemPromptOptions(
             cwd=cwd,
-            tools=tuple(tools),
             skills=resources.skills,
             custom_prompt=config.custom_prompt,
             append_system_prompt=config.append_system_prompt,
@@ -738,7 +697,9 @@ def _build_skill(
             + (config.extension_runtime.prompt_sections if config.extension_runtime else ()),
         )
     )
-    return build_coding_skill(CodingSkillOptions(instructions=instructions, tools=tuple(tools)))
+    return build_coding_skill(
+        CodingSkillOptions(instructions=instructions, executor=PapermillExecutor(cwd))
+    )
 
 
 def default_session_path(cwd: Path, *, paths: RioPaths | None = None) -> Path:
@@ -749,11 +710,6 @@ def default_session_path(cwd: Path, *, paths: RioPaths | None = None) -> Path:
 def jsonl_session_storage(path: Path | str) -> JsonlSessionStorage:
     """Return JSONL-backed journal storage."""
     return JsonlSessionStorage(path)
-
-
-def context_of(entry: SessionEntry) -> list[Turn] | None:
-    """Return the context an entry captured, if it captured one."""
-    return entry_context(entry)
 
 
 CommandHandler = Callable[[str], object]

@@ -17,8 +17,8 @@ Run a adhoc task:
 rio run "Fix gh issue 123."
 ```
 
-Rio exposes the `read`, `write`, `edit`, and `bash` tools by default.
-Use `--tools` to choose a subset.
+Rio works in a Jupyter notebook: it acts by adding Python and shell cells,
+which run in the project directory.
 
 Run a predefined workflow:
 
@@ -64,9 +64,9 @@ cd tests/lean && lake build
 See [the Lean behavior models](tests/lean/README.md) for their scope and limits.
 
 * `rio.ai` is a multi-provider LLM streaming SDK.
-* `rio.agent` is the [Context Language Model][CLM] runtime: the model manages its
-  own context by editing it as a file.
-* `rio.coding` supplies the autonomous coding skill and tools.
+* `rio.agent` is the [Context Language Model][CLM] runtime: the context is a
+  Jupyter notebook the model patches, and the runtime runs the changed cells.
+* `rio.coding` supplies the autonomous coding skill.
 * `rio.cli` is the public one-shot command-line entry point.
 
 [CLM]: https://arxiv.org/abs/2609.37725

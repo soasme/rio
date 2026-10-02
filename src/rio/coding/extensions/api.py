@@ -32,9 +32,8 @@ AGENT_EVENT_TYPES: frozenset[str] = frozenset(
         "step_end",
         "reasoning",
         "validation_error",
-        "action_start",
-        "action_end",
-        "context_edit",
+        "patch",
+        "execution",
         "queue_update",
         "entry_appended",
         "state_restored",
@@ -877,10 +876,10 @@ class ExtensionContext:
         return self._runtime.session_view.is_running
 
     @property
-    def context(self) -> list[dict[str, JSONValue]]:
-        """Return a copy of the context the model sees next, as `{role, text}` turns."""
+    def notebook(self) -> dict[str, JSONValue]:
+        """Return a copy of the notebook the model sees next."""
         self._generation.assert_active()
-        return deepcopy(self._runtime.session_view.context)
+        return deepcopy(self._runtime.session_view.notebook)
 
     @property
     def has_ui(self) -> bool:

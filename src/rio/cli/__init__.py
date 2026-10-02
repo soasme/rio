@@ -35,15 +35,6 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--provider", help="Provider name.")
     run_parser.add_argument("-m", "--model", help="Model name.")
     run_parser.add_argument("--cwd", type=Path, help="Working directory.")
-    run_parser.add_argument(
-        "--tools",
-        type=_parse_tools,
-        default=("read", "write", "edit", "bash", "respond"),
-        help=(
-            "Comma-separated tools to expose (default: read,write,edit,bash,respond; "
-            "available: read,write,edit,bash,respond)."
-        ),
-    )
     run_parser.add_argument("-t", "--thinking", help="Reasoning effort level.")
     run_parser.add_argument(
         "-e",
@@ -109,7 +100,6 @@ def _run(args: argparse.Namespace) -> None:
             "approve" if args.approve else "decline" if args.no_approve else None,
             args.resume,
             PrintOutputMode(args.output),
-            args.tools,
         )
     except ValueError as exc:
         args.parser.error(str(exc))
@@ -140,14 +130,6 @@ def _resolve_task(parts: Sequence[str]) -> str:
     if path.is_file() and path.suffix.lower() == ".md":
         return path.read_text(encoding="utf-8")
     return task
-
-
-def _parse_tools(value: str) -> tuple[str, ...]:
-    names = tuple(name.strip() for name in value.split(","))
-    available = {"read", "write", "edit", "bash", "respond"}
-    if not names or any(name not in available for name in names):
-        raise argparse.ArgumentTypeError("--tools must list read, write, edit, bash, or respond")
-    return tuple(dict.fromkeys(names))
 
 
 def main() -> None:

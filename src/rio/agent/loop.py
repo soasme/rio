@@ -1,41 +1,26 @@
-"""The Context Language Model (CLM) loop.
+"""The notebook loop: a Context Language Model whose context is a Jupyter notebook.
 
-The model manages its own context (arXiv:2609.37725). Before every step the
-runtime writes the context to a file. The model replies with text and one tool
-call; the runtime runs the tool, then reads the file back. If the model edited
-it, the edited turns replace the context, provided they fit the limit. The
-step's reply and observation are appended, and the loop repeats until an
-action terminates the run.
+The model manages its own context (arXiv:2609.37725), and the context is a
+runnable notebook rather than a transcript. Each step the model sees the whole
+notebook and replies with one `skill_step` call carrying a JSON Patch. The
+runtime applies it, rejects it through the retry path if the result is not a
+valid notebook or outgrows the limit, then runs the changed code cells. The
+notebook with their outputs is the next step's context. A step that sets
+`reply` ends the run.
 
 Validity is the runtime's job; strategy is the model's. The runtime never
-summarizes. It only reports the context size after every observation and,
-when the model lets the context outgrow its limit, withholds the oldest
-observations so the next request still fits.
+summarizes or drops cells. It only caps each new output's size.
 """
 
 from __future__ import annotations
 
-import json
-import tempfile
 from collections.abc import AsyncIterator
-from pathlib import Path
 
-from rio.agent.context import (
-    Turn,
-    context_tokens,
-    estimate_tokens,
-    parse_context,
-    read_context,
-    turn,
-    withhold_oldest,
-    write_context,
-)
 from rio.agent.errors import ProviderResponseError, RetriesExhaustedError
 from rio.agent.events import (
-    ActionEndEvent,
-    ActionStartEvent,
     AgentEvent,
-    ContextEditEvent,
+    ExecutionEvent,
+    PatchEvent,
     ReasoningEvent,
     RunEndEvent,
     RunStartEvent,
@@ -43,18 +28,28 @@ from rio.agent.events import (
     StepStartEvent,
     ValidationErrorEvent,
 )
-from rio.agent.prompt import build_messages, context_protocol
+from rio.agent.notebook import (
+    Notebook,
+    NotebookError,
+    PapermillExecutor,
+    append_cell,
+    apply_patch,
+    changed_cells,
+    error_output,
+    markdown_cell,
+    new_notebook,
+    notebook_tokens,
+)
+from rio.agent.prompt import STEP_TOOL_NAME, build_messages, notebook_protocol, skill_step_tool
 from rio.agent.skill import HarnessSpec
-from rio.ai.messages import AssistantMessage, TextContent, ToolCall, raw_tool_arguments
+from rio.ai.messages import AssistantMessage, ToolCall, raw_tool_arguments
 from rio.ai.provider import CancellationToken, ModelProvider
 from rio.ai.provider_events import AssistantDoneEvent, AssistantErrorEvent
-from rio.ai.tools import AgentToolResult
+from rio.ai.types import JSONObject
 
-#: The share of the context window the context may use; the rest is headroom
-#: for the system prompt, tool definitions, and the reply.
+#: The share of the context window the notebook may use; the rest is headroom
+#: for the system prompt, the tool definition, and the reply.
 CONTEXT_LIMIT_RATIO = 0.8
-#: The share of the limit at which each observation asks the model to compact.
-COMPACT_HINT_RATIO = 0.75
 DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
 
 
@@ -64,65 +59,54 @@ def context_limit(context_window_tokens: int) -> int:
     return int(context_window_tokens * CONTEXT_LIMIT_RATIO)
 
 
-def default_context_file() -> Path:
-    """Return a fresh private context file path."""
-    return Path(tempfile.mkdtemp(prefix="rio-context-")) / "CONTEXT.md"
-
-
-async def run_context_loop(
+async def run_notebook_loop(
     *,
     provider: ModelProvider,
     model: str,
     skill: HarnessSpec,
     observation: str | None = None,
-    context: list[Turn] | None = None,
-    context_file: Path | None = None,
+    notebook: Notebook | None = None,
     max_steps: int | None = None,
     max_retries: int = 2,
     context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
     signal: CancellationToken | None = None,
 ) -> AsyncIterator[AgentEvent]:
-    """Run the CLM loop, yielding one event per lifecycle transition.
+    """Run the notebook loop, yielding one event per lifecycle transition.
 
-    ``observation`` is appended to ``context`` as a user turn before the first step.
+    ``observation`` is appended to ``notebook`` as a user markdown cell before the first step.
     """
-    path = context_file or default_context_file()
     limit = context_limit(context_window_tokens)
-    system = skill.instructions + "\n\n" + context_protocol(path, limit)
-    actions = skill.action_by_name()
-    tools = list(skill.actions)
-    context = [dict(item) for item in context or []]
+    system = skill.instructions + "\n\n" + notebook_protocol(limit)
+    tool = skill_step_tool()
+    executor = skill.executor or PapermillExecutor()
+    notebook = notebook if notebook is not None else new_notebook()
     if observation is not None:
-        context.append(turn("user", observation))
+        notebook = append_cell(notebook, markdown_cell(observation, role="user"))
 
     yield RunStartEvent(skill=skill.name)
 
     step = 0
+    reply: str | None = None
     while max_steps is None or step < max_steps:
         if signal is not None and signal.is_cancelled():
             break
-
-        over = context_tokens(context) - limit
-        if over > 0:
-            context = withhold_oldest(context, over_tokens=over)
-        yield StepStartEvent(step=step, context=[dict(item) for item in context])
+        yield StepStartEvent(step=step, notebook=notebook)
 
         error_note: str | None = None
         attempt = 0
         while True:
-            rendered = write_context(path, context)
             assistant = await _call_model(
                 provider,
                 model,
                 system,
-                build_messages(context, error_note=error_note),
-                tools,
+                build_messages(notebook, limit_tokens=limit, error_note=error_note),
+                [tool],
                 signal,
             )
             if assistant.stop_reason == "error":
                 raise ProviderResponseError(assistant.error_message or "provider returned an error")
-            call = assistant.tool_calls[0] if assistant.tool_calls else None
-            error_note = _call_error(assistant, call, actions)
+            call = next((c for c in assistant.tool_calls if c.name == STEP_TOOL_NAME), None)
+            patched, error_note = _check(assistant, call, notebook, limit)
             if error_note is None:
                 break
             attempt += 1
@@ -130,70 +114,41 @@ async def run_context_loop(
             if attempt > max_retries:
                 raise RetriesExhaustedError(error_note)
 
-        assert call is not None
+        assert call is not None and patched is not None
         if assistant.text:
             yield ReasoningEvent(step=step, reasoning=assistant.text)
-        arguments = dict(call.arguments)
-        yield ActionStartEvent(step=step, name=call.name, arguments=dict(arguments))
-        try:
-            result = await actions[call.name].execute(
-                f"{skill.name}-step-{step}", arguments, signal
-            )
-            is_error = False
-        except Exception as exc:
-            # A failing action is an observation, not a crash.
-            result = AgentToolResult(content=[TextContent(text=f"{call.name} failed: {exc}")])
-            is_error = True
-        yield ActionEndEvent(step=step, name=call.name, result=result, is_error=is_error)
+        patch: list[JSONObject] = list(call.arguments["patch"])  # type: ignore[arg-type]
+        cells = changed_cells(notebook, patched)
+        yield PatchEvent(step=step, patch=patch, cells=cells)
+        if cells:
+            try:
+                patched = await executor(patched, cells)
+            except Exception as exc:
+                # A kernel that fails to start is an observation, not a crash.
+                patched["cells"][cells[0]]["outputs"] = [error_output(exc)]  # type: ignore[index]
+            yield ExecutionEvent(step=step, cells=cells, notebook=patched)
+        notebook = patched
 
-        edited = read_context(path)
-        note = ""
-        if edited is not None and edited.strip() != rendered.strip():
-            candidate = parse_context(edited)
-            before, after = context_tokens(context), context_tokens(candidate)
-            accepted = after <= limit
-            if accepted:
-                context = candidate
-                note = (
-                    f"\n[context edit applied: ~{before} -> ~{after} tokens, {len(context)} turns]"
-                )
-            else:
-                note = (
-                    f"\n[context edit rejected: ~{after} tokens is over the ~{limit}-token limit. "
-                    "Replace stale text with shorter summaries.]"
-                )
-            yield ContextEditEvent(
-                step=step,
-                accepted=accepted,
-                before_tokens=before,
-                after_tokens=after,
-                turns=len(candidate),
-            )
-
-        reply = "\n".join(
-            part for part in (assistant.text, f"{call.name} {_json(arguments)}") if part
-        )
-        if len(assistant.tool_calls) > 1:
-            note += "\n[only the first tool call ran: call one tool per reply]"
-        context.append(turn("assistant", reply))
-        observation_text = (result.text or "(no output)") + note
-        context.append(turn("tool", observation_text + _readout(context, limit, path)))
-
-        terminated = bool(result.terminate)
-        yield StepEndEvent(
-            step=step, context=[dict(item) for item in context], terminated=terminated
-        )
+        reply = call.arguments.get("reply")  # type: ignore[assignment]
+        if not isinstance(reply, str):
+            reply = None
+        if reply is not None:
+            notebook = append_cell(notebook, markdown_cell(reply, role="assistant"))
+        yield StepEndEvent(step=step, notebook=notebook, reply=reply)
         step += 1
-        if terminated:
+        if reply is not None:
             break
 
-    yield RunEndEvent(steps=step, context=[dict(item) for item in context])
+    yield RunEndEvent(steps=step, notebook=notebook, reply=reply)
 
 
-def _call_error(assistant: AssistantMessage, call: ToolCall | None, actions: dict) -> str | None:
-    """Return why a reply has no usable action, or None when it has one."""
+def _check(
+    assistant: AssistantMessage, call: ToolCall | None, notebook: Notebook, limit: int
+) -> tuple[Notebook | None, str | None]:
+    """Return the patched notebook, or why the reply has no usable patch."""
     if call is None:
-        return f"call exactly one tool; declared tools are {sorted(actions)}."
+        called = ", ".join(f"`{c.name}`" for c in assistant.tool_calls) or "no tool"
+        return None, f"call the `{STEP_TOOL_NAME}` tool; you called {called}."
     raw_arguments = raw_tool_arguments(call.arguments)
     if raw_arguments is not None:
         cause = (
@@ -201,25 +156,21 @@ def _call_error(assistant: AssistantMessage, call: ToolCall | None, actions: dic
             if assistant.stop_reason == "length"
             else "the arguments were not valid JSON"
         )
-        return (
-            f"your `{call.name}` arguments could not be parsed -- {cause} "
-            f"({len(raw_arguments)} characters were received). Retry with a smaller "
-            "action: write or edit the file in several steps instead of sending its "
-            "whole content in one call."
+        return None, (
+            f"your `{STEP_TOOL_NAME}` arguments could not be parsed -- {cause} "
+            f"({len(raw_arguments)} characters were received). Retry with a smaller patch."
         )
-    if call.name not in actions:
-        return f"unknown tool {call.name!r}; declared tools are {sorted(actions)}."
-    return None
-
-
-def _readout(context: list[Turn], limit: int, path: Path) -> str:
-    tokens = context_tokens(context) + estimate_tokens("\n[context: ~000000/000000 tokens]")
-    hint = f" -- compact {path} now" if tokens >= limit * COMPACT_HINT_RATIO else ""
-    return f"\n[context: ~{tokens}/{limit} tokens{hint}]"
-
-
-def _json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    try:
+        patched = apply_patch(notebook, call.arguments.get("patch"))
+    except NotebookError as exc:
+        return None, str(exc)
+    size = notebook_tokens(patched)
+    if size > limit and size >= notebook_tokens(notebook):
+        return None, (
+            f"the patched notebook would be ~{size} tokens, over the ~{limit}-token limit. "
+            "Remove stale outputs and cells, keeping short notes of what you still need."
+        )
+    return patched, None
 
 
 async def _call_model(

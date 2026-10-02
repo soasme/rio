@@ -44,11 +44,12 @@ class FakeSession:
     provider_name: str = "test-provider"
     available_models: tuple[str, ...] = ("test-model", "other-model")
     available_providers: tuple[str, ...] = ("test-provider",)
-    tools: tuple = ()
     skills: tuple = ()
     prompt_templates: tuple = ()
     context_files: tuple = ()
-    context: list = field(default_factory=lambda: [{"role": "user", "text": "fix the parser"}])
+    notebook: dict = field(
+        default_factory=lambda: {"cells": [{"cell_type": "markdown", "source": "fix the parser"}]}
+    )
     context_window_tokens: int = 200_000
     thinking_level: str = "medium"
     available_thinking_levels: tuple[str, ...] = ("off", "medium", "high")
@@ -148,13 +149,14 @@ class TestNoCompaction:
 
 
 class TestClmCommand:
-    def test_shows_the_context_file(self, registry, session) -> None:
+    def test_shows_the_notebook(self, registry, session) -> None:
         message = registry.execute(session, "/clm").message
-        assert message == "[[CTX_TURN 1 role=user]]\nfix the parser"
+        assert '"source": "fix the parser"' in message
 
-    def test_reports_an_empty_context(self, registry) -> None:
-        message = create_default_command_registry().execute(FakeSession(context=[]), "/clm").message
-        assert message == "Context is empty."
+    def test_reports_an_empty_notebook(self, registry) -> None:
+        session = FakeSession(notebook={"cells": []})
+        message = create_default_command_registry().execute(session, "/clm").message
+        assert message == "Notebook is empty."
 
 
 class TestStatus:
@@ -170,9 +172,6 @@ class TestStatus:
         assert "Provider: test-provider" in message
         assert "Session: session-1" in message
         assert "Session name: A session" in message
-
-    def test_counts_actions_not_tool_calls(self, registry, session) -> None:
-        assert "Actions: 0" in registry.execute(session, "/session").message
 
     def test_thinking_status_appears(self, registry, session) -> None:
         assert "Thinking mode: medium" in registry.execute(session, "/session").message

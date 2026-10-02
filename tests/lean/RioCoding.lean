@@ -1,4 +1,4 @@
-/- Behavioral models for rio.coding's tools, journal, and dispatch.
+/- Behavioral models for rio.coding's edit validation, journal, and dispatch.
 
 These are executable specifications of decisions made by the Python code, not
 proofs about Python source. External I/O, hashes, and provider calls are inputs.
@@ -8,9 +8,9 @@ import RioAgent
 
 namespace RioCoding
 
-open RioAgent (Context)
+open RioAgent (Notebook Cell)
 
-/- tools.py: edit validation and terminal response decisions. -/
+/- tools.py: edit validation. -/
 inductive EditError where
   | emptyOldText | notFound | duplicate | overlap | noChange
 deriving DecidableEq, Repr
@@ -32,31 +32,14 @@ theorem missing_text_rejected : validateEdit false 0 false true = .error .notFou
 theorem unchanged_edit_rejected : validateEdit false 1 false false = .error .noChange := by rfl
 theorem unique_changed_edit_accepted : validateEdit false 1 false true = .ok () := by rfl
 
-inductive CodingAction where
-  | read | write | edit | bash | respond
-deriving DecidableEq, Repr
-
-inductive ToolOutcome where
-  | observation | termination | rejected
-deriving DecidableEq, Repr
-
-/-- `respond` ends the run; an empty message is rejected as a failed action. -/
-def toolOutcome (action : CodingAction) (emptyMessage : Bool) : ToolOutcome :=
-  if action == .respond then
-    if emptyMessage then .rejected else .termination
-  else .observation
-
-theorem respond_is_terminal : toolOutcome .respond false = .termination := by rfl
-theorem empty_respond_is_rejected : toolOutcome .respond true = .rejected := by rfl
-theorem other_actions_are_observations (empty : Bool) :
-    toolOutcome .bash empty = .observation := by rfl
-
-/- session_store/tree.py: explicit leaf pointers and latest branch checkpoint. -/
+/- session_store/tree.py: the notebook is rebuilt from the journal. A reset holds a
+whole notebook; a step holds a patch, given here as the function it applies. -/
 structure JournalEntry where
   id : String
   parent : Option String
   leafPointer : Option String := none
-  snapshot : Option Context := none
+  reset : Option Notebook := none
+  patch : Option (Notebook → Notebook) := none
 
 def latestLeaf : List JournalEntry → Option String
   | [] => none
@@ -65,50 +48,43 @@ def latestLeaf : List JournalEntry → Option String
       | some pointer => pointer.leafPointer
       | none => entries.getLast?.map (·.id)
 
-def latestSnapshot : List JournalEntry → Option Context
-  | [] => none
-  | entry :: rest =>
-      match latestSnapshot rest with
-      | some context => some context
-      | none => entry.snapshot
+def applyEntry (notebook : Notebook) (entry : JournalEntry) : Notebook :=
+  match entry.reset, entry.patch with
+  | some fresh, _ => fresh
+  | none, some patch => patch notebook
+  | none, none => notebook
 
-def resumeContext (path : List JournalEntry) : Context :=
-  (latestSnapshot path).getD []
+/-- Replay a resolved root-to-leaf branch path onto an empty notebook. -/
+def resumeNotebook (path : List JournalEntry) : Notebook := path.foldl applyEntry []
 
-theorem empty_journal_has_empty_context : resumeContext [] = [] := by rfl
+theorem empty_journal_has_empty_notebook : resumeNotebook [] = [] := by rfl
 
-private theorem latestSnapshot_append_checkpoint (history : List JournalEntry)
-    (entry : JournalEntry) (context : Context) :
-    latestSnapshot (history ++ [{ entry with snapshot := some context }]) = some context := by
-  induction history with
-  | nil => rfl
-  | cons first rest ih => simp [latestSnapshot, ih]
+theorem steps_replay_in_order (history : List JournalEntry) (entry : JournalEntry)
+    (patch : Notebook → Notebook) :
+    resumeNotebook (history ++ [{ entry with reset := none, patch := some patch }]) =
+      patch (resumeNotebook history) := by
+  simp [resumeNotebook, applyEntry]
 
-theorem latest_checkpoint_wins (history : List JournalEntry) (entry : JournalEntry)
-    (context : Context) :
-    resumeContext (history ++ [{ entry with snapshot := some context }]) = context := by
-  simp [resumeContext, latestSnapshot_append_checkpoint]
+theorem a_reset_shadows_everything_before_it (history : List JournalEntry)
+    (entry : JournalEntry) (fresh : Notebook) :
+    resumeNotebook (history ++ [{ entry with reset := some fresh }]) = fresh := by
+  simp [resumeNotebook, applyEntry]
 
-theorem metadata_after_checkpoint_does_not_change_context (history : List JournalEntry)
-    (entry : JournalEntry) (context : Context) :
-    resumeContext (history ++ [{ entry with snapshot := some context },
-      { id := "metadata", parent := some entry.id }]) = context := by
-  have snapshot : latestSnapshot (history ++ [{ entry with snapshot := some context },
-      { id := "metadata", parent := some entry.id }]) = some context := by
-    induction history with
-    | nil => rfl
-    | cons first rest ih => simp [latestSnapshot, ih]
-  simp [resumeContext, snapshot]
+theorem metadata_does_not_change_the_notebook (history : List JournalEntry) (id : String) :
+    resumeNotebook (history ++ [{ id := id, parent := none }]) = resumeNotebook history := by
+  simp [resumeNotebook, applyEntry]
 
-/- session.py: a resumed run appends the new task to the journaled context. -/
-def resumeWithTask (path : List JournalEntry) (task : String) : Context :=
-  resumeContext path ++ [{ role := "user", text := task }]
+/- session.py: a resumed run appends the new task to the journaled notebook. -/
+def userCell (task : String) : Cell := { id := 0, code := false, source := task, outputs := [] }
 
-theorem resume_keeps_the_journaled_context (history : List JournalEntry) (entry : JournalEntry)
-    (context : Context) (task : String) :
-    resumeWithTask (history ++ [{ entry with snapshot := some context }]) task =
-      context ++ [{ role := "user", text := task }] := by
-  simp [resumeWithTask, latest_checkpoint_wins]
+def resumeWithTask (path : List JournalEntry) (task : String) : Notebook :=
+  resumeNotebook path ++ [userCell task]
+
+theorem resume_keeps_the_journaled_notebook (history : List JournalEntry)
+    (entry : JournalEntry) (fresh : Notebook) (task : String) :
+    resumeWithTask (history ++ [{ entry with reset := some fresh }]) task =
+      fresh ++ [userCell task] := by
+  simp [resumeWithTask, a_reset_shadows_everything_before_it]
 
 /- commands.py and thinking.py: command routing and mode cycling. -/
 inductive Route where

@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from rio.ai.tools import AgentTool
 from rio.coding.session_store.entries import SessionEntry, TurnEntry, ValidationFailureEntry
 from rio.coding.session_usage import collect_session_usage
 
@@ -45,13 +44,12 @@ def calculate_session_stats(
     entries: Sequence[SessionEntry],
     *,
     instructions: str,
-    tools: Sequence[AgentTool] = (),
     provider: str | None = None,
     model: str | None = None,
 ) -> SessionStats:
     """Aggregate estimated token footprint and activity across a session journal.
 
-    One committed step is exactly one action call, so ``step_count`` is
+    One committed step is exactly one `skill_step` call, so ``step_count`` is
     also the tool-call count.
     """
     turn_count = sum(1 for entry in entries if isinstance(entry, TurnEntry))
@@ -61,7 +59,6 @@ def calculate_session_stats(
     usage = collect_session_usage(
         entries,
         instructions=instructions,
-        tools=tools,
         provider=provider,
         model=model,
     )

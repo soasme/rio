@@ -1,17 +1,16 @@
-"""HarnessSpec: the fixed instructions and action tools for a domain."""
+"""HarnessSpec: the fixed instructions for a domain and how its notebook runs."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rio.ai.tools import AgentTool
+from rio.agent.notebook import NotebookExecutor
 
 
 @dataclass(frozen=True, slots=True)
 class HarnessSpec:
     name: str
     instructions: str
-    actions: tuple[AgentTool, ...] = ()
-
-    def action_by_name(self) -> dict[str, AgentTool]:
-        return {action.name: action for action in self.actions}
+    #: Runs the changed cells of a patched notebook. `None` runs them with
+    #: papermill in the current directory.
+    executor: NotebookExecutor | None = None

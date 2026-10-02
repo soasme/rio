@@ -1,32 +1,34 @@
-"""Drives CLM runs and writes them to the context journal.
+"""Drives notebook runs and writes them to the journal.
 
 This is the layer between `rio.agent.Harness` and the coding session proper.
 It owns what the runtime deliberately does not:
 
-* **Journaling.** Each step is written as a `StepEntry` holding its action,
-  its observation, and the full context that resulted, so a resume is one read
-  of the newest snapshot. The step's reasoning is journaled separately as a
-  `ReasoningEntry` for diagnostics; it already lives in the context.
-* **Checkpoints.** Any journaled snapshot can be adopted as the live context.
+* **Journaling.** Each step is written as a `StepEntry` holding the JSON Patch
+  from the last journaled notebook to the new one, so the notebook is always
+  derived from the session file. The step's reasoning is journaled separately
+  as a `ReasoningEntry` for diagnostics; it is not in the notebook.
+* **Checkpoints.** The notebook at any journaled step can be adopted as the
+  live one.
 """
 
 from __future__ import annotations
 
+import copy
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from pathlib import Path
 
 from rio.agent import (
-    ActionEndEvent,
-    ActionStartEvent,
     Harness,
     HarnessConfig,
     HarnessSpec,
+    Notebook,
+    PatchEvent,
     ReasoningEvent,
     StepEndEvent,
     StepStartEvent,
-    Turn,
     ValidationErrorEvent,
+    diff,
+    new_notebook,
 )
 from rio.ai.provider import ModelProvider
 from rio.coding.events import (
@@ -37,7 +39,6 @@ from rio.coding.events import (
     StateRestoredEvent,
 )
 from rio.coding.session_store import (
-    ActionRecord,
     LeafEntry,
     ReasoningEntry,
     SessionEntry,
@@ -46,17 +47,11 @@ from rio.coding.session_store import (
     StepEntry,
     ValidationFailureEntry,
     entries_by_id,
-    entry_context,
     latest_leaf_id,
+    notebook_at_entry,
 )
 
-#: Observations are journaled for auditability, not for replay -- nothing ever
-#: reads one back into a prompt. A generous cap keeps a single runaway command's
-#: output from dominating the session file.
-DEFAULT_JOURNALED_OBSERVATION_LIMIT = 16 * 1024
-
-#: Reasoning is journaled for the same reason. It is prose the model wrote
-#: rather than arbitrary program output, so a tighter cap suffices. `0`
+#: Reasoning is journaled for diagnostics, never read back into a prompt. `0`
 #: disables the writes.
 DEFAULT_JOURNALED_REASONING_LIMIT = 8 * 1024
 
@@ -72,19 +67,7 @@ class SessionRunnerConfig:
     max_steps: int | None = None
     max_retries: int = 2
     context_window_tokens: int = 128_000
-    journaled_observation_limit: int = DEFAULT_JOURNALED_OBSERVATION_LIMIT
     journaled_reasoning_limit: int = DEFAULT_JOURNALED_REASONING_LIMIT
-    context_file: Path | None = None
-
-
-@dataclass(slots=True)
-class _StepInProgress:
-    """The pieces of one step, gathered across the events that announce them."""
-
-    step: int
-    action: ActionRecord | None = None
-    observation: str | None = None
-    observation_truncated: bool = False
 
 
 class SessionRunner:
@@ -94,17 +77,18 @@ class SessionRunner:
         self,
         config: SessionRunnerConfig,
         *,
-        context: list[Turn] | None = None,
+        notebook: Notebook | None = None,
         parent_entry_id: str | None = None,
     ) -> None:
         self._config = config
-        self._context: list[Turn] = [dict(item) for item in context or []]
+        self._notebook: Notebook = copy.deepcopy(notebook) if notebook else new_notebook()
+        #: The notebook the journal ends at; the next step patch starts here.
+        self._journaled: Notebook = copy.deepcopy(self._notebook)
         self._parent_entry_id = parent_entry_id
         self._harness = self._rebuilt_harness()
         self._running = False
         self._steps_this_run = 0
         self._terminated = False
-        self._last_observation: str | None = None
         self._answer: str | None = None
 
     # -- inspection ----------------------------------------------------------
@@ -114,20 +98,15 @@ class SessionRunner:
         return self._config
 
     @property
-    def context(self) -> list[Turn]:
-        """The context the model sees next. This is the session's entire memory."""
-        return [dict(item) for item in self._context]
-
-    @property
-    def context_file(self) -> Path:
-        """The file the model edits to manage its context."""
-        return self._harness.context_file
+    def notebook(self) -> Notebook:
+        """The notebook the model sees next. This is the session's entire memory."""
+        return copy.deepcopy(self._notebook)
 
     @property
     def answer(self) -> str | None:
         """What the last run answered, or `None` if the current turn has not answered yet.
 
-        The answer is the message the terminating action carried.
+        The answer is the `reply` of the step that ended the run.
         """
         return self._answer
 
@@ -148,7 +127,7 @@ class SessionRunner:
     # -- running -------------------------------------------------------------
 
     async def run(self, message: str | None = None) -> AsyncIterator[CodingSessionEvent]:
-        """Run the configured skill once with ``message`` in its history."""
+        """Run the configured skill once with ``message`` as a new user cell."""
         if self._running:
             raise RuntimeError("SessionRunner is already running")
         self._running = True
@@ -161,7 +140,7 @@ class SessionRunner:
 
             yield SessionRunEndEvent(
                 steps=self._steps_this_run,
-                context=self.context,
+                notebook=self.notebook,
                 answer=self._answer,
             )
             for entry in await self._write_tip_pointer():
@@ -172,11 +151,10 @@ class SessionRunner:
 
     async def _run_once(self, message: str | None) -> AsyncIterator[CodingSessionEvent]:
         """Run the loop until it terminates or is cancelled."""
-        pending: _StepInProgress | None = None
+        cells: list[int] = []
         async for event in self._harness.run(message):
             if isinstance(event, StepStartEvent):
-                pending = _StepInProgress(step=event.step)
-                self._context = [dict(item) for item in event.context]
+                self._notebook = copy.deepcopy(event.notebook)
                 yield event
 
             elif isinstance(event, ReasoningEvent):
@@ -205,38 +183,26 @@ class SessionRunner:
                     yield EntryAppendedEvent(entry=written)
                 yield event
 
-            elif isinstance(event, ActionStartEvent):
-                if pending is not None:
-                    pending.action = ActionRecord(name=event.name, arguments=dict(event.arguments))
-                yield event
-
-            elif isinstance(event, ActionEndEvent):
-                text = event.result.text or ""
-                if event.result.terminate and not event.is_error:
-                    self._answer = text or None
-                if pending is not None:
-                    limit = self._config.journaled_observation_limit
-                    pending.observation_truncated = len(text) > limit
-                    pending.observation = text[:limit]
-                    self._last_observation = text or None
+            elif isinstance(event, PatchEvent):
+                cells = list(event.cells)
                 yield event
 
             elif isinstance(event, StepEndEvent):
-                self._context = [dict(item) for item in event.context]
+                self._notebook = copy.deepcopy(event.notebook)
                 self._steps_this_run += 1
-                if pending is not None and pending.action is not None:
-                    entry = StepEntry(
-                        parent_id=self._parent_entry_id,
-                        step=pending.step,
-                        state={"context": self.context},
-                        action=pending.action,
-                        observation=pending.observation,
-                        observation_truncated=pending.observation_truncated,
-                        terminated=event.terminated,
-                    )
-                    for written in await self._write([entry]):
-                        yield EntryAppendedEvent(entry=written)
-                pending = None
+                if event.reply is not None:
+                    self._answer = event.reply
+                entry = StepEntry(
+                    parent_id=self._parent_entry_id,
+                    step=event.step,
+                    patch=diff(self._journaled, self._notebook),
+                    cells=cells,
+                    reply=event.reply,
+                )
+                self._journaled = self.notebook
+                for written in await self._write([entry]):
+                    yield EntryAppendedEvent(entry=written)
+                cells = []
                 self._terminated = event.terminated
                 yield event
 
@@ -284,66 +250,57 @@ class SessionRunner:
         tip = self._parent_entry_id
         return await self._write([LeafEntry(parent_id=tip, entry_id=tip)], advance=False)
 
-    async def load(self) -> list[Turn]:
-        """Adopt the context recorded in storage, if any, and return it."""
+    async def load(self) -> Notebook:
+        """Adopt the notebook recorded in storage, if any, and return it."""
         if self._config.storage is None:
-            return self.context
+            return self.notebook
         entries = await self._config.storage.read_all()
         if not entries:
-            return self.context
-        leaf = latest_leaf_id(entries)
-        if leaf is not None:
-            from rio.coding.session_store.tree import state_at_entry
-
-            _state, snapshot = state_at_entry(entries, leaf)
-            if snapshot is not None:
-                self._context = entry_context(snapshot) or []
+            return self.notebook
         # Hang the next write off the branch tip, not off whatever entry
         # happens to be last in the file -- a pointer is not a parent.
         self._parent_entry_id = latest_leaf_id(entries) or entries[-1].id
-        self._harness = self._rebuilt_harness()
-        return self.context
+        self._adopt(notebook_at_entry(entries, self._parent_entry_id))
+        return self.notebook
 
     async def restore(self, entry_id: str, *, reason: str | None = None) -> StateRestoredEvent:
-        """Adopt a journaled checkpoint as the live context."""
+        """Adopt the notebook at a journaled checkpoint as the live one."""
         if self._config.storage is None:
             raise RuntimeError("cannot restore a checkpoint without storage")
         entries = await self._config.storage.read_all()
-        entry = entries_by_id(entries).get(entry_id)
-        if entry is None:
+        if entry_id not in entries_by_id(entries):
             raise KeyError(f"no session entry {entry_id!r}")
-        context = entry_context(entry)
-        if context is None:
-            raise ValueError(f"session entry {entry_id!r} carries no context")
-
-        self._context = context
+        self._adopt(notebook_at_entry(entries, entry_id))
         self._answer = None
         reset = StateResetEntry(
             parent_id=entry_id,
-            state={"context": self.context},
+            notebook=self.notebook,
             reason=reason,
             restored_from_entry_id=entry_id,
         )
         await self._write([reset])
         await self._write_tip_pointer()
-        self._harness = self._rebuilt_harness()
-        return StateRestoredEvent(context=self.context, entry_id=entry_id, reason=reason)
+        return StateRestoredEvent(notebook=self.notebook, entry_id=entry_id, reason=reason)
 
-    async def reset(self, context: list[Turn] | None = None, *, reason: str | None = None) -> None:
-        """Replace the context wholesale, journaling the reset."""
-        self._context = [dict(item) for item in context or []]
+    async def reset(self, notebook: Notebook | None = None, *, reason: str | None = None) -> None:
+        """Replace the notebook wholesale, journaling the reset."""
+        self._adopt(notebook if notebook is not None else new_notebook())
         self._answer = None
         reset = StateResetEntry(
-            parent_id=self._parent_entry_id, state={"context": self.context}, reason=reason
+            parent_id=self._parent_entry_id, notebook=self.notebook, reason=reason
         )
         await self._write([reset])
         await self._write_tip_pointer()
+
+    def _adopt(self, notebook: Notebook) -> None:
+        self._notebook = copy.deepcopy(notebook)
+        self._journaled = copy.deepcopy(notebook)
         self._harness = self._rebuilt_harness()
 
     def rebind(self, *, provider: ModelProvider | None = None, model: str | None = None) -> None:
-        """Point the runner at a different provider or model, keeping the context.
+        """Point the runner at a different provider or model, keeping the notebook.
 
-        The context is provider-neutral text, so nothing has to be translated.
+        The notebook is provider-neutral JSON, so nothing has to be translated.
         """
         if provider is not None:
             self._config.provider = provider
@@ -357,7 +314,6 @@ class SessionRunner:
         self._harness = self._rebuilt_harness()
 
     def _rebuilt_harness(self) -> Harness:
-        previous = getattr(self, "_harness", None)
         return Harness(
             HarnessConfig(
                 provider=self._config.provider,
@@ -366,9 +322,6 @@ class SessionRunner:
                 max_steps=self._config.max_steps,
                 max_retries=self._config.max_retries,
                 context_window_tokens=self._config.context_window_tokens,
-                context_file=(
-                    previous.context_file if previous is not None else self._config.context_file
-                ),
             ),
-            context=self._context,
+            notebook=self._notebook,
         )

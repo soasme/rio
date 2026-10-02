@@ -1,10 +1,10 @@
-"""Errors raised by the context loop."""
+"""Errors raised by the notebook loop."""
 
 from __future__ import annotations
 
 
 class RetriesExhaustedError(Exception):
-    """The model failed to produce a usable action within `max_retries` retries."""
+    """The model failed to produce a usable step within `max_retries` retries."""
 
 
 class ProviderResponseError(Exception):

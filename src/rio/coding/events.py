@@ -1,8 +1,8 @@
 """Coding-session events consumed by frontends and SDK users.
 
 A coding session emits two kinds of event. The first kind comes straight from
-`rio.agent`: the CLM step lifecycle (`StepStartEvent`, `ActionStartEvent`,
-`ContextEditEvent`, ...). The second kind, defined here, is about the session
+`rio.agent`: the notebook step lifecycle (`StepStartEvent`, `PatchEvent`,
+`ExecutionEvent`, ...). The second kind, defined here, is about the session
 rather than the run -- queued input, model changes, journal writes, retries.
 """
 
@@ -19,11 +19,11 @@ from rio.coding.session_store.entries import SessionEntry
 
 
 class SessionRunEndEvent(WireModel):
-    """One `prompt()`/`continue_()` run finished, with the context it settled on."""
+    """One `prompt()`/`continue_()` run finished, with the notebook it settled on."""
 
     type: Literal["run_end"] = "run_end"
     steps: int = 0
-    context: list[dict[str, JSONValue]] = Field(default_factory=list)
+    notebook: dict[str, JSONValue] = Field(default_factory=dict)
     answer: str | None = None
     will_retry: bool = False
 
@@ -43,17 +43,17 @@ class QueueUpdateEvent(WireModel):
 
 
 class EntryAppendedEvent(WireModel):
-    """An entry was appended to the context journal."""
+    """An entry was appended to the notebook journal."""
 
     type: Literal["entry_appended"] = "entry_appended"
     entry: SessionEntry
 
 
 class StateRestoredEvent(WireModel):
-    """The context was replaced from a checkpoint. This is rio's form of branching."""
+    """The notebook was replaced from a checkpoint. This is rio's form of branching."""
 
     type: Literal["state_restored"] = "state_restored"
-    context: list[dict[str, JSONValue]] = Field(default_factory=list)
+    notebook: dict[str, JSONValue] = Field(default_factory=dict)
     entry_id: str | None = None
     reason: str | None = None
 

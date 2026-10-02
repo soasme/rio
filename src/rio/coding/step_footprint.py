@@ -1,16 +1,15 @@
-"""Per-step token-footprint estimation for CLM runs.
+"""Per-step token-footprint estimation for notebook runs.
 
-Each step's prompt is the fixed skill instructions, the tool definitions, and
-the context the model manages. Only the context varies, and the model keeps it
-under its limit by editing its context file.
+Each step's prompt is the fixed skill instructions, the `skill_step` tool, and
+the notebook the model manages. Only the notebook varies, and the model keeps
+it under its limit by patching it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 
-from rio.agent import render_context
+from rio.agent import Notebook, notebook_tokens, skill_step_tool
 from rio.ai.messages import (
     AgentMessage,
     AssistantMessage,
@@ -19,7 +18,6 @@ from rio.ai.messages import (
     message_text,
 )
 from rio.ai.tools import AgentTool
-from rio.ai.types import JSONObject
 
 CHARS_PER_TOKEN = 4
 MESSAGE_OVERHEAD_TOKENS = 4
@@ -64,7 +62,7 @@ def estimate_tool_tokens(tool: AgentTool) -> int:
 
 @dataclass(frozen=True, slots=True)
 class StepFootprint:
-    """Token cost of one step's prompt: instructions + context + tools."""
+    """Token cost of one step's prompt: instructions + notebook + the step tool."""
 
     instructions_tokens: int
     context_tokens: int
@@ -78,14 +76,13 @@ class StepFootprint:
 def estimate_step_footprint(
     *,
     instructions: str,
-    context: Sequence[JSONObject],
-    tools: Sequence[AgentTool] = (),
+    notebook: Notebook,
 ) -> StepFootprint:
     """Return the estimated token footprint of one step's prompt."""
     return StepFootprint(
         instructions_tokens=estimate_text_tokens(instructions),
-        context_tokens=estimate_text_tokens(render_context(context)) if context else 0,
-        tools_tokens=sum(estimate_tool_tokens(tool) for tool in tools),
+        context_tokens=notebook_tokens(notebook),
+        tools_tokens=estimate_tool_tokens(skill_step_tool()),
     )
 
 

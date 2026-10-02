@@ -1,7 +1,7 @@
 """Token-footprint usage analytics for rio coding sessions.
 
 Per-step usage is a `rio.coding.step_footprint` estimate of each step's prompt,
-computed from the context the journal recorded, rather than a provider count.
+computed from the notebook the journal replays to, rather than a provider count.
 Presentation lives in the session export layer.
 """
 
@@ -11,7 +11,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from rio.ai.tools import AgentTool
 from rio.coding.provider_catalog import builtin_provider_entry, model_cost_for_input_tokens
 from rio.coding.session_store.entries import (
     BranchSummaryEntry,
@@ -19,8 +18,8 @@ from rio.coding.session_store.entries import (
     SessionEntry,
     StepEntry,
     ThinkingLevelChangeEntry,
-    entry_context,
 )
+from rio.coding.session_store.tree import notebook_at_entry
 from rio.coding.step_footprint import StepFootprint, estimate_step_footprint
 
 __all__ = [
@@ -36,11 +35,11 @@ _TOKENS_PER_MILLION = 1_000_000
 
 @dataclass(frozen=True, slots=True)
 class StepUsage:
-    """Estimated token footprint and chosen action for one committed step."""
+    """Estimated token footprint and the cells run for one committed step."""
 
     number: int
     timestamp: str
-    action_name: str
+    cells: tuple[int, ...]
     instructions_tokens: int
     context_tokens: int
     tools_tokens: int
@@ -66,7 +65,6 @@ class SessionUsage:
     """Aggregated estimated usage for the steps in a session journal."""
 
     steps: tuple[StepUsage, ...]
-    action_calls: tuple[tuple[str, int], ...]
     events: tuple[UsageEvent, ...] = ()
 
     @property
@@ -103,17 +101,15 @@ def collect_session_usage(
     entries: Sequence[SessionEntry],
     *,
     instructions: str,
-    tools: Sequence[AgentTool] = (),
     provider: str | None = None,
     model: str | None = None,
 ) -> SessionUsage:
-    """Collect per-step estimated token usage, action counts, and notable events.
+    """Collect per-step estimated token usage and notable events.
 
-    ``instructions`` and ``tools`` are the skill's fixed instructions and
-    action definitions; a step entry only stores its context.
+    ``instructions`` are the skill's fixed instructions; a step entry only
+    stores its notebook patch.
     """
     steps: list[StepUsage] = []
-    actions: dict[str, int] = {}
     pending_events: list[tuple[str, str, str]] = []
     events: list[UsageEvent] = []
 
@@ -126,11 +122,8 @@ def collect_session_usage(
         if not isinstance(entry, StepEntry):
             continue
 
-        actions[entry.action.name] = actions.get(entry.action.name, 0) + 1
         footprint = estimate_step_footprint(
-            instructions=instructions,
-            context=entry_context(entry) or [],
-            tools=tools,
+            instructions=instructions, notebook=notebook_at_entry(entries, entry.id)
         )
         estimated = (
             estimated_step_cost(provider, model, footprint)
@@ -142,7 +135,7 @@ def collect_session_usage(
             StepUsage(
                 number=step_number,
                 timestamp=_entry_time(entry.timestamp),
-                action_name=entry.action.name,
+                cells=tuple(entry.cells),
                 instructions_tokens=footprint.instructions_tokens,
                 context_tokens=footprint.context_tokens,
                 tools_tokens=footprint.tools_tokens,
@@ -161,8 +154,7 @@ def collect_session_usage(
             for timestamp, kind, label in pending_events
         )
 
-    ordered_actions = tuple(sorted(actions.items(), key=lambda item: (-item[1], item[0])))
-    return SessionUsage(steps=tuple(steps), action_calls=ordered_actions, events=tuple(events))
+    return SessionUsage(steps=tuple(steps), events=tuple(events))
 
 
 def _entry_time(timestamp: float) -> str:

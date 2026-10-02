@@ -5,7 +5,7 @@ from the runtime:
 
 * `/compact` is gone. The model manages its own context, so the harness never
   summarizes it.
-* `/clm` shows the context file the model edits, and `/session` reports
+* `/clm` shows the notebook the model sees next, and `/session` reports
   the next step's prompt size against the context limit.
 """
 
@@ -16,8 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from rio.agent import render_context
-from rio.ai.tools import AgentTool
+from rio.agent import render_notebook
 from rio.ai.types import JSONValue
 from rio.coding.prompt_templates import PromptTemplate
 from rio.coding.provider_catalog import BUILTIN_PROVIDER_CATALOG, builtin_provider_entry
@@ -35,8 +34,8 @@ from rio.coding.thinking import normalize_thinking_level
 LOGIN_PROVIDER_ALIASES = {
     "anthropic-api": ("anthropic", "api-key"),
     "anthropic-subscription": ("anthropic", "subscription"),
-
 }
+
 
 class CommandSession(Protocol):
     """Session attributes available to slash-command handlers."""
@@ -57,9 +56,6 @@ class CommandSession(Protocol):
     def available_providers(self) -> Sequence[str]: ...
 
     @property
-    def tools(self) -> Sequence[AgentTool]: ...
-
-    @property
     def skills(self) -> Sequence[Skill]: ...
 
     @property
@@ -69,7 +65,7 @@ class CommandSession(Protocol):
     def context_files(self) -> Sequence[ProjectContextFile]: ...
 
     @property
-    def context(self) -> list[dict[str, JSONValue]]: ...
+    def notebook(self) -> dict[str, JSONValue]: ...
 
     @property
     def context_window_tokens(self) -> int: ...
@@ -130,7 +126,6 @@ class CommandResult:
     model_picker_requested: bool = False
     model_selection_provider: str | None = None
     model_selection_model: str | None = None
-    tools_picker_requested: bool = False
     scoped_models_picker_requested: bool = False
     skills_picker_requested: bool = False
     theme_picker_requested: bool = False
@@ -246,9 +241,9 @@ def create_default_command_registry() -> CommandRegistry:
         SlashCommand(
             name="clm",
             usage="/clm",
-            description="Show the context the model sees next, as its context file.",
+            description="Show the notebook the model sees next.",
             handler=_clm_command,
-            search_terms=("state", "memory", "history", "context"),
+            search_terms=("state", "memory", "history", "context", "notebook"),
         )
     )
     registry.register(
@@ -367,15 +362,6 @@ def create_default_command_registry() -> CommandRegistry:
     )
     registry.register(
         SlashCommand(
-            name="tools",
-            usage="/tools",
-            description="Browse actions available to the active session.",
-            handler=_tools_command,
-            search_terms=("actions", "capabilities", "reference"),
-        )
-    )
-    registry.register(
-        SlashCommand(
             name="scoped-models",
             usage="/scoped-models",
             description="Choose models available to quick-cycle with Ctrl+P.",
@@ -472,10 +458,11 @@ def _new_command(context: CommandContext) -> CommandResult:
 
 
 def _clm_command(context: CommandContext) -> CommandResult:
-    """Show the context the model sees next, rendered as its context file."""
-    if not context.session.context:
-        return CommandResult(handled=True, message="Context is empty.")
-    return CommandResult(handled=True, message=render_context(context.session.context).rstrip())
+    """Show the notebook the model sees next, as JSON."""
+    notebook = context.session.notebook
+    if not notebook.get("cells"):
+        return CommandResult(handled=True, message="Notebook is empty.")
+    return CommandResult(handled=True, message=render_notebook(notebook))
 
 
 def _export_command(context: CommandContext) -> CommandResult:
@@ -498,16 +485,17 @@ def _status_command(context: CommandContext) -> CommandResult:
         lines.append(f"Session: {session.session_id}")
     if session.session_title:
         lines.append(f"Session name: {session.session_title}")
-    lines.extend([
-        f"Model: {session.model}",
-        f"Provider: {session.provider_name}",
-        f"CWD: {session.cwd}",
-        f"Actions: {len(session.tools)}",
-        f"Skills: {len(session.skills)}",
-        f"Prompt templates: {len(session.prompt_templates)}",
-        f"Context files: {len(session.context_files)}",
-        f"Context window: {session.context_window_tokens}",
-    ])
+    lines.extend(
+        [
+            f"Model: {session.model}",
+            f"Provider: {session.provider_name}",
+            f"CWD: {session.cwd}",
+            f"Skills: {len(session.skills)}",
+            f"Prompt templates: {len(session.prompt_templates)}",
+            f"Context files: {len(session.context_files)}",
+            f"Context window: {session.context_window_tokens}",
+        ]
+    )
     lines.extend(_footprint_lines(session))
     if session.provider_name == "huggingface":
         route = getattr(session, "inference_provider", None)
@@ -539,7 +527,7 @@ def _footprint_lines(session: CommandSession) -> list[str]:
         f"{footprint.total_tokens} tokens "
         f"(instructions={footprint.instructions_tokens}, "
         f"context={footprint.context_tokens}, "
-        f"actions={footprint.tools_tokens})",
+        f"step tool={footprint.tools_tokens})",
         f"Context window used: {usage.utilization:.1%} (context limit {usage.limit_tokens:,})",
     ]
 
@@ -688,10 +676,6 @@ def _format_sessions(context: CommandContext) -> str:
     for record in records:
         lines.append(_format_session_record(record))
     return "\n".join(lines)
-
-
-def _tools_command(context: CommandContext) -> CommandResult:
-    return CommandResult(handled=True, tools_picker_requested=True)
 
 
 def _model_command(context: CommandContext) -> CommandResult:

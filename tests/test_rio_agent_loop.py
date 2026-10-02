@@ -1,35 +1,29 @@
-"""Tests for `run_context_loop`, the CLM loop (arXiv:2609.37725).
+"""Tests for `run_notebook_loop`, the CLM loop whose context is a notebook.
 
-Uses `rio.ai.FakeProvider` to script deterministic model responses -- no
-network, no API key -- so these assert the runtime's own guarantees: the
-context is mirrored to a file, the model's edits to that file become its next
-context, unusable replies are retried, and actions never crash the loop.
+Uses `rio.ai.FakeProvider` to script model replies and an in-process executor,
+so these assert the runtime's own guarantees: patches become the next context,
+changed cells run, invalid patches are retried, and a reply ends the run.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+import json
 
 import pytest
 
-from conftest import FINISH, make_skill, step_response
+from conftest import add_code, add_markdown, make_skill, step_response
 from rio.agent import (
-    ActionEndEvent,
-    ContextEditEvent,
+    ExecutionEvent,
+    PatchEvent,
     ProviderResponseError,
     ReasoningEvent,
     RetriesExhaustedError,
     RunEndEvent,
     StepEndEvent,
     ValidationErrorEvent,
-    parse_context,
-    render_context,
-    run_context_loop,
-    turn,
+    run_notebook_loop,
 )
 from rio.ai import (
-    AgentTool,
-    AgentToolResult,
     AssistantDoneEvent,
     AssistantErrorEvent,
     AssistantMessage,
@@ -43,200 +37,164 @@ from rio.ai import (
 async def _run(provider, *, skill=None, **kwargs) -> list:
     return [
         event
-        async for event in run_context_loop(
+        async for event in run_notebook_loop(
             provider=provider, model="m", skill=skill or make_skill(), **kwargs
         )
     ]
 
 
-def _rewrite_tool(path: Path, text: str) -> AgentTool:
-    """A tool that overwrites the context file, as a model would with `write` or `bash`."""
-
-    async def execute(tool_call_id, arguments, signal=None, on_update=None):
-        path.write_text(text)
-        return AgentToolResult(content=[TextContent(text="")])
-
-    return AgentTool(
-        name="rewrite",
-        label="Rewrite",
-        description="Rewrite the context file.",
-        parameters={"type": "object", "properties": {}},
-        execute_fn=execute,
-    )
+def _request_notebook(provider, index: int) -> dict:
+    text = provider.calls[index][2][0].text
+    return json.loads(text.split("```json\n", 1)[1].split("\n```", 1)[0])
 
 
 @pytest.mark.asyncio
-async def test_each_step_appends_the_reply_and_observation_to_the_context():
+async def test_the_task_is_a_user_cell_and_the_request_is_the_whole_notebook():
+    provider = FakeProvider([step_response(reply="hi")])
+
+    await _run(provider, observation="do the task")
+
+    request = provider.calls[0][2]
+    assert len(request) == 1
+    cells = _request_notebook(provider, 0)["cells"]
+    assert cells[0]["source"] == "do the task"
+    assert cells[0]["metadata"] == {"rio": {"role": "user"}}
+    assert "JSON Patch" in provider.calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_changed_cells_run_and_their_outputs_reach_the_next_request():
     provider = FakeProvider(
         [
-            step_response(reasoning="look first", action="advance", args={"note": "a"}),
-            step_response(reasoning="done", action="finish"),
+            step_response(reasoning="compute", patch=[add_code("x = 41\nprint(x + 1)")]),
+            step_response(reply="42"),
         ]
     )
 
-    events = await _run(provider, observation="do the task")
+    events = await _run(provider, observation="task")
 
-    run_end = events[-1]
-    assert isinstance(run_end, RunEndEvent)
-    assert run_end.steps == 2
-    roles = [item["role"] for item in run_end.context]
-    assert roles == ["user", "assistant", "tool", "assistant", "tool"]
-    assert run_end.context[1]["text"] == 'look first\nadvance {"note": "a"}'
-    assert run_end.context[2]["text"].startswith("observed:a\n[context: ~")
+    patch = next(e for e in events if isinstance(e, PatchEvent))
+    assert patch.cells == [1]
+    assert any(isinstance(e, ReasoningEvent) and e.reasoning == "compute" for e in events)
+    cell = _request_notebook(provider, 1)["cells"][1]
+    assert cell["outputs"][0]["text"] == "42\n"
 
 
 @pytest.mark.asyncio
-async def test_the_model_sees_its_context_as_messages_and_its_reasoning_stays():
+async def test_unchanged_cells_keep_their_outputs_and_later_cells_see_their_variables():
     provider = FakeProvider(
         [
-            step_response(reasoning="REMEMBER", action="advance"),
-            step_response(action="finish"),
+            step_response(patch=[add_code("x = 1\nprint('first')")]),
+            step_response(
+                patch=[
+                    {"op": "replace", "path": "/cells/1/outputs", "value": []},
+                    add_code("print(x + 1)"),
+                ]
+            ),
+            step_response(reply="done"),
         ]
     )
 
-    events = await _run(provider, observation="do the task")
+    events = await _run(provider, observation="task")
 
-    assert any(isinstance(e, ReasoningEvent) and e.reasoning == "REMEMBER" for e in events)
-    second_request = provider.calls[1][2]
-    assert [message.role for message in second_request] == ["user", "assistant", "user"]
-    assert "REMEMBER" in second_request[1].text
-
-
-@pytest.mark.asyncio
-async def test_the_context_is_mirrored_to_a_file_named_in_the_system_prompt(tmp_path):
-    path = tmp_path / "CONTEXT.md"
-    provider = FakeProvider([step_response(action="finish")])
-
-    await _run(provider, observation="do the task", context_file=path)
-
-    system = provider.calls[0][1]
-    assert str(path) in system
-    assert "[[CTX_TURN" in system
-    assert parse_context(path.read_text()) == [turn("user", "do the task")]
+    second = [e for e in events if isinstance(e, ExecutionEvent)][1]
+    assert second.cells == [2]
+    cells = second.notebook["cells"]
+    assert cells[1]["outputs"] == []
+    assert cells[2]["outputs"][0]["text"] == "2\n"
 
 
 @pytest.mark.asyncio
-async def test_an_edit_to_the_context_file_becomes_the_next_context(tmp_path):
-    path = tmp_path / "CONTEXT.md"
-    compacted = render_context([turn("notes", "task: ship it; found the bug in a.py")])
-    skill = make_skill(actions=(_rewrite_tool(path, compacted), FINISH))
-    provider = FakeProvider([step_response(action="rewrite"), step_response(action="finish")])
-
-    events = await _run(provider, skill=skill, observation="x" * 2000, context_file=path)
-
-    edit = next(e for e in events if isinstance(e, ContextEditEvent))
-    assert edit.accepted
-    assert edit.after_tokens < edit.before_tokens
-    second_request = provider.calls[1][2]
-    assert "x" * 2000 not in second_request[0].text
-    assert "found the bug in a.py" in second_request[0].text
-    final = events[-1].context
-    assert final[0] == turn("notes", "task: ship it; found the bug in a.py")
-    assert "[context edit applied" in final[2]["text"]
-
-
-@pytest.mark.asyncio
-async def test_an_edit_over_the_limit_is_rejected(tmp_path):
-    path = tmp_path / "CONTEXT.md"
-    skill = make_skill(actions=(_rewrite_tool(path, "y" * 4000), FINISH))
-    provider = FakeProvider([step_response(action="rewrite"), step_response(action="finish")])
-
-    events = await _run(
-        provider,
-        skill=skill,
-        observation="task",
-        context_file=path,
-        context_window_tokens=1000,
-    )
-
-    edit = next(e for e in events if isinstance(e, ContextEditEvent))
-    assert not edit.accepted
-    final = events[-1].context
-    assert final[0] == turn("user", "task")
-    assert "[context edit rejected" in final[2]["text"]
-
-
-@pytest.mark.asyncio
-async def test_a_context_over_the_limit_withholds_the_oldest_observations():
-    async def _big(tool_call_id, arguments, signal=None, on_update=None):
-        return AgentToolResult(content=[TextContent(text="z" * 2400)])
-
-    big = AgentTool(
-        name="advance",
-        label="Big",
-        description="Produce a lot of output.",
-        parameters={"type": "object", "properties": {}},
-        execute_fn=_big,
-    )
-    skill = make_skill(actions=(big, FINISH))
+async def test_markdown_only_patches_run_nothing():
     provider = FakeProvider(
-        [
-            step_response(action="advance"),
-            step_response(action="advance"),
-            step_response(action="finish"),
-        ]
+        [step_response(patch=[add_markdown("a note")]), step_response(reply="ok")]
     )
 
-    events = await _run(provider, skill=skill, observation="task", context_window_tokens=1200)
+    events = await _run(provider, observation="task")
 
-    third_request = provider.calls[2][2]
-    text = "\n".join(message.text for message in third_request)
-    assert "withheld by the runtime" in text
-    assert text.count("z" * 2400) == 1
-    assert isinstance(events[-1], RunEndEvent)
+    assert not any(isinstance(e, ExecutionEvent) for e in events)
+    assert _request_notebook(provider, 1)["cells"][1]["source"] == "a note"
 
 
 @pytest.mark.asyncio
-async def test_each_observation_reports_the_context_size_and_asks_to_compact_near_the_limit():
-    provider = FakeProvider([step_response(action="advance"), step_response(action="finish")])
-
-    events = await _run(provider, observation="t" * 2400, context_window_tokens=1000)
-
-    observation = next(e for e in events if isinstance(e, StepEndEvent)).context[-1]["text"]
-    assert "/800 tokens -- compact " in observation
-
-
-@pytest.mark.asyncio
-async def test_termination_comes_from_the_action_result():
-    provider = FakeProvider([step_response(action="finish")])
+async def test_a_reply_ends_the_run_and_is_kept_as_a_cell():
+    provider = FakeProvider([step_response(reply="all done")])
 
     events = await _run(provider, observation="start", max_steps=100)
 
     step_end = next(e for e in events if isinstance(e, StepEndEvent))
-    assert step_end.terminated is True
-    assert events[-1].steps == 1
+    assert step_end.terminated
+    run_end = events[-1]
+    assert isinstance(run_end, RunEndEvent)
+    assert (run_end.steps, run_end.reply) == (1, "all done")
+    last = run_end.notebook["cells"][-1]
+    assert (last["source"], last["metadata"]) == ("all done", {"rio": {"role": "assistant"}})
 
 
 @pytest.mark.asyncio
-async def test_a_reply_without_a_tool_call_is_retried_with_a_transient_correction():
+async def test_an_invalid_notebook_is_retried_with_a_transient_correction():
+    bad = {"op": "add", "path": "/cells/-", "value": {"cell_type": "nope", "source": ""}}
+    provider = FakeProvider([step_response(patch=[bad]), step_response(reply="ok")])
+
+    events = await _run(provider, observation="start")
+
+    error = next(e for e in events if isinstance(e, ValidationErrorEvent)).error
+    assert "invalid notebook" in error
+    assert "Rejected reply" in provider.calls[1][2][0].text
+    assert len(events[-1].notebook["cells"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_patch_that_fails_to_apply_is_retried():
+    missing = {"op": "remove", "path": "/cells/9"}
+    provider = FakeProvider([step_response(patch=[missing]), step_response(reply="ok")])
+
+    events = await _run(provider, observation="start")
+
+    error = next(e for e in events if isinstance(e, ValidationErrorEvent)).error
+    assert error.startswith("patch failed")
+
+
+@pytest.mark.asyncio
+async def test_a_patch_that_grows_the_notebook_over_the_limit_is_rejected():
+    provider = FakeProvider(
+        [step_response(patch=[add_markdown("z" * 4000)]), step_response(reply="ok")]
+    )
+
+    events = await _run(provider, observation="start", context_window_tokens=1000)
+
+    error = next(e for e in events if isinstance(e, ValidationErrorEvent)).error
+    assert "over the ~800-token limit" in error
+
+
+@pytest.mark.asyncio
+async def test_a_patch_that_shrinks_an_oversized_notebook_is_accepted():
+    shrink = {"op": "replace", "path": "/cells/0/source", "value": "short"}
+    provider = FakeProvider([step_response(patch=[shrink], reply="ok")])
+
+    events = await _run(provider, observation="z" * 4000, context_window_tokens=1000)
+
+    assert not any(isinstance(e, ValidationErrorEvent) for e in events)
+    assert events[-1].notebook["cells"][0]["source"] == "short"
+
+
+@pytest.mark.asyncio
+async def test_a_reply_without_the_step_tool_is_retried():
     no_call = AssistantMessage(content=[TextContent(text="I am done")], stop_reason="stop")
     provider = FakeProvider(
-        [[AssistantDoneEvent(reason="stop", message=no_call)], step_response(action="finish")]
+        [[AssistantDoneEvent(reason="stop", message=no_call)], step_response(reply="ok")]
     )
 
     events = await _run(provider, observation="start")
 
     error = next(e for e in events if isinstance(e, ValidationErrorEvent)).error
-    assert "call exactly one tool" in error
-    assert "Rejected reply" in provider.calls[1][2][-1].text
-    assert "Rejected reply" not in render_context(events[-1].context)
-
-
-@pytest.mark.asyncio
-async def test_an_unknown_tool_is_rejected():
-    provider = FakeProvider(
-        [step_response(action="does_not_exist"), step_response(action="finish")]
-    )
-
-    events = await _run(provider, observation="start")
-
-    error = next(e for e in events if isinstance(e, ValidationErrorEvent)).error
-    assert "unknown tool 'does_not_exist'" in error
+    assert "call the `skill_step` tool" in error
 
 
 @pytest.mark.asyncio
 async def test_retries_exhausted_raises():
-    provider = FakeProvider([step_response(action="nope"), step_response(action="nope")])
+    bad = step_response(patch=[{"op": "remove", "path": "/nope"}])
+    provider = FakeProvider([bad, bad])
 
     with pytest.raises(RetriesExhaustedError):
         await _run(provider, observation="start", max_retries=1)
@@ -252,56 +210,27 @@ async def test_a_provider_error_is_raised_instead_of_retried():
 
 
 @pytest.mark.asyncio
-async def test_a_failing_action_becomes_an_observation_instead_of_crashing():
-    async def _explode(tool_call_id, arguments, signal=None, on_update=None):
-        raise RuntimeError("boom")
+async def test_a_failing_executor_becomes_an_output_instead_of_crashing():
+    async def broken(notebook, changed):
+        raise RuntimeError("no kernel")
 
-    explode = AgentTool(
-        name="advance",
-        label="Explode",
-        description="Fail.",
-        parameters={"type": "object", "properties": {}},
-        execute_fn=_explode,
-    )
-    skill = make_skill(actions=(explode, FINISH))
-    provider = FakeProvider([step_response(action="advance"), step_response(action="finish")])
+    provider = FakeProvider([step_response(patch=[add_code("1")]), step_response(reply="ok")])
 
-    events = await _run(provider, skill=skill, observation="start")
+    await _run(provider, skill=make_skill(executor=broken), observation="start")
 
-    failed = next(e for e in events if isinstance(e, ActionEndEvent) and e.name == "advance")
-    assert failed.is_error
-    assert "advance failed: boom" in provider.calls[1][2][-1].text
-
-
-@pytest.mark.asyncio
-async def test_only_the_first_of_several_tool_calls_runs():
-    message = AssistantMessage(
-        content=[
-            ToolCall(id="a", name="advance", arguments={"note": "1"}),
-            ToolCall(id="b", name="advance", arguments={"note": "2"}),
-        ],
-        stop_reason="toolUse",
-    )
-    provider = FakeProvider(
-        [[AssistantDoneEvent(reason="toolUse", message=message)], step_response(action="finish")]
-    )
-
-    events = await _run(provider, observation="start")
-
-    ran = [e for e in events if isinstance(e, ActionEndEvent)]
-    assert [e.result.text for e in ran] == ["observed:1", "terminal"]
-    assert "only the first tool call ran" in provider.calls[1][2][-1].text
+    output = _request_notebook(provider, 1)["cells"][1]["outputs"][0]
+    assert (output["ename"], output["evalue"]) == ("RuntimeError", "no kernel")
 
 
 @pytest.mark.asyncio
 async def test_a_truncated_call_is_reported_as_truncation():
-    partial = '{"note": "aaa'
+    partial = '{"patch": [{"op'
     message = AssistantMessage(
-        content=[ToolCall(id="c", name="advance", arguments=malformed_tool_arguments(partial))],
+        content=[ToolCall(id="c", name="skill_step", arguments=malformed_tool_arguments(partial))],
         stop_reason="length",
     )
     provider = FakeProvider(
-        [[AssistantDoneEvent(reason="length", message=message)], step_response(action="finish")]
+        [[AssistantDoneEvent(reason="length", message=message)], step_response(reply="ok")]
     )
 
     events = await _run(provider, observation="start", max_retries=1)
@@ -309,3 +238,12 @@ async def test_a_truncated_call_is_reported_as_truncation():
     error = next(e for e in events if isinstance(e, ValidationErrorEvent)).error
     assert "output token limit" in error
     assert str(len(partial)) in error
+
+
+@pytest.mark.asyncio
+async def test_max_steps_stops_a_run_without_a_reply():
+    provider = FakeProvider([step_response(patch=[add_markdown("a")])])
+
+    events = await _run(provider, observation="start", max_steps=1)
+
+    assert (events[-1].steps, events[-1].reply) == (1, None)

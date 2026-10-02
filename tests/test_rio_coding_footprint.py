@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 
+from rio.agent import markdown_cell, new_notebook
 from rio.ai.messages import AssistantMessage, AssistantMessageDiagnostic, TextContent
 from rio.ai.tools import AgentTool, AgentToolResult
 from rio.coding.diagnostics import (
@@ -14,7 +15,7 @@ from rio.coding.diagnostics import (
 )
 from rio.coding.paths import RioPaths
 from rio.coding.session_stats import calculate_session_stats
-from rio.coding.session_store import ActionRecord, StepEntry
+from rio.coding.session_store import StepEntry
 from rio.coding.session_store.entries import (
     BranchSummaryEntry,
     ModelChangeEntry,
@@ -34,18 +35,14 @@ from rio.coding.step_footprint import (
 )
 
 
+def _notebook(*sources: str) -> dict:
+    notebook = new_notebook()
+    notebook["cells"] = [markdown_cell(source) for source in sources]
+    return notebook
+
+
 async def _noop_execute(tool_call_id, arguments, signal=None, on_update=None):
     return AgentToolResult(content=[TextContent(text="ok")])
-
-
-def _make_tool(name: str = "advance") -> AgentTool:
-    return AgentTool(
-        name=name,
-        label="Advance",
-        description="Advance the skill by one step.",
-        parameters={"type": "object", "properties": {}},
-        execute_fn=_noop_execute,
-    )
 
 
 class TestStepFootprint:
@@ -56,21 +53,20 @@ class TestStepFootprint:
         assert estimate_text_tokens("abcde") == 2
 
     def test_tool_token_estimate_grows_with_schema_size(self) -> None:
-        small = _make_tool("a")
-        big = AgentTool(
-            name="a",
-            label="Big",
-            description="x" * 500,
-            parameters={"type": "object", "properties": {"p": {"type": "string"}}},
-            execute_fn=_noop_execute,
-        )
-        assert estimate_tool_tokens(big) > estimate_tool_tokens(small)
+        def tool(description: str) -> AgentTool:
+            return AgentTool(
+                name="a",
+                label="A",
+                description=description,
+                parameters={"type": "object", "properties": {}},
+                execute_fn=_noop_execute,
+            )
 
-    def test_footprint_breaks_down_instructions_context_and_tools(self) -> None:
+        assert estimate_tool_tokens(tool("x" * 500)) > estimate_tool_tokens(tool("x"))
+
+    def test_footprint_breaks_down_instructions_notebook_and_step_tool(self) -> None:
         footprint = estimate_step_footprint(
-            instructions="You are a coding skill.",
-            context=[{"role": "user", "text": "fix the bug"}],
-            tools=(_make_tool(),),
+            instructions="You are a coding skill.", notebook=_notebook("fix the bug")
         )
         assert isinstance(footprint, StepFootprint)
         assert footprint.instructions_tokens > 0
@@ -80,24 +76,21 @@ class TestStepFootprint:
             footprint.instructions_tokens + footprint.context_tokens + footprint.tools_tokens
         )
 
-    def test_footprint_shrinks_when_the_model_compacts_its_context(self) -> None:
-        full = [{"role": "tool", "text": "x" * 4000}, {"role": "tool", "text": "y" * 4000}]
-        compacted = [{"role": "notes", "text": "x and y checked; both fine"}]
-
-        before = estimate_step_footprint(instructions="i", context=full)
-        after = estimate_step_footprint(instructions="i", context=compacted)
+    def test_footprint_shrinks_when_the_model_compacts_its_notebook(self) -> None:
+        before = estimate_step_footprint(
+            instructions="i", notebook=_notebook("x" * 4000, "y" * 4000)
+        )
+        after = estimate_step_footprint(instructions="i", notebook=_notebook("x and y fine"))
 
         assert after.total_tokens < before.total_tokens
 
     def test_context_window_utilization(self) -> None:
-        footprint = estimate_step_footprint(
-            instructions="instructions", context=[{"role": "user", "text": "g"}]
-        )
+        footprint = estimate_step_footprint(instructions="instructions", notebook=_notebook("g"))
         utilization = context_window_utilization(footprint, DEFAULT_CONTEXT_WINDOW_TOKENS)
         assert 0 < utilization < 1
 
     def test_context_window_utilization_rejects_non_positive_window(self) -> None:
-        footprint = estimate_step_footprint(instructions="i", context=[])
+        footprint = estimate_step_footprint(instructions="i", notebook=new_notebook())
         try:
             context_window_utilization(footprint, 0)
         except ValueError:
@@ -110,12 +103,11 @@ def _make_chain(count: int) -> list[StepEntry]:
     entries: list[StepEntry] = []
     parent = None
     for index in range(count):
+        cell = markdown_cell(f"finding {index}")
         entry = StepEntry(
             parent_id=parent,
             step=index,
-            state={"context": [{"role": "tool", "text": f"finding {index}"}]},
-            action=ActionRecord(name="read", arguments={"path": f"file{index}.py"}),
-            observation=f"observation {index}",
+            patch=[{"op": "add", "path": "/cells/-", "value": cell}],
         )
         entries.append(entry)
         parent = entry.id
@@ -125,20 +117,15 @@ def _make_chain(count: int) -> list[StepEntry]:
 class TestSessionUsage:
     def test_collect_session_usage_reports_one_step_per_entry(self) -> None:
         entries = _make_chain(3)
-        usage = collect_session_usage(entries, instructions="instructions", tools=(_make_tool(),))
+        usage = collect_session_usage(entries, instructions="instructions")
 
         assert [step.number for step in usage.steps] == [1, 2, 3]
-        assert usage.action_calls == (("read", 3),)
+        assert usage.steps[0].context_tokens < usage.steps[2].context_tokens
         assert usage.total_tokens == sum(step.total_tokens for step in usage.steps)
         assert all(step.estimated_cost is None for step in usage.steps)
 
     def test_journaled_reasoning_does_not_change_the_step_footprint(self) -> None:
-        """Journaling is free at prompt time: nothing journaled reaches a prompt.
-
-        A step's footprint is instructions + context + tools. A
-        `ReasoningEntry` is none of those, however long it is, so a journal
-        with one beside every step measures exactly the same as one without.
-        """
+        """Journaling is free at prompt time: reasoning never reaches the notebook."""
         entries = _make_chain(3)
         noisy = [
             item
@@ -153,20 +140,13 @@ class TestSessionUsage:
         noisy_usage = collect_session_usage(noisy, instructions="instructions")
 
         assert noisy_usage.steps == bare_usage.steps
-        assert noisy_usage.total_tokens == bare_usage.total_tokens
 
     def test_collect_session_usage_positions_events_against_the_next_step(self) -> None:
         entries = _make_chain(1)
         model_change = ModelChangeEntry(parent_id=entries[0].id, model="gpt-5")
         thinking_change = ThinkingLevelChangeEntry(parent_id=model_change.id, thinking_level="high")
         branch = BranchSummaryEntry(parent_id=thinking_change.id, summary="did stuff")
-        next_step = StepEntry(
-            parent_id=branch.id,
-            step=1,
-            state={"context": []},
-            action=ActionRecord(name="respond", arguments={}),
-            terminated=True,
-        )
+        next_step = StepEntry(parent_id=branch.id, step=1, reply="done")
 
         usage = collect_session_usage(
             [*entries, model_change, thinking_change, branch, next_step],
@@ -179,25 +159,19 @@ class TestSessionUsage:
         assert all(event.step_number == 2 for event in usage.events)
 
     def test_estimated_step_cost_prices_the_whole_footprint_as_input(self) -> None:
-        footprint = estimate_step_footprint(
-            instructions="i" * 1000, context=[{"role": "user", "text": "g"}]
-        )
+        footprint = estimate_step_footprint(instructions="i" * 1000, notebook=_notebook("g"))
         cost = estimated_step_cost("openai", "gpt-4.1", footprint)
         assert cost is not None
-        expected = footprint.total_tokens * 2.0 / 1_000_000
-        assert cost == expected
+        assert cost == footprint.total_tokens * 2.0 / 1_000_000
 
     def test_estimated_step_cost_is_none_for_an_unknown_provider(self) -> None:
-        footprint = estimate_step_footprint(instructions="i", context=[])
+        footprint = estimate_step_footprint(instructions="i", notebook=new_notebook())
         assert estimated_step_cost("no-such-provider", "no-such-model", footprint) is None
 
     def test_collect_session_usage_prices_steps_when_provider_and_model_given(self) -> None:
         entries = _make_chain(2)
         usage = collect_session_usage(
-            entries,
-            instructions="instructions",
-            provider="openai",
-            model="gpt-4.1",
+            entries, instructions="instructions", provider="openai", model="gpt-4.1"
         )
         assert all(step.estimated_cost is not None for step in usage.steps)
         assert usage.total_cost == sum(step.estimated_cost for step in usage.steps)
@@ -210,9 +184,7 @@ class TestSessionStats:
         steps[0].parent_id = turn.id
         failure = ValidationFailureEntry(parent_id=steps[-1].id, step=4, attempt=1, error="bad")
 
-        stats = calculate_session_stats(
-            [turn, *steps, failure], instructions="instructions", tools=(_make_tool(),)
-        )
+        stats = calculate_session_stats([turn, *steps, failure], instructions="instructions")
 
         assert stats.turn_count == 1
         assert stats.step_count == 4
@@ -228,13 +200,6 @@ class TestSessionStats:
         assert stats.step_count == 0
         assert stats.average_step_tokens is None
         assert stats.estimated_cost is None
-
-    def test_session_stats_step_count_matches_session_usage_action_count(self) -> None:
-        """One committed step is exactly one action call."""
-        entries = _make_chain(6)
-        stats = calculate_session_stats(entries, instructions="instructions")
-        usage = collect_session_usage(entries, instructions="instructions")
-        assert stats.step_count == sum(count for _name, count in usage.action_calls)
 
 
 class TestDiagnostics:
