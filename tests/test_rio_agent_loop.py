@@ -259,7 +259,7 @@ async def test_the_notebook_records_the_kernel_and_stamps_cells_that_ran():
     first, second = _request_notebook(provider, 0), _request_notebook(provider, 1)
     assert first["metadata"]["rio"]["kernel"] == {"id": "k1", "running": False}
     assert second["metadata"]["rio"]["kernel"] == {"id": "k1", "running": True}
-    assert second["cells"][1]["metadata"] == {"rio": {"kernel": "k1"}}
+    assert second["cells"][1]["metadata"] == {"rio": {"kernel": "k1", "defines": ["x"]}}
 
 
 @pytest.mark.asyncio
@@ -303,5 +303,5 @@ async def test_a_patch_that_reads_a_variable_from_a_stale_cell_is_rejected():
     events = await _run(provider, skill=skill, notebook=events[-1].notebook, observation="more")
 
     error = next(e for e in events if isinstance(e, ValidationErrorEvent)).error
-    assert error.startswith("cell 4 reads `x`, which only stale cell 1 defines")
+    assert error.startswith("cell 4 reads `x`, which only stale cell 1 defined")
     assert events[-1].notebook["cells"][4]["outputs"][0]["text"] == "42\n"

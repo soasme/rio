@@ -20,15 +20,17 @@ structure Cell where
   outputs : List String
   /-- The id of the kernel that last ran the cell. -/
   kernel : Option Nat := none
-  /-- Names the cell's source defines and reads, as found statically. -/
+  /-- Names the cell bound when it last ran, and names its source reads. -/
   defines : List String := []
   reads : List String := []
 deriving DecidableEq, Repr
 
-/-- The live kernel: its id, and the outputs a cell produces when it runs. -/
+/-- The live kernel: its id, the outputs a cell produces when it runs, and the
+names the run binds (recorded by the kernel, not read from the source). -/
 structure Kernel where
   id : Nat
   run : Cell → List String
+  binds : Cell → List String
 
 abbrev Notebook := List Cell
 
@@ -126,11 +128,26 @@ theorem redefining_the_name_satisfies_the_read (current : Nat) (others : List Ce
         reads := [name] } = false := by
   simp [readsStale]
 
+/-- In a new kernel, each name only stale cells defined is bound to a placeholder
+that fails when used, so reads the static check misses still cannot see a value. -/
+def placeholders (current : Nat) (cells : List Cell) (name : String) : Bool :=
+  staleDefines current cells name && !liveDefines current cells name
+
+theorem a_rejected_read_is_a_placeholder (current : Nat) (others : List Cell) (cell : Cell)
+    (name : String) (h : name ∈ cell.reads) (fresh : cell.defines.contains name = false)
+    (bad : placeholders current others name = true) : readsStale current others cell = true := by
+  simp [placeholders] at bad
+  simp [readsStale, List.any_eq_true]
+  refine ⟨name, h, ?_⟩
+  simp_all
+
 /-! ## Merging outputs -/
 
 /-- Changed cells take the outputs of their run; every other cell keeps its own. -/
 def mergeCell (before : Notebook) (kernel : Kernel) (cell : Cell) : Cell :=
-  if isChanged before cell then { cell with outputs := kernel.run cell, kernel := some kernel.id }
+  if isChanged before cell then
+    { cell with outputs := kernel.run cell, kernel := some kernel.id,
+                defines := kernel.binds cell }
   else cell
 
 def merge (before : Notebook) (kernel : Kernel) (after : Notebook) : Notebook :=
@@ -151,6 +168,11 @@ theorem merge_keeps_every_cell (before : Notebook) (kernel : Kernel)
   intro cell _
   split <;> rfl
 
+theorem cells_that_ran_record_what_they_bound (before : Notebook) (kernel : Kernel)
+    (cell : Cell) (h : isChanged before cell = true) :
+    (mergeCell before kernel cell).defines = kernel.binds cell := by
+  simp [mergeCell, h]
+
 theorem cells_that_ran_are_not_stale (before : Notebook) (kernel : Kernel) (cell : Cell)
     (h : isChanged before cell = true) : isStale kernel.id (mergeCell before kernel cell) = false := by
   simp [mergeCell, h, isStale]
@@ -162,9 +184,11 @@ def runInOrder (fails : Cell → Bool) (kernel : Kernel) : List Cell → List Ce
   | [] => []
   | cell :: rest =>
       if fails cell then
-        { cell with outputs := kernel.run cell, kernel := some kernel.id } ::
-          rest.map (fun later => { later with outputs := [], kernel := none })
-      else { cell with outputs := kernel.run cell, kernel := some kernel.id } ::
+        { cell with outputs := kernel.run cell, kernel := some kernel.id,
+                    defines := kernel.binds cell } ::
+          rest.map (fun later => { later with outputs := [], kernel := none, defines := [] })
+      else { cell with outputs := kernel.run cell, kernel := some kernel.id,
+                       defines := kernel.binds cell } ::
         runInOrder fails kernel rest
 
 theorem cells_after_a_failure_get_no_outputs (fails : Cell → Bool) (kernel : Kernel)

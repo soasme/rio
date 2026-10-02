@@ -28,17 +28,27 @@ keeps that kernel alive; it talks to it over local sockets. A resume, rewind,
 or new session starts an empty kernel.
 
 The notebook records the kernel. `metadata.rio.kernel` holds the current
-kernel's `id` and whether it is `running`, and each code cell that ran has
-`metadata.rio.kernel` set to the id of the kernel that ran it. A new kernel gets
-a new id, so after a resume, rewind, or new session every cell that ran before
-is stale: its variables, open files, and subprocesses may be gone. Each request
-lists the stale cells. A cell may stay stale, but a patch is rejected when a
-cell it runs reads a name that only stale cells define and no cell from the
-current kernel does. Names are found statically, after IPython turns magics and
-`!cmd` into Python, so dynamic access is not caught. Removing a cell's stamp
-(`{"op": "remove", "path": "/cells/3/metadata/rio/kernel"}`) runs it again
-without editing it, so the model can re-run a stale cell before the cells that
-read its variables in the same patch.
+kernel's `id` and whether it is `running`. Each code cell that ran has
+`metadata.rio.kernel` set to the id of the kernel that ran it, and
+`metadata.rio.defines` listing the names it bound. The kernel records those
+names itself (`rio.agent.kernel_ext` compares the namespace before and after
+the cell), so names made by `exec` count and a function's locals do not.
+
+A new kernel gets a new id, so after a resume, rewind, or new session every
+cell that ran before is stale: its variables, open files, and subprocesses are
+gone. Each request lists the stale cells. A cell may stay stale, but reading
+its variables is stopped twice:
+
+- Before running, a patch is rejected when a cell it runs reads a name that
+  only stale cells defined. Reads are found statically, after IPython turns
+  magics and `!cmd` into Python.
+- In the kernel, each such name is bound to a `StaleValue` placeholder. Almost
+  any use of it raises `StaleVariableError`, naming the cell to run again. This
+  catches the reads the static check misses: `globals()[...]`, `eval`, `exec`.
+
+Removing a cell's stamp (`{"op": "remove", "path": "/cells/3/metadata/rio/kernel"}`)
+runs it again without editing it, so the model can re-run a stale cell before
+the cells that read its variables, in the same patch.
 
 A cell can read and write files with plain Python, run `!cmd` or `%%bash`, or
 change part of a file with `%%edit`:

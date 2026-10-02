@@ -104,7 +104,9 @@ def test_cell_names_see_through_magics_and_shell_commands():
 def _with_stale_source(*sources: str) -> dict:
     notebook = apply_patch(new_notebook(), [add_code(source) for source in sources])
     for cell in notebook["cells"]:
-        cell["metadata"] = {"rio": {"kernel": "old"}}
+        cell["metadata"] = {
+            "rio": {"kernel": "old", "defines": sorted(cell_names(cell["source"])[0])}
+        }
     return with_kernel(notebook, "new", running=False)
 
 
@@ -113,7 +115,7 @@ def test_reading_a_variable_only_a_stale_cell_defines_is_reported():
     after = apply_patch(before, [add_code("total = sum(data)")])
 
     assert stale_uses(before, after) == [
-        "cell 2 reads `data`, which only stale cell 0 defines; that cell ran in an older kernel"
+        "cell 2 reads `data`, which only stale cell 0 defined; that cell ran in an older kernel"
     ]
 
 
@@ -135,7 +137,7 @@ def test_running_the_stale_cell_first_or_redefining_the_name_is_accepted():
 
 def test_a_live_cell_that_defines_the_name_satisfies_the_read():
     before = _with_stale_source("data = load()", "data = [2]")
-    before["cells"][1]["metadata"] = {"rio": {"kernel": "new"}}
+    before["cells"][1]["metadata"] = {"rio": {"kernel": "new", "defines": ["data"]}}
     after = apply_patch(before, [add_code("sum(data)")])
 
     assert stale_uses(before, after) == []
@@ -171,7 +173,7 @@ async def test_a_failing_cell_stops_the_changed_cells_after_it(kernel):
     result = await kernel(notebook, [0, 1])
 
     assert result["cells"][0]["outputs"][0]["ename"] == "ZeroDivisionError"
-    assert result["cells"][0]["metadata"] == {"rio": {"kernel": kernel.kernel_id}}
+    assert result["cells"][0]["metadata"] == {"rio": {"kernel": kernel.kernel_id, "defines": []}}
     assert result["cells"][1]["metadata"] == {}
     assert "\x1b[" not in "".join(result["cells"][0]["outputs"][0]["traceback"])
     assert result["cells"][1]["outputs"] == []
@@ -183,11 +185,16 @@ async def test_shutdown_starts_the_next_run_with_an_empty_kernel(kernel):
     notebook = await kernel(notebook, [0])
     old_id = kernel.kernel_id
     await kernel.shutdown()
-    check = apply_patch(notebook, [add_code("print('y' in globals())")])
+    check = apply_patch(notebook, [add_code("print(type(y).__name__)"), add_code("y + 1")])
 
-    result = await kernel(check, [1])
+    result = await kernel(check, [1, 2])
 
-    assert _text(result["cells"][1]) == "False\n"
+    # The new kernel has no `y`: a placeholder stands in, and using it names cell 0.
+    assert _text(result["cells"][1]) == "StaleValue\n"
+    error = result["cells"][2]["outputs"][0]
+    assert error["ename"] == "StaleVariableError"
+    assert error["traceback"] == [f"StaleVariableError: {error['evalue']}"]
+    assert "defined by cell 0" in error["evalue"]
     assert kernel.kernel_id != old_id
     assert result["metadata"]["rio"]["kernel"] == {"id": kernel.kernel_id, "running": True}
     assert stale_cells(result) == [0]
@@ -222,3 +229,55 @@ async def test_startup_code_runs_once_when_the_kernel_starts(tmp_path):
         await kernel.shutdown()
 
     assert _text(result["cells"][0]) == "True\n"
+
+
+@pytest.mark.asyncio
+async def test_defined_names_are_recorded_at_run_time(kernel):
+    source = "import os\nexec('made = 1')\ndef f():\n    local = 2\n    return local\nx = f()"
+    notebook = apply_patch(new_notebook(), [add_code(source), add_code("x = 3\nos.sep")])
+
+    result = await kernel(notebook, [0, 1])
+
+    assert result["cells"][0]["metadata"]["rio"]["defines"] == ["f", "made", "os", "x"]
+    assert result["cells"][1]["metadata"]["rio"]["defines"] == ["x"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source",
+    [
+        "globals()['data'].append(1)",
+        "eval('data')[0]",
+        "data = data + [1]",
+        "with data: pass",
+        "for item in data: pass",
+    ],
+)
+async def test_placeholders_catch_dynamic_and_indirect_reads(kernel, source):
+    first = apply_patch(new_notebook(), [add_code("data = [0]")])
+    first = await kernel(first, [0])
+    await kernel.shutdown()
+    second = apply_patch(first, [add_code(source)])
+
+    result = await kernel(second, [1])
+
+    output = result["cells"][1]["outputs"][0]
+    assert output.get("ename") == "StaleVariableError" or "StaleVariableError" in output.get(
+        "text", ""
+    )
+
+
+@pytest.mark.asyncio
+async def test_rerunning_the_stale_cell_replaces_the_placeholder(kernel):
+    first = apply_patch(new_notebook(), [add_code("data = [0]")])
+    first = await kernel(first, [0])
+    await kernel.shutdown()
+    second = apply_patch(
+        first,
+        [{"op": "remove", "path": "/cells/0/metadata/rio/kernel"}, add_code("print(data)")],
+    )
+
+    result = await kernel(second, changed_cells(first, second))
+
+    assert _text(result["cells"][1]) == "[0]\n"
+    assert stale_cells(result) == []

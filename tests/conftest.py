@@ -51,6 +51,7 @@ class FakeExecutor:
         for index in changed:
             cell = notebook["cells"][index]
             stdout = io.StringIO()
+            before = {name: id(value) for name, value in self.namespace.items()}
             try:
                 with contextlib.redirect_stdout(stdout):
                     exec(cell["source"], self.namespace)
@@ -66,7 +67,12 @@ class FakeExecutor:
                 ]
             cell["outputs"] = outputs
             cell["execution_count"] = index + 1
-            cell["metadata"].setdefault("rio", {})["kernel"] = self.kernel_id
+            defines = sorted(
+                name
+                for name, value in self.namespace.items()
+                if not name.startswith("_") and before.get(name) != id(value)
+            )
+            cell["metadata"]["rio"] = {"kernel": self.kernel_id, "defines": defines}
         return with_kernel(notebook, self.kernel_id, running=True)
 
 

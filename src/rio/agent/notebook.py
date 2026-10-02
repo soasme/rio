@@ -18,7 +18,7 @@ import re
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import jsonpatch
 import nbformat
@@ -156,34 +156,53 @@ def stale_cells(notebook: Notebook) -> list[int]:
 
 
 def stale_uses(before: Notebook, after: Notebook) -> list[str]:
-    """Explain each name a cell about to run reads that only a stale cell defines.
+    """Explain each name a cell about to run reads that only stale cells defined.
 
     Leaving a cell stale is fine; reading a variable from one is not, because
-    the current kernel does not have it. Names are found statically, after
-    IPython turns magics and `!cmd` into Python, so this misses dynamic access.
+    the current kernel does not have it. Defined names are the ones recorded
+    when each cell ran; read names are found statically, after IPython turns
+    magics and `!cmd` into Python. The kernel's `StaleValue` placeholders catch
+    the reads this misses.
     """
-    current = after["metadata"].get("rio", {}).get("kernel", {}).get("id")  # type: ignore[union-attr]
     run = changed_cells(before, after)
-    stale: dict[str, int] = {}
-    live: set[str] = set()
-    for index, cell in enumerate(after["cells"]):  # type: ignore[arg-type]
-        if cell["cell_type"] != "code" or index in run:
-            continue
-        kernel = cell_kernel(cell)
-        if kernel == current:
-            live |= cell_names(cell["source"])[0]
-        elif kernel is not None:
-            stale.update(dict.fromkeys(cell_names(cell["source"])[0], index))
+    stale, live = stale_definitions(after, _current_kernel(after), skip=set(run))
     problems = []
     for index in run:
         defined, used = cell_names(after["cells"][index]["source"])  # type: ignore[index]
         for name in sorted((used - defined) & stale.keys() - live):
             problems.append(
-                f"cell {index} reads `{name}`, which only stale cell {stale[name]} defines; "
+                f"cell {index} reads `{name}`, which only stale cell {stale[name]} defined; "
                 "that cell ran in an older kernel"
             )
         live |= defined
     return problems
+
+
+def stale_definitions(
+    notebook: Notebook, current: str | None, *, skip: set[int] | frozenset[int] = frozenset()
+) -> tuple[dict[str, int], set[str]]:
+    """Return names only stale cells defined (with the last such cell) and names live cells did."""
+    stale: dict[str, int] = {}
+    live: set[str] = set()
+    for index, cell in enumerate(notebook["cells"]):  # type: ignore[arg-type]
+        if cell["cell_type"] != "code" or index in skip:
+            continue
+        kernel = cell_kernel(cell)
+        if kernel == current:
+            live |= set(cell_defines(cell))
+        elif kernel is not None:
+            stale.update(dict.fromkeys(cell_defines(cell), index))
+    return {name: cell for name, cell in stale.items() if name not in live}, live
+
+
+def cell_defines(cell: JSONObject) -> list[str]:
+    """Return the names `cell` bound when it last ran, as recorded by the kernel."""
+    names = cell.get("metadata", {}).get("rio", {}).get("defines", [])  # type: ignore[union-attr]
+    return [name for name in names if isinstance(name, str)]
+
+
+def _current_kernel(notebook: Notebook) -> str | None:
+    return notebook["metadata"].get("rio", {}).get("kernel", {}).get("id")  # type: ignore[union-attr]
 
 
 def cell_names(source: str) -> tuple[set[str], set[str]]:
@@ -216,14 +235,16 @@ def with_kernel(notebook: Notebook, kernel_id: str, *, running: bool) -> Noteboo
     return result
 
 
-def _stamp(cell: dict, kernel_id: str | None) -> None:
+def _stamp(cell: dict, kernel_id: str | None, defines: list[str] | None = None) -> None:
     rio = cell["metadata"].setdefault("rio", {})
     if kernel_id is None:
         rio.pop("kernel", None)
+        rio.pop("defines", None)
         if not rio:
             del cell["metadata"]["rio"]
     else:
         rio["kernel"] = kernel_id
+        rio["defines"] = defines or []
 
 
 def render_notebook(notebook: Notebook) -> str:
@@ -273,6 +294,9 @@ class KernelExecutor:
         if not changed:
             return result
         client = await self._started()
+        stale, _live = stale_definitions(result, self._kernel_id, skip=set(changed))
+        if stale:
+            await _run_silently(client, f"get_ipython()._rio_install_stale({stale!r})")
         failed = False
         for index in changed:
             cell = result["cells"][index]  # type: ignore[index]
@@ -284,7 +308,8 @@ class KernelExecutor:
             outputs = [_clean_output(dict(item), self.output_chars) for item in node.outputs]
             cell["outputs"] = outputs
             cell["execution_count"] = node.get("execution_count")
-            _stamp(cell, self._kernel_id)
+            defined = await _evaluate(client, "get_ipython()._rio_defined")
+            _stamp(cell, self._kernel_id, defined)
             failed = any(item["output_type"] == "error" for item in cell["outputs"])
         return with_kernel(result, self._kernel_id, running=True)
 
@@ -334,13 +359,36 @@ class KernelExecutor:
         client.kc.start_channels()
         await client.kc.wait_for_ready(timeout=60)
         self._client = client
-        if self.startup:
-            setup = await _execute(client, nbformat.v4.new_code_cell(self.startup), history=False)
-            errors = [item for item in setup.outputs if item["output_type"] == "error"]
-            if errors:
-                await self.shutdown()
-                raise RuntimeError(f"kernel startup failed: {errors[0]['evalue']}")
+        startup = "%load_ext rio.agent.kernel_ext\n" + self.startup
+        try:
+            await _run_silently(client, startup)
+        except RuntimeError:
+            await self.shutdown()
+            raise
         return client
+
+
+async def _run_silently(client: NotebookClient, code: str) -> dict:
+    """Run runtime code that is not a cell: no output, no history, no cell events."""
+    return await _reply(client, code)
+
+
+async def _evaluate(client: NotebookClient, expression: str) -> Any:
+    """Return the value of a Python literal expression evaluated in the kernel."""
+    reply = await _reply(client, "", user_expressions={"value": expression})
+    value = reply["user_expressions"]["value"]
+    if value["status"] != "ok":
+        raise RuntimeError(f"kernel could not evaluate {expression}: {value.get('evalue')}")
+    return ast.literal_eval(value["data"]["text/plain"])
+
+
+async def _reply(client: NotebookClient, code: str, **kwargs: Any) -> dict:
+    assert client.kc is not None
+    msg_id = client.kc.execute(code, silent=True, store_history=False, **kwargs)
+    reply = (await client.async_wait_for_reply(msg_id))["content"]
+    if reply["status"] != "ok":
+        raise RuntimeError(f"kernel code failed: {reply.get('ename')}: {reply.get('evalue')}")
+    return reply
 
 
 async def _execute(client: NotebookClient, cell: JSONObject, *, history: bool = True):
