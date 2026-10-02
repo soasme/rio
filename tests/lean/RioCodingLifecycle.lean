@@ -3,17 +3,6 @@ import RioCoding
 
 namespace RioCodingLifecycle
 
-/- session.py: direct tools are exposed by default; an explicit tool list replaces it. -/
-def exposedTools (requested : Option (List RioCoding.FileAction)) : List RioCoding.FileAction :=
-  requested.getD [.read, .write, .edit, .bash]
-
-theorem default_exposes_direct_tools : exposedTools none = [.read, .write, .edit, .bash] := by
-  rfl
-
-theorem explicit_tools_replace_default (tools : List RioCoding.FileAction) :
-    exposedTools (some tools) = tools := by
-  rfl
-
 /- session_preparation.py: staged writes become authoritative only on adoption. -/
 inductive Preparation where
   | prepared | adopted | aborted

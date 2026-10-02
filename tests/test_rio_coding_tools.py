@@ -593,7 +593,7 @@ async def test_respond_tool_rejects_an_empty_message(message: str) -> None:
         await tool.execute("test-call", {"message": message})
 
 
-# --- image_processing (ported directly, no SKILL.state changes needed) ------
+# --- image_processing ---------------------------------------------------------
 
 
 def image_processing_bytes(format_name: str, *, size: tuple[int, int] = (16, 12)) -> bytes:

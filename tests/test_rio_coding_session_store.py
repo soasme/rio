@@ -1,8 +1,8 @@
-"""Tests for the execution-state journal.
+"""Tests for the notebook journal.
 
-The property that matters here is the one that distinguishes a state journal
-from a transcript: resuming or branching reads a single snapshot, and never
-depends on how many entries came before it.
+The notebook is never stored anywhere but the journal: a reset holds a whole
+notebook and each step holds the JSON Patch it made, so resuming or branching
+replays the patches on one branch.
 """
 
 from __future__ import annotations
@@ -11,9 +11,8 @@ import json
 
 import pytest
 
-from rio.coding.coding_skill import describe_state, plan_progress, touched_files
+from rio.agent import markdown_cell, new_notebook
 from rio.coding.session_store import (
-    ActionRecord,
     InMemorySessionStorage,
     JsonlSessionStorage,
     LeafEntry,
@@ -27,43 +26,41 @@ from rio.coding.session_store import (
     ValidationFailureEntry,
     checkpoints,
     entries_from_json_lines,
-    entry_state,
     entry_to_json_line,
     latest_leaf_id,
+    notebook_at_entry,
     path_to_entry,
-    resume_state,
-    state_at_entry,
+    resume_notebook,
 )
 
 
 def make_chain(count: int, *, root_parent: str | None = None) -> list[StepEntry]:
-    """Return `count` chained steps whose state grows one finding per step."""
+    """Return `count` chained steps, each adding one markdown cell."""
     entries: list[StepEntry] = []
     parent = root_parent
-    state: dict = {"goal": "g", "findings": {}}
     for index in range(count):
-        state = {**state, "findings": {**state["findings"], f"f{index}": f"value {index}"}}
+        cell = markdown_cell(f"finding {index}")
         entry = StepEntry(
             parent_id=parent,
             step=index,
-            state_delta={"findings": {f"f{index}": f"value {index}"}},
-            state=state,
-            action=ActionRecord(name="read", arguments={"path": f"file{index}.py"}),
-            observation=f"observation {index}",
+            patch=[{"op": "add", "path": "/cells/-", "value": cell}],
         )
         entries.append(entry)
         parent = entry.id
     return entries
 
 
+def sources(notebook: dict) -> list[str]:
+    return [cell["source"] for cell in notebook["cells"]]
+
+
 class TestSerialization:
     def test_step_entry_round_trips(self) -> None:
         entry = StepEntry(
             step=4,
-            state_delta={"cwd": "/tmp", "last_error": None},
-            state={"cwd": "/tmp"},
-            action=ActionRecord(name="bash", arguments={"command": "ls"}),
-            observation="a.py\nb.py",
+            patch=[{"op": "replace", "path": "/cells/0/source", "value": "x"}],
+            cells=[0],
+            reply="done",
         )
         [restored] = entries_from_json_lines([entry_to_json_line(entry)])
         assert restored == entry
@@ -93,7 +90,7 @@ class TestSerialization:
                 "id": "a" * 32,
                 "timestamp": 0.0,
                 "step": 0,
-                "action": {"name": "read", "arguments": {}},
+                "patch": [],
                 "reasoning": "I should look at the file",
             }
         )
@@ -137,70 +134,49 @@ class TestTree:
         assert latest_leaf_id([]) is None
 
 
-class TestStateRecovery:
-    def test_resume_reads_the_newest_snapshot(self) -> None:
+class TestNotebookRecovery:
+    def test_resume_replays_every_step_patch(self) -> None:
         entries = make_chain(5)
-        state = resume_state(entries)
-        assert state == entries[-1].state
-        assert len(state["findings"]) == 5
+        assert sources(resume_notebook(entries)) == [f"finding {i}" for i in range(5)]
 
-    def test_resume_skips_entries_without_a_snapshot(self) -> None:
+    def test_resume_skips_entries_without_a_patch(self) -> None:
         entries = make_chain(2)
         failure = ValidationFailureEntry(
-            parent_id=entries[-1].id, step=2, attempt=1, error="bad delta"
+            parent_id=entries[-1].id, step=2, attempt=1, error="bad patch"
         )
         pointer = LeafEntry(entry_id=failure.id)
-        assert resume_state([*entries, failure, pointer]) == entries[-1].state
+        assert resume_notebook([*entries, failure, pointer]) == resume_notebook(entries)
 
-    def test_resume_of_an_empty_journal_is_empty(self) -> None:
-        assert resume_state([]) == {}
+    def test_resume_of_an_empty_journal_is_an_empty_notebook(self) -> None:
+        assert resume_notebook([]) == new_notebook()
 
-    def test_state_at_entry_returns_the_carrying_entry(self) -> None:
+    def test_notebook_at_entry_stops_at_that_entry(self) -> None:
         entries = make_chain(3)
-        state, carrier = state_at_entry(entries, entries[1].id)
-        assert carrier is entries[1]
-        assert state == entries[1].state
+        assert sources(notebook_at_entry(entries, entries[1].id)) == ["finding 0", "finding 1"]
 
     def test_a_state_reset_shadows_everything_before_it(self) -> None:
         entries = make_chain(4)
-        reset = StateResetEntry(
-            parent_id=entries[-1].id, state={"goal": "fresh"}, reason="new session"
-        )
-        assert resume_state([*entries, reset]) == {"goal": "fresh"}
+        fresh = new_notebook()
+        fresh["cells"] = [markdown_cell("fresh")]
+        reset = StateResetEntry(parent_id=entries[-1].id, notebook=fresh, reason="new session")
+        after = make_chain(1, root_parent=reset.id)
+        assert sources(resume_notebook([*entries, reset, *after])) == ["fresh", "finding 0"]
 
-    def test_branching_restores_an_earlier_snapshot_verbatim(self) -> None:
+    def test_branching_replays_only_its_own_branch(self) -> None:
         entries = make_chain(5)
-        branched = StepEntry(
-            parent_id=entries[1].id,
-            step=2,
-            state_delta={"goal": "different"},
-            state={**entries[1].state, "goal": "different"},
-            action=ActionRecord(name="respond", arguments={"message": "done"}),
-            terminated=True,
-        )
-        # The branch inherits entry 1's two findings, not the five on the trunk.
-        state = resume_state([*entries, branched, LeafEntry(entry_id=branched.id)])
-        assert state["goal"] == "different"
-        assert len(state["findings"]) == 2
+        [branched] = make_chain(1, root_parent=entries[1].id)
+        notebook = resume_notebook([*entries, branched, LeafEntry(entry_id=branched.id)])
+        assert sources(notebook) == ["finding 0", "finding 1", "finding 0"]
 
-    def test_checkpoints_are_the_snapshot_carrying_entries(self) -> None:
+    def test_checkpoints_are_the_entries_that_change_the_notebook(self) -> None:
         entries = make_chain(3)
         failure = ValidationFailureEntry(step=9, attempt=1, error="nope")
         info = SessionInfoEntry(cwd="/repo")
         found = checkpoints([info, *entries, failure])
         assert [e.id for e in found] == [e.id for e in entries]
 
-    def test_entry_state_is_none_for_non_snapshot_entries(self) -> None:
-        assert entry_state(ValidationFailureEntry(step=0, attempt=1, error="x")) is None
-        assert entry_state(ReasoningEntry(step=0, reasoning="because")) is None
-
     def test_reasoning_entries_are_invisible_to_resume_and_branching(self) -> None:
-        """The journal keeps reasoning; the resume path cannot see it.
-
-        A reasoning entry carries no snapshot and never advances the tip, so a
-        session that journals it recovers exactly the state of one that does
-        not, and it is never offered as a checkpoint.
-        """
+        """The journal keeps reasoning; the resume path cannot see it."""
         entries = make_chain(3)
         notes = [
             ReasoningEntry(
@@ -210,30 +186,9 @@ class TestStateRecovery:
         ]
         interleaved = [item for pair in zip(notes, entries, strict=True) for item in pair]
 
-        assert resume_state(interleaved) == resume_state(entries)
+        assert resume_notebook(interleaved) == resume_notebook(entries)
         assert [e.id for e in checkpoints(interleaved)] == [e.id for e in entries]
         assert latest_leaf_id(interleaved) == entries[-1].id
-
-    def test_a_reasoning_entry_is_not_a_restorable_checkpoint(self) -> None:
-        entry = ReasoningEntry(step=0, reasoning="because")
-        _state, carrier = state_at_entry([entry], entry.id)
-        assert carrier is None
-
-    def test_recovery_cost_does_not_depend_on_journal_length(self) -> None:
-        """A transcript replays every entry; a state journal reads exactly one.
-
-        `state_at_entry` walks back from the leaf and stops at the first
-        snapshot, so a 500-step journal costs the same single read as a
-        1-step one.
-        """
-        short = make_chain(1)
-        long = make_chain(500)
-        _, short_carrier = state_at_entry(short, short[-1].id)
-        _, long_carrier = state_at_entry(long, long[-1].id)
-        assert short_carrier is short[-1]
-        assert long_carrier is long[-1]
-        # Both resumed states hold every finding, without any replay step.
-        assert len(resume_state(long)["findings"]) == 500
 
 
 class TestStorage:
@@ -280,37 +235,4 @@ class TestStorage:
     async def test_resume_from_a_written_journal(self, tmp_path) -> None:
         storage = JsonlSessionStorage(tmp_path / "session.jsonl")
         await storage.append_batch(make_chain(6))
-        assert len(resume_state(await storage.read_all())["findings"]) == 6
-
-
-class TestStateAccessors:
-    def test_plan_progress(self) -> None:
-        state = {
-            "plan": [
-                {"id": "1", "title": "a", "status": "done"},
-                {"id": "2", "title": "b", "status": "in_progress"},
-                {"id": "3", "title": "c", "status": "pending"},
-            ]
-        }
-        assert plan_progress(state) == (1, 3)
-
-    def test_plan_progress_tolerates_a_missing_or_malformed_plan(self) -> None:
-        assert plan_progress({}) == (0, 0)
-        assert plan_progress({"plan": "not a list"}) == (0, 0)
-
-    def test_touched_files_are_sorted(self) -> None:
-        state = {"files": {"b.py": {"status": "edited"}, "a.py": {"status": "read"}}}
-        assert touched_files(state) == ["a.py", "b.py"]
-
-    def test_describe_state_summarizes_without_dumping(self) -> None:
-        state = {
-            "plan": [{"id": "1", "title": "a", "status": "done"}],
-            "findings": {"x": "y"},
-            "files": {"a.py": {}},
-            "blockers": ["network is down"],
-        }
-        summary = describe_state(state)
-        assert "plan 1/1" in summary
-        assert "1 findings" in summary
-        assert "1 files" in summary
-        assert "1 blockers" in summary
+        assert len(resume_notebook(await storage.read_all())["cells"]) == 6

@@ -1,14 +1,7 @@
-"""Render a completed SKILL.state run from its journal.
+"""Render a completed notebook run from its journal.
 
-Ported from tau's `transcript.py`, and redesigned rather than translated.
-tau's `TranscriptRenderer` replayed a *live* stream of character deltas and
-tool-call blocks as an assistant turn happened. rio's steps have no live
-text stream to replay -- reasoning is discarded, not streamed -- and a step
-only becomes interesting once the whole cycle (proposal, validation, commit,
-action) has already landed in the journal. So unlike tau's version, this
-module does not implement `EventRenderer`: it takes the finished
-`SessionEntry` list a `rio.coding.session_store.SessionStorage` produced and
-renders it after the fact, ending with the execution state the run settled
+Takes the finished `SessionEntry` list a `rio.coding.session_store.SessionStorage`
+produced and renders it after the fact, ending with the notebook the run settled
 on -- the session's entire memory of what happened.
 """
 
@@ -17,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from rio.ai.types import JSONValue
+from rio.agent import render_notebook
 from rio.coding.session_store import (
     BranchSummaryEntry,
     CustomEntry,
@@ -32,10 +25,11 @@ from rio.coding.session_store import (
     ThinkingLevelChangeEntry,
     TurnEntry,
     ValidationFailureEntry,
-    resume_state,
+    latest_leaf_id,
+    notebook_at_entry,
 )
 
-__all__ = ["render_completed_run", "render_final_state", "render_run_steps"]
+__all__ = ["render_completed_run", "render_final_notebook", "render_run_steps"]
 
 _OBSERVATION_CHARS = 400
 
@@ -48,21 +42,18 @@ def render_run_steps(entries: Sequence[SessionEntry]) -> str:
     return "\n".join(lines)
 
 
-def render_final_state(entries: Sequence[SessionEntry]) -> str:
-    """Render the execution state the run settled on, as formatted JSON.
-
-    This is the state at the active branch's newest snapshot -- see
-    `rio.coding.session_store.resume_state` -- not a replay of anything: a
-    SKILL.state journal always stores the full state a step produced, never
-    just the message that produced it.
-    """
-    return json.dumps(resume_state(entries), indent=2, sort_keys=True)
+def render_final_notebook(entries: Sequence[SessionEntry]) -> str:
+    """Render the notebook at the active branch's tip, as the model sees it."""
+    leaf = latest_leaf_id(entries)
+    if leaf is None:
+        return ""
+    return render_notebook(notebook_at_entry(entries, leaf))
 
 
 def render_completed_run(entries: Sequence[SessionEntry]) -> str:
-    """Render a run's step account followed by the final execution state."""
+    """Render a run's step account followed by the final notebook."""
     entries = list(entries)
-    return render_run_steps(entries) + "\n\nFinal execution state:\n" + render_final_state(entries)
+    return render_run_steps(entries) + "\n\nFinal notebook:\n" + render_final_notebook(entries)
 
 
 def _render_entry(entry: SessionEntry) -> list[str]:
@@ -76,7 +67,7 @@ def _render_entry(entry: SessionEntry) -> list[str]:
         return [f"  reasoning: {_truncate(entry.reasoning)}"]
     if isinstance(entry, StateResetEntry):
         reason = f": {entry.reason}" if entry.reason else ""
-        return [f"# state reset{reason}"]
+        return [f"# notebook reset{reason}"]
     if isinstance(entry, ModelChangeEntry):
         return [f"# model changed to {entry.model}"]
     if isinstance(entry, ThinkingLevelChangeEntry):
@@ -97,19 +88,12 @@ def _render_entry(entry: SessionEntry) -> list[str]:
 
 
 def _render_step(entry: StepEntry) -> list[str]:
-    lines = [f"## step {entry.step}: {entry.action.name}({_render_json(entry.action.arguments)})"]
-    if entry.state_delta:
-        lines.append(f"   state delta: {_render_json(entry.state_delta)}")
-    if entry.observation:
-        suffix = " (truncated)" if entry.observation_truncated else ""
-        lines.append(f"   observation{suffix}: {_truncate(entry.observation)}")
-    if entry.terminated:
-        lines.append("   (terminated)")
+    ran = f", ran cells {entry.cells}" if entry.cells else ""
+    lines = [f"## step {entry.step}: {len(entry.patch)} patch operation(s){ran}"]
+    lines.append(f"   patch: {_truncate(json.dumps(entry.patch, sort_keys=True))}")
+    if entry.reply is not None:
+        lines.append(f"   reply: {_truncate(entry.reply)}")
     return lines
-
-
-def _render_json(value: dict[str, JSONValue]) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def _truncate(text: str, *, limit: int = _OBSERVATION_CHARS) -> str:

@@ -3,22 +3,20 @@
 Mostly a faithful port of tau's registry. Two things changed, both following
 from the runtime:
 
-* `/compact` is gone. It summarized a transcript that was about to overflow the
-  context window; rio's prompt is a fixed size, so there is nothing to compact.
-* `/state` is new, and `/session` reports a per-step footprint instead of a
-  running total. The execution state is what the model actually sees, so being
-  able to read it is the equivalent of scrolling back through a transcript.
+* `/compact` is gone. The model manages its own context, so the harness never
+  summarizes it.
+* `/clm` shows the notebook the model sees next, and `/session` reports
+  the next step's prompt size against the context limit.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from rio.ai.tools import AgentTool
+from rio.agent import render_notebook
 from rio.ai.types import JSONValue
 from rio.coding.prompt_templates import PromptTemplate
 from rio.coding.provider_catalog import BUILTIN_PROVIDER_CATALOG, builtin_provider_entry
@@ -37,10 +35,6 @@ LOGIN_PROVIDER_ALIASES = {
     "anthropic-api": ("anthropic", "api-key"),
     "anthropic-subscription": ("anthropic", "subscription"),
 }
-
-#: How many steps ahead `/session` projects cumulative cost. The projection is
-#: only interesting because it is linear; on a transcript it would be a curve.
-PROJECTION_STEPS = 100
 
 
 class CommandSession(Protocol):
@@ -62,9 +56,6 @@ class CommandSession(Protocol):
     def available_providers(self) -> Sequence[str]: ...
 
     @property
-    def tools(self) -> Sequence[AgentTool]: ...
-
-    @property
     def skills(self) -> Sequence[Skill]: ...
 
     @property
@@ -74,7 +65,7 @@ class CommandSession(Protocol):
     def context_files(self) -> Sequence[ProjectContextFile]: ...
 
     @property
-    def state(self) -> dict[str, JSONValue]: ...
+    def notebook(self) -> dict[str, JSONValue]: ...
 
     @property
     def context_window_tokens(self) -> int: ...
@@ -135,7 +126,6 @@ class CommandResult:
     model_picker_requested: bool = False
     model_selection_provider: str | None = None
     model_selection_model: str | None = None
-    tools_picker_requested: bool = False
     scoped_models_picker_requested: bool = False
     skills_picker_requested: bool = False
     theme_picker_requested: bool = False
@@ -249,11 +239,11 @@ def create_default_command_registry() -> CommandRegistry:
     )
     registry.register(
         SlashCommand(
-            name="state",
-            usage="/state [field]",
-            description="Show the execution state the model sees each step.",
-            handler=_state_command,
-            search_terms=("context", "memory", "plan", "findings"),
+            name="clm",
+            usage="/clm",
+            description="Show the notebook the model sees next.",
+            handler=_clm_command,
+            search_terms=("state", "memory", "history", "context", "notebook"),
         )
     )
     registry.register(
@@ -339,7 +329,7 @@ def create_default_command_registry() -> CommandRegistry:
         SlashCommand(
             name="tree",
             usage="/tree",
-            description="Branch from an earlier execution-state checkpoint.",
+            description="Branch from an earlier context checkpoint.",
             handler=_tree_command,
             search_terms=("branch", "checkpoint", "rewind"),
         )
@@ -348,7 +338,7 @@ def create_default_command_registry() -> CommandRegistry:
         SlashCommand(
             name="fork",
             usage="/fork [name]",
-            description="Branch a new session from the current live state.",
+            description="Branch a new session from the current live context.",
             handler=_fork_command,
             search_terms=("branch", "checkpoint", "split"),
         )
@@ -368,15 +358,6 @@ def create_default_command_registry() -> CommandRegistry:
             usage="/model",
             description="Choose the active model.",
             handler=_model_command,
-        )
-    )
-    registry.register(
-        SlashCommand(
-            name="tools",
-            usage="/tools",
-            description="Browse actions available to the active session.",
-            handler=_tools_command,
-            search_terms=("actions", "capabilities", "reference"),
         )
     )
     registry.register(
@@ -476,33 +457,12 @@ def _new_command(context: CommandContext) -> CommandResult:
     return CommandResult(handled=True, new_session_requested=True)
 
 
-def _state_command(context: CommandContext) -> CommandResult:
-    """Show the execution state, or one field of it.
-
-    This is the whole of what the model remembers. Reading it is the closest
-    equivalent to scrolling back through a transcript -- and unlike a
-    transcript, it is short enough to read in one screen.
-    """
-    state = context.session.state
-    field = context.args.strip()
-    if not field:
-        return CommandResult(handled=True, message=_format_state(state))
-    if field not in state:
-        available = ", ".join(sorted(state))
-        return CommandResult(
-            handled=True,
-            message=f"Unknown state field: {field}\nDeclared fields: {available}",
-        )
-    return CommandResult(
-        handled=True,
-        message=f"{field}:\n{json.dumps(state[field], indent=2, sort_keys=True)}",
-    )
-
-
-def _format_state(state: dict[str, JSONValue]) -> str:
-    if not state:
-        return "Execution state is empty."
-    return "Execution state:\n" + json.dumps(state, indent=2, sort_keys=True)
+def _clm_command(context: CommandContext) -> CommandResult:
+    """Show the notebook the model sees next, as JSON."""
+    notebook = context.session.notebook
+    if not notebook.get("cells"):
+        return CommandResult(handled=True, message="Notebook is empty.")
+    return CommandResult(handled=True, message=render_notebook(notebook))
 
 
 def _export_command(context: CommandContext) -> CommandResult:
@@ -525,16 +485,17 @@ def _status_command(context: CommandContext) -> CommandResult:
         lines.append(f"Session: {session.session_id}")
     if session.session_title:
         lines.append(f"Session name: {session.session_title}")
-    lines.extend([
-        f"Model: {session.model}",
-        f"Provider: {session.provider_name}",
-        f"CWD: {session.cwd}",
-        f"Actions: {len(session.tools)}",
-        f"Skills: {len(session.skills)}",
-        f"Prompt templates: {len(session.prompt_templates)}",
-        f"Context files: {len(session.context_files)}",
-        f"Context window: {session.context_window_tokens}",
-    ])
+    lines.extend(
+        [
+            f"Model: {session.model}",
+            f"Provider: {session.provider_name}",
+            f"CWD: {session.cwd}",
+            f"Skills: {len(session.skills)}",
+            f"Prompt templates: {len(session.prompt_templates)}",
+            f"Context files: {len(session.context_files)}",
+            f"Context window: {session.context_window_tokens}",
+        ]
+    )
     lines.extend(_footprint_lines(session))
     if session.provider_name == "huggingface":
         route = getattr(session, "inference_provider", None)
@@ -556,23 +517,19 @@ def _status_command(context: CommandContext) -> CommandResult:
 
 
 def _footprint_lines(session: CommandSession) -> list[str]:
-    """Report the per-step prompt cost, which does not change as a run goes on."""
+    """Report the next step's prompt size and the context limit."""
     usage = getattr(session, "context_usage", None)
     if usage is None:
         return []
     footprint = usage.footprint
-    lines = [
-        "Per-step prompt: "
+    return [
+        "Next step prompt: "
         f"{footprint.total_tokens} tokens "
         f"(instructions={footprint.instructions_tokens}, "
-        f"state={footprint.state_tokens}, "
-        f"observation={footprint.observation_tokens}, "
-        f"actions={footprint.tools_tokens})",
-        f"Context window used per step: {usage.utilization:.1%} (constant across the run)",
+        f"context={footprint.context_tokens}, "
+        f"step tool={footprint.tools_tokens})",
+        f"Context window used: {usage.utilization:.1%} (context limit {usage.limit_tokens:,})",
     ]
-    projected = usage.projected_tokens(PROJECTION_STEPS)
-    lines.append(f"Projected over {PROJECTION_STEPS} steps: {projected:,} tokens (linear)")
-    return lines
 
 
 def _system_command(context: CommandContext) -> CommandResult:
@@ -592,7 +549,7 @@ def _hotkeys_command(context: CommandContext) -> CommandResult:
         "- Ctrl+R: open session picker",
         "- Ctrl+P / Shift+Ctrl+P: cycle scoped models forward / backward",
         "- Shift+Tab: cycle thinking mode",
-        "- Ctrl+S: toggle the execution-state panel",
+        "- Ctrl+S: toggle the context panel",
         "- Ctrl+O: collapse or expand action output",
         "- Ctrl+C: clear prompt input",
         "- Ctrl+D: quit",
@@ -719,10 +676,6 @@ def _format_sessions(context: CommandContext) -> str:
     for record in records:
         lines.append(_format_session_record(record))
     return "\n".join(lines)
-
-
-def _tools_command(context: CommandContext) -> CommandResult:
-    return CommandResult(handled=True, tools_picker_requested=True)
 
 
 def _model_command(context: CommandContext) -> CommandResult:

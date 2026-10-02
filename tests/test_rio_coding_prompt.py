@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from rio.ai.tools import AgentTool, AgentToolResult
 from rio.coding.context import (
     discover_project_context,
     discover_project_context_with_diagnostics,
@@ -35,17 +34,13 @@ from rio.coding.skills import (
     shadowed_skill_diagnostics,
 )
 from rio.coding.system_prompt import (
-    CODING_STATE_FIELD_DOCS,
     BuildSystemPromptOptions,
     ProjectContextFile,
     PromptSection,
     build_skill_instructions,
     build_system_prompt,
     collect_prompt_guidelines,
-    format_available_tools,
     format_skills_for_prompt,
-    format_state_field_docs,
-    format_step_protocol,
 )
 from rio.coding.thinking import (
     DEFAULT_THINKING_LEVEL,
@@ -55,41 +50,6 @@ from rio.coding.thinking import (
     normalize_thinking_levels,
     reasoning_effort_for_level,
 )
-
-
-async def _unused_executor(
-    tool_call_id: str,
-    _arguments: object,
-    signal: object | None = None,
-    on_update: object | None = None,
-) -> AgentToolResult:
-    del tool_call_id, signal, on_update
-    return AgentToolResult(content="")
-
-
-def _read_tool() -> AgentTool:
-    return AgentTool(
-        name="read",
-        label="Read",
-        description="Read file contents",
-        parameters={"type": "object", "properties": {"path": {"type": "string"}}},
-        execute_fn=_unused_executor,  # type: ignore[arg-type]
-        prompt_snippet="Read file contents",
-        prompt_guidelines=("Use read to examine files instead of cat or sed.",),
-    )
-
-
-def _bash_tool() -> AgentTool:
-    return AgentTool(
-        name="bash",
-        label="Bash",
-        description="Run a shell command",
-        parameters={"type": "object", "properties": {"command": {"type": "string"}}},
-        execute_fn=_unused_executor,  # type: ignore[arg-type]
-        prompt_snippet="Run a shell command",
-        prompt_guidelines=("When using bash, include a brief present-participle description.",),
-    )
-
 
 # --- context.py -------------------------------------------------------------
 
@@ -544,23 +504,14 @@ def test_reasoning_effort_maps_off_to_none() -> None:
 # --- system_prompt.py --------------------------------------------------------
 
 
-def test_default_prompt_includes_tools_guidelines_date_and_cwd(tmp_path: Path) -> None:
-    tools = [_read_tool(), _bash_tool()]
-
+def test_default_prompt_includes_guidelines_date_and_cwd(tmp_path: Path) -> None:
     prompt = build_skill_instructions(
-        BuildSystemPromptOptions(
-            cwd=tmp_path,
-            tools=tools,
-            current_date=date(2026, 6, 17),
-        )
+        BuildSystemPromptOptions(cwd=tmp_path, current_date=date(2026, 6, 17))
     )
 
     assert "You are an expert coding assistant operating inside rio" in prompt
-    assert "SKILL.state runtime" in prompt
-    assert "Available tools:\n- read: Read file contents" in prompt
-    assert "- Prefer grep/find/ls tools over bash" not in prompt
-    assert "- Use read to examine files instead of cat or sed." in prompt
-    assert "- When using bash, include a brief present-participle description." in prompt
+    assert "Jupyter notebook" in prompt
+    assert "Available tools:" not in prompt
     assert "- Inspect relevant files and project instructions before editing" in prompt
     assert "- Do not overwrite or discard unrelated user changes" in prompt
     assert "- Report checks honestly; never claim a command passed unless you ran it" in prompt
@@ -571,32 +522,19 @@ def test_build_system_prompt_is_an_alias_for_build_skill_instructions(tmp_path: 
     assert build_system_prompt is build_skill_instructions
 
 
-def test_tool_without_prompt_snippet_is_hidden_from_available_tools() -> None:
-    tool = AgentTool(
-        name="hidden",
-        label="Hidden",
-        description="Still sent to provider",
-        parameters={"type": "object"},
-        execute_fn=_unused_executor,  # type: ignore[arg-type]
-    )
-
-    assert format_available_tools([tool]) == "(none)"
-
-
 def test_guidelines_are_deduplicated() -> None:
-    tools = [_read_tool()]
-    duplicate = tools[0].prompt_guidelines[0]
+    duplicate = "Be concise in your responses"
 
-    guidelines = collect_prompt_guidelines(tools, [duplicate])
+    guidelines = collect_prompt_guidelines(["Extension rule", duplicate])
 
     assert guidelines.count(duplicate) == 1
+    assert guidelines[0] == "Extension rule"
 
 
 def test_custom_prompt_replaces_default_but_keeps_append_context_and_date(tmp_path: Path) -> None:
     prompt = build_skill_instructions(
         BuildSystemPromptOptions(
             cwd=tmp_path,
-            tools=[_read_tool(), _bash_tool()],
             custom_prompt="Custom base.",
             append_system_prompt="Extra rules.",
             context_files=(ProjectContextFile(path="/repo/AGENTS.md", content="Follow rules."),),
@@ -605,9 +543,7 @@ def test_custom_prompt_replaces_default_but_keeps_append_context_and_date(tmp_pa
     )
 
     assert prompt.startswith("Custom base.\n\nExtra rules.")
-    assert "Available tools:" not in prompt
-    assert "Step protocol:" not in prompt
-    assert "Execution state fields:" not in prompt
+    assert "Guidelines:" not in prompt
     assert '<project_instructions path="/repo/AGENTS.md">' in prompt
     assert "Follow rules." in prompt
     assert "Current date: 2026-06-17" in prompt
@@ -644,7 +580,6 @@ def test_empty_custom_prompt_is_still_custom(tmp_path: Path) -> None:
     prompt = build_skill_instructions(
         BuildSystemPromptOptions(
             cwd=tmp_path,
-            tools=[_read_tool(), _bash_tool()],
             custom_prompt="",
             append_system_prompt="Extra rules.",
             current_date=date(2026, 6, 17),
@@ -652,7 +587,7 @@ def test_empty_custom_prompt_is_still_custom(tmp_path: Path) -> None:
     )
 
     assert prompt.startswith("\n\nExtra rules.")
-    assert "Available tools:" not in prompt
+    assert "Guidelines:" not in prompt
     assert "Current date: 2026-06-17" in prompt
 
 
@@ -695,76 +630,9 @@ def test_format_skills_for_prompt_excludes_disabled_skills(tmp_path: Path) -> No
     assert format_skills_for_prompt([hidden]) == ""
 
 
-def test_skills_are_included_only_when_read_tool_is_available(tmp_path: Path) -> None:
+def test_skills_are_included_in_the_default_prompt(tmp_path: Path) -> None:
     skill = Skill(name="testing", path=tmp_path / "testing.md", content="", description="Test")
-    no_read_tool = AgentTool(
-        name="custom",
-        label="Custom",
-        description="Custom",
-        parameters={"type": "object"},
-        execute_fn=_unused_executor,  # type: ignore[arg-type]
-        prompt_snippet="Custom tool",
-    )
 
-    without_read = build_skill_instructions(
-        BuildSystemPromptOptions(cwd=tmp_path, tools=[no_read_tool], skills=[skill])
-    )
-    with_read = build_skill_instructions(
-        BuildSystemPromptOptions(cwd=tmp_path, tools=[_read_tool()], skills=[skill])
-    )
+    prompt = build_skill_instructions(BuildSystemPromptOptions(cwd=tmp_path, skills=[skill]))
 
-    assert "<available_skills>" not in without_read
-    assert "<available_skills>" in with_read
-
-
-# --- new: step protocol and state field sections ----------------------------
-
-
-def test_default_prompt_includes_step_protocol_section() -> None:
-    prompt = build_skill_instructions(BuildSystemPromptOptions(cwd=Path("/repo")))
-
-    assert "Protocol:" in prompt
-    assert "skill_step" in prompt
-    assert "state_delta" in prompt
-    assert "RFC 7396 JSON Merge Patch" in prompt
-    assert "reasoning" in prompt
-    assert "discarded" in prompt
-    assert "`respond`" in prompt
-
-
-def test_default_prompt_includes_state_field_docs_section() -> None:
-    prompt = build_skill_instructions(BuildSystemPromptOptions(cwd=Path("/repo")))
-
-    assert "Execution state fields:" in prompt
-    for field_name in CODING_STATE_FIELD_DOCS:
-        assert f"`{field_name}`" in prompt
-
-
-def test_format_step_protocol_describes_the_full_contract() -> None:
-    text = format_step_protocol()
-
-    assert "initial/rebuilt state" in text
-    assert "State patch" in text
-    assert "observations" in text
-    assert "one `skill_step` call" in text
-    assert "RFC 7396 JSON Merge Patch" in text
-    assert "private and discarded" in text
-
-
-def test_format_state_field_docs_lists_every_declared_field() -> None:
-    text = format_state_field_docs()
-
-    for field_name, description in CODING_STATE_FIELD_DOCS.items():
-        assert f"- `{field_name}`: {description}" in text
-
-
-def test_format_state_field_docs_accepts_a_custom_mapping() -> None:
-    text = format_state_field_docs({"foo": "does foo things"})
-
-    assert text == "Execution state fields:\n- `foo`: does foo things"
-
-
-def test_coding_state_field_docs_covers_the_declared_schema() -> None:
-    from rio.coding.coding_skill import CODING_STATE_FIELDS
-
-    assert set(CODING_STATE_FIELD_DOCS) == set(CODING_STATE_FIELDS)
+    assert "<available_skills>" in prompt

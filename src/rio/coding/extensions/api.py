@@ -19,12 +19,10 @@ if TYPE_CHECKING:
     from rio.coding.extensions.runtime import ExtensionRuntime
     from rio.coding.local_backends import LocalBackend
 
-# Every string here is one step in the SKILL.state step lifecycle or one
-# session-level event a coding session emits (see `rio.coding.events` and
-# `rio.agent.events`). There is no per-message streaming here (a step's model
-# reply is not surfaced incrementally to extensions) and no compaction (there
-# is no transcript to compact): both existed only to serve an append-only
-# conversation, which SKILL.state does not keep.
+# Every string here is one step in the CLM step lifecycle or one session-level
+# event a coding session emits (see `rio.coding.events` and `rio.agent.events`).
+# There is no per-message streaming: a step's reply is not surfaced
+# incrementally to extensions.
 AGENT_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "run_start",
@@ -32,11 +30,10 @@ AGENT_EVENT_TYPES: frozenset[str] = frozenset(
         "agent_settled",
         "step_start",
         "step_end",
-        "reasoning_discarded",
+        "reasoning",
         "validation_error",
-        "state_update",
-        "action_start",
-        "action_end",
+        "patch",
+        "execution",
         "queue_update",
         "entry_appended",
         "state_restored",
@@ -415,9 +412,8 @@ class InputHookResult:
 class ToolCallHookEvent:
     """Payload for the `tool_call` hook, fired just before an action executes.
 
-    Carries no tool-call id: the hook runs inside the action executor seam,
-    which the SKILL.state runtime invokes without one. At most one `tool_call`
-    hook invocation happens per step, matching the one-action-per-step rule.
+    Carries no tool-call id. At most one `tool_call` hook invocation happens
+    per step, matching the one-action-per-step rule.
     """
 
     tool_name: str
@@ -880,17 +876,10 @@ class ExtensionContext:
         return self._runtime.session_view.is_running
 
     @property
-    def state(self) -> dict[str, JSONValue]:
-        """Return a read-only copy of the current SKILL.state execution state.
-
-        This is the SKILL.state analogue of Pi's transcript read
-        (``ctx.sessionManager.getBranch()``): under SKILL.state there is no
-        message history to read, so extensions observe the run through its
-        structured state instead. The returned mapping is a copy; mutating it
-        never affects the live session.
-        """
+    def notebook(self) -> dict[str, JSONValue]:
+        """Return a copy of the notebook the model sees next."""
         self._generation.assert_active()
-        return deepcopy(self._runtime.session_view.state)
+        return deepcopy(self._runtime.session_view.notebook)
 
     @property
     def has_ui(self) -> bool:
@@ -953,10 +942,9 @@ class ExtensionAPI:
     def register_tool(self, tool: AgentTool) -> None:
         """Register an agent tool.
 
-        Under SKILL.state a registered tool becomes an action in the coding
-        skill's action set: the model may choose it as the single action for
-        a step, exactly like a built-in coding tool. First registration per
-        name wins.
+        A registered tool becomes an action in the coding skill's action set:
+        the model may choose it as the single action for a step, exactly like
+        a built-in coding tool. First registration per name wins.
         """
         self._generation.assert_active()
         self._runtime.register_tool(self._source_id, self._extension_name, tool)
@@ -1010,11 +998,11 @@ class ExtensionAPI:
     def add_prompt_section(self, title: str | None, body: str) -> None:
         """Append a free-form, optionally titled section to the skill instructions.
 
-        These sections become part of `P`, the fixed instructions built by
-        `rio.coding.system_prompt.build_skill_instructions` -- unlike the rest
-        of a step's prompt, they do not vary with the execution state, so they
-        are the right place for structured, always-on extension context such
-        as procedures, paragraphs, and code blocks. Use
+        These sections become part of the fixed instructions built by
+        `rio.coding.system_prompt.build_skill_instructions` -- unlike the
+        context, the model cannot edit them, so they are the right place for
+        structured, always-on extension context such as procedures,
+        paragraphs, and code blocks. Use
         :meth:`add_prompt_guideline` for one behavioral bullet instead.
         """
         self._generation.assert_active()

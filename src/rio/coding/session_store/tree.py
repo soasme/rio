@@ -1,18 +1,24 @@
-"""Session tree traversal and state-checkpoint recovery.
+"""Session tree traversal and notebook recovery.
 
 The journal is a tree: each entry names its parent, so alternate branches can
-coexist in one file. Where a transcript-based agent has to walk a branch and
-replay every message on it, a state journal only has to find the newest entry
-on the branch that carries a snapshot -- everything before it is already folded
-into that snapshot.
+coexist in one file. The notebook at an entry is rebuilt by walking its branch:
+start from the newest `state_reset` snapshot and apply each later step patch.
 """
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Sequence
 
-from rio.ai.types import JSONValue
-from rio.coding.session_store.entries import SessionEntry, entry_state
+import jsonpatch
+
+from rio.agent import Notebook, new_notebook
+from rio.coding.session_store.entries import (
+    NOTEBOOK_ENTRY_TYPES,
+    SessionEntry,
+    StateResetEntry,
+    StepEntry,
+)
 
 
 class SessionTreeError(ValueError):
@@ -58,33 +64,28 @@ def latest_leaf_id(entries: Sequence[SessionEntry]) -> str | None:
     return entries[-1].id if entries else None
 
 
-def state_at_entry(
-    entries: Sequence[SessionEntry],
-    leaf_id: str,
-) -> tuple[dict[str, JSONValue], SessionEntry | None]:
-    """Return the execution state in force at `leaf_id`, and the entry that carried it.
-
-    Walks the root-to-leaf path backwards to the newest snapshot. No replay is
-    involved: a snapshot is the complete state, because every accepted step
-    persisted the state it produced rather than the events that produced it.
-    """
-    path = path_to_entry(entries, leaf_id)
-    for entry in reversed(path):
-        state = entry_state(entry)
-        if state is not None:
-            return state, entry
-    return {}, None
+def notebook_at_entry(entries: Sequence[SessionEntry], entry_id: str) -> Notebook:
+    """Return the notebook in force at `entry_id`."""
+    path = path_to_entry(entries, entry_id)
+    start = 0
+    notebook = new_notebook()
+    for index in range(len(path) - 1, -1, -1):
+        entry = path[index]
+        if isinstance(entry, StateResetEntry):
+            notebook, start = copy.deepcopy(entry.notebook), index + 1
+            break
+    for entry in path[start:]:
+        if isinstance(entry, StepEntry):
+            notebook = jsonpatch.apply_patch(notebook, entry.patch)
+    return notebook
 
 
-def resume_state(entries: Sequence[SessionEntry]) -> dict[str, JSONValue]:
-    """Return the execution state a resumed session should start from."""
+def resume_notebook(entries: Sequence[SessionEntry]) -> Notebook:
+    """Return the notebook a resumed session should start from."""
     leaf_id = latest_leaf_id(entries)
-    if leaf_id is None:
-        return {}
-    state, _entry = state_at_entry(entries, leaf_id)
-    return state
+    return notebook_at_entry(entries, leaf_id) if leaf_id is not None else new_notebook()
 
 
 def checkpoints(entries: Sequence[SessionEntry]) -> list[SessionEntry]:
     """Return every entry that can be branched from, oldest first."""
-    return [entry for entry in entries if entry_state(entry) is not None]
+    return [entry for entry in entries if entry.type in NOTEBOOK_ENTRY_TYPES]

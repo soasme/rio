@@ -1,15 +1,10 @@
-"""Append-only session entry models for a SKILL.state execution journal.
+"""Append-only session entry models for a notebook journal.
 
-tau's session log was a transcript: an append-only list of conversation
-messages that had to be replayed to reconstruct what the agent knew. rio's is
-a *state journal* instead. Every committed step writes both the merge patch
-that was applied and the full execution state that resulted, so resuming a
-session is a single read of the newest snapshot rather than a replay of
-everything that came before.
-
-That also makes branching cheap. A branch point is any entry that carries a
-state snapshot; rewinding to it means adopting that snapshot verbatim. There
-is no history to rewrite because the model never saw any history.
+The context is a Jupyter notebook. A `state_reset` entry holds a whole
+notebook; every step holds the JSON Patch from the notebook before it to the
+one after. The notebook at any entry is the last reset on its branch with the
+later step patches applied, so it is derived from the journal and never kept
+anywhere else.
 """
 
 from __future__ import annotations
@@ -43,61 +38,42 @@ class BaseSessionEntry(BaseModel):
     timestamp: float = Field(default_factory=current_timestamp)
 
 
-class ActionRecord(BaseModel):
-    """The single action a step chose to execute."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str
-    arguments: dict[str, JSONValue] = Field(default_factory=dict)
-
-
 class TurnEntry(BaseSessionEntry):
-    """A user turn: the observation that seeded a run of steps."""
+    """A user turn: the task that seeded a run of steps."""
 
     type: Literal["turn"] = "turn"
     observation: str
-    state: dict[str, JSONValue] = Field(default_factory=dict)
 
 
 class StepEntry(BaseSessionEntry):
-    """One committed SKILL.state step.
+    """One committed step, as the JSON Patch that turns the previous notebook into this one.
 
-    ``state_delta`` is the RFC 7396 merge patch the model proposed and the
-    runtime accepted; ``state`` is the full execution state that resulted.
-    Storing both means the journal is auditable *and* resumable without replay.
-
-    The model's reasoning is deliberately absent *from this entry*. This is the
-    entry a resume reads, so anything stored here is one step away from
-    reaching a prompt and rebuilding the unbounded history the design exists to
-    avoid. Reasoning is journaled separately, as `ReasoningEntry`.
+    The patch covers everything that changed: the model's edits, the outputs
+    of the cells that ran, and the user and reply cells the runtime added.
     """
 
     type: Literal["step"] = "step"
     step: int
-    state_delta: dict[str, JSONValue] = Field(default_factory=dict)
-    state: dict[str, JSONValue] = Field(default_factory=dict)
-    action: ActionRecord
-    observation: str | None = None
-    observation_truncated: bool = False
-    terminated: bool = False
+    patch: list[dict[str, JSONValue]] = Field(default_factory=list)
+    cells: list[int] = Field(default_factory=list)
+    reply: str | None = None
+
+    @property
+    def terminated(self) -> bool:
+        return self.reply is not None
 
 
 class StateResetEntry(BaseSessionEntry):
-    """The execution state was replaced wholesale: a new session, or a rewind."""
+    """The notebook was replaced wholesale: a new session, a rewind, or a fork."""
 
     type: Literal["state_reset"] = "state_reset"
-    state: dict[str, JSONValue] = Field(default_factory=dict)
+    notebook: dict[str, JSONValue] = Field(default_factory=dict)
     reason: str | None = None
     restored_from_entry_id: str | None = None
 
 
 class ValidationFailureEntry(BaseSessionEntry):
-    """A rejected step proposal, kept for diagnostics.
-
-    Rejections never reach the execution state, so they are not part of the
-    resumable chain -- they record that the rollback-retry cycle fired.
-    """
+    """A reply with no usable action, kept for diagnostics. It never reaches the context."""
 
     type: Literal["validation_failure"] = "validation_failure"
     step: int
@@ -108,9 +84,8 @@ class ValidationFailureEntry(BaseSessionEntry):
 class ReasoningEntry(BaseSessionEntry):
     """The model's reasoning for a step, kept for diagnostics.
 
-    Never read back into a prompt and never part of the resumable chain: it
-    carries no state snapshot, so a resume or a branch cannot land on it. It is
-    a leaf note beside the step it explains, not a link in the chain.
+    A leaf note beside the step it explains: it carries no snapshot, so a
+    resume or a branch cannot land on it.
     """
 
     type: Literal["reasoning"] = "reasoning"
@@ -135,7 +110,7 @@ class ThinkingLevelChangeEntry(BaseSessionEntry):
 
 
 class BranchSummaryEntry(BaseSessionEntry):
-    """A human-readable summary of the state diff along an abandoned branch."""
+    """A human-readable summary of an abandoned branch."""
 
     type: Literal["branch_summary"] = "branch_summary"
     summary: str
@@ -190,17 +165,5 @@ type SessionEntry = Annotated[
     Field(discriminator="type"),
 ]
 
-#: Entry types that carry a full execution-state snapshot, and so can be
-#: resumed from or branched at without replaying anything earlier.
-#:
-#: "reasoning" is left out deliberately, not by oversight. That omission is
-#: what makes `entry_state()` return None for a `ReasoningEntry`, so resume and
-#: branching cannot see one. Do not "fix" it by adding the type here.
-SNAPSHOT_ENTRY_TYPES = frozenset({"turn", "step", "state_reset"})
-
-
-def entry_state(entry: SessionEntry) -> dict[str, JSONValue] | None:
-    """Return the execution state an entry captured, or None if it captured none."""
-    if entry.type in SNAPSHOT_ENTRY_TYPES:
-        return dict(entry.state)  # type: ignore[union-attr]
-    return None
+#: Entry types that change the notebook, and so can be branched from.
+NOTEBOOK_ENTRY_TYPES = frozenset({"step", "state_reset"})

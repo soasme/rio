@@ -24,20 +24,15 @@ from rio.coding.step_footprint import StepFootprint
 class FakeUsage:
     footprint: StepFootprint = field(
         default_factory=lambda: StepFootprint(
-            instructions_tokens=800,
-            state_tokens=120,
-            observation_tokens=60,
-            tools_tokens=200,
+            instructions_tokens=800, context_tokens=180, tools_tokens=200
         )
     )
     context_window_tokens: int = 200_000
+    limit_tokens: int = 160_000
 
     @property
     def utilization(self) -> float:
         return self.footprint.total_tokens / self.context_window_tokens
-
-    def projected_tokens(self, steps: int) -> int:
-        return self.footprint.total_tokens * steps
 
 
 @dataclass
@@ -49,16 +44,11 @@ class FakeSession:
     provider_name: str = "test-provider"
     available_models: tuple[str, ...] = ("test-model", "other-model")
     available_providers: tuple[str, ...] = ("test-provider",)
-    tools: tuple = ()
     skills: tuple = ()
     prompt_templates: tuple = ()
     context_files: tuple = ()
-    state: dict = field(
-        default_factory=lambda: {
-            "goal": "fix the parser",
-            "plan": [{"id": "1", "title": "read", "status": "done"}],
-            "findings": {},
-        }
+    notebook: dict = field(
+        default_factory=lambda: {"cells": [{"cell_type": "markdown", "source": "fix the parser"}]}
     )
     context_window_tokens: int = 200_000
     thinking_level: str = "medium"
@@ -112,7 +102,7 @@ class TestParsing:
         assert registry.execute(session, "/exit").exit_requested is True
 
     def test_arguments_are_split_off_and_trimmed(self, registry, session) -> None:
-        assert registry.execute(session, "/state   goal  ").message.startswith("goal:")
+        assert registry.execute(session, "/export   --format  ").handled is True
 
     def test_two_word_scoped_models_form(self, registry, session) -> None:
         assert registry.execute(session, "/scoped models").scoped_models_picker_requested is True
@@ -158,34 +148,23 @@ class TestNoCompaction:
         assert not hasattr(CommandResult(handled=True), "compact_summary")
 
 
-class TestStateCommand:
-    def test_shows_the_whole_execution_state(self, registry, session) -> None:
-        message = registry.execute(session, "/state").message
-        assert "Execution state:" in message
-        assert "fix the parser" in message
+class TestClmCommand:
+    def test_shows_the_notebook(self, registry, session) -> None:
+        message = registry.execute(session, "/clm").message
+        assert '"source": "fix the parser"' in message
 
-    def test_shows_a_single_field(self, registry, session) -> None:
-        message = registry.execute(session, "/state goal").message
-        assert message.startswith("goal:")
-        assert "fix the parser" in message
-        assert "plan" not in message
-
-    def test_rejects_an_undeclared_field(self, registry, session) -> None:
-        message = registry.execute(session, "/state nonsense").message
-        assert "Unknown state field" in message
-        assert "goal" in message
-
-    def test_reports_an_empty_state(self, registry) -> None:
-        message = create_default_command_registry().execute(FakeSession(state={}), "/state").message
-        assert message == "Execution state is empty."
+    def test_reports_an_empty_notebook(self, registry) -> None:
+        session = FakeSession(notebook={"cells": []})
+        message = create_default_command_registry().execute(session, "/clm").message
+        assert message == "Notebook is empty."
 
 
 class TestStatus:
-    def test_reports_a_per_step_footprint_not_a_running_total(self, registry, session) -> None:
+    def test_reports_the_next_prompt_and_the_context_limit(self, registry, session) -> None:
         message = registry.execute(session, "/session").message
-        assert "Per-step prompt: 1180 tokens" in message
-        assert "constant across the run" in message
-        assert "Projected over 100 steps: 118,000 tokens (linear)" in message
+        assert "Next step prompt: 1180 tokens" in message
+        assert "context=180" in message
+        assert "context limit 160,000" in message
 
     def test_reports_the_basics(self, registry, session) -> None:
         message = registry.execute(session, "/session").message
@@ -193,9 +172,6 @@ class TestStatus:
         assert "Provider: test-provider" in message
         assert "Session: session-1" in message
         assert "Session name: A session" in message
-
-    def test_counts_actions_not_tool_calls(self, registry, session) -> None:
-        assert "Actions: 0" in registry.execute(session, "/session").message
 
     def test_thinking_status_appears(self, registry, session) -> None:
         assert "Thinking mode: medium" in registry.execute(session, "/session").message

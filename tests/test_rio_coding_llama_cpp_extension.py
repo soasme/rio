@@ -778,13 +778,7 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
                                             "function": {
                                                 "name": "skill_step",
                                                 "arguments": json.dumps(
-                                                    {
-                                                        "state_delta": {"goal": "say hello"},
-                                                        "action": {
-                                                            "name": "respond",
-                                                            "arguments": {"message": "hello"},
-                                                        },
-                                                    }
+                                                    {"patch": [], "reply": "hello"}
                                                 ),
                                             },
                                         }
@@ -814,7 +808,6 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
         cwd=project,
         provider_name="llama.cpp",
         trust_override="untrusted",
-        exposed_tools=("bash", "respond"),
     )
     assert ok is True
     assert "hello" in capsys.readouterr().out

@@ -1,73 +1,19 @@
 """Skill instruction assembly for rio coding skills.
 
-Produces `P`, the immutable skill specification handed to
-`rio.agent.HarnessSpec.instructions`. Unlike an append-only conversational
-system prompt, `P` is authored once per domain and is the only fixed text the
-model sees on every step; the mutable execution state and the single latest
-observation carry everything else. This module therefore documents the
-SKILL.state step protocol and the coding skill's declared state fields in
-addition to the tool-usage guidance, project context, and skills sections
-ported from the conversational design.
+Produces the fixed instructions handed to `rio.agent.HarnessSpec.instructions`:
+guidelines, project context, and skills. The runtime appends the notebook
+protocol (see `rio.agent.prompt`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from rio.ai.tools import AgentTool
 from rio.coding.skills import Skill
-
-CODING_STATE_FIELD_DOCS: Mapping[str, str] = {
-    "goal": (
-        "What the user asked for, restated in your own words. Set it once, near the "
-        "start of the turn, and keep it stable. A new user message is a new goal: "
-        "replace it, and keep the rest of the state — the session has not restarted."
-    ),
-    "plan": (
-        "An ordered checklist toward the goal: a list of objects with `id`, `title`, "
-        "and `status` (`pending`, `in_progress`, `done`, or `blocked`). Update statuses "
-        "as you make progress, and add or reorder steps as the plan changes. When a new "
-        "user message sets a new goal, replace the finished plan with one for it."
-    ),
-    "findings": (
-        "Durable conclusions you have reached, keyed by a short topic name. Use it for "
-        "facts worth remembering across steps, such as where a piece of logic lives or "
-        "why an approach was rejected."
-    ),
-    "files": (
-        "A map from file path to `status` (`read`, `edited`, or `created`), `hash`, "
-        "`context` (`total_lines` and `slices` keyed by line range), and your short `note`. "
-        "The runtime records status, hash, and content after successful file actions; "
-        "leave those fields to it. Use cached slices instead of repeating reads. "
-        "Read missing ranges with `offset`. Existing files must be read before writing "
-        "or editing; read again if their hash changed on disk. To free state space, "
-        "set `context` to null and summarize what matters in `note`. "
-        "Forgetting content keeps the status, hash, and note."
-    ),
-    "cwd": "The current working directory for file and shell operations.",
-    "environment": (
-        "A snapshot of the run's environment: operating system, shell, git branch, and "
-        "a short digest of the loaded project context. Refresh it when the environment "
-        "changes; do not repeat this information elsewhere."
-    ),
-    "blockers": (
-        "Unresolved obstacles preventing progress, such as missing permissions or "
-        "failing tests you cannot fix yet. Remove an entry once it is resolved."
-    ),
-    "last_error": (
-        "The error message from the most recently failed action, or `null` once you "
-        "have addressed it or it no longer applies — a new user message makes it no "
-        "longer apply. Read it before retrying a failed action."
-    ),
-    "scratch": (
-        "Short-lived working notes that do not belong in any other field. Treat it as "
-        "disposable; do not rely on it for anything that must survive many steps."
-    ),
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,10 +34,9 @@ class PromptSection:
 
 @dataclass(frozen=True, slots=True)
 class BuildSystemPromptOptions:
-    """Options used to build rio's skill instructions (`P`)."""
+    """Options used to build rio's skill instructions."""
 
     cwd: Path
-    tools: Sequence[AgentTool] = ()
     skills: Sequence[Skill] = ()
     custom_prompt: str | None = None
     append_system_prompt: str | None = None
@@ -99,11 +44,24 @@ class BuildSystemPromptOptions:
     current_date: date | None = None
     extra_guidelines: Sequence[str] = field(default_factory=tuple)
     extra_sections: Sequence[PromptSection] = field(default_factory=tuple)
-    state_field_docs: Mapping[str, str] = field(default_factory=lambda: CODING_STATE_FIELD_DOCS)
+
+
+EDIT_MAGIC_HELP = """To change part of a file, use a `%%edit` cell. Each SEARCH text must \
+match the original file exactly once; blocks must not overlap; nothing is written unless \
+every block applies. The cell prints a diff.
+
+```
+%%edit path/to/file.py
+<<<<<<< SEARCH
+exact old text
+=======
+new text
+>>>>>>> REPLACE
+```"""
 
 
 def build_skill_instructions(options: BuildSystemPromptOptions) -> str:
-    """Build the deterministic `P` skill instructions for a rio coding skill."""
+    """Build the deterministic skill instructions for a rio coding skill."""
     current_date = options.current_date or date.today()
     cwd = _format_path(options.cwd)
     append_parts = [options.append_system_prompt] if options.append_system_prompt else []
@@ -114,28 +72,22 @@ def build_skill_instructions(options: BuildSystemPromptOptions) -> str:
         prompt = options.custom_prompt
         prompt += append_section
         prompt += format_project_context(options.context_files)
-        if _has_tool(options.tools, "read"):
-            prompt += format_skills_for_prompt(options.skills)
+        prompt += format_skills_for_prompt(options.skills)
         prompt += f"\nCurrent date: {current_date.isoformat()}"
         prompt += f"\nCurrent working directory: {cwd}"
         return prompt
 
     prompt = (
-        "You are an expert coding assistant operating inside rio, a coding agent skill "
-        "running on the SKILL.state runtime. You help users by reading files, "
-        "executing commands, editing code, and writing new files."
-        f"\n\nAvailable tools:\n{format_available_tools(options.tools)}"
-        "\n\nIn addition to the tools above, you may have access to other custom tools "
-        "depending on the project."
-        f"\n\nGuidelines:\n{format_guidelines(options.tools, options.extra_guidelines)}"
-        f"\n\n{format_step_protocol()}"
-        f"\n\n{format_state_field_docs(options.state_field_docs)}"
+        "You are an expert coding assistant operating inside rio, a coding agent whose "
+        "context is a Jupyter notebook it manages itself. You help users by reading files, "
+        "executing commands, editing code, and writing new files from notebook cells."
+        f"\n\nGuidelines:\n{format_guidelines(options.extra_guidelines)}"
+        f"\n\n{EDIT_MAGIC_HELP}"
     )
 
     prompt += append_section
     prompt += format_project_context(options.context_files)
-    if _has_tool(options.tools, "read"):
-        prompt += format_skills_for_prompt(options.skills)
+    prompt += format_skills_for_prompt(options.skills)
     prompt += f"\nCurrent date: {current_date.isoformat()}"
     prompt += f"\nCurrent working directory: {cwd}"
     return prompt
@@ -152,80 +104,32 @@ def format_prompt_section(section: PromptSection) -> str:
     return f"## {section.title}\n\n{section.body}"
 
 
-def format_step_protocol() -> str:
-    """Format the minimal state-patch protocol."""
-    return (
-        "Protocol:\n"
-        "- History contains an initial/rebuilt state, accepted `State patch` records, "
-        "and observations. It may be rebuilt to one state when full.\n"
-        "- Reply with one `skill_step` call: `state_delta` is an RFC 7396 JSON Merge "
-        "Patch (null deletes; objects merge); then take one `action`.\n"
-        "- `reasoning` is private and discarded. Persist only useful facts in state. "
-        "Use `respond` with a `message` to finish after completing or blocking the plan."
-    )
-
-
-def format_state_field_docs(field_docs: Mapping[str, str] = CODING_STATE_FIELD_DOCS) -> str:
-    """Format the execution-state field reference section."""
-    lines = ["Execution state fields:"]
-    for name, description in field_docs.items():
-        lines.append(f"- `{name}`: {description}")
-    return "\n".join(lines)
-
-
-def format_available_tools(tools: Sequence[AgentTool]) -> str:
-    """Format visible tools using prompt snippets."""
-    lines = [f"- {tool.name}: {tool.prompt_snippet}" for tool in tools if tool.prompt_snippet]
-    return "\n".join(lines) if lines else "(none)"
-
-
-def collect_prompt_guidelines(
-    tools: Sequence[AgentTool], extra_guidelines: Sequence[str] = ()
-) -> list[str]:
+def collect_prompt_guidelines(extra_guidelines: Sequence[str] = ()) -> list[str]:
     """Collect and de-duplicate skill-instruction guidelines."""
-    names = {tool.name for tool in tools}
     guidelines: list[str] = []
     seen: set[str] = set()
-
-    def add(value: str) -> None:
+    for value in (
+        *extra_guidelines,
+        "Inspect relevant files and project instructions before editing",
+        "Make focused changes that preserve the project's architecture and style",
+        "Do not overwrite or discard unrelated user changes",
+        "Use the project's documented commands and package manager",
+        "Run relevant tests, formatting, linting, and type checks after changes",
+        "Report checks honestly; never claim a command passed unless you ran it",
+        "Ask before destructive operations or materially ambiguous design choices",
+        "Be concise in your responses",
+        "Show file paths clearly when working with files",
+    ):
         normalized = value.strip()
-        if not normalized or normalized in seen:
-            return
-        seen.add(normalized)
-        guidelines.append(normalized)
-
-    has_bash = "bash" in names
-    has_exploration_tools = bool({"grep", "find", "ls"} & names)
-    if has_bash and not has_exploration_tools:
-        add("Use bash for file operations like ls, rg, find")
-    elif has_bash and has_exploration_tools:
-        add(
-            "Prefer grep/find/ls tools over bash for file exploration (faster, respects .gitignore)"
-        )
-
-    for tool in tools:
-        for guideline in tool.prompt_guidelines:
-            add(guideline)
-    for guideline in extra_guidelines:
-        add(guideline)
-
-    add("Inspect relevant files and project instructions before editing")
-    add("Make focused changes that preserve the project's architecture and style")
-    add("Do not overwrite or discard unrelated user changes")
-    add("Use the project's documented commands and package manager")
-    add("Run relevant tests, formatting, linting, and type checks after changes")
-    add("Report checks honestly; never claim a command passed unless you ran it")
-    add("Ask before destructive operations or materially ambiguous design choices")
-    add("Be concise in your responses")
-    add("Show file paths clearly when working with files")
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            guidelines.append(normalized)
     return guidelines
 
 
-def format_guidelines(tools: Sequence[AgentTool], extra_guidelines: Sequence[str] = ()) -> str:
+def format_guidelines(extra_guidelines: Sequence[str] = ()) -> str:
     """Format prompt guidelines as markdown bullets."""
-    return "\n".join(
-        f"- {guideline}" for guideline in collect_prompt_guidelines(tools, extra_guidelines)
-    )
+    return "\n".join(f"- {guideline}" for guideline in collect_prompt_guidelines(extra_guidelines))
 
 
 def format_project_context(context_files: Sequence[ProjectContextFile]) -> str:
@@ -279,10 +183,6 @@ def format_skills_for_prompt(skills: Sequence[Skill]) -> str:
         )
     lines.append("</available_skills>")
     return "\n".join(lines)
-
-
-def _has_tool(tools: Sequence[AgentTool], name: str) -> bool:
-    return any(tool.name == name for tool in tools)
 
 
 def _format_path(path: Path) -> str:

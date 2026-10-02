@@ -1,4 +1,4 @@
-"""Built-in filesystem and shell tools for Rio SKILL.state coding runs.
+"""Built-in filesystem and shell tools for Rio coding runs.
 
 The module exposes factory functions that create provider-neutral `AgentTool`
 objects plus richer `ToolDefinition` objects for callers that need prompt
@@ -6,16 +6,14 @@ metadata and JSON schemas. The tools operate relative to a configurable working
 directory, return structured `AgentToolResult` values, and keep local
 filesystem/shell behavior outside the reusable `rio.ai` package.
 
-Under SKILL.state (see `rio.agent`) a tool's result becomes the *entire* next
-observation `O_t` -- the model never sees the arguments it passed on a prior
-step, because there is no message transcript to replay. Every tool below
-therefore prefixes its returned text with a compact header naming the action
+Every tool prefixes its returned text with a compact header naming the action
 and its key argument (for example `read /path/to/file.py (lines 1-120 of
-400)`), so the observation is self-describing on its own.
+400)`), so an observation stays self-describing after the model edits the
+call that produced it out of its context.
 
-This module also defines `respond`, the terminal action a SKILL.state coding
-run uses to end a turn: it sets `AgentToolResult.terminate=True` instead of
-returning control for another step.
+This module also defines `respond`, the terminal action a coding run uses to
+end a turn: it sets `AgentToolResult.terminate=True` instead of returning
+control for another step.
 """
 
 from __future__ import annotations
@@ -159,10 +157,8 @@ _file_locks: dict[Path, asyncio.Lock] = {}
 def _tool_header(action: str, subject: str, detail: str | None = None) -> str:
     """Build the compact `action subject (detail)` header for a tool result.
 
-    Under SKILL.state a tool result becomes the next step's only observation:
-    the model never sees the arguments it passed. Every coding tool prefixes
-    its result text with this header so the observation names the action and
-    its key argument without relying on any transcript.
+    The header keeps an observation self-describing on its own, even after
+    the model edits its call out of the context.
     """
     return f"{action} {subject} ({detail})" if detail else f"{action} {subject}"
 
@@ -213,7 +209,7 @@ def create_coding_tools(
     mutations of the same file do not interleave. When configured,
     `shell_command_prefix` is prepended to every bash tool command.
 
-    `respond` is the SKILL.state coding skill's terminal action: it sets
+    `respond` is the coding skill's terminal action: it sets
     `AgentToolResult.terminate=True` and ends the run with a final message
     instead of producing another observation.
     """
@@ -418,9 +414,7 @@ def create_read_tool_definition(
             output = truncation.content
 
         if not truncation.first_line_exceeds_limit:
-            # The span the model just saw. `rio.coding.file_context` caches
-            # exactly this range in the state, so a later step can read it
-            # there instead of reading the file again.
+            # The span the model just saw.
             details["start_line"] = start_display
             details["end_line"] = end_display
 
@@ -595,21 +589,8 @@ def create_edit_tool_definition(*, cwd: str | Path | None = None) -> ToolDefinit
         path = resolve_path_argument(prepared, cwd=root)
         edits = _edits_arg(prepared)
 
-        if not path.exists():
-            raise ToolInputError(f"Could not edit file: {path}. File not found.")
-        if path.is_dir():
-            raise ToolInputError(f"Could not edit file: {path}. Path is a directory.")
-
         async with _file_lock(path):
-            raw_content = path.read_text(encoding="utf-8")
-            bom, content = _strip_bom(raw_content)
-            original_ending = detect_line_ending(content)
-            normalized = normalize_to_lf(content)
-            base_content, new_content = apply_edits_to_normalized_content(
-                normalized, edits, str(path)
-            )
-            final_content = bom + restore_line_endings(new_content, original_ending)
-            path.write_text(final_content, encoding="utf-8")
+            base_content, new_content = edit_file(path, edits)
 
         diff_text, first_changed_line = generate_diff_string(base_content, new_content)
         patch = generate_unified_patch(str(path), base_content, new_content)
@@ -677,6 +658,25 @@ def create_edit_tool_definition(*, cwd: str | Path | None = None) -> ToolDefinit
         executor=execute,
         constrained_sampling=_STRICT_JSON_SCHEMA_SAMPLING,
     )
+
+
+def edit_file(path: Path, edits: list[dict[str, str]]) -> tuple[str, str]:
+    """Apply exact `oldText`/`newText` replacements to `path` and write it.
+
+    Every edit is checked before anything is written. Line endings and a UTF-8
+    byte-order mark are preserved. Returns the old and new content, LF-normalized.
+    """
+    if not path.exists():
+        raise ToolInputError(f"Could not edit file: {path}. File not found.")
+    if path.is_dir():
+        raise ToolInputError(f"Could not edit file: {path}. Path is a directory.")
+    bom, content = _strip_bom(path.read_text(encoding="utf-8"))
+    original_ending = detect_line_ending(content)
+    base_content, new_content = apply_edits_to_normalized_content(
+        normalize_to_lf(content), edits, str(path)
+    )
+    path.write_text(bom + restore_line_endings(new_content, original_ending), encoding="utf-8")
+    return base_content, new_content
 
 
 def create_edit_tool(*, cwd: str | Path | None = None) -> AgentTool:
@@ -862,11 +862,10 @@ def create_bash_tool(
 
 
 def create_respond_tool() -> AgentTool:
-    """Create the `respond` action that ends a SKILL.state coding run.
+    """Create the `respond` action that ends a coding run.
 
-    Under SKILL.state there is no "assistant produced text with no tool
-    calls" stop condition -- every step is exactly one action. `respond` is
-    how a coding run ends a turn: its result sets
+    Every step is exactly one action, so a reply with no tool call is not a
+    stop condition. `respond` is how a coding run ends a turn: its result sets
     `AgentToolResult.terminate=True`, and its text is the final answer shown
     to the user.
     """

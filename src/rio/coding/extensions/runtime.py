@@ -14,7 +14,7 @@ from typing import Literal, Protocol, cast
 import httpx
 
 import rio.coding.built_in_extensions as built_in_extension_registry
-from rio.agent.events import SkillEvent
+from rio.agent.events import AgentEvent
 from rio.ai.messages import TextContent
 from rio.ai.tools import (
     AgentTool,
@@ -118,7 +118,7 @@ class BoundSession(Protocol):
     def is_running(self) -> bool: ...
 
     @property
-    def state(self) -> dict[str, JSONValue]: ...
+    def notebook(self) -> dict[str, JSONValue]: ...
 
     def queue_steering_message(
         self,
@@ -771,7 +771,7 @@ class ExtensionRuntime:
 
     def attach_harness_listener(
         self,
-        subscribe: Callable[[Callable[[SkillEvent], Awaitable[None] | None]], Callable[[], None]],
+        subscribe: Callable[[Callable[[AgentEvent], Awaitable[None] | None]], Callable[[], None]],
     ) -> None:
         """Subscribe the event fan-out to a harness, replacing any prior one."""
         if self._harness_unsubscribe is not None:
@@ -1199,8 +1199,8 @@ class ExtensionRuntime:
             except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
                 self._record_runtime_failure(owner.name, event_type, exc)
 
-    async def _on_agent_event(self, event: SkillEvent) -> None:
-        """Forward the execution-state lifecycle without replaying history."""
+    async def _on_agent_event(self, event: AgentEvent) -> None:
+        """Forward the step lifecycle."""
         await self.emit_event(event)
 
     async def _emit_lifecycle(self, event_name: str, payload: object) -> None:

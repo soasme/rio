@@ -1,10 +1,9 @@
 """Tests for rio.coding's non-TUI renderers and session export.
 
 Covers `rio.coding.rendering.{base,plain,json,steps}` and
-`rio.coding.session_export`. There is no conversation transcript to render
-under SKILL.state, so these tests exercise the redesigned surface: live
-per-step rendering of `rio.agent`/`rio.coding` events, an after-the-fact
-step account read back from the journal, and a self-contained HTML export.
+`rio.coding.session_export`: live per-step rendering of `rio.agent`/`rio.coding`
+events, an after-the-fact step account read back from the journal, and a
+self-contained HTML export.
 """
 
 from __future__ import annotations
@@ -13,16 +12,16 @@ import json
 
 import pytest
 
+from conftest import add_code
 from rio.agent import (
-    ActionEndEvent,
-    ActionStartEvent,
-    ReasoningDiscardedEvent,
-    StateUpdateEvent,
-    StepEndEvent,
+    ExecutionEvent,
+    PatchEvent,
+    ReasoningEvent,
     StepStartEvent,
     ValidationErrorEvent,
+    apply_patch,
+    new_notebook,
 )
-from rio.ai.tools import AgentToolResult
 from rio.coding.events import AutoRetryEndEvent, AutoRetryStartEvent, SessionRunEndEvent
 from rio.coding.rendering import (
     JsonEventRenderer,
@@ -40,7 +39,6 @@ from rio.coding.session_export import (
     render_session_html,
 )
 from rio.coding.session_store import (
-    ActionRecord,
     ReasoningEntry,
     StepEntry,
     TurnEntry,
@@ -50,132 +48,60 @@ from rio.coding.session_store import (
 # -- rendering.plain ----------------------------------------------------------
 
 
-def test_plain_renderer_hides_discarded_reasoning(
+def test_plain_renderer_hides_reasoning(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Human output contains the transcript, not internal reasoning."""
     renderer = PlainEventRenderer()
 
-    renderer.render(ReasoningDiscardedEvent(step=1, reasoning="I will check the file next"))
+    renderer.render(ReasoningEvent(step=1, reasoning="I will check the file next"))
 
     out = capsys.readouterr().out
     assert out == ""
 
 
-def test_plain_renderer_renders_step_lifecycle(capsys: pytest.CaptureFixture[str]) -> None:
+def _ran(source: str, text: str) -> ExecutionEvent:
+    notebook = apply_patch(new_notebook(), [add_code(source)])
+    notebook["cells"][0]["outputs"] = [{"output_type": "stream", "name": "stdout", "text": text}]
+    return ExecutionEvent(step=1, cells=[0], notebook=notebook)
+
+
+def test_plain_renderer_shows_each_cell_run_and_its_output(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     renderer = PlainEventRenderer()
 
-    renderer.render(StepStartEvent(step=1, state={"goal": ""}, observation="start"))
-    renderer.render(StateUpdateEvent(step=1, delta={"goal": "Fix bug"}, state={"goal": "Fix bug"}))
-    renderer.render(ActionStartEvent(step=1, name="bash", arguments={"command": "ls"}))
-    renderer.render(
-        ActionEndEvent(
-            step=1,
-            name="bash",
-            result=AgentToolResult(content="file1\nfile2"),
-            is_error=False,
-        )
-    )
-    renderer.render(StepEndEvent(step=1, state={"goal": "Fix bug"}, terminated=False))
+    renderer.render(StepStartEvent(step=1, notebook=new_notebook()))
+    renderer.render(PatchEvent(step=1, patch=[add_code("!ls")], cells=[0]))
+    renderer.render(_ran("!ls", "file1\nfile2\n"))
 
     out = capsys.readouterr().out
-    assert "Running ls" in out
-    assert "  └ bash: file1" in out
+    assert "[0] !ls" in out
+    assert "  └ file1\n    file2" in out
     assert "step 1" not in out
-    assert "Fix bug" not in out
     assert renderer.finish() is True
 
 
-def test_plain_renderer_read_shows_path_and_line_range_not_content(
+def test_plain_renderer_reports_patches_that_run_nothing(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     renderer = PlainEventRenderer()
 
-    renderer.render(ActionStartEvent(step=1, name="read", arguments={"path": "a.py"}))
-    renderer.render(
-        ActionEndEvent(
-            step=1,
-            name="read",
-            result=AgentToolResult(
-                content="read a.py (lines 1-3 of 3)\n\ndef add(a, b):\n    return a + b",
-                details={"path": "a.py", "start_line": 1, "end_line": 3},
-            ),
-            is_error=False,
-        )
-    )
+    renderer.render(PatchEvent(step=1, patch=[{"op": "remove", "path": "/cells/0"}], cells=[]))
 
-    out = capsys.readouterr().out
-    assert "read a.py:1:3" in out
-    assert "def add" not in out
-    assert "{" not in out
+    assert "Notebook edited (1 operations)" in capsys.readouterr().out
 
 
-def test_plain_renderer_write_shows_path_only(capsys: pytest.CaptureFixture[str]) -> None:
+def test_plain_renderer_shows_errors_by_name(capsys: pytest.CaptureFixture[str]) -> None:
     renderer = PlainEventRenderer()
+    event = _ran("1/0", "")
+    event.notebook["cells"][0]["outputs"] = [
+        {"output_type": "error", "ename": "ZeroDivisionError", "evalue": "division by zero"}
+    ]
 
-    renderer.render(
-        ActionStartEvent(step=1, name="write", arguments={"path": "a.py", "content": "x"})
-    )
-    renderer.render(
-        ActionEndEvent(
-            step=1,
-            name="write",
-            result=AgentToolResult(
-                content="write a.py (1 characters)\n\nSuccessfully wrote to a.py.",
-                details={"path": "a.py", "characters": 1},
-            ),
-            is_error=False,
-        )
-    )
+    renderer.render(event)
 
-    out = capsys.readouterr().out
-    assert out.strip().endswith("write a.py")
-    assert "Successfully wrote" not in out
-
-
-def test_plain_renderer_edit_shows_diff_not_success_message(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    renderer = PlainEventRenderer()
-    patch = "--- a.py\n+++ a.py\n@@ -1,2 +1,2 @@\n-def add(a, b):\n+def add(a, b):  # sum\n"
-
-    renderer.render(ActionStartEvent(step=1, name="edit", arguments={"path": "a.py", "edits": []}))
-    renderer.render(
-        ActionEndEvent(
-            step=1,
-            name="edit",
-            result=AgentToolResult(
-                content="edit a.py (1 edit(s))\n\nSuccessfully replaced 1 block(s) in a.py.",
-                details={"path": "a.py", "edits": 1, "diff": "...", "patch": patch},
-            ),
-            is_error=False,
-        )
-    )
-
-    out = capsys.readouterr().out
-    assert "edit a.py" in out
-    assert "+def add(a, b):  # sum" in out
-    assert "Successfully replaced" not in out
-
-
-def test_plain_renderer_file_tool_failure_shows_arguments_and_error(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    renderer = PlainEventRenderer()
-
-    renderer.render(ActionStartEvent(step=1, name="read", arguments={"path": "missing.py"}))
-    renderer.render(
-        ActionEndEvent(
-            step=1,
-            name="read",
-            result=AgentToolResult(content="read failed: File not found: missing.py"),
-            is_error=True,
-        )
-    )
-
-    out = capsys.readouterr().out
-    assert '"path":"missing.py"' in out
-    assert "File not found: missing.py" in out
+    assert "ZeroDivisionError: division by zero" in capsys.readouterr().out
 
 
 def test_plain_renderer_renders_validation_error_as_retry(
@@ -219,22 +145,15 @@ def test_plain_renderer_recovers_after_successful_retry() -> None:
 def test_json_renderer_emits_one_json_object_per_event(capsys: pytest.CaptureFixture[str]) -> None:
     renderer = JsonEventRenderer()
 
-    renderer.render(StepStartEvent(step=1, state={"goal": ""}, observation="start"))
-    renderer.render(
-        ActionEndEvent(step=1, name="bash", result=AgentToolResult(content="ok"), is_error=False)
-    )
-    renderer.render(SessionRunEndEvent(steps=1, state={"goal": ""}, answer="done"))
+    renderer.render(StepStartEvent(step=1, notebook=new_notebook()))
+    renderer.render(_ran("print('ok')", "ok\n"))
+    renderer.render(SessionRunEndEvent(steps=1, answer="done"))
 
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert lines[0] == {
-        "type": "step_start",
-        "step": 1,
-        "state": {"goal": ""},
-        "observation": "start",
-    }
-    assert lines[1]["type"] == "action_end"
-    assert lines[1]["is_error"] is False
-    assert lines[1]["result"]["content"] == [{"type": "text", "text": "ok"}]
+    assert lines[0] == {"type": "step_start", "step": 1, "notebook": new_notebook()}
+    assert lines[1]["type"] == "execution"
+    assert lines[1]["cells"] == [0]
+    assert lines[1]["notebook"]["cells"][0]["outputs"][0]["text"] == "ok\n"
     assert lines[2]["type"] == "run_end"
     assert lines[2]["answer"] == "done"
     assert renderer.finish() is True
@@ -314,11 +233,11 @@ def test_plain_renderer_uses_colored_dots_on_success(
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
 
     renderer = PlainEventRenderer()
-    renderer.render(ActionStartEvent(step=1, name="bash", arguments={"command": "ls"}))
+    renderer.render(_ran("!ls", "a\n"))
 
     out = capsys.readouterr().out
     assert f"{GREEN}●{RESET}" in out
-    assert "Running ls" in out
+    assert "[0] !ls" in out
 
 
 def test_plain_renderer_uses_plain_dots_when_no_color(
@@ -327,10 +246,10 @@ def test_plain_renderer_uses_plain_dots_when_no_color(
     monkeypatch.setenv("NO_COLOR", "1")
 
     renderer = PlainEventRenderer()
-    renderer.render(ActionStartEvent(step=1, name="bash", arguments={"command": "ls"}))
+    renderer.render(_ran("!ls", "a\n"))
 
     out = capsys.readouterr().out
-    assert "· Running ls" in out
+    assert "· [0] !ls" in out
     assert "\033[" not in out  # No ANSI codes
 
 
@@ -359,63 +278,43 @@ def test_plain_renderer_uses_red_dot_on_failure(
 
 
 def _sample_entries() -> list:
+    cell = {"cell_type": "code", "id": "c1", "metadata": {}, "source": "!ls"}
+    cell |= {"execution_count": 1, "outputs": []}
     return [
         TurnEntry(id="t1", observation="Fix the bug in foo.py"),
         StepEntry(
             id="s1",
             parent_id="t1",
             step=1,
-            state_delta={"goal": "Fix bug"},
-            state={"goal": "Fix bug"},
-            action=ActionRecord(name="bash", arguments={"command": "ls"}),
-            observation="file1\nfile2",
-            terminated=False,
+            patch=[{"op": "add", "path": "/cells/-", "value": cell}],
+            cells=[0],
         ),
-        ValidationFailureEntry(id="v1", parent_id="s1", step=2, attempt=1, error="bad delta"),
-        StepEntry(
-            id="s2",
-            parent_id="v1",
-            step=2,
-            state_delta={"answer": "done"},
-            state={"goal": "Fix bug", "answer": "done"},
-            action=ActionRecord(name="respond", arguments={}),
-            observation="",
-            terminated=True,
-        ),
+        ValidationFailureEntry(id="v1", parent_id="s1", step=2, attempt=1, error="bad patch"),
+        StepEntry(id="s2", parent_id="v1", step=2, reply="answer: done"),
     ]
 
 
 def test_render_run_steps_produces_step_account() -> None:
     text = render_run_steps(_sample_entries())
 
-    assert "step 1: bash" in text
-    assert "step 2: respond" in text
-    assert "retry 1: bad delta" in text
-    assert "(terminated)" in text
+    assert "step 1: 1 patch operation(s), ran cells [0]" in text
+    assert "step 2: 0 patch operation(s)" in text
+    assert "retry 1: bad patch" in text
+    assert "reply: answer: done" in text
 
 
-def test_render_completed_run_includes_final_state() -> None:
+def test_render_completed_run_includes_final_notebook() -> None:
     text = render_completed_run(_sample_entries())
 
-    assert "Final execution state:" in text
-    assert '"answer": "done"' in text
+    assert "Final notebook:" in text
+    assert '"source": "!ls"' in text
 
 
 # -- session_export ---------------------------------------------------------
 
 
-def test_render_session_html_escapes_malicious_observation() -> None:
-    entries = [
-        StepEntry(
-            id="s1",
-            step=1,
-            state_delta={},
-            state={},
-            action=ActionRecord(name="bash", arguments={"command": "echo <script>"}),
-            observation="<script>alert(1)</script>",
-            terminated=False,
-        )
-    ]
+def test_render_session_html_escapes_malicious_output() -> None:
+    entries = [StepEntry(id="s1", step=1, reply="<script>alert(1)</script>")]
 
     html_out = render_session_html(entries, title="Escape test")
 
@@ -424,42 +323,20 @@ def test_render_session_html_escapes_malicious_observation() -> None:
 
 
 def test_render_session_html_includes_steps_table_and_footprint() -> None:
-    entries = [
-        StepEntry(
-            id="s1",
-            step=1,
-            state_delta={"goal": "x"},
-            state={"goal": "x"},
-            action=ActionRecord(name="bash", arguments={"command": "ls"}),
-            observation="ok",
-            terminated=False,
-        )
-    ]
-
     html_out = render_session_html(
-        entries, title="Steps test", instructions="You are a coding skill."
+        _sample_entries(), title="Steps test", instructions="You are a coding skill."
     )
 
     assert '<table class="steps">' in html_out
-    assert "bash" in html_out
-    assert "Projected cumulative tokens" in html_out
-    assert "Per-step footprint is fixed at" in html_out
+    assert "!ls" in html_out
+    assert '<table class="usage">' in html_out
     assert "<title>Steps test</title>" in html_out
 
 
 def test_render_session_html_attaches_reasoning_to_its_step_collapsed() -> None:
     entries = [
         ReasoningEntry(id="r1", step=1, reasoning="I will list the files first.", truncated=True),
-        StepEntry(
-            id="s1",
-            parent_id="r1",
-            step=1,
-            state_delta={"goal": "x"},
-            state={"goal": "x"},
-            action=ActionRecord(name="bash", arguments={"command": "ls"}),
-            observation="ok",
-            terminated=False,
-        ),
+        StepEntry(id="s1", parent_id="r1", step=1),
     ]
 
     html_out = render_session_html(entries, title="Reasoning test")
@@ -475,7 +352,7 @@ def test_render_session_html_attaches_reasoning_to_its_step_collapsed() -> None:
 def test_render_session_html_renders_retry_and_final_step() -> None:
     html_out = render_session_html(_sample_entries(), title="Retry test")
 
-    assert "retry 1: bad delta" in html_out
+    assert "retry 1: bad patch" in html_out
     assert '<span class="badge">final</span>' in html_out
 
 

@@ -1,22 +1,15 @@
-"""The append-only per-step prompt sent to the model.
+"""The prompt a step sends: instructions, the notebook protocol, and the notebook.
 
-The runtime owns the materialized execution state, but the model sees its
-history: the initial state, every accepted state patch, and every observation.
-This keeps state construction deterministic while preserving the ordinary
-agent property that later decisions can inspect earlier evidence.
-
-The model reports its output for the step -- reasoning, a state update, and
-an action -- by calling a single mandatory `skill_step` tool. Any free text
-or thinking before that call is the reasoning; the runtime reads it for
-observability then discards it forever (see `rio.agent.loop`).
+Each request is the system prompt plus one user message holding the whole
+notebook as JSON. The model answers with one `skill_step` call: a JSON Patch
+against that notebook, and an optional reply that ends the run.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 
-from rio.agent.skill import HarnessSpec
+from rio.agent.notebook import Notebook, notebook_tokens, render_notebook, stale_cells
 from rio.ai.messages import AgentMessage, UserMessage
 from rio.ai.tools import AgentTool, AgentToolResult, ToolCancellationToken, ToolUpdateCallback
 from rio.ai.types import JSONObject, JSONValue
@@ -24,100 +17,105 @@ from rio.ai.types import JSONObject, JSONValue
 STEP_TOOL_NAME = "skill_step"
 
 
-async def _skill_step_not_executed(
+async def _not_executed(
     tool_call_id: str,
     arguments: Mapping[str, JSONValue],
     signal: ToolCancellationToken | None = None,
     on_update: ToolUpdateCallback | None = None,
 ) -> AgentToolResult:
-    raise RuntimeError(
-        f"{STEP_TOOL_NAME!r} is intercepted and validated by the SKILL.state loop; "
-        "it is never executed as an ordinary tool."
-    )
+    raise RuntimeError(f"{STEP_TOOL_NAME!r} is applied by the notebook loop, never executed")
 
 
-def skill_step_tool(skill: HarnessSpec) -> AgentTool:
-    """The one tool the model may call each step. It forces structured output: reasoning, a state
-    update, and an action.
-    """
+def skill_step_tool() -> AgentTool:
+    """The one tool the model calls each step."""
     parameters: JSONObject = {
         "type": "object",
         "properties": {
-            "reasoning": {
-                "type": "string",
+            "patch": {
+                "type": "array",
                 "description": (
-                    "Private scratch reasoning. Never shown back to you in a future "
-                    "step -- anything that must persist belongs in state_delta instead."
+                    "RFC 6902 JSON Patch operations applied to the notebook. Code cells "
+                    "the patch adds or whose source it changes are run."
                 ),
-            },
-            "state_delta": {
-                "type": "object",
-                "description": (
-                    "Partial update merged into the execution state (JSON Merge Patch, "
-                    "RFC 7396): set a field to null to delete it, an object to merge "
-                    "recursively, anything else to replace it. Only declared fields: "
-                    + ", ".join(skill.state_fields)
-                ),
-            },
-            "action": {
-                "type": "object",
-                "description": "The single action to execute this step.",
-                "properties": {
-                    "name": {"type": "string", "enum": list(skill.action_by_name())},
-                    "arguments": {"type": "object"},
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "op": {
+                            "type": "string",
+                            "enum": ["add", "remove", "replace", "move", "copy", "test"],
+                        },
+                        "path": {"type": "string"},
+                        "from": {"type": "string"},
+                        "value": {},
+                    },
+                    "required": ["op", "path"],
                 },
-                "required": ["name", "arguments"],
+            },
+            "reply": {
+                "type": "string",
+                "description": "Your answer to the user. Setting it ends the run.",
             },
         },
-        "required": ["state_delta", "action"],
+        "required": ["patch"],
     }
     return AgentTool(
         name=STEP_TOOL_NAME,
         label="Skill Step",
-        description="Advance the skill by one step: reason privately, update state, act.",
+        description="Patch the notebook; its changed code cells run.",
         parameters=parameters,
-        execute_fn=_skill_step_not_executed,
+        execute_fn=_not_executed,
     )
 
 
-def state_message(
-    state: JSONObject, *, rebuilt: bool = False, needs_refresh: bool = False
-) -> UserMessage:
-    """Return the history record that establishes a state baseline."""
-    label = "State rebuild" if rebuilt else "Initial state"
-    content = f"{label}:\n```json\n{json.dumps(state, indent=2, sort_keys=True)}\n```"
-    if needs_refresh:
-        content += (
-            "\nThis state still exceeds the context target. "
-            "Remove nonessential fields in state_delta."
-        )
-    return UserMessage(content=content)
-
-
-def state_patch_message(delta: JSONObject) -> UserMessage:
-    """Return an accepted RFC 7396 patch as an immutable history record."""
-    return UserMessage(
-        content=f"State patch:\n```json\n{json.dumps(delta, indent=2, sort_keys=True)}\n```"
+def notebook_protocol(limit_tokens: int) -> str:
+    """Return the system-prompt section that teaches the model to work in its notebook."""
+    return (
+        "## Your context is a notebook\n\n"
+        "Your whole context is one Jupyter notebook (nbformat v4 JSON), sent in full every "
+        f"step. Each reply calls `{STEP_TOOL_NAME}` with a JSON Patch (RFC 6902) against it.\n\n"
+        "- Add or edit code cells to act. Cells are Python run by IPython: use `!cmd` or "
+        "`%%bash` for shell commands, and Python for reading and writing files.\n"
+        "- After the patch, the code cells it added or changed run in order, and their "
+        "outputs appear in the notebook. A cell that fails stops the ones after it. Other "
+        "cells keep their outputs and never run again.\n"
+        "- All cells share one live kernel, so variables build up across steps. Editing a "
+        "cell's source runs it again; editing only its outputs does not.\n"
+        "- `metadata.rio.kernel` holds the current kernel's `id` and whether it is `running`. "
+        "Each code cell that ran has `metadata.rio.kernel` set to the id of the kernel that "
+        "ran it, and `metadata.rio.defines` listing the names it bound. After a resume, "
+        "rewind, or new session the kernel is new and empty: a cell stamped with another id "
+        "is stale, and the variables, open files, and subprocesses it created are gone. Each "
+        "request lists stale cells. Leaving a cell stale is fine, but a patch whose cells "
+        "read a name only a stale cell defined is rejected, and in the kernel such a name "
+        "raises `StaleVariableError` when used. Run that cell again first, in the same "
+        "patch and before the cells that read it, by removing its stamp "
+        '(`{"op": "remove", "path": "/cells/<i>/metadata/rio/kernel"}`), or define the '
+        "variable again.\n"
+        "- A new cell needs only `cell_type` and `source`, e.g. "
+        '`{"op": "add", "path": "/cells/-", "value": {"cell_type": "code", "source": "..."}}`.\n'
+        "- Markdown cells are notes. Cells with `metadata.rio.role` are user messages and "
+        "your replies.\n"
+        "- Manage your context: remove stale outputs and cells, and keep notes of decisions, "
+        "file paths, and exact values. "
+        f"The notebook must stay under about {limit_tokens} tokens; each request shows its size.\n"
+        "- Set `reply` to answer the user and end the run, once the task is done or blocked."
     )
 
 
-def observation_message(observation: str) -> UserMessage:
-    """Return an action result as an immutable history record."""
-    return UserMessage(content="Observation:\n" + observation)
-
-
-def build_step_messages(
-    history: list[AgentMessage], *, error_note: str | None = None
+def build_messages(
+    notebook: Notebook, *, limit_tokens: int, error_note: str | None = None
 ) -> list[AgentMessage]:
-    """Return the complete history, plus a transient validation correction."""
-    messages = list(history)
-    if error_note:
-        messages.append(
-            UserMessage(
-                content=(
-                    f"Rejected {STEP_TOOL_NAME} call: {error_note}\n"
-                    "Retry with a corrected call."
-                )
-            )
+    """Return the request messages for `notebook`, plus a transient correction."""
+    text = (
+        f"```json\n{render_notebook(notebook)}\n```\n"
+        f"[notebook: ~{notebook_tokens(notebook)}/{limit_tokens} tokens]"
+    )
+    stale = stale_cells(notebook)
+    if stale:
+        text += (
+            f"\n[stale cells {stale}: they ran in an older kernel. Run one again before "
+            "reading its variables.]"
         )
-    return messages
+    if error_note:
+        text += f"\n\nRejected reply: {error_note}\nRetry with a corrected reply."
+    return [UserMessage(content=text)]

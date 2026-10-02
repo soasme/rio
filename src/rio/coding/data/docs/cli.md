@@ -1,4 +1,4 @@
-# rio CLI and RPC
+# rio CLI
 
 rio drives one `rio.coding.session.CodingSession` from a one-shot print-mode CLI. The CLI entry point is `rio.cli:app` (script name `rio`).
 
@@ -36,18 +36,8 @@ that implement the Responses API.
 `rio run --thinking LEVEL` selects reasoning effort. `--approve` allows ambient
 project resources for the run; `--no-approve` disables them. Each `rio run`
 creates a durable session. Human output prints its id; pass it to `--resume`
-to load its state and continue it. Use `--output json` for one JSON event per line;
-the default `human` format prints messages and tool invocations.
-
-## RPC mode
-
-`rio.coding.rpc.RpcServer` reads newline-delimited JSON commands from stdin and writes newline-delimited JSON responses/events to stdout -- see `architecture.md` for why the events it streams describe SKILL.state steps rather than a conversation.
-
-Every command is a JSON object with a `type` and, for correlated commands, an `id` that is echoed back on the response. `prompt`, `steer`, `follow_up`, and `continue` start or steer a run and stream the run's events (a `RunStartEvent`, one `StepStartEvent`/`StateUpdateEvent`/`ActionStartEvent`/`ActionEndEvent`/`StepEndEvent` cycle per step, then a `RunEndEvent` and the session-level `run_end`/`agent_settled` events) after an initial success/failure response. `get_state` reports model, provider, thinking level, and queued-message counts; `get_execution_state` reports the session's actual memory of the run -- its state object, plan progress, touched files, and answer. `get_entries`, `get_tree`, and `get_checkpoints` read the state journal, and `restore` adopts an earlier checkpoint as the live state. See `rio/coding/rpc.py` for the complete command list.
-
-Input EOF stops accepting commands and lets an accepted run finish. Use `abort`
-to cancel it explicitly. Background run failures produce an error response
-with the original request id.
+to rebuild its notebook and continue it. Use `--output json` for one JSON event per
+line; the default `human` format prints messages and the cells that ran.
 
 ## Thinking level
 

@@ -1,83 +1,92 @@
 # rio architecture
 
-rio is a SKILL.state coding agent informed by *SKILL.state: Scalable
-Long-Horizon Agent Skills* (arXiv:2608.26263). The runtime materializes state
-while the model receives an append-only history of state patches and observations.
+rio is a coding agent built on *Context Language Models* (arXiv:2609.37725):
+the model manages its own context, and the context is a runnable Jupyter
+notebook.
 
 ## The three packages
 
 ```text
 rio.ai      provider/model streaming layer
-rio.agent   state-patch runtime and history compaction
-rio.coding  CLI app, resources, skills, extensions, commands, TUI
+rio.agent   CLM runtime: the notebook, patch checks, cell execution, the step loop
+rio.coding  CLI app, resources, skills, extensions, commands, session journal
 ```
 
 - `rio.ai`: providers, wire-level message/tool types, and the provider-neutral
-  assistant stream event union. No knowledge of skills, state, or sessions.
-- `rio.agent`: the portable SKILL.state runtime -- `HarnessSpec`, `Harness`,
-  `run_skill_loop`, state-delta validation, and the step event stream. No
-  knowledge of the coding domain, the filesystem, or any frontend.
-- `rio.coding`: the coding domain expressed as one SKILL.state skill (see
-  `rio.coding.coding_skill`), plus everything a coding agent needs that isn't
-  the runtime itself: resource discovery, tools, project trust, the session
-  journal, and frontends (CLI, RPC, TUI).
+  assistant stream event union. No knowledge of skills, notebooks, or sessions.
+- `rio.agent`: the portable CLM runtime -- `HarnessSpec`, `Harness`,
+  `run_notebook_loop`, `rio.agent.notebook`, and the step event stream. No
+  knowledge of the coding domain or any frontend.
+- `rio.coding`: the coding domain expressed as one skill (see
+  `rio.coding.coding_skill`), plus resource discovery, project trust, the
+  session journal, and frontends.
 
-Keep `rio.agent` free of Typer, Rich, Textual, filesystem layout assumptions,
-and coding-specific vocabulary. `rio.coding` is where all of that lives.
+## The context is a notebook
 
-## Sessions append history and rebuild state
+The context is an nbformat v4 notebook kept as JSON. Each step the model sees
+the whole notebook in one user message and replies with one `skill_step` call:
 
-Each request contains fixed instructions plus a history beginning with an
-initial or rebuilt state. The runtime appends every accepted RFC 7396 state
-patch and every action observation; private reasoning is never replayed. It
-still owns the materialized state and validates patches before actions run.
+- `patch`: an RFC 6902 JSON Patch against the notebook;
+- `reply` (optional): the answer to the user. Setting it ends the run, and the
+  runtime appends it as a markdown cell with `metadata.rio.role = "assistant"`.
 
-At 80% of the configured context window, the runtime replaces the history
-with one exact materialized state. The next steps append normally. State is
-budgeted, so agents must intentionally remove or shorten state fields when a
-useful rebuilt state cannot fit.
+The runtime applies the patch and fills in the fields a new cell may omit
+(`id`, `metadata`, `outputs`, `execution_count`). It rejects the reply through
+the retry path when the patch fails, the result is not a valid notebook, cell
+ids repeat, or the notebook would grow past the limit. A patch that shrinks an
+oversized notebook is accepted.
 
-## File context
+Code cells the patch added or whose source changed then run in order, in the
+session's working directory; the first one that fails stops the rest. All cells
+share one IPython kernel that lives for the session (`rio.agent.KernelExecutor`,
+built on nbclient), so variables build up across steps and no cell runs twice
+unless its source changes. A resume, rewind, or new session starts an empty
+kernel. Only the cells that ran get new outputs; every other cell keeps its own.
+Outputs lose terminal colors and binary data, and long text is cut.
 
-The coding skill's `execute_action` callback checks file hashes, executes the
-existing tool, and returns its result plus a state delta. The loop commits the
-delta; cache-limit notes use the normal tool result.
+The notebook records the kernel. `metadata.rio.kernel` holds the current
+kernel's `id` and whether it is `running`. Each code cell that ran has
+`metadata.rio.kernel` set to the id of the kernel that ran it, and
+`metadata.rio.defines` listing the names it bound. The kernel records those
+names itself (`rio.agent.kernel_ext` compares the namespace before and after
+the cell), so names made by `exec` count and a function's locals do not.
 
-`state.files[path]` holds `status`, `hash`, and `context` (`total_lines` plus
-`slices` keyed by line range). Reads accumulate slices; writes refresh cached
-windows. Set `context` to null to forget content while keeping the hash and note.
-Content that exceeds the state budget is omitted with a note in the tool result.
+A new kernel gets a new id, so after a resume, rewind, or new session every
+cell that ran before is stale: its variables, open files, and subprocesses are
+gone. Each request lists the stale cells. A cell may stay stale, but reading
+its variables is stopped twice:
 
-The journal keeps the model's original patch and the full resulting state,
-including runtime file updates. Resume uses that snapshot, not patch replay.
+- Before running, a patch is rejected when a cell it runs reads a name that
+  only stale cells defined. Reads are found statically, after IPython turns
+  magics and `!cmd` into Python.
+- In the kernel, each such name is bound to a `StaleValue` placeholder. Almost
+  any use of it raises `StaleVariableError`, naming the cell to run again. This
+  catches the reads the static check misses: `globals()[...]`, `eval`, `exec`.
 
-## Branching is checkpointing, not tree replay
+Removing a cell's stamp (`{"op": "remove", "path": "/cells/3/metadata/rio/kernel"}`)
+runs it again without editing it, so the model can re-run a stale cell before
+the cells that read its variables, in the same patch.
 
-Because every committed step already carries the complete state it produced
-(not a diff against a transcript position), a "checkpoint" is just one
-journaled entry with a state snapshot attached, and "branching" is adopting
-that snapshot as the live state. There is no subtree of messages to replay.
+Cells are Python run by IPython: `!cmd` and `%%bash` run shell commands, plain
+Python reads and writes files, and the `%%edit PATH` cell magic
+(`rio.coding.edit_magic`) applies SEARCH/REPLACE blocks with the `edit` tool's
+rules. Markdown cells are notes. User tasks are markdown cells with
+`metadata.rio.role = "user"`.
 
-`rio.coding.session_store` defines the journal entry types (`TurnEntry`,
-`StepEntry`, `StateResetEntry`, and a handful of bookkeeping entries for
-model/thinking-level changes and labels) and the tree utilities that find the
-latest checkpoint on a branch (`resume_state`, `state_at_entry`,
-`latest_leaf_id`). `rio.coding.session_runner.SessionRunner` is the layer that
-actually drives a run against that journal: it writes a `StepEntry` for every
-committed step, folds a steering message into the next observation by
-restarting the loop from the current state (nothing is lost, because the
-state already holds everything the model would have been told), and
-implements `restore(entry_id)` by reading that entry's state back out of the
-journal and swapping it in wholesale. Read those two modules together to see
-how a rio session actually persists and resumes -- there is no message log to
-reconcile, only a state to read.
+Validity is the runtime's job; strategy is the model's. The runtime never
+summarizes or drops cells. The model keeps the notebook small by removing stale
+outputs and cells.
 
-## Frontends
+## Sessions journal the notebook
 
-`rio.coding.rpc` is one such frontend: a JSONL protocol that starts and steers
-runs, and exposes the session's live execution state (`get_execution_state`)
-and its state journal (`get_entries`, `get_tree`, `get_checkpoints`,
-`restore`) to an external process such as an editor integration. A CLI and a
-Textual TUI are other frontends over the same `CodingSession`. None of them
-own any session state themselves -- they all read and drive the one
-`Sigma_t` the session already has.
+The notebook is never stored outside the session file. A `StateResetEntry`
+holds a whole notebook. Each committed step writes a `StepEntry` holding the
+JSON Patch from the previous notebook to the new one (the model's edits, the
+new outputs, and any user or reply cell), the cells that ran, and the reply.
+Resuming replays the patches on the active branch; `--resume` appends the new
+task as a user cell. Branching rebuilds the notebook at an earlier step and
+journals it as a reset.
+
+`rio.coding.session_store` defines the entry types and the tree utilities
+(`notebook_at_entry`, `resume_notebook`, `latest_leaf_id`).
+`rio.coding.session_runner.SessionRunner` drives a run against that journal.

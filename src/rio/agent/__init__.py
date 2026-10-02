@@ -1,54 +1,41 @@
-"""rio.agent: a SKILL.state long-horizon agent runtime.
+"""rio.agent: a Context Language Model (CLM) agent runtime (arXiv:2609.37725).
 
-Fixed skill instructions, a structured mutable execution state, and the
-latest observation are the only inputs to each step. `O_t` is one plain
-string: whatever text the step observes, whether that text is an action's
-result or a message from the user. The runtime does not tag it by kind --
-a user message is not a distinct channel, just this step's observation.
-The runtime discards the reasoning behind each step once it commits a
-valid state update, so per-step prompt size stays fixed instead of growing
-with the number of steps already taken.
-
-Exposes a loop interface shaped like `rio.ai`'s ported tau_agent-style
-`AgentHarness`/`run_agent_loop` (a stateful harness plus a bare async-
-generator loop function, both emitting a typed event stream), but backed
-internally by execution state rather than an append-only transcript.
+The model manages its own context, and the context is a Jupyter notebook. Each
+step the model patches the notebook with RFC 6902 JSON Patch; the runtime
+checks the result is a valid notebook, runs the changed code cells, and sends
+the notebook with their outputs back as the next context.
 """
 
 # ruff: noqa: F401 - this module intentionally defines the public facade
 
-from rio.agent.errors import (
-    ActionNotFoundError,
-    ProviderResponseError,
-    RetriesExhaustedError,
-    StateValidationError,
-)
+from rio.agent.errors import ProviderResponseError, RetriesExhaustedError
 from rio.agent.events import (
-    ActionEndEvent,
-    ActionStartEvent,
-    ReasoningDiscardedEvent,
+    AgentEvent,
+    ExecutionEvent,
+    PatchEvent,
+    ReasoningEvent,
     RunEndEvent,
     RunStartEvent,
-    SkillEvent,
-    StateUpdateEvent,
     StepEndEvent,
     StepStartEvent,
     ValidationErrorEvent,
 )
-from rio.agent.harness import (
-    EventListener,
-    Harness,
-    HarnessCancellationToken,
-    HarnessConfig,
+from rio.agent.harness import EventListener, Harness, HarnessCancellationToken, HarnessConfig
+from rio.agent.loop import context_limit, run_notebook_loop
+from rio.agent.notebook import (
+    KernelExecutor,
+    Notebook,
+    NotebookError,
+    NotebookExecutor,
+    apply_patch,
+    changed_cells,
+    diff,
+    markdown_cell,
+    new_notebook,
+    notebook_tokens,
+    render_notebook,
 )
-from rio.agent.loop import run_skill_loop
-from rio.agent.prompt import STEP_TOOL_NAME, build_step_messages, skill_step_tool
+from rio.agent.prompt import STEP_TOOL_NAME, build_messages, notebook_protocol, skill_step_tool
 from rio.agent.skill import HarnessSpec
-from rio.agent.state import (
-    apply_state_delta,
-    check_state_budget,
-    state_size_chars,
-    validate_state_delta,
-)
 
 __all__ = [name for name in globals() if not name.startswith("_")]

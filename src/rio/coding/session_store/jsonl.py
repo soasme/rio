@@ -1,4 +1,4 @@
-"""JSONL serialization for the execution-state journal."""
+"""JSONL serialization for the context journal."""
 
 from __future__ import annotations
 

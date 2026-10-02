@@ -13,7 +13,8 @@ Continue the same work with that ID:
 rio run --resume SESSION_ID "Now add regression tests."
 ```
 
-The resumed run uses the original working directory. You may provide
+The resumed run continues from the saved notebook, rebuilt from the session
+file: the new task is appended to it as a user cell. The resumed run uses the original working directory. You may provide
 `--provider` or `--model` to override the saved selection; otherwise Rio uses
 the session's saved provider and model.
 

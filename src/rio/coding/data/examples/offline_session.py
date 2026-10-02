@@ -15,10 +15,7 @@ async def main() -> None:
             ToolCall(
                 id="example-step",
                 name="skill_step",
-                arguments={
-                    "state_delta": {"goal": "greet the user"},
-                    "action": {"name": "respond", "arguments": {"message": "Hello from Rio."}},
-                },
+                arguments={"patch": [], "reply": "Hello from Rio."},
             )
         ],
         stop_reason="toolUse",

@@ -1,10 +1,10 @@
-"""Faithful JSON event-stream renderer for SKILL.state print mode.
+"""Faithful JSON event-stream renderer for print mode.
 
 Emits one JSON object per event exactly as it arrives, so a caller can pipe a
 run's output through `jq` or feed it to another process. tau's
 `JsonEventRenderer` only ever had Pydantic wire messages to serialize, so it
 just called `model_dump_json`. Half of `CodingSessionEvent` is `rio.agent`'s
-plain dataclasses instead (`StepStartEvent`, `ActionEndEvent`, ...), which
+plain dataclasses instead (`StepStartEvent`, `ExecutionEvent`, ...), which
 know nothing about JSON, so this module adds a small dataclass-to-JSON
 bridge; the pydantic session-level events already serialize themselves.
 """

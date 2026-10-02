@@ -45,7 +45,6 @@ async def run_persistent_session(
     trust_override: TrustOverride | None = None,
     resume: str | None = None,
     output_mode: PrintOutputMode = PrintOutputMode.human,
-    exposed_tools: tuple[str, ...] = ("read", "write", "edit", "bash", "respond"),
     *,
     session_manager: SessionManager | None = None,
 ) -> tuple[bool, str]:
@@ -75,7 +74,6 @@ async def run_persistent_session(
         extension_paths,
         trust_override,
         output_mode,
-        exposed_tools=exposed_tools,
         storage=JsonlSessionStorage(record.path),
     )
     manager.touch_session(record.id, model=selected_model, provider_name=selected_name)
@@ -92,7 +90,6 @@ async def run_configured_session(
     trust_override: TrustOverride | None = None,
     output_mode: PrintOutputMode = PrintOutputMode.human,
     *,
-    exposed_tools: tuple[str, ...] = ("read", "write", "edit", "bash", "respond"),
     storage: SessionStorage | None = None,
 ) -> bool:
     """Construct and execute one coding session."""
@@ -105,7 +102,6 @@ async def run_configured_session(
         extension_paths,
         trust_override,
         output_mode,
-        exposed_tools=exposed_tools,
         storage=storage,
     )
     return succeeded
@@ -121,7 +117,6 @@ async def _run_configured_session(
     trust_override: TrustOverride | None = None,
     output_mode: PrintOutputMode = PrintOutputMode.human,
     *,
-    exposed_tools: tuple[str, ...] = ("read", "write", "edit", "bash", "respond"),
     storage: SessionStorage | None = None,
 ) -> tuple[bool, str, str]:
     """Construct and execute one coding session."""
@@ -169,8 +164,6 @@ async def _run_configured_session(
                 storage=storage or InMemorySessionStorage(),
                 project_resources_trusted=trust.trusted,
                 thinking_level=level,
-                shell_command_prefix=shell.shell_command_prefix,
-                exposed_tools=exposed_tools,
             )
         )
         return await _render_run(session, prompt, output_mode), selected_name, selected_model

@@ -1,27 +1,25 @@
-"""Tests for Harness, the stateful wrapper around run_skill_loop."""
+"""Tests for Harness, the stateful wrapper around run_notebook_loop."""
 
 from __future__ import annotations
 
 import pytest
 
 from conftest import make_skill, step_response
-from rio.agent import Harness, HarnessConfig, RunEndEvent
-from rio.ai import FakeProvider
+from rio.agent import Harness, HarnessConfig, RunEndEvent, markdown_cell, new_notebook
 
 
 @pytest.mark.asyncio
-async def test_harness_tracks_state_and_notifies_listeners():
-    skill = make_skill()
-    provider = FakeProvider(
-        [step_response(reasoning="r1", state_delta={"counter": 1}, action="finish", args={})]
-    )
-    harness = Harness(HarnessConfig(provider=provider, model="m", skill=skill))
+async def test_harness_tracks_the_notebook_and_notifies_listeners():
+    from rio.ai import FakeProvider
+
+    provider = FakeProvider([step_response(reply="r1")])
+    harness = Harness(HarnessConfig(provider=provider, model="m", skill=make_skill()))
     received = []
     harness.subscribe(received.append)
 
     events = [event async for event in harness.run("start")]
 
-    assert harness.state["counter"] == 1
+    assert [cell["source"] for cell in harness.notebook["cells"]] == ["start", "r1"]
     assert not harness.is_running
     assert received == events
     assert isinstance(events[-1], RunEndEvent)
@@ -29,16 +27,17 @@ async def test_harness_tracks_state_and_notifies_listeners():
 
 @pytest.mark.asyncio
 async def test_harness_rejects_concurrent_run():
-    skill = make_skill()
-    provider = FakeProvider(
-        [step_response(reasoning="r1", state_delta={}, action="finish", args={})]
+    from rio.ai import FakeProvider
+
+    harness = Harness(
+        HarnessConfig(
+            provider=FakeProvider([step_response(reply="r")]), model="m", skill=make_skill()
+        )
     )
-    harness = Harness(HarnessConfig(provider=provider, model="m", skill=skill))
 
     generator = harness.run("start")
     with pytest.raises(RuntimeError):
         harness.run("start-again")
-
     async for _ in generator:
         pass
 
@@ -46,19 +45,19 @@ async def test_harness_rejects_concurrent_run():
 
 
 @pytest.mark.asyncio
-async def test_harness_seeds_from_explicit_state_not_only_skill_default():
-    skill = make_skill(initial_state={"counter": 0})
-    provider = FakeProvider(
-        [step_response(reasoning="r1", state_delta={"counter": 6}, action="finish", args={})]
-    )
+async def test_harness_continues_from_an_explicit_notebook():
+    from rio.ai import FakeProvider
+
+    provider = FakeProvider([step_response(reply="r")])
+    notebook = new_notebook()
+    notebook["cells"].append(markdown_cell("earlier work"))
     harness = Harness(
-        HarnessConfig(provider=provider, model="m", skill=skill),
-        state={"counter": 5},
+        HarnessConfig(provider=provider, model="m", skill=make_skill()), notebook=notebook
     )
 
-    events = [event async for event in harness.run("start")]
+    async for _ in harness.run("next task"):
+        pass
 
-    first_call = provider.calls[0]
-    assert '"counter": 5' in first_call[2][0].text
-    assert harness.state["counter"] == 6
-    assert events
+    request = provider.calls[0][2][0].text
+    assert "earlier work" in request and "next task" in request
+    assert notebook["cells"] == [harness.notebook["cells"][0]]
