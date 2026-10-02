@@ -1,18 +1,13 @@
 """Skill instruction assembly for rio coding skills.
 
-Produces `P`, the immutable skill specification handed to
-`rio.agent.HarnessSpec.instructions`. Unlike an append-only conversational
-system prompt, `P` is authored once per domain and is the only fixed text the
-model sees on every step; the mutable execution state and the single latest
-observation carry everything else. This module therefore documents the
-SKILL.state step protocol and the coding skill's declared state fields in
-addition to the tool-usage guidance, project context, and skills sections
-ported from the conversational design.
+Produces the fixed instructions handed to `rio.agent.HarnessSpec.instructions`:
+tool usage, guidelines, the step protocol, project context, and skills. The
+runtime appends the context-file protocol (see `rio.agent.prompt`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -20,54 +15,6 @@ from xml.sax.saxutils import escape
 
 from rio.ai.tools import AgentTool
 from rio.coding.skills import Skill
-
-CODING_STATE_FIELD_DOCS: Mapping[str, str] = {
-    "goal": (
-        "What the user asked for, restated in your own words. Set it once, near the "
-        "start of the turn, and keep it stable. A new user message is a new goal: "
-        "replace it, and keep the rest of the state — the session has not restarted."
-    ),
-    "plan": (
-        "An ordered checklist toward the goal: a list of objects with `id`, `title`, "
-        "and `status` (`pending`, `in_progress`, `done`, or `blocked`). Update statuses "
-        "as you make progress, and add or reorder steps as the plan changes. When a new "
-        "user message sets a new goal, replace the finished plan with one for it."
-    ),
-    "findings": (
-        "Durable conclusions you have reached, keyed by a short topic name. Use it for "
-        "facts worth remembering across steps, such as where a piece of logic lives or "
-        "why an approach was rejected."
-    ),
-    "files": (
-        "A map from file path to `status` (`read`, `edited`, or `created`), `hash`, "
-        "`context` (`total_lines` and `slices` keyed by line range), and your short `note`. "
-        "The runtime records status, hash, and content after successful file actions; "
-        "leave those fields to it. Use cached slices instead of repeating reads. "
-        "Read missing ranges with `offset`. Existing files must be read before writing "
-        "or editing; read again if their hash changed on disk. To free state space, "
-        "set `context` to null and summarize what matters in `note`. "
-        "Forgetting content keeps the status, hash, and note."
-    ),
-    "cwd": "The current working directory for file and shell operations.",
-    "environment": (
-        "A snapshot of the run's environment: operating system, shell, git branch, and "
-        "a short digest of the loaded project context. Refresh it when the environment "
-        "changes; do not repeat this information elsewhere."
-    ),
-    "blockers": (
-        "Unresolved obstacles preventing progress, such as missing permissions or "
-        "failing tests you cannot fix yet. Remove an entry once it is resolved."
-    ),
-    "last_error": (
-        "The error message from the most recently failed action, or `null` once you "
-        "have addressed it or it no longer applies — a new user message makes it no "
-        "longer apply. Read it before retrying a failed action."
-    ),
-    "scratch": (
-        "Short-lived working notes that do not belong in any other field. Treat it as "
-        "disposable; do not rely on it for anything that must survive many steps."
-    ),
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +35,7 @@ class PromptSection:
 
 @dataclass(frozen=True, slots=True)
 class BuildSystemPromptOptions:
-    """Options used to build rio's skill instructions (`P`)."""
+    """Options used to build rio's skill instructions."""
 
     cwd: Path
     tools: Sequence[AgentTool] = ()
@@ -99,11 +46,10 @@ class BuildSystemPromptOptions:
     current_date: date | None = None
     extra_guidelines: Sequence[str] = field(default_factory=tuple)
     extra_sections: Sequence[PromptSection] = field(default_factory=tuple)
-    state_field_docs: Mapping[str, str] = field(default_factory=lambda: CODING_STATE_FIELD_DOCS)
 
 
 def build_skill_instructions(options: BuildSystemPromptOptions) -> str:
-    """Build the deterministic `P` skill instructions for a rio coding skill."""
+    """Build the deterministic skill instructions for a rio coding skill."""
     current_date = options.current_date or date.today()
     cwd = _format_path(options.cwd)
     append_parts = [options.append_system_prompt] if options.append_system_prompt else []
@@ -121,15 +67,14 @@ def build_skill_instructions(options: BuildSystemPromptOptions) -> str:
         return prompt
 
     prompt = (
-        "You are an expert coding assistant operating inside rio, a coding agent skill "
-        "running on the SKILL.state runtime. You help users by reading files, "
-        "executing commands, editing code, and writing new files."
+        "You are an expert coding assistant operating inside rio, a coding agent that "
+        "manages its own context. You help users by reading files, executing commands, "
+        "editing code, and writing new files."
         f"\n\nAvailable tools:\n{format_available_tools(options.tools)}"
         "\n\nIn addition to the tools above, you may have access to other custom tools "
         "depending on the project."
         f"\n\nGuidelines:\n{format_guidelines(options.tools, options.extra_guidelines)}"
         f"\n\n{format_step_protocol()}"
-        f"\n\n{format_state_field_docs(options.state_field_docs)}"
     )
 
     prompt += append_section
@@ -153,24 +98,12 @@ def format_prompt_section(section: PromptSection) -> str:
 
 
 def format_step_protocol() -> str:
-    """Format the minimal state-patch protocol."""
+    """Format the one-action-per-step protocol."""
     return (
         "Protocol:\n"
-        "- History contains an initial/rebuilt state, accepted `State patch` records, "
-        "and observations. It may be rebuilt to one state when full.\n"
-        "- Reply with one `skill_step` call: `state_delta` is an RFC 7396 JSON Merge "
-        "Patch (null deletes; objects merge); then take one `action`.\n"
-        "- `reasoning` is private and discarded. Persist only useful facts in state. "
-        "Use `respond` with a `message` to finish after completing or blocking the plan."
+        "- Each reply is your reasoning followed by exactly one tool call.\n"
+        "- Use `respond` with a `message` to finish once the task is done or blocked."
     )
-
-
-def format_state_field_docs(field_docs: Mapping[str, str] = CODING_STATE_FIELD_DOCS) -> str:
-    """Format the execution-state field reference section."""
-    lines = ["Execution state fields:"]
-    for name, description in field_docs.items():
-        lines.append(f"- `{name}`: {description}")
-    return "\n".join(lines)
 
 
 def format_available_tools(tools: Sequence[AgentTool]) -> str:

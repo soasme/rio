@@ -890,10 +890,10 @@ def test_packaged_docs_do_not_describe_compaction_or_transcripts_as_a_feature(na
     assert "transcript replay" not in lowered
 
 
-def test_architecture_doc_cites_the_skill_state_paper_and_the_three_packages() -> None:
+def test_architecture_doc_cites_the_clm_paper_and_the_three_packages() -> None:
     text = (rio_docs_path() / "architecture.md").read_text(encoding="utf-8")
-    assert "SKILL.state" in text
-    assert "arXiv:2608.26263" in text
+    assert "Context Language Models" in text
+    assert "arXiv:2609.37725" in text
     assert "rio.ai" in text
     assert "rio.agent" in text
     assert "rio.coding" in text

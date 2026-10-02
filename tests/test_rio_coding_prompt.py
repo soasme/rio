@@ -35,7 +35,6 @@ from rio.coding.skills import (
     shadowed_skill_diagnostics,
 )
 from rio.coding.system_prompt import (
-    CODING_STATE_FIELD_DOCS,
     BuildSystemPromptOptions,
     ProjectContextFile,
     PromptSection,
@@ -44,7 +43,6 @@ from rio.coding.system_prompt import (
     collect_prompt_guidelines,
     format_available_tools,
     format_skills_for_prompt,
-    format_state_field_docs,
     format_step_protocol,
 )
 from rio.coding.thinking import (
@@ -556,7 +554,7 @@ def test_default_prompt_includes_tools_guidelines_date_and_cwd(tmp_path: Path) -
     )
 
     assert "You are an expert coding assistant operating inside rio" in prompt
-    assert "SKILL.state runtime" in prompt
+    assert "manages its own context" in prompt
     assert "Available tools:\n- read: Read file contents" in prompt
     assert "- Prefer grep/find/ls tools over bash" not in prompt
     assert "- Use read to examine files instead of cat or sed." in prompt
@@ -606,8 +604,7 @@ def test_custom_prompt_replaces_default_but_keeps_append_context_and_date(tmp_pa
 
     assert prompt.startswith("Custom base.\n\nExtra rules.")
     assert "Available tools:" not in prompt
-    assert "Step protocol:" not in prompt
-    assert "Execution state fields:" not in prompt
+    assert "Protocol:" not in prompt
     assert '<project_instructions path="/repo/AGENTS.md">' in prompt
     assert "Follow rules." in prompt
     assert "Current date: 2026-06-17" in prompt
@@ -717,54 +714,17 @@ def test_skills_are_included_only_when_read_tool_is_available(tmp_path: Path) ->
     assert "<available_skills>" in with_read
 
 
-# --- new: step protocol and state field sections ----------------------------
+# --- step protocol ------------------------------------------------------------
 
 
 def test_default_prompt_includes_step_protocol_section() -> None:
     prompt = build_skill_instructions(BuildSystemPromptOptions(cwd=Path("/repo")))
 
-    assert "Protocol:" in prompt
-    assert "skill_step" in prompt
-    assert "state_delta" in prompt
-    assert "RFC 7396 JSON Merge Patch" in prompt
-    assert "reasoning" in prompt
-    assert "discarded" in prompt
-    assert "`respond`" in prompt
+    assert format_step_protocol() in prompt
 
 
-def test_default_prompt_includes_state_field_docs_section() -> None:
-    prompt = build_skill_instructions(BuildSystemPromptOptions(cwd=Path("/repo")))
-
-    assert "Execution state fields:" in prompt
-    for field_name in CODING_STATE_FIELD_DOCS:
-        assert f"`{field_name}`" in prompt
-
-
-def test_format_step_protocol_describes_the_full_contract() -> None:
+def test_format_step_protocol_asks_for_one_tool_call_and_respond() -> None:
     text = format_step_protocol()
 
-    assert "initial/rebuilt state" in text
-    assert "State patch" in text
-    assert "observations" in text
-    assert "one `skill_step` call" in text
-    assert "RFC 7396 JSON Merge Patch" in text
-    assert "private and discarded" in text
-
-
-def test_format_state_field_docs_lists_every_declared_field() -> None:
-    text = format_state_field_docs()
-
-    for field_name, description in CODING_STATE_FIELD_DOCS.items():
-        assert f"- `{field_name}`: {description}" in text
-
-
-def test_format_state_field_docs_accepts_a_custom_mapping() -> None:
-    text = format_state_field_docs({"foo": "does foo things"})
-
-    assert text == "Execution state fields:\n- `foo`: does foo things"
-
-
-def test_coding_state_field_docs_covers_the_declared_schema() -> None:
-    from rio.coding.coding_skill import CODING_STATE_FIELDS
-
-    assert set(CODING_STATE_FIELD_DOCS) == set(CODING_STATE_FIELDS)
+    assert "exactly one tool call" in text
+    assert "`respond`" in text

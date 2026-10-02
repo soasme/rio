@@ -1,8 +1,7 @@
-"""Durable execution-state journal for rio coding sessions.
+"""Durable context journal for rio coding sessions.
 
-A rio session log records *state*, not conversation. Each committed step
-persists the merge patch that was applied and the execution state it produced,
-so a session resumes by reading one snapshot instead of replaying a transcript.
+Each committed step persists the context it produced, so a session resumes by
+reading one snapshot instead of replaying a transcript.
 """
 
 # ruff: noqa: F401 - this module intentionally defines the public facade
@@ -25,6 +24,7 @@ from rio.coding.session_store.entries import (
     TurnEntry,
     ValidationFailureEntry,
     current_timestamp,
+    entry_context,
     entry_state,
     new_entry_id,
 )

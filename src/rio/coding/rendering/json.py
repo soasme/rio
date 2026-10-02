@@ -1,4 +1,4 @@
-"""Faithful JSON event-stream renderer for SKILL.state print mode.
+"""Faithful JSON event-stream renderer for print mode.
 
 Emits one JSON object per event exactly as it arrives, so a caller can pipe a
 run's output through `jq` or feed it to another process. tau's

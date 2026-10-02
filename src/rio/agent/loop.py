@@ -1,273 +1,225 @@
-"""The SKILL.state execution loop.
+"""The Context Language Model (CLM) loop.
 
-The runtime materializes state from accepted patches.  The model receives an
-append-only history of those patches and action observations, like a
-traditional agent transcript without replaying private reasoning.  When that
-history reaches 80% of the context window, the runtime replaces it with one
-materialized state rebuild and continues appending from there.
+The model manages its own context (arXiv:2609.37725). Before every step the
+runtime writes the context to a file. The model replies with text and one tool
+call; the runtime runs the tool, then reads the file back. If the model edited
+it, the edited turns replace the context, provided they fit the limit. The
+step's reply and observation are appended, and the loop repeats until an
+action terminates the run.
 
-The model must respond
-with one `skill_step` tool call carrying its private reasoning, a state
-update, and an action. The runtime checks the state update and the action --
-including whether the updated state still fits the skill's state budget --
-and an invalid proposal triggers a rollback-retry cycle, bounded by
-`max_retries`, instead of being committed. On success, the runtime commits
-the new state, discards the reasoning for good, runs the action to get the
-next observation, and the loop repeats.
-
-Because the prompt never includes history, total prompt size across a run
-grows in proportion to the number of steps, not the square of it -- see
-`tests/test_rio_agent_loop.py::test_prompt_footprint_is_bounded_across_steps`
-for a runtime check of that property.
+Validity is the runtime's job; strategy is the model's. The runtime never
+summarizes. It only reports the context size after every observation and,
+when the model lets the context outgrow its limit, withholds the oldest
+observations so the next request still fits.
 """
 
 from __future__ import annotations
 
+import json
+import tempfile
 from collections.abc import AsyncIterator
+from pathlib import Path
 
-from rio.agent.errors import (
-    ActionNotFoundError,
-    ProviderResponseError,
-    RetriesExhaustedError,
-    StateValidationError,
+from rio.agent.context import (
+    Turn,
+    context_tokens,
+    estimate_tokens,
+    parse_context,
+    read_context,
+    turn,
+    withhold_oldest,
+    write_context,
 )
+from rio.agent.errors import ProviderResponseError, RetriesExhaustedError
 from rio.agent.events import (
     ActionEndEvent,
     ActionStartEvent,
-    ReasoningDiscardedEvent,
+    AgentEvent,
+    ContextEditEvent,
+    ReasoningEvent,
     RunEndEvent,
     RunStartEvent,
-    SkillEvent,
-    StateUpdateEvent,
     StepEndEvent,
     StepStartEvent,
     ValidationErrorEvent,
 )
-from rio.agent.prompt import (
-    STEP_TOOL_NAME,
-    build_step_messages,
-    observation_message,
-    skill_step_tool,
-    state_message,
-    state_patch_message,
-)
+from rio.agent.prompt import build_messages, context_protocol
 from rio.agent.skill import HarnessSpec
-from rio.agent.state import apply_state_delta, check_state_budget, validate_state_delta
-from rio.ai.messages import (
-    AgentMessage,
-    AssistantMessage,
-    TextContent,
-    message_text,
-    raw_tool_arguments,
-)
+from rio.ai.messages import AssistantMessage, TextContent, ToolCall, raw_tool_arguments
 from rio.ai.provider import CancellationToken, ModelProvider
 from rio.ai.provider_events import AssistantDoneEvent, AssistantErrorEvent
-from rio.ai.tools import AgentTool, AgentToolResult
+from rio.ai.tools import AgentToolResult
 
-COMPACTION_THRESHOLD = 0.8
+#: The share of the context window the context may use; the rest is headroom
+#: for the system prompt, tool definitions, and the reply.
+CONTEXT_LIMIT_RATIO = 0.8
+#: The share of the limit at which each observation asks the model to compact.
+COMPACT_HINT_RATIO = 0.75
 DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
 
 
-async def run_skill_loop(
+def context_limit(context_window_tokens: int) -> int:
+    if context_window_tokens <= 0:
+        raise ValueError("context_window_tokens must be positive")
+    return int(context_window_tokens * CONTEXT_LIMIT_RATIO)
+
+
+def default_context_file() -> Path:
+    """Return a fresh private context file path."""
+    return Path(tempfile.mkdtemp(prefix="rio-context-")) / "CONTEXT.md"
+
+
+async def run_context_loop(
     *,
     provider: ModelProvider,
     model: str,
     skill: HarnessSpec,
     observation: str | None = None,
-    state: dict | None = None,
+    context: list[Turn] | None = None,
+    context_file: Path | None = None,
     max_steps: int | None = None,
     max_retries: int = 2,
     context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
     signal: CancellationToken | None = None,
-) -> AsyncIterator[SkillEvent]:
-    """Run the SKILL.state loop, yielding one event per lifecycle transition.
+) -> AsyncIterator[AgentEvent]:
+    """Run the CLM loop, yielding one event per lifecycle transition.
 
-    ``observation`` seeds the append-only history for compatibility with the
-    public low-level API. Coding sessions pass the user's task here.
+    ``observation`` is appended to ``context`` as a user turn before the first step.
     """
-    state = dict(state if state is not None else skill.initial_state)
+    path = context_file or default_context_file()
+    limit = context_limit(context_window_tokens)
+    system = skill.instructions + "\n\n" + context_protocol(path, limit)
     actions = skill.action_by_name()
-    tool = skill_step_tool(skill)
+    tools = list(skill.actions)
+    context = [dict(item) for item in context or []]
+    if observation is not None:
+        context.append(turn("user", observation))
 
     yield RunStartEvent(skill=skill.name)
 
     step = 0
-    history: list[AgentMessage] = [state_message(state)]
-    if observation is not None:
-        history.append(observation_message(observation))
-    terminated = False
     while max_steps is None or step < max_steps:
         if signal is not None and signal.is_cancelled():
             break
 
-        yield StepStartEvent(step=step, state=dict(state), observation=None)
+        over = context_tokens(context) - limit
+        if over > 0:
+            context = withhold_oldest(context, over_tokens=over)
+        yield StepStartEvent(step=step, context=[dict(item) for item in context])
 
-        delta, action_name, action_arguments = None, None, None
         error_note: str | None = None
         attempt = 0
         while True:
-            if _needs_compaction(history, skill.instructions, tool, context_window_tokens):
-                # A rebuild is deliberately computed by the runtime: it is the
-                # exact state obtained by applying every accepted patch, not an
-                # LLM summary that may lose a fact. The state budget reserves
-                # room for this single record; an agent that needs more room
-                # must intentionally delete or shorten state fields in a patch.
-                history = [state_message(state, rebuilt=True)]
-                if _needs_compaction(history, skill.instructions, tool, context_window_tokens):
-                    history = [state_message(state, rebuilt=True, needs_refresh=True)]
-            messages = build_step_messages(history, error_note=error_note)
+            rendered = write_context(path, context)
             assistant = await _call_model(
-                provider, model, skill.instructions, messages, [tool], signal
+                provider,
+                model,
+                system,
+                build_messages(context, error_note=error_note),
+                tools,
+                signal,
             )
             if assistant.stop_reason == "error":
-                # A provider failure is not a malformed step: retrying the same
-                # prompt cannot fix it, and reporting it as one hides the real
-                # message behind a protocol complaint.
                 raise ProviderResponseError(assistant.error_message or "provider returned an error")
+            call = assistant.tool_calls[0] if assistant.tool_calls else None
+            error_note = _call_error(assistant, call, actions)
+            if error_note is None:
+                break
+            attempt += 1
+            yield ValidationErrorEvent(step=step, attempt=attempt, error=error_note)
+            if attempt > max_retries:
+                raise RetriesExhaustedError(error_note)
 
-            # A step is one action, so only the first `skill_step` call is used.
-            # Models that emit several in parallel are not retried: the first
-            # proposal is committed and its observation is what they see next.
-            call = next(
-                (c for c in assistant.tool_calls if c.name == STEP_TOOL_NAME),
-                None,
-            )
-            if call is None:
-                called = ", ".join(f"`{c.name}`" for c in assistant.tool_calls) or "no tool"
-                error_note = (
-                    f"you must call the `{STEP_TOOL_NAME}` tool; you called {called}. "
-                    f"Every action goes in that call's `action` field."
-                )
-                attempt += 1
-                yield ValidationErrorEvent(step=step, attempt=attempt, error=error_note)
-                if attempt > max_retries:
-                    raise RetriesExhaustedError(error_note)
-                continue
-
-            # Arguments that never parsed reach here as the raw text. Retrying
-            # on the shape complaint the checks below would raise ("action must
-            # be a JSON object") sent the model back to write the same oversized
-            # call again, so say what actually went wrong instead.
-            raw_arguments = raw_tool_arguments(call.arguments)
-            if raw_arguments is not None:
-                error_note = _truncated_call_note(
-                    raw_arguments, truncated=assistant.stop_reason == "length"
-                )
-                attempt += 1
-                yield ValidationErrorEvent(step=step, attempt=attempt, error=error_note)
-                if attempt > max_retries:
-                    raise RetriesExhaustedError(error_note)
-                continue
-
-            if assistant.text:
-                yield ReasoningDiscardedEvent(step=step, reasoning=assistant.text)
-
-            proposed_delta = call.arguments.get("state_delta")
-            proposed_action = call.arguments.get("action")
-            try:
-                if not isinstance(proposed_delta, dict):
-                    raise StateValidationError(
-                        f"state_delta must be a JSON object, got {type(proposed_delta).__name__}"
-                    )
-                validate_state_delta(proposed_delta, allowed_fields=skill.state_fields)
-                if not isinstance(proposed_action, dict):
-                    raise StateValidationError("action must be a JSON object")
-                candidate_name = proposed_action.get("name")
-                if not isinstance(candidate_name, str) or candidate_name not in actions:
-                    raise ActionNotFoundError(
-                        f"unknown action {candidate_name!r}; declared actions are {sorted(actions)}"
-                    )
-                candidate_arguments = proposed_action.get("arguments", {})
-                if not isinstance(candidate_arguments, dict):
-                    raise StateValidationError("action arguments must be a JSON object")
-                candidate_state = apply_state_delta(state, proposed_delta)
-                check_state_budget(candidate_state, max_chars=skill.state_budget_chars)
-            except (StateValidationError, ActionNotFoundError) as exc:
-                error_note = str(exc)
-                attempt += 1
-                yield ValidationErrorEvent(step=step, attempt=attempt, error=error_note)
-                if attempt > max_retries:
-                    raise RetriesExhaustedError(error_note) from exc
-                continue
-
-            delta = proposed_delta
-            action_name = candidate_name
-            action_arguments = dict(candidate_arguments)
-            break
-
-        state = candidate_state
-        history.append(state_patch_message(delta))
-        yield StateUpdateEvent(step=step, delta=dict(delta), state=dict(state))
-
-        yield ActionStartEvent(step=step, name=action_name, arguments=dict(action_arguments))
-        action_delta = {}
+        assert call is not None
+        if assistant.text:
+            yield ReasoningEvent(step=step, reasoning=assistant.text)
+        arguments = dict(call.arguments)
+        yield ActionStartEvent(step=step, name=call.name, arguments=dict(arguments))
         try:
-            action = actions[action_name]
-            call_id = f"{skill.name}-step-{step}"
-            if skill.execute_action is None:
-                result = await action.execute(call_id, action_arguments, signal)
-            else:
-                result, action_delta = await skill.execute_action(
-                    action, call_id, action_arguments, state, signal
-                )
+            result = await actions[call.name].execute(
+                f"{skill.name}-step-{step}", arguments, signal
+            )
             is_error = False
         except Exception as exc:
-            # A failing action is an observation, not a crash. The state update
-            # for this step has already been committed, so the model resumes
-            # from a consistent state with the failure as its latest
-            # observation -- the same recovery path as any other result.
-            result = AgentToolResult(content=[TextContent(text=f"{action_name} failed: {exc}")])
+            # A failing action is an observation, not a crash.
+            result = AgentToolResult(content=[TextContent(text=f"{call.name} failed: {exc}")])
             is_error = True
-        yield ActionEndEvent(step=step, name=action_name, result=result, is_error=is_error)
+        yield ActionEndEvent(step=step, name=call.name, result=result, is_error=is_error)
 
-        if action_delta:
-            state = apply_state_delta(state, action_delta)
-            history.append(state_patch_message(action_delta))
-            yield StateUpdateEvent(step=step, delta=action_delta, state=dict(state))
+        edited = read_context(path)
+        note = ""
+        if edited is not None and edited.strip() != rendered.strip():
+            candidate = parse_context(edited)
+            before, after = context_tokens(context), context_tokens(candidate)
+            accepted = after <= limit
+            if accepted:
+                context = candidate
+                note = (
+                    f"\n[context edit applied: ~{before} -> ~{after} tokens, {len(context)} turns]"
+                )
+            else:
+                note = (
+                    f"\n[context edit rejected: ~{after} tokens is over the ~{limit}-token limit. "
+                    "Replace stale text with shorter summaries.]"
+                )
+            yield ContextEditEvent(
+                step=step,
+                accepted=accepted,
+                before_tokens=before,
+                after_tokens=after,
+                turns=len(candidate),
+            )
+
+        reply = "\n".join(
+            part for part in (assistant.text, f"{call.name} {_json(arguments)}") if part
+        )
+        if len(assistant.tool_calls) > 1:
+            note += "\n[only the first tool call ran: call one tool per reply]"
+        context.append(turn("assistant", reply))
+        observation_text = (result.text or "(no output)") + note
+        context.append(turn("tool", observation_text + _readout(context, limit, path)))
 
         terminated = bool(result.terminate)
-        yield StepEndEvent(step=step, state=dict(state), terminated=terminated)
-
+        yield StepEndEvent(
+            step=step, context=[dict(item) for item in context], terminated=terminated
+        )
         step += 1
         if terminated:
             break
-        history.append(observation_message(result.text or "(no observation)"))
 
-    yield RunEndEvent(steps=step, state=dict(state))
-
-
-def _needs_compaction(
-    history: list[AgentMessage], instructions: str, tool: AgentTool, context_window_tokens: int
-) -> bool:
-    """Whether the next normal request would exceed the history budget."""
-    if context_window_tokens <= 0:
-        raise ValueError("context_window_tokens must be positive")
-    # Keep this estimator local to the runtime so `rio.agent` remains usable
-    # without importing the coding domain (and creating a dependency cycle).
-    tokens = _estimate_tokens(instructions)
-    tokens += sum(4 + _estimate_tokens(message_text(message)) for message in history)
-    tokens += 16 + _estimate_tokens(tool.name) + _estimate_tokens(tool.description)
-    tokens += _estimate_tokens(str(tool.input_schema))
-    return tokens > context_window_tokens * COMPACTION_THRESHOLD
+    yield RunEndEvent(steps=step, context=[dict(item) for item in context])
 
 
-def _estimate_tokens(text: str) -> int:
-    return max(1, (len(text) + 3) // 4) if text else 0
+def _call_error(assistant: AssistantMessage, call: ToolCall | None, actions: dict) -> str | None:
+    """Return why a reply has no usable action, or None when it has one."""
+    if call is None:
+        return f"call exactly one tool; declared tools are {sorted(actions)}."
+    raw_arguments = raw_tool_arguments(call.arguments)
+    if raw_arguments is not None:
+        cause = (
+            "the response hit the output token limit before the call was finished"
+            if assistant.stop_reason == "length"
+            else "the arguments were not valid JSON"
+        )
+        return (
+            f"your `{call.name}` arguments could not be parsed -- {cause} "
+            f"({len(raw_arguments)} characters were received). Retry with a smaller "
+            "action: write or edit the file in several steps instead of sending its "
+            "whole content in one call."
+        )
+    if call.name not in actions:
+        return f"unknown tool {call.name!r}; declared tools are {sorted(actions)}."
+    return None
 
 
-def _truncated_call_note(raw_arguments: str, *, truncated: bool) -> str:
-    """Explain unparseable step arguments in terms the next attempt can act on."""
-    cause = (
-        "the response hit the output token limit before the call was finished"
-        if truncated
-        else "the arguments were not valid JSON"
-    )
-    return (
-        f"your `{STEP_TOOL_NAME}` arguments could not be parsed -- {cause} "
-        f"({len(raw_arguments)} characters were received). Retry with a smaller "
-        "action: write or edit the file in several steps instead of sending its "
-        "whole content in one call."
-    )
+def _readout(context: list[Turn], limit: int, path: Path) -> str:
+    tokens = context_tokens(context) + estimate_tokens("\n[context: ~000000/000000 tokens]")
+    hint = f" -- compact {path} now" if tokens >= limit * COMPACT_HINT_RATIO else ""
+    return f"\n[context: ~{tokens}/{limit} tokens{hint}]"
+
+
+def _json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 async def _call_model(

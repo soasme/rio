@@ -1,14 +1,15 @@
-"""Events emitted by `rio.agent.loop.run_skill_loop`.
+"""Events emitted by `rio.agent.loop.run_context_loop`.
 
-Shaped like `rio.ai`'s ported tau_agent-style agent events (a flat stream of
-small, typed records a UI or logger can subscribe to) but describing SKILL.
-state's step lifecycle instead of an append-only conversation turn.
+A flat stream of small, typed records a UI or logger can subscribe to. Each
+step is one model call and one action; `context` is the full list of turns the
+model will see next.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from rio.agent.context import Turn
 from rio.ai.tools import AgentToolResult
 from rio.ai.types import JSONObject
 
@@ -21,15 +22,12 @@ class RunStartEvent:
 @dataclass(frozen=True, slots=True)
 class StepStartEvent:
     step: int
-    state: JSONObject
-    observation: str | None
+    context: list[Turn]
 
 
 @dataclass(frozen=True, slots=True)
-class ReasoningDiscardedEvent:
-    """The model's reasoning for this step. Surfaced once for observability, then never sent back
-    to the model.
-    """
+class ReasoningEvent:
+    """The text the model wrote before its action. It stays in the context."""
 
     step: int
     reasoning: str
@@ -37,20 +35,11 @@ class ReasoningDiscardedEvent:
 
 @dataclass(frozen=True, slots=True)
 class ValidationErrorEvent:
-    """A proposed state update or action failed runtime validation; a rollback-retry follows."""
+    """The reply had no usable action; a retry with a correction follows."""
 
     step: int
     attempt: int
     error: str
-
-
-@dataclass(frozen=True, slots=True)
-class StateUpdateEvent:
-    """The proposed state update was validated and committed to form the new state."""
-
-    step: int
-    delta: JSONObject
-    state: JSONObject
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,26 +58,37 @@ class ActionEndEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextEditEvent:
+    """The model edited its context file; `accepted` says whether the edit was adopted."""
+
+    step: int
+    accepted: bool
+    before_tokens: int
+    after_tokens: int
+    turns: int
+
+
+@dataclass(frozen=True, slots=True)
 class StepEndEvent:
     step: int
-    state: JSONObject
+    context: list[Turn]
     terminated: bool
 
 
 @dataclass(frozen=True, slots=True)
 class RunEndEvent:
     steps: int
-    state: JSONObject
+    context: list[Turn]
 
 
-type SkillEvent = (
+type AgentEvent = (
     RunStartEvent
     | StepStartEvent
-    | ReasoningDiscardedEvent
+    | ReasoningEvent
     | ValidationErrorEvent
-    | StateUpdateEvent
     | ActionStartEvent
     | ActionEndEvent
+    | ContextEditEvent
     | StepEndEvent
     | RunEndEvent
 )

@@ -12,7 +12,7 @@ tests translating a message transcript between provider wire formats, which is
 entirely rio.ai's concern (already ported) and has nothing to do with
 provider_config/provider_runtime. rio.coding also has no transcript to
 translate in the first place -- a provider swap only carries the
-provider-neutral SKILL.state execution state (see `CodingSession.set_provider`
+provider-neutral context (see `CodingSession.set_provider`
 in rio/coding/session.py). The replacement here,
 `test_switching_provider_and_model_preserves_configuration_and_credentials`,
 asserts that swapping the active provider/model leaves every other provider's

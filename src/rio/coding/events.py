@@ -1,14 +1,9 @@
 """Coding-session events consumed by frontends and SDK users.
 
 A coding session emits two kinds of event. The first kind comes straight from
-`rio.agent`: the SKILL.state step lifecycle (`StepStartEvent`,
-`StateUpdateEvent`, `ActionStartEvent`, ...). The second kind, defined here, is
-about the session rather than the run -- queued input, model changes, journal
-writes, retries.
-
-tau had a third kind, compaction events, because its transcript grew until it
-had to be summarized. rio has no transcript to compact, so those events have no
-counterpart here.
+`rio.agent`: the CLM step lifecycle (`StepStartEvent`, `ActionStartEvent`,
+`ContextEditEvent`, ...). The second kind, defined here, is about the session
+rather than the run -- queued input, model changes, journal writes, retries.
 """
 
 from __future__ import annotations
@@ -17,22 +12,18 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from rio.agent.events import SkillEvent
+from rio.agent.events import AgentEvent
 from rio.ai.messages import WireModel
 from rio.ai.types import JSONValue
 from rio.coding.session_store.entries import SessionEntry
 
 
 class SessionRunEndEvent(WireModel):
-    """One `prompt()`/`continue_()` run finished.
-
-    Carries the execution state the run settled on -- the session's entire
-    memory of what happened, since nothing else survives a step.
-    """
+    """One `prompt()`/`continue_()` run finished, with the context it settled on."""
 
     type: Literal["run_end"] = "run_end"
     steps: int = 0
-    state: dict[str, JSONValue] = Field(default_factory=dict)
+    context: list[dict[str, JSONValue]] = Field(default_factory=list)
     answer: str | None = None
     will_retry: bool = False
 
@@ -52,22 +43,17 @@ class QueueUpdateEvent(WireModel):
 
 
 class EntryAppendedEvent(WireModel):
-    """An entry was appended to the execution-state journal."""
+    """An entry was appended to the context journal."""
 
     type: Literal["entry_appended"] = "entry_appended"
     entry: SessionEntry
 
 
 class StateRestoredEvent(WireModel):
-    """The execution state was replaced from a checkpoint.
-
-    This is rio's form of branching. Restoring is a whole-state swap rather
-    than a transcript rewrite, because a checkpoint already holds everything
-    the model would be told.
-    """
+    """The context was replaced from a checkpoint. This is rio's form of branching."""
 
     type: Literal["state_restored"] = "state_restored"
-    state: dict[str, JSONValue] = Field(default_factory=dict)
+    context: list[dict[str, JSONValue]] = Field(default_factory=list)
     entry_id: str | None = None
     reason: str | None = None
 
@@ -118,4 +104,4 @@ type SessionOwnEvent = Annotated[
     Field(discriminator="type"),
 ]
 
-type CodingSessionEvent = SkillEvent | SessionOwnEvent
+type CodingSessionEvent = AgentEvent | SessionOwnEvent

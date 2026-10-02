@@ -1,10 +1,8 @@
-"""Session tree traversal and state-checkpoint recovery.
+"""Session tree traversal and context-checkpoint recovery.
 
 The journal is a tree: each entry names its parent, so alternate branches can
-coexist in one file. Where a transcript-based agent has to walk a branch and
-replay every message on it, a state journal only has to find the newest entry
-on the branch that carries a snapshot -- everything before it is already folded
-into that snapshot.
+coexist in one file. Recovery finds the newest entry on the branch that carries
+a snapshot -- everything before it is already folded into that snapshot.
 """
 
 from __future__ import annotations
@@ -62,12 +60,7 @@ def state_at_entry(
     entries: Sequence[SessionEntry],
     leaf_id: str,
 ) -> tuple[dict[str, JSONValue], SessionEntry | None]:
-    """Return the execution state in force at `leaf_id`, and the entry that carried it.
-
-    Walks the root-to-leaf path backwards to the newest snapshot. No replay is
-    involved: a snapshot is the complete state, because every accepted step
-    persisted the state it produced rather than the events that produced it.
-    """
+    """Return the snapshot in force at `leaf_id`, and the entry that carried it."""
     path = path_to_entry(entries, leaf_id)
     for entry in reversed(path):
         state = entry_state(entry)
@@ -77,7 +70,7 @@ def state_at_entry(
 
 
 def resume_state(entries: Sequence[SessionEntry]) -> dict[str, JSONValue]:
-    """Return the execution state a resumed session should start from."""
+    """Return the snapshot a resumed session should start from."""
     leaf_id = latest_leaf_id(entries)
     if leaf_id is None:
         return {}

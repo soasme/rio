@@ -1,26 +1,20 @@
-"""Drives SKILL.state runs and writes them to the execution-state journal.
+"""Drives CLM runs and writes them to the context journal.
 
-This is the layer between `rio.agent.run_skill_loop` and the coding session
-proper. It owns three things the runtime deliberately does not:
+This is the layer between `rio.agent.Harness` and the coding session proper.
+It owns what the runtime deliberately does not:
 
-* **Journaling.** Each accepted step is written as a `StepEntry` holding both
-  the merge patch and the resulting state, and the reasoning that produced it
-  as a separate `ReasoningEntry`. The split is the point: the runtime still
-  discards reasoning from the prompt, and the journalled copy carries no state
-  and never advances the branch tip, so it cannot reach a later step.
-* **Steering.** A message typed while a run is in flight interrupts it and
-  restarts it, observing the message as plain text appended after the result
-  the run had reached -- a user message is just another observation, not a
-  channel of its own. Because the state is a complete description of the
-  run, restarting from the current state costs nothing and loses nothing;
-  there is no conversation to rewind.
-* **Checkpoints.** Any journaled snapshot can be adopted as the live state.
+* **Journaling.** Each step is written as a `StepEntry` holding its action,
+  its observation, and the full context that resulted, so a resume is one read
+  of the newest snapshot. The step's reasoning is journaled separately as a
+  `ReasoningEntry` for diagnostics; it already lives in the context.
+* **Checkpoints.** Any journaled snapshot can be adopted as the live context.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 
 from rio.agent import (
     ActionEndEvent,
@@ -28,16 +22,13 @@ from rio.agent import (
     Harness,
     HarnessConfig,
     HarnessSpec,
-    ReasoningDiscardedEvent,
-    RunEndEvent,
-    RunStartEvent,
-    StateUpdateEvent,
+    ReasoningEvent,
     StepEndEvent,
     StepStartEvent,
+    Turn,
     ValidationErrorEvent,
 )
 from rio.ai.provider import ModelProvider
-from rio.ai.types import JSONObject, JSONValue
 from rio.coding.events import (
     AgentSettledEvent,
     CodingSessionEvent,
@@ -55,7 +46,7 @@ from rio.coding.session_store import (
     StepEntry,
     ValidationFailureEntry,
     entries_by_id,
-    entry_state,
+    entry_context,
     latest_leaf_id,
 )
 
@@ -64,12 +55,9 @@ from rio.coding.session_store import (
 #: output from dominating the session file.
 DEFAULT_JOURNALED_OBSERVATION_LIMIT = 16 * 1024
 
-#: Reasoning is journaled for the same reason and read back just as rarely, but
-#: it is prose the model wrote rather than arbitrary program output, so a
-#: tighter cap suffices: 8KB holds any step's argument in full while keeping a
-#: long run's journal from being mostly reasoning. `0` disables the writes
-#: entirely -- reasoning is the most sensitive thing a run puts on disk, and
-#: opting out of that is one setting.
+#: Reasoning is journaled for the same reason. It is prose the model wrote
+#: rather than arbitrary program output, so a tighter cap suffices. `0`
+#: disables the writes.
 DEFAULT_JOURNALED_REASONING_LIMIT = 8 * 1024
 
 
@@ -86,6 +74,7 @@ class SessionRunnerConfig:
     context_window_tokens: int = 128_000
     journaled_observation_limit: int = DEFAULT_JOURNALED_OBSERVATION_LIMIT
     journaled_reasoning_limit: int = DEFAULT_JOURNALED_REASONING_LIMIT
+    context_file: Path | None = None
 
 
 @dataclass(slots=True)
@@ -93,37 +82,25 @@ class _StepInProgress:
     """The pieces of one step, gathered across the events that announce them."""
 
     step: int
-    state_delta: JSONObject | None = None
-    state: JSONObject = field(default_factory=dict)
     action: ActionRecord | None = None
     observation: str | None = None
     observation_truncated: bool = False
 
 
 class SessionRunner:
-    """Runs one SKILL.state execution against a journal."""
+    """Runs one CLM execution against a journal."""
 
     def __init__(
         self,
         config: SessionRunnerConfig,
         *,
-        state: JSONObject | None = None,
+        context: list[Turn] | None = None,
         parent_entry_id: str | None = None,
     ) -> None:
         self._config = config
-        self._state: JSONObject = dict(state if state is not None else config.skill.initial_state)
+        self._context: list[Turn] = [dict(item) for item in context or []]
         self._parent_entry_id = parent_entry_id
-        self._harness = Harness(
-            HarnessConfig(
-                provider=config.provider,
-                model=config.model,
-                skill=config.skill,
-                max_steps=config.max_steps,
-                max_retries=config.max_retries,
-                context_window_tokens=config.context_window_tokens,
-            ),
-            state=self._state,
-        )
+        self._harness = self._rebuilt_harness()
         self._running = False
         self._steps_this_run = 0
         self._terminated = False
@@ -137,17 +114,20 @@ class SessionRunner:
         return self._config
 
     @property
-    def state(self) -> dict[str, JSONValue]:
-        """The complete execution state. This is the session's entire memory."""
-        return dict(self._state)
+    def context(self) -> list[Turn]:
+        """The context the model sees next. This is the session's entire memory."""
+        return [dict(item) for item in self._context]
+
+    @property
+    def context_file(self) -> Path:
+        """The file the model edits to manage its context."""
+        return self._harness.context_file
 
     @property
     def answer(self) -> str | None:
         """What the last run answered, or `None` if the current turn has not answered yet.
 
-        The answer is the message the terminating action carried, not a state
-        field: keeping a copy in the state only made it possible for a later
-        turn to read an answer that was never its own.
+        The answer is the message the terminating action carried.
         """
         return self._answer
 
@@ -181,7 +161,7 @@ class SessionRunner:
 
             yield SessionRunEndEvent(
                 steps=self._steps_this_run,
-                state=dict(self._state),
+                context=self.context,
                 answer=self._answer,
             )
             for entry in await self._write_tip_pointer():
@@ -193,20 +173,15 @@ class SessionRunner:
     async def _run_once(self, message: str | None) -> AsyncIterator[CodingSessionEvent]:
         """Run the loop until it terminates or is cancelled."""
         pending: _StepInProgress | None = None
-        iterator = self._harness.run(message)
-        async for event in iterator:
-            if isinstance(event, RunStartEvent):
+        async for event in self._harness.run(message):
+            if isinstance(event, StepStartEvent):
+                pending = _StepInProgress(step=event.step)
+                self._context = [dict(item) for item in event.context]
                 yield event
 
-            elif isinstance(event, StepStartEvent):
-                pending = _StepInProgress(step=event.step, state=dict(event.state))
-                yield event
-
-            elif isinstance(event, ReasoningDiscardedEvent):
-                # Discarded from the prompt, kept in the journal. `advance=False`
-                # is the whole of that guarantee: the branch tip does not move,
-                # so the note never becomes a parent and no later step is told
-                # about it. It lands just before the `StepEntry` it explains.
+            elif isinstance(event, ReasoningEvent):
+                # A diagnostic note beside the step: `advance=False` keeps the
+                # branch tip on the step chain.
                 limit = self._config.journaled_reasoning_limit
                 if limit:
                     entry = ReasoningEntry(
@@ -230,15 +205,6 @@ class SessionRunner:
                     yield EntryAppendedEvent(entry=written)
                 yield event
 
-            elif isinstance(event, StateUpdateEvent):
-                if pending is not None:
-                    # Keep the model's patch; later updates are runtime-owned state.
-                    if pending.state_delta is None:
-                        pending.state_delta = dict(event.delta)
-                    pending.state = dict(event.state)
-                self._state = dict(event.state)
-                yield event
-
             elif isinstance(event, ActionStartEvent):
                 if pending is not None:
                     pending.action = ActionRecord(name=event.name, arguments=dict(event.arguments))
@@ -256,14 +222,13 @@ class SessionRunner:
                 yield event
 
             elif isinstance(event, StepEndEvent):
-                self._state = dict(event.state)
+                self._context = [dict(item) for item in event.context]
                 self._steps_this_run += 1
                 if pending is not None and pending.action is not None:
                     entry = StepEntry(
                         parent_id=self._parent_entry_id,
                         step=pending.step,
-                        state_delta=pending.state_delta or {},
-                        state=pending.state or dict(event.state),
+                        state={"context": self.context},
                         action=pending.action,
                         observation=pending.observation,
                         observation_truncated=pending.observation_truncated,
@@ -275,11 +240,7 @@ class SessionRunner:
                 self._terminated = event.terminated
                 yield event
 
-            elif isinstance(event, RunEndEvent):
-                self._state = dict(event.state)
-                yield event
-
-            else:  # pragma: no cover - defensive against new runtime events
+            else:
                 yield event
 
     # -- journal -------------------------------------------------------------
@@ -323,72 +284,66 @@ class SessionRunner:
         tip = self._parent_entry_id
         return await self._write([LeafEntry(parent_id=tip, entry_id=tip)], advance=False)
 
-    async def load(self) -> JSONObject:
-        """Adopt the state recorded in storage, if any, and return it."""
+    async def load(self) -> list[Turn]:
+        """Adopt the context recorded in storage, if any, and return it."""
         if self._config.storage is None:
-            return self.state
+            return self.context
         entries = await self._config.storage.read_all()
         if not entries:
-            return self.state
+            return self.context
         leaf = latest_leaf_id(entries)
         if leaf is not None:
             from rio.coding.session_store.tree import state_at_entry
 
-            state, snapshot = state_at_entry(entries, leaf)
+            _state, snapshot = state_at_entry(entries, leaf)
             if snapshot is not None:
-                self._state = state
+                self._context = entry_context(snapshot) or []
         # Hang the next write off the branch tip, not off whatever entry
         # happens to be last in the file -- a pointer is not a parent.
         self._parent_entry_id = latest_leaf_id(entries) or entries[-1].id
         self._harness = self._rebuilt_harness()
-        return self.state
+        return self.context
 
     async def restore(self, entry_id: str, *, reason: str | None = None) -> StateRestoredEvent:
-        """Adopt a journaled checkpoint as the live execution state.
-
-        This is the whole of rio's branching story. There is no transcript to
-        truncate and nothing to replay: the checkpoint *is* the state.
-        """
+        """Adopt a journaled checkpoint as the live context."""
         if self._config.storage is None:
             raise RuntimeError("cannot restore a checkpoint without storage")
         entries = await self._config.storage.read_all()
         entry = entries_by_id(entries).get(entry_id)
         if entry is None:
             raise KeyError(f"no session entry {entry_id!r}")
-        state = entry_state(entry)
-        if state is None:
-            raise ValueError(f"session entry {entry_id!r} carries no execution state")
+        context = entry_context(entry)
+        if context is None:
+            raise ValueError(f"session entry {entry_id!r} carries no context")
 
-        self._state = state
+        self._context = context
         self._answer = None
         reset = StateResetEntry(
             parent_id=entry_id,
-            state=dict(state),
+            state={"context": self.context},
             reason=reason,
             restored_from_entry_id=entry_id,
         )
         await self._write([reset])
         await self._write_tip_pointer()
         self._harness = self._rebuilt_harness()
-        return StateRestoredEvent(state=dict(state), entry_id=entry_id, reason=reason)
+        return StateRestoredEvent(context=self.context, entry_id=entry_id, reason=reason)
 
-    async def reset(self, state: JSONObject | None = None, *, reason: str | None = None) -> None:
-        """Replace the execution state wholesale, journaling the reset."""
-        self._state = dict(state if state is not None else self._config.skill.initial_state)
+    async def reset(self, context: list[Turn] | None = None, *, reason: str | None = None) -> None:
+        """Replace the context wholesale, journaling the reset."""
+        self._context = [dict(item) for item in context or []]
         self._answer = None
         reset = StateResetEntry(
-            parent_id=self._parent_entry_id, state=dict(self._state), reason=reason
+            parent_id=self._parent_entry_id, state={"context": self.context}, reason=reason
         )
         await self._write([reset])
         await self._write_tip_pointer()
         self._harness = self._rebuilt_harness()
 
     def rebind(self, *, provider: ModelProvider | None = None, model: str | None = None) -> None:
-        """Point the runner at a different provider or model, keeping the state.
+        """Point the runner at a different provider or model, keeping the context.
 
-        A model swap is trivial here. There is no transcript to translate
-        between provider message formats -- the next step's prompt is rebuilt
-        from the state regardless of who ran the previous one.
+        The context is provider-neutral text, so nothing has to be translated.
         """
         if provider is not None:
             self._config.provider = provider
@@ -402,6 +357,7 @@ class SessionRunner:
         self._harness = self._rebuilt_harness()
 
     def _rebuilt_harness(self) -> Harness:
+        previous = getattr(self, "_harness", None)
         return Harness(
             HarnessConfig(
                 provider=self._config.provider,
@@ -410,6 +366,9 @@ class SessionRunner:
                 max_steps=self._config.max_steps,
                 max_retries=self._config.max_retries,
                 context_window_tokens=self._config.context_window_tokens,
+                context_file=(
+                    previous.context_file if previous is not None else self._config.context_file
+                ),
             ),
-            state=self._state,
+            context=self._context,
         )

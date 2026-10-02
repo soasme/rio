@@ -5,7 +5,7 @@ from __future__ import annotations
 from rio.coding.rendering.base import EventRenderer, PrintOutputMode
 from rio.coding.rendering.json import JsonEventRenderer, event_to_json
 from rio.coding.rendering.plain import PlainEventRenderer
-from rio.coding.rendering.steps import render_completed_run, render_final_state, render_run_steps
+from rio.coding.rendering.steps import render_completed_run, render_final_context, render_run_steps
 
 
 def create_event_renderer(mode: PrintOutputMode) -> EventRenderer:
@@ -23,6 +23,6 @@ __all__ = [
     "create_event_renderer",
     "event_to_json",
     "render_completed_run",
-    "render_final_state",
+    "render_final_context",
     "render_run_steps",
 ]

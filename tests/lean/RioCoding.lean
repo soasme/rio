@@ -1,4 +1,4 @@
-/- Behavioral models for rio.coding's state, tools, journal, and dispatch.
+/- Behavioral models for rio.coding's tools, journal, and dispatch.
 
 These are executable specifications of decisions made by the Python code, not
 proofs about Python source. External I/O, hashes, and provider calls are inputs.
@@ -8,115 +8,7 @@ import RioAgent
 
 namespace RioCoding
 
-open RioAgent (Json Object)
-
-/- coding_skill.py: all declared state fields are seeded. -/
-def stateFields : List String :=
-  ["goal", "plan", "findings", "files", "cwd", "environment", "blockers", "last_error", "scratch"]
-
-def initialState (cwd goal : String) (environment : Object) : Object :=
-  [("goal", .string goal), ("plan", .array []), ("findings", .object []),
-   ("files", .object []), ("cwd", .string cwd), ("environment", .object environment),
-   ("blockers", .array []), ("last_error", .null), ("scratch", .object [])]
-
-theorem initial_state_has_all_fields (cwd goal : String) (environment : Object) :
-    (initialState cwd goal environment).map Prod.fst = stateFields := by
-  rfl
-
-theorem initial_goal_and_cwd (cwd goal : String) (environment : Object) :
-    RioAgent.lookup "goal" (initialState cwd goal environment) = some (.string goal) ∧
-    RioAgent.lookup "cwd" (initialState cwd goal environment) = some (.string cwd) := by
-  simp [initialState, RioAgent.lookup]
-
-inductive PlanStatus where
-  | pending | inProgress | done | blocked
-deriving DecidableEq, Repr
-
-structure PlanItem where
-  status : PlanStatus
-deriving DecidableEq, Repr
-
-def planProgress (plan : List PlanItem) : Nat × Nat :=
-  ((plan.filter (fun item => item.status == .done)).length, plan.length)
-
-def canRespond (plan : List PlanItem) : Bool :=
-  plan.all (fun item => item.status == .done || item.status == .blocked)
-
-theorem empty_plan_can_respond : canRespond [] = true := by rfl
-
-theorem pending_plan_blocks_respond (rest : List PlanItem) :
-    canRespond ({ status := .pending } :: rest) = false := by
-  simp [canRespond]
-
-theorem completed_and_blocked_plan_can_respond (items : List PlanItem)
-    (h : ∀ item ∈ items, item.status = .done ∨ item.status = .blocked) :
-    canRespond items = true := by
-  simp only [canRespond, List.all_eq_true]
-  intro item hi
-  rcases h item hi with hd | hb
-  · simp [hd]
-  · simp [hb]
-
-/- file_context.py: existing files require a matching recorded hash before a write. -/
-inductive FileAction where
-  | read | write | edit | bash | respond
-deriving DecidableEq, Repr
-
-inductive Preflight where
-  | proceed | readFirst | reread | finishPlan
-deriving DecidableEq, Repr
-
-def preflight (action : FileAction) (fileExists : Bool) (recorded actual : Option Nat)
-    (plan : List PlanItem) : Preflight :=
-  if action == .respond && !canRespond plan then .finishPlan
-  else if (action == .write || action == .edit) && fileExists then
-    match recorded, actual with
-    | none, _ => .readFirst
-    | some old, some current => if old == current then .proceed else .reread
-    | some _, none => .reread
-  else .proceed
-
-theorem write_existing_unread_requires_read (hash : Option Nat) (plan : List PlanItem) :
-    preflight .write true none hash plan = .readFirst := by
-  simp [preflight]
-
-theorem edit_stale_requires_reread (old current : Nat) (plan : List PlanItem)
-    (h : old ≠ current) :
-    preflight .edit true (some old) (some current) plan = .reread := by
-  simp [preflight, h]
-
-theorem fresh_edit_proceeds (hash : Nat) (plan : List PlanItem) :
-    preflight .edit true (some hash) (some hash) plan = .proceed := by
-  simp [preflight]
-
-theorem new_file_does_not_require_hash (plan : List PlanItem) :
-    preflight .write false none none plan = .proceed := by
-  simp [preflight]
-
-theorem respond_with_pending_work_rejected (rest : List PlanItem) :
-    preflight .respond false none none ({ status := .pending } :: rest) = .finishPlan := by
-  simp [preflight, pending_plan_blocks_respond]
-
-inductive CacheResult where
-  | full | metadataOnly | unchanged
-deriving DecidableEq, Repr
-
-/-- The runtime first tries slices, then metadata, then leaves state unchanged. -/
-def cacheResult (fullSize metadataSize budget : Nat) : CacheResult :=
-  if fullSize <= budget then .full
-  else if metadataSize <= budget then .metadataOnly
-  else .unchanged
-
-theorem cache_falls_back_to_metadata (fullSize metadataSize budget : Nat)
-    (hfull : budget < fullSize) (hmeta : metadataSize <= budget) :
-    cacheResult fullSize metadataSize budget = .metadataOnly := by
-  simp [cacheResult, Nat.not_le.mpr hfull, hmeta]
-
-theorem cache_never_exceeds_budget (fullSize metadataSize budget : Nat) :
-    cacheResult fullSize metadataSize budget = .full → fullSize <= budget := by
-  by_cases h : fullSize <= budget
-  · exact fun _ => h
-  · by_cases hm : metadataSize <= budget <;> simp [cacheResult, h, hm]
+open RioAgent (Context)
 
 /- tools.py: edit validation and terminal response decisions. -/
 inductive EditError where
@@ -140,25 +32,31 @@ theorem missing_text_rejected : validateEdit false 0 false true = .error .notFou
 theorem unchanged_edit_rejected : validateEdit false 1 false false = .error .noChange := by rfl
 theorem unique_changed_edit_accepted : validateEdit false 1 false true = .ok () := by rfl
 
+inductive CodingAction where
+  | read | write | edit | bash | respond
+deriving DecidableEq, Repr
+
 inductive ToolOutcome where
   | observation | termination | rejected
 deriving DecidableEq, Repr
 
-def toolOutcome (action : FileAction) (guard : Preflight) : ToolOutcome :=
-  if guard != .proceed then .rejected
-  else if action == .respond then .termination else .observation
+/-- `respond` ends the run; an empty message is rejected as a failed action. -/
+def toolOutcome (action : CodingAction) (emptyMessage : Bool) : ToolOutcome :=
+  if action == .respond then
+    if emptyMessage then .rejected else .termination
+  else .observation
 
-theorem respond_is_terminal_after_plan_complete (plan : List PlanItem)
-    (h : canRespond plan = true) :
-    toolOutcome .respond (preflight .respond false none none plan) = .termination := by
-  simp [toolOutcome, preflight, h]
+theorem respond_is_terminal : toolOutcome .respond false = .termination := by rfl
+theorem empty_respond_is_rejected : toolOutcome .respond true = .rejected := by rfl
+theorem other_actions_are_observations (empty : Bool) :
+    toolOutcome .bash empty = .observation := by rfl
 
 /- session_store/tree.py: explicit leaf pointers and latest branch checkpoint. -/
 structure JournalEntry where
   id : String
   parent : Option String
   leafPointer : Option String := none
-  snapshot : Option Object := none
+  snapshot : Option Context := none
 
 def latestLeaf : List JournalEntry → Option String
   | [] => none
@@ -167,40 +65,50 @@ def latestLeaf : List JournalEntry → Option String
       | some pointer => pointer.leafPointer
       | none => entries.getLast?.map (·.id)
 
-def latestSnapshot : List JournalEntry → Option Object
+def latestSnapshot : List JournalEntry → Option Context
   | [] => none
   | entry :: rest =>
       match latestSnapshot rest with
-      | some state => some state
+      | some context => some context
       | none => entry.snapshot
 
-def resumeState (path : List JournalEntry) : Object :=
+def resumeContext (path : List JournalEntry) : Context :=
   (latestSnapshot path).getD []
 
-theorem empty_journal_has_empty_state : resumeState [] = [] := by rfl
+theorem empty_journal_has_empty_context : resumeContext [] = [] := by rfl
 
 private theorem latestSnapshot_append_checkpoint (history : List JournalEntry)
-    (entry : JournalEntry) (state : Object) :
-    latestSnapshot (history ++ [{ entry with snapshot := some state }]) = some state := by
+    (entry : JournalEntry) (context : Context) :
+    latestSnapshot (history ++ [{ entry with snapshot := some context }]) = some context := by
   induction history with
   | nil => rfl
   | cons first rest ih => simp [latestSnapshot, ih]
 
 theorem latest_checkpoint_wins (history : List JournalEntry) (entry : JournalEntry)
-    (state : Object) :
-    resumeState (history ++ [{ entry with snapshot := some state }]) = state := by
-  simp [resumeState, latestSnapshot_append_checkpoint]
+    (context : Context) :
+    resumeContext (history ++ [{ entry with snapshot := some context }]) = context := by
+  simp [resumeContext, latestSnapshot_append_checkpoint]
 
-theorem metadata_after_checkpoint_does_not_change_state (history : List JournalEntry)
-    (entry : JournalEntry) (state : Object) :
-    resumeState (history ++ [{ entry with snapshot := some state },
-      { id := "metadata", parent := some entry.id }]) = state := by
-  have snapshot : latestSnapshot (history ++ [{ entry with snapshot := some state },
-      { id := "metadata", parent := some entry.id }]) = some state := by
+theorem metadata_after_checkpoint_does_not_change_context (history : List JournalEntry)
+    (entry : JournalEntry) (context : Context) :
+    resumeContext (history ++ [{ entry with snapshot := some context },
+      { id := "metadata", parent := some entry.id }]) = context := by
+  have snapshot : latestSnapshot (history ++ [{ entry with snapshot := some context },
+      { id := "metadata", parent := some entry.id }]) = some context := by
     induction history with
     | nil => rfl
     | cons first rest ih => simp [latestSnapshot, ih]
-  simp [resumeState, snapshot]
+  simp [resumeContext, snapshot]
+
+/- session.py: a resumed run appends the new task to the journaled context. -/
+def resumeWithTask (path : List JournalEntry) (task : String) : Context :=
+  resumeContext path ++ [{ role := "user", text := task }]
+
+theorem resume_keeps_the_journaled_context (history : List JournalEntry) (entry : JournalEntry)
+    (context : Context) (task : String) :
+    resumeWithTask (history ++ [{ entry with snapshot := some context }]) task =
+      context ++ [{ role := "user", text := task }] := by
+  simp [resumeWithTask, latest_checkpoint_wins]
 
 /- commands.py and thinking.py: command routing and mode cycling. -/
 inductive Route where

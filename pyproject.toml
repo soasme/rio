@@ -1,7 +1,7 @@
 [project]
 name = "rio"
 version = "0.6.3"
-description = "rio.ai: a ported multi-provider LLM streaming SDK. rio.agent: a SKILL.state long-horizon agent runtime (arXiv:2608.26263). rio.coding: a SKILL.state coding agent."
+description = "rio.ai: a ported multi-provider LLM streaming SDK. rio.agent: a Context Language Model (CLM) agent runtime (arXiv:2609.37725). rio.coding: a CLM coding agent."
 readme = "README.md"
 authors = [
     { name = "Ju Lin", email = "soasme@gmail.com" }

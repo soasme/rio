@@ -7,6 +7,7 @@ import sys
 from rio.agent import (
     ActionEndEvent,
     ActionStartEvent,
+    ContextEditEvent,
     ValidationErrorEvent,
 )
 from rio.ai.tools import AgentToolResult
@@ -54,6 +55,11 @@ class PlainEventRenderer:
                 self._file_tool_result(event)
             else:
                 self._result(event.name, event.result.text)
+        elif isinstance(event, ContextEditEvent):
+            outcome = "edited" if event.accepted else "edit rejected"
+            self._message(
+                f"Context {outcome}: ~{event.before_tokens} -> ~{event.after_tokens} tokens"
+            )
         elif isinstance(event, AutoRetryStartEvent):
             self._failed = True
             self._message(f"Retrying: {event.error_message}")

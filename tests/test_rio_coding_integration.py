@@ -5,10 +5,9 @@ tools, the skill instructions are the ones a real run would get, the journal is
 a real JSONL file on disk, and the edits actually land. Only the model's step
 output is scripted, so the run is deterministic.
 
-The point is to check that the pieces compose: that a ported tool works as a
-SKILL.state *action*, that its output becomes the next observation, and that
-what the agent learned survives in the execution state rather than in a
-conversation nobody kept.
+The point is to check that the pieces compose: that a ported tool works as an
+action, that its output lands in the context, and that the agent can manage
+that context by editing its context file with the same tools.
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ from __future__ import annotations
 import json
 
 from conftest import step_response
+from rio.agent import parse_context, render_context, turn
 from rio.ai import FakeProvider
 from rio.coding.paths import RioPaths
 from rio.coding.rendering import PlainEventRenderer, render_completed_run
@@ -60,28 +60,11 @@ def fix_the_bug_streams():
     return [
         step_response(
             reasoning="I need to see calc.py before changing anything.",
-            state_delta={
-                "goal": "fix the bug in calc.add",
-                "plan": [
-                    {"id": "1", "title": "read calc.py", "status": "in_progress"},
-                    {"id": "2", "title": "fix the operator", "status": "pending"},
-                    {"id": "3", "title": "verify", "status": "pending"},
-                ],
-            },
             action="read",
             args={"path": "calc.py"},
         ),
         step_response(
             reasoning="add() subtracts. Swap the operator.",
-            state_delta={
-                "findings": {"bug": "calc.add used '-' instead of '+'"},
-                "files": {"calc.py": {"status": "edited", "note": "operator fixed"}},
-                "plan": [
-                    {"id": "1", "title": "read calc.py", "status": "done"},
-                    {"id": "2", "title": "fix the operator", "status": "in_progress"},
-                    {"id": "3", "title": "verify", "status": "pending"},
-                ],
-            },
             action="edit",
             args={
                 "path": "calc.py",
@@ -90,25 +73,11 @@ def fix_the_bug_streams():
         ),
         step_response(
             reasoning="Confirm the fix by running it.",
-            state_delta={
-                "plan": [
-                    {"id": "1", "title": "read calc.py", "status": "done"},
-                    {"id": "2", "title": "fix the operator", "status": "done"},
-                    {"id": "3", "title": "verify", "status": "in_progress"},
-                ],
-            },
             action="bash",
             args={"command": 'python -c "import calc; print(calc.add(2, 3))"'},
         ),
         step_response(
             reasoning="It prints 5. Done.",
-            state_delta={
-                "plan": [
-                    {"id": "1", "title": "read calc.py", "status": "done"},
-                    {"id": "2", "title": "fix the operator", "status": "done"},
-                    {"id": "3", "title": "verify", "status": "done"},
-                ],
-            },
             action="respond",
             args={"message": "Fixed calc.add: it subtracted instead of adding. Verified 2+3=5."},
         ),
@@ -121,29 +90,30 @@ async def test_the_agent_actually_fixes_the_file(tmp_path) -> None:
         pass
 
     assert "return a + b" in (repo / "calc.py").read_text(encoding="utf-8")
-    # The answer is the terminating action's message, not a copy kept in state.
     assert session.answer == "Fixed calc.add: it subtracted instead of adding. Verified 2+3=5."
 
 
-async def test_the_plan_progresses_through_the_state(tmp_path) -> None:
+async def test_the_context_carries_the_whole_run(tmp_path) -> None:
     session, _repo = await build_session(tmp_path, fix_the_bug_streams())
     async for _event in session.prompt("fix calc.add"):
         pass
 
-    assert session.plan_progress == (3, 3)
-    assert session.touched_files == ["calc.py"]
-    assert session.state["findings"]["bug"] == "calc.add used '-' instead of '+'"
+    context = session.context
+    assert context[0] == turn("user", "fix calc.add")
+    assert [item["role"] for item in context[1:]] == ["assistant", "tool"] * 4
+    assert "add() subtracts. Swap the operator." in context[3]["text"]
+    assert parse_context(session.context_file.read_text()) == context[:-2]
 
 
 async def test_each_tool_result_becomes_the_next_observation(tmp_path) -> None:
-    """A ported tool is an action; its output is `O_t+1` and nothing else."""
+    """A ported tool is an action; its output lands in the next request."""
     session, _repo = await build_session(tmp_path, fix_the_bug_streams())
     provider = session.provider
     async for _event in session.prompt("fix calc.add"):
         pass
 
     observations = [
-        "\n".join(message.content for message in messages)
+        "\n".join(message.text for message in messages)
         for _m, _s, messages, _t in provider.calls
     ]
     # Step 1 sees the read output; step 2 sees the edit's; step 3 sees bash's.
@@ -158,7 +128,7 @@ async def test_the_bash_action_really_runs(tmp_path) -> None:
     async for _event in session.prompt("fix calc.add"):
         pass
 
-    final_observation = "\n".join(message.content for message in provider.calls[-1][2])
+    final_observation = "\n".join(message.text for message in provider.calls[-1][2])
     assert "exit 0" in final_observation
 
 
@@ -167,7 +137,7 @@ async def test_the_journal_survives_the_process(tmp_path) -> None:
     session, repo = await build_session(tmp_path, fix_the_bug_streams())
     async for _event in session.prompt("fix calc.add"):
         pass
-    original = session.state
+    original = session.context
 
     home = tmp_path / "home"
     paths = RioPaths(home=home / ".rio", agents_home=home / ".agents")
@@ -186,7 +156,7 @@ async def test_the_journal_survives_the_process(tmp_path) -> None:
             storage=JsonlSessionStorage(journal),
         )
     )
-    assert reopened.state == original
+    assert reopened.context == original
 
 
 async def test_the_journal_records_the_actions_that_changed_the_file(tmp_path) -> None:
@@ -198,7 +168,7 @@ async def test_the_journal_records_the_actions_that_changed_the_file(tmp_path) -
     assert [s.action.name for s in steps] == ["read", "edit", "bash", "respond"]
     edit = steps[1]
     assert edit.action.arguments["path"] == "calc.py"
-    assert json.dumps(edit.state_delta)  # serializable, as the journal requires
+    assert json.dumps(edit.state)  # serializable, as the journal requires
 
 
 async def test_the_run_renders(tmp_path) -> None:
@@ -213,67 +183,26 @@ async def test_the_run_renders(tmp_path) -> None:
     assert "return a + b" in rendered or "calc.py" in rendered
 
 
-async def test_a_rejected_delta_does_not_touch_the_file(tmp_path) -> None:
-    """Validation happens before the action runs, so a bad patch changes nothing."""
-    streams = [
-        step_response(
-            reasoning="",
-            state_delta={"not_a_declared_field": True},
-            action="write",
-            args={"path": "calc.py", "content": "wrecked"},
-        ),
-        *fix_the_bug_streams(),
-    ]
-    session, repo = await build_session(tmp_path, streams)
+async def test_the_agent_compacts_its_context_with_its_own_tools(tmp_path) -> None:
+    """The model rewrites its context file with `write`; the next request uses the rewrite."""
+    session, _repo = await build_session(tmp_path, [])
+    compacted = render_context([turn("notes", "task: fix calc.add; bug is '-' in add()")])
+    session.provider._streams.extend(
+        [
+            step_response(action="read", args={"path": "calc.py"}),
+            step_response(
+                reasoning="Compact before editing.",
+                action="write",
+                args={"path": str(session.context_file), "content": compacted},
+            ),
+            step_response(action="respond", args={"message": "done"}),
+        ]
+    )
     async for _event in session.prompt("fix calc.add"):
         pass
 
-    assert "wrecked" not in (repo / "calc.py").read_text(encoding="utf-8")
-    assert "not_a_declared_field" not in session.state
-    assert "return a + b" in (repo / "calc.py").read_text(encoding="utf-8")
-
-
-async def test_the_file_the_agent_read_is_in_the_state_it_carries(tmp_path) -> None:
-    """A read is remembered as content, not as a note saying a read happened."""
-    session, _repo = await build_session(tmp_path, fix_the_bug_streams())
-    async for _event in session.prompt("fix calc.add"):
-        pass
-
-    entry = session.state["files"]["calc.py"]
-    assert entry["status"] == "edited"
-    assert entry["hash"]
-    assert "return a + b" in entry["context"]["slices"]["1-6"]
-
-
-async def test_a_file_changed_behind_the_agents_back_must_be_read_again(tmp_path) -> None:
-    """The hash is what stops an edit being composed against content that has moved on."""
-    streams = [
-        step_response(reasoning="", state_delta={}, action="read", args={"path": "calc.py"}),
-        step_response(
-            reasoning="",
-            state_delta={},
-            action="bash",
-            args={
-                "command": "printf 'def add(a, b):\\n    return a * b\\n' > calc.py",
-                "description": "Rewriting calc.py",
-            },
-        ),
-        step_response(
-            reasoning="",
-            state_delta={},
-            action="edit",
-            args={
-                "path": "calc.py",
-                "edits": [{"oldText": "return a - b", "newText": "return a + b"}],
-            },
-        ),
-        step_response(reasoning="", state_delta={}, action="respond", args={"message": "stopped"}),
-    ]
-    session, repo = await build_session(tmp_path, streams)
-    async for _event in session.prompt("fix calc.add"):
-        pass
-
-    provider = session.provider
-    refusal = "\n".join(message.content for message in provider.calls[3][2])
-    assert "changed on disk" in refusal
-    assert "return a * b" in (repo / "calc.py").read_text(encoding="utf-8")
+    third_request = "\n".join(message.text for message in session.provider.calls[2][2])
+    assert "bug is '-' in add()" in third_request
+    assert "A tiny module with a bug." not in third_request
+    assert session.context[0] == turn("notes", "task: fix calc.add; bug is '-' in add()")
+    assert "[context edit applied" in session.context[2]["text"]

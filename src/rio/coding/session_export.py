@@ -1,20 +1,11 @@
 """Session export helpers for human-readable run views.
 
-tau's export rendered a chat transcript: a branching tree of user/assistant/
-tool messages, with a sidebar for navigating branches and a filter bar for
-hiding tool noise. rio has no such transcript -- a session journal is a
-sequence of committed SKILL.state steps (see `rio.coding.session_store`),
-each carrying the merge patch the model proposed and the full state that
-resulted. So this export is reworked into what that journal actually holds:
-a table of steps (action, arguments, state delta, observation), the final
-execution state as formatted JSON, and -- since it is the point of the
-design -- the fixed per-step token footprint and the linear cumulative
-projection from `rio.coding.step_footprint`, which is what stays bounded
-that would otherwise grow without bound in a transcript-based agent.
+A session journal is a sequence of committed CLM steps (see
+`rio.coding.session_store`), each carrying its action, observation, and the
+context that resulted. The export renders a table of steps, the per-step token
+footprint, and the final context as the model saw it.
 
-tau's HTML-escaping helpers are kept as-is: they matter here exactly as much
-as they did there, since an observation is arbitrary command output and must
-never be interpreted as markup by the browser rendering the export.
+Observations are arbitrary command output, so every value is HTML-escaped.
 """
 
 from __future__ import annotations
@@ -31,6 +22,7 @@ from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import JsonLexer
 
+from rio.agent import render_context
 from rio.ai.tools import AgentTool
 from rio.ai.types import JSONValue
 from rio.coding.session_store import (
@@ -47,10 +39,11 @@ from rio.coding.session_store import (
     ThinkingLevelChangeEntry,
     TurnEntry,
     ValidationFailureEntry,
-    resume_state,
+    entry_context,
+    latest_leaf_id,
+    state_at_entry,
 )
 from rio.coding.session_usage import StepUsage, collect_session_usage
-from rio.coding.step_footprint import estimate_step_footprint, projected_cumulative_tokens
 
 __all__ = [
     "SessionExportError",
@@ -63,14 +56,8 @@ __all__ = [
     "render_session_html",
 ]
 
-#: Milestones used to illustrate O(T) cumulative token growth. Fixed rather
-#: than derived from the run's actual step count, so the callout reads the
-#: same whether the run is 3 steps or 300.
-_PROJECTION_MILESTONES = (10, 100, 1_000, 10_000)
-
-#: Hard cap on how much of one observation the export embeds. A SKILL.state
-#: step's prompt footprint is bounded by design, but raw command output
-#: (e.g. a full test-suite log) is not, and this is a single static file.
+#: Hard cap on how much of one observation the export embeds: raw command
+#: output (e.g. a full test-suite log) is unbounded, and this is a single file.
 _OBSERVATION_CHARS = 4_000
 
 
@@ -197,14 +184,12 @@ def render_session_html(
     provider: str | None = None,
     model: str | None = None,
 ) -> str:
-    """Render a completed SKILL.state run as standalone HTML.
+    """Render a completed CLM run as standalone HTML.
 
     `instructions` and `tools` are the skill's fixed instructions and action
-    definitions -- the same inputs `rio.coding.step_footprint` needs, since a
-    step entry only journals the state and observation halves of its prompt.
-    They are optional because an export must remain possible even when the
-    caller cannot reconstruct them (e.g. exporting a bare JSONL file with no
-    live session around it); token figures are simply smaller without them.
+    definitions, which a step entry does not journal. They are optional
+    because an export must remain possible when the caller cannot reconstruct
+    them; token figures are simply smaller without them.
     """
     entry_list = list(entries)
     generated_at = datetime.now(UTC).replace(microsecond=0).isoformat()
@@ -212,7 +197,7 @@ def render_session_html(
     meta_html = _render_session_meta(entry_list)
     instructions_html = _render_instructions(instructions)
     steps_html = _render_steps_table(entry_list)
-    final_state_html = _render_json_block(resume_state(entry_list))
+    final_context_html = f"<pre>{_escape(_final_context_text(entry_list))}</pre>"
     footprint_html = _render_footprint(
         entry_list, instructions=instructions or "", tools=tools, provider=provider, model=model
     )
@@ -255,9 +240,9 @@ def render_session_html(
       <h2>Steps</h2>
       {steps_html}
     </section>
-    <section aria-label="Final execution state">
-      <h2>Final execution state</h2>
-      {final_state_html}
+    <section aria-label="Final context">
+      <h2>Final context</h2>
+      {final_context_html}
     </section>
   </main>
 </body>
@@ -300,13 +285,7 @@ def _render_session_meta(entries: Sequence[SessionEntry]) -> str:
 
 
 def _render_instructions(instructions: str | None) -> str:
-    """Render the skill's fixed instructions `P`, separately from step content.
-
-    `P` is authored once per domain and never changes over a run -- unlike a
-    transcript's system prompt, it is not "live configuration" so much as a
-    constant every step's prompt shares. Shown collapsed by default since it
-    can be long and is auxiliary to the run itself.
-    """
+    """Render the skill's fixed instructions, collapsed since they can be long."""
     if not instructions:
         return ""
     return (
@@ -343,7 +322,7 @@ def _render_steps_table(entries: Sequence[SessionEntry]) -> str:
     return (
         '<table class="steps">'
         "<thead><tr>"
-        "<th>#</th><th>Action</th><th>Arguments</th><th>State &Delta;</th><th>Observation</th>"
+        "<th>#</th><th>Action</th><th>Arguments</th><th>Observation</th>"
         "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         "</table>"
@@ -352,7 +331,7 @@ def _render_steps_table(entries: Sequence[SessionEntry]) -> str:
 
 def _render_retry_rows(failures: Sequence[ValidationFailureEntry]) -> list[str]:
     return [
-        '<tr class="retry"><td colspan="5">'
+        '<tr class="retry"><td colspan="4">'
         f"retry {failure.attempt}: {_escape(failure.error)}"
         "</td></tr>"
         for failure in failures
@@ -360,16 +339,12 @@ def _render_retry_rows(failures: Sequence[ValidationFailureEntry]) -> list[str]:
 
 
 def _render_reasoning_rows(reasoning: Sequence[ReasoningEntry]) -> list[str]:
-    """Render a step's reasoning above it, collapsed.
-
-    It is long, and it is only wanted when the state delta below it does not
-    explain what the step was trying to do.
-    """
+    """Render a step's reasoning above it, collapsed."""
     rows: list[str] = []
     for entry in reasoning:
         truncated = '<p class="truncated-note">(truncated)</p>' if entry.truncated else ""
         rows.append(
-            '<tr class="reasoning"><td colspan="5">'
+            '<tr class="reasoning"><td colspan="4">'
             '<details class="reasoning">'
             "<summary>reasoning</summary>"
             f"<pre>{_escape(entry.reasoning)}</pre>{truncated}"
@@ -393,7 +368,6 @@ def _render_step_row(entry: StepEntry) -> str:
         f"<td>{entry.step}{terminated_badge}</td>"
         f"<td><code>{_escape(entry.action.name)}</code></td>"
         f"<td>{_render_json_block(entry.action.arguments)}</td>"
-        f"<td>{_render_json_block(entry.state_delta) if entry.state_delta else _empty()}</td>"
         f"<td>{observation_html if observation else _empty()}</td>"
         "</tr>"
     )
@@ -404,7 +378,7 @@ def _render_event_note(entry: SessionEntry) -> str | None:
     text = _event_note_text(entry)
     if text is None:
         return None
-    return f'<tr class="event"><td colspan="5">{text}</td></tr>'
+    return f'<tr class="event"><td colspan="4">{text}</td></tr>'
 
 
 def _event_note_text(entry: SessionEntry) -> str | None:
@@ -412,7 +386,7 @@ def _event_note_text(entry: SessionEntry) -> str | None:
         return f"turn: {_escape(_summarize(entry.observation))}"
     if isinstance(entry, StateResetEntry):
         reason = f": {_escape(entry.reason)}" if entry.reason else ""
-        return f"state reset{reason}"
+        return f"context reset{reason}"
     if isinstance(entry, ModelChangeEntry):
         return f"model changed to <code>{_escape(entry.model)}</code>"
     if isinstance(entry, ThinkingLevelChangeEntry):
@@ -439,19 +413,11 @@ def _render_footprint(
     provider: str | None,
     model: str | None,
 ) -> str:
-    """Render per-step token footprint and the linear cumulative projection.
-
-    This is the point of the design made visible: unlike a transcript-based
-    agent's usage dashboard, per-step cost here does not depend on how many
-    steps came before it, so the "cumulative projection" is a straight line,
-    not a curve.
-    """
+    """Render the estimated prompt size of every step."""
     usage = collect_session_usage(
         entries, instructions=instructions, tools=tools, provider=provider, model=model
     )
-    steps_table = _render_usage_table(usage.steps)
-    projection_table = _render_projection_table(entries, instructions=instructions, tools=tools)
-    return f"{steps_table}{projection_table}"
+    return _render_usage_table(usage.steps)
 
 
 def _render_usage_table(steps: Sequence[StepUsage]) -> str:
@@ -462,8 +428,7 @@ def _render_usage_table(steps: Sequence[StepUsage]) -> str:
         f"<td>{step.number}</td>"
         f"<td><code>{_escape(step.action_name)}</code></td>"
         f"<td>{step.instructions_tokens}</td>"
-        f"<td>{step.state_tokens}</td>"
-        f"<td>{step.observation_tokens}</td>"
+        f"<td>{step.context_tokens}</td>"
         f"<td>{step.tools_tokens}</td>"
         f"<td>{step.total_tokens}</td>"
         "</tr>"
@@ -472,42 +437,21 @@ def _render_usage_table(steps: Sequence[StepUsage]) -> str:
     return (
         '<table class="usage">'
         "<thead><tr>"
-        "<th>#</th><th>Action</th><th>Instructions</th><th>State</th>"
-        "<th>Observation</th><th>Tools</th><th>Total</th>"
+        "<th>#</th><th>Action</th><th>Instructions</th><th>Context</th>"
+        "<th>Tools</th><th>Total</th>"
         "</tr></thead>"
         f"<tbody>{rows}</tbody>"
         "</table>"
     )
 
 
-def _render_projection_table(
-    entries: Sequence[SessionEntry],
-    *,
-    instructions: str,
-    tools: Sequence[AgentTool],
-) -> str:
-    step_entries = [entry for entry in entries if isinstance(entry, StepEntry)]
-    last = step_entries[-1] if step_entries else None
-    footprint = estimate_step_footprint(
-        instructions=instructions,
-        state=last.state if last is not None else {},
-        observation=(last.observation or "") if last is not None else "",
-        tools=tools,
-    )
-    rows = "".join(
-        f"<tr><td>{steps:,}</td><td>{projected_cumulative_tokens(footprint, steps):,}</td></tr>"
-        for steps in _PROJECTION_MILESTONES
-    )
-    return (
-        "<p>Per-step footprint is fixed at "
-        f"<strong>{footprint.total_tokens:,} tokens</strong> "
-        "regardless of how many steps have already run, so cumulative "
-        "prompt tokens grow linearly:</p>"
-        '<table class="projection">'
-        "<thead><tr><th>After N steps</th><th>Projected cumulative tokens</th></tr></thead>"
-        f"<tbody>{rows}</tbody>"
-        "</table>"
-    )
+def _final_context_text(entries: Sequence[SessionEntry]) -> str:
+    leaf = latest_leaf_id(entries)
+    if leaf is None:
+        return ""
+    _state, snapshot = state_at_entry(entries, leaf)
+    context = entry_context(snapshot) if snapshot is not None else None
+    return render_context(context) if context else ""
 
 
 def _empty() -> str:

@@ -1,23 +1,8 @@
-"""Token-footprint usage analytics for rio SKILL.state coding sessions.
+"""Token-footprint usage analytics for rio coding sessions.
 
-tau's ``session_usage.py`` collected per-request provider-reported usage
-(fresh/cached/cache-write/output token counts straight off each
-``AssistantMessage.usage``) from an append-only transcript, then rendered an
-interactive HTML dashboard from it.
-
-Neither half survives the port unchanged. There is no transcript to walk --
-a rio session journal is a sequence of committed
-``rio.coding.session_store`` entries, one per SKILL.state step -- and no
-provider ever reports real usage for a step: ``rio.agent.loop`` validates the
-assistant's reply and discards its reasoning before the loop's caller ever
-sees the raw message, so ``AssistantMessage.usage`` never reaches the
-journal. What is left to measure is the same fixed three-piece prompt every
-step actually sends, so per-step usage here is a
-``rio.coding.step_footprint`` estimate rather than a provider-reported
-figure.
-
-Presentation lives in the TUI and session export layers. ``SessionUsage``
-below provides the estimated accounting data for those renderers.
+Per-step usage is a `rio.coding.step_footprint` estimate of each step's prompt,
+computed from the context the journal recorded, rather than a provider count.
+Presentation lives in the session export layer.
 """
 
 from __future__ import annotations
@@ -34,6 +19,7 @@ from rio.coding.session_store.entries import (
     SessionEntry,
     StepEntry,
     ThinkingLevelChangeEntry,
+    entry_context,
 )
 from rio.coding.step_footprint import StepFootprint, estimate_step_footprint
 
@@ -56,19 +42,13 @@ class StepUsage:
     timestamp: str
     action_name: str
     instructions_tokens: int
-    state_tokens: int
-    observation_tokens: int
+    context_tokens: int
     tools_tokens: int
     estimated_cost: float | None
 
     @property
     def total_tokens(self) -> int:
-        return (
-            self.instructions_tokens
-            + self.state_tokens
-            + self.observation_tokens
-            + self.tools_tokens
-        )
+        return self.instructions_tokens + self.context_tokens + self.tools_tokens
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,10 +86,8 @@ def estimated_step_cost(
 ) -> float | None:
     """Estimate one step's USD cost from the built-in provider catalog rates.
 
-    The whole footprint is priced at the model's input rate. A SKILL.state
-    step has no reused conversation prefix to mark as a cache hit the way a
-    growing transcript would -- the state and observation are different on
-    every step -- so there is no fresh/cached split to model here.
+    The whole footprint is priced at the model's input rate; cache hits on an
+    unedited context prefix are not modeled.
     """
     entry = builtin_provider_entry(provider)
     metadata = entry.model_metadata.get(model) if entry is not None else None
@@ -131,11 +109,8 @@ def collect_session_usage(
 ) -> SessionUsage:
     """Collect per-step estimated token usage, action counts, and notable events.
 
-    ``instructions`` and ``tools`` are the skill's fixed instructions and the
-    per-step tool definitions (normally just ``skill_step_tool(skill)``) --
-    the same inputs ``rio.coding.step_footprint.estimate_step_footprint``
-    needs, since a step entry only stores the state and observation halves
-    of its prompt.
+    ``instructions`` and ``tools`` are the skill's fixed instructions and
+    action definitions; a step entry only stores its context.
     """
     steps: list[StepUsage] = []
     actions: dict[str, int] = {}
@@ -154,8 +129,7 @@ def collect_session_usage(
         actions[entry.action.name] = actions.get(entry.action.name, 0) + 1
         footprint = estimate_step_footprint(
             instructions=instructions,
-            state=entry.state,
-            observation=entry.observation or "",
+            context=entry_context(entry) or [],
             tools=tools,
         )
         estimated = (
@@ -170,8 +144,7 @@ def collect_session_usage(
                 timestamp=_entry_time(entry.timestamp),
                 action_name=entry.action.name,
                 instructions_tokens=footprint.instructions_tokens,
-                state_tokens=footprint.state_tokens,
-                observation_tokens=footprint.observation_tokens,
+                context_tokens=footprint.context_tokens,
                 tools_tokens=footprint.tools_tokens,
                 estimated_cost=estimated,
             )

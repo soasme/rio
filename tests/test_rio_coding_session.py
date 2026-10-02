@@ -1,11 +1,8 @@
 """Tests for `CodingSession`, the coding-agent environment.
 
 Most of these check ordinary session behaviour -- resource discovery, journaling,
-reconfiguration. The ones worth reading closely are the ones that would be hard
-or impossible for a transcript-based session: the prompt footprint is identical
-on step 1 and step 500, a model swap needs no history translation, and reloading
-resources mid-session takes effect immediately because nothing was ever written
-against the old instructions.
+reconfiguration, checkpoints. The context is provider-neutral text, so a model
+swap needs no history translation, and a checkpoint is the whole context.
 """
 
 from __future__ import annotations
@@ -58,17 +55,11 @@ def two_step_streams():
     return [
         step_response(
             reasoning="Check the entry point.",
-            state_delta={
-                "goal": "explain main.py",
-                "files": {"main.py": {"status": "read", "note": "entry point"}},
-                "findings": {"entrypoint": "main.py"},
-            },
             action="read",
             args={"path": "main.py"},
         ),
         step_response(
             reasoning="Ready to answer.",
-            state_delta={"plan": [{"id": "1", "title": "explain", "status": "done"}]},
             action="respond",
             args={"message": "main.py starts the server."},
         ),
@@ -156,12 +147,9 @@ class TestLoad:
         assert [tool.name for tool in session.tools] == ["read", "respond"]
         assert session.skill.actions == session.tools
 
-    async def test_state_starts_seeded_with_every_declared_field(self, project) -> None:
+    async def test_context_starts_empty(self, project) -> None:
         session = await make_session(project, [])
-        state = session.state
-        for name in session.skill.state_fields:
-            assert name in state, f"{name} was not seeded"
-        assert state["cwd"] == str(session.cwd)
+        assert session.context == []
 
     async def test_session_info_is_journaled_once(self, project) -> None:
         storage = InMemorySessionStorage()
@@ -180,24 +168,22 @@ class TestPrompting:
         assert run_end.answer == "main.py starts the server."
         assert session.answer == "main.py starts the server."
 
-    async def test_state_accessors_reflect_the_run(self, project) -> None:
+    async def test_the_context_records_the_run(self, project) -> None:
         session = await make_session(project, two_step_streams())
         await collect(session, "explain main.py")
 
-        assert session.plan_progress == (1, 1)
-        assert session.touched_files == ["main.py"]
-        assert "plan 1/1" in session.state_summary
+        roles = [item["role"] for item in session.context]
+        assert roles == ["user", "assistant", "tool", "assistant", "tool"]
+        assert "contents of main.py" in session.context[2]["text"]
 
-    async def test_the_task_is_an_initial_history_observation(self, project) -> None:
-        """The task remains visible beside the initial materialized state."""
+    async def test_the_task_is_the_first_user_turn(self, project) -> None:
         session = await make_session(project, two_step_streams())
         provider = session.provider
         await collect(session, "explain main.py")
 
-        _model, _system, first_messages, _tools = provider.calls[0]
-        assert len(first_messages) == 2
-        assert '"goal": "explain main.py"' in first_messages[0].content
-        assert first_messages[1].content == "Observation:\nexplain main.py"
+        _model, system, first_messages, _tools = provider.calls[0]
+        assert [message.text for message in first_messages] == ["explain main.py"]
+        assert str(session.context_file) in system
 
     async def test_the_run_is_journaled_as_steps(self, project) -> None:
         storage = InMemorySessionStorage()
@@ -329,33 +315,24 @@ class TestSlashInvocation:
         assert '<skill name="review"' in session.expand_prompt_text("/review")
 
 
-class TestBoundedFootprint:
+class TestFootprint:
     async def test_the_step_footprint_is_reported_before_any_run(self, project) -> None:
         session = await make_session(project, [])
         footprint = session.step_footprint
         assert footprint.instructions_tokens > 0
+        assert footprint.context_tokens == 0
         assert footprint.total_tokens == (
-            footprint.instructions_tokens
-            + footprint.state_tokens
-            + footprint.observation_tokens
-            + footprint.tools_tokens
+            footprint.instructions_tokens + footprint.context_tokens + footprint.tools_tokens
         )
 
-    async def test_context_usage_does_not_creep_toward_the_window(self, project) -> None:
-        """tau's equivalent was a countdown. This one is a constant."""
+    async def test_context_usage_grows_with_the_context(self, project) -> None:
         session = await make_session(project, two_step_streams())
         before = session.context_usage.utilization
         await collect(session, "explain main.py")
         after = session.context_usage.utilization
 
-        assert 0.0 < before < 1.0
-        # The state grew by a handful of fields, not by a turn of transcript.
-        assert abs(after - before) < 0.05
-
-    async def test_projected_cost_is_linear_in_steps(self, project) -> None:
-        session = await make_session(project, [])
-        usage = session.context_usage
-        assert usage.projected_tokens(200) == 2 * usage.projected_tokens(100)
+        assert 0.0 < before < after < 1.0
+        assert session.context_usage.limit_tokens < session.context_window_tokens
 
 
 class TestReconfiguration:
@@ -368,8 +345,8 @@ class TestReconfiguration:
         assert session.model == "another-model"
         changes = [e for e in await storage.read_all() if isinstance(e, ModelChangeEntry)]
         assert changes[-1].model == "another-model"
-        # The findings survive the swap because they live in the state.
-        assert session.state["findings"] == {"entrypoint": "main.py"}
+        # The context survives the swap: it is provider-neutral text.
+        assert "contents of main.py" in session.context[2]["text"]
 
     async def test_thinking_level_changes_are_journaled(self, project) -> None:
         storage = InMemorySessionStorage()
@@ -381,7 +358,7 @@ class TestReconfiguration:
         assert entries[-1].thinking_level == "high"
 
     async def test_reload_picks_up_edited_project_instructions(self, project) -> None:
-        """`P` is rebuilt per step, so a reload takes effect on the next one."""
+        """Instructions are sent every step, so a reload takes effect on the next one."""
         repo, _home = project
         session = await make_session(project, [])
         assert "Always run the linter" in session.system_prompt
@@ -403,15 +380,14 @@ class TestReconfiguration:
 
 
 class TestCheckpoints:
-    async def test_new_session_clears_the_state(self, project) -> None:
+    async def test_new_session_clears_the_context(self, project) -> None:
         session = await make_session(project, two_step_streams())
         await collect(session, "explain main.py")
         assert session.answer is not None
 
         await session.new_session()
         assert session.answer is None
-        assert session.state["findings"] == {}
-        assert session.state["cwd"] == str(session.cwd)
+        assert session.context == []
 
     async def test_checkpoints_can_be_restored(self, project) -> None:
         storage = InMemorySessionStorage()
@@ -422,17 +398,17 @@ class TestCheckpoints:
         await session.restore(first_step.id, reason="rewind")
 
         assert session.answer is None
-        assert session.state["findings"] == {"entrypoint": "main.py"}
+        assert [item["role"] for item in session.context] == ["user", "assistant", "tool"]
 
-    async def test_fork_from_adopts_state_and_journals_lineage(self, project) -> None:
+    async def test_fork_from_adopts_context_and_journals_lineage(self, project) -> None:
         parent = await make_session(project, two_step_streams())
         await collect(parent, "explain main.py")
 
         child_storage = InMemorySessionStorage()
         child = await make_session(project, [], storage=child_storage)
-        await child.fork_from(dict(parent.state), parent_session_id="parent-id")
+        await child.fork_from(parent.context, parent_session_id="parent-id")
 
-        assert child.state["findings"] == {"entrypoint": "main.py"}
+        assert child.context == parent.context
         entries = await child_storage.read_all()
         fork_notes = [e for e in entries if isinstance(e, CustomEntry) and e.namespace == "fork"]
         assert fork_notes[-1].data == {"parent_session_id": "parent-id"}
@@ -500,18 +476,18 @@ class TestCheckpoints:
         await collect(session, "explain main.py")
 
         reopened = await make_session(project, [], storage=storage)
-        assert reopened.state["findings"] == {"entrypoint": "main.py"}
-        assert reopened.state["plan"] == [{"id": "1", "title": "explain", "status": "done"}]
+        assert reopened.context == session.context
+        assert reopened.context[0] == {"role": "user", "text": "explain main.py"}
 
 
-async def test_metadata_keeps_journal_connected_and_preserves_resumed_state(project):
+async def test_metadata_keeps_journal_connected_and_preserves_resumed_context(project):
     from rio.coding.session_store import latest_leaf_id, path_to_entry
 
     storage = InMemorySessionStorage()
     session = await make_session(project, two_step_streams(), storage=storage)
-    initial = session.state
+    initial = session.context
     resumed = await make_session(project, [], storage=storage)
-    assert resumed.state == initial
+    assert resumed.context == initial
     _ = [event async for event in session.prompt("explain main.py")]
     await session.set_session_name("Entry point")
     await session.set_model("another-model")
@@ -520,5 +496,5 @@ async def test_metadata_keeps_journal_connected_and_preserves_resumed_state(proj
     assert path[0].type == "session_info"
     assert [entry.type for entry in path][-2:] == ["label", "model_change"]
     resumed = await make_session(project, [], storage=storage)
-    assert resumed.state == session.state
+    assert resumed.context == session.context
     assert resumed.session_name == "Entry point"

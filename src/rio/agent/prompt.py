@@ -1,123 +1,66 @@
-"""The append-only per-step prompt sent to the model.
+"""The prompt a CLM step sends: instructions, the context protocol, and the context.
 
-The runtime owns the materialized execution state, but the model sees its
-history: the initial state, every accepted state patch, and every observation.
-This keeps state construction deterministic while preserving the ordinary
-agent property that later decisions can inspect earlier evidence.
-
-The model reports its output for the step -- reasoning, a state update, and
-an action -- by calling a single mandatory `skill_step` tool. Any free text
-or thinking before that call is the reasoning; the runtime reads it for
-observability then discards it forever (see `rio.agent.loop`).
+The model sees its context as ordinary chat messages. Assistant turns become
+assistant messages; every other turn becomes user text, labelled with its role
+when that role is not `user`. Consecutive turns that map to the same message
+role are merged so any edited context is a legal request. Tool-call structure
+is not kept: a step's action is recorded as text in its assistant turn, so the
+model can edit it like anything else.
 """
 
 from __future__ import annotations
 
-import json
-from collections.abc import Mapping
+from collections.abc import Sequence
+from pathlib import Path
 
-from rio.agent.skill import HarnessSpec
-from rio.ai.messages import AgentMessage, UserMessage
-from rio.ai.tools import AgentTool, AgentToolResult, ToolCancellationToken, ToolUpdateCallback
-from rio.ai.types import JSONObject, JSONValue
-
-STEP_TOOL_NAME = "skill_step"
+from rio.agent.context import Turn
+from rio.ai.messages import AgentMessage, AssistantMessage, UserMessage
 
 
-async def _skill_step_not_executed(
-    tool_call_id: str,
-    arguments: Mapping[str, JSONValue],
-    signal: ToolCancellationToken | None = None,
-    on_update: ToolUpdateCallback | None = None,
-) -> AgentToolResult:
-    raise RuntimeError(
-        f"{STEP_TOOL_NAME!r} is intercepted and validated by the SKILL.state loop; "
-        "it is never executed as an ordinary tool."
+def context_protocol(path: Path, limit_tokens: int) -> str:
+    """Return the system-prompt section that teaches the model to edit its context."""
+    return (
+        "## Your context\n\n"
+        f"Your context is mirrored to `{path}`, rewritten before every step. It holds "
+        "every turn after this system prompt, one `[[CTX_TURN <i> role=<role>]]` block "
+        "per turn. You manage your own context by editing that file with your tools: "
+        "shorten stale output, delete dead ends, merge turns into notes, reorder them, or "
+        "add blocks with any role label. The edited file becomes your context on the next "
+        f"step. Your context limit is about {limit_tokens} tokens; each observation ends "
+        "with the current size.\n\n"
+        "- Do not read the whole file: its text is already in your context.\n"
+        "- Locate text with code or by unique lines; do not retype long bodies.\n"
+        "- Keep the header of every turn you keep. A turn with an empty body is dropped.\n"
+        "- Batch edits: everything after an edit is re-read, so one large edit beats "
+        "many small ones.\n"
+        "- Keep the task, decisions, open items, file paths, and exact values. Drop tool "
+        "output you have already used."
     )
 
 
-def skill_step_tool(skill: HarnessSpec) -> AgentTool:
-    """The one tool the model may call each step. It forces structured output: reasoning, a state
-    update, and an action.
-    """
-    parameters: JSONObject = {
-        "type": "object",
-        "properties": {
-            "reasoning": {
-                "type": "string",
-                "description": (
-                    "Private scratch reasoning. Never shown back to you in a future "
-                    "step -- anything that must persist belongs in state_delta instead."
-                ),
-            },
-            "state_delta": {
-                "type": "object",
-                "description": (
-                    "Partial update merged into the execution state (JSON Merge Patch, "
-                    "RFC 7396): set a field to null to delete it, an object to merge "
-                    "recursively, anything else to replace it. Only declared fields: "
-                    + ", ".join(skill.state_fields)
-                ),
-            },
-            "action": {
-                "type": "object",
-                "description": "The single action to execute this step.",
-                "properties": {
-                    "name": {"type": "string", "enum": list(skill.action_by_name())},
-                    "arguments": {"type": "object"},
-                },
-                "required": ["name", "arguments"],
-            },
-        },
-        "required": ["state_delta", "action"],
-    }
-    return AgentTool(
-        name=STEP_TOOL_NAME,
-        label="Skill Step",
-        description="Advance the skill by one step: reason privately, update state, act.",
-        parameters=parameters,
-        execute_fn=_skill_step_not_executed,
-    )
-
-
-def state_message(
-    state: JSONObject, *, rebuilt: bool = False, needs_refresh: bool = False
-) -> UserMessage:
-    """Return the history record that establishes a state baseline."""
-    label = "State rebuild" if rebuilt else "Initial state"
-    content = f"{label}:\n```json\n{json.dumps(state, indent=2, sort_keys=True)}\n```"
-    if needs_refresh:
-        content += (
-            "\nThis state still exceeds the context target. "
-            "Remove nonessential fields in state_delta."
-        )
-    return UserMessage(content=content)
-
-
-def state_patch_message(delta: JSONObject) -> UserMessage:
-    """Return an accepted RFC 7396 patch as an immutable history record."""
-    return UserMessage(
-        content=f"State patch:\n```json\n{json.dumps(delta, indent=2, sort_keys=True)}\n```"
-    )
-
-
-def observation_message(observation: str) -> UserMessage:
-    """Return an action result as an immutable history record."""
-    return UserMessage(content="Observation:\n" + observation)
-
-
-def build_step_messages(
-    history: list[AgentMessage], *, error_note: str | None = None
-) -> list[AgentMessage]:
-    """Return the complete history, plus a transient validation correction."""
-    messages = list(history)
+def build_messages(context: Sequence[Turn], *, error_note: str | None = None) -> list[AgentMessage]:
+    """Return the request messages for `context`, plus a transient correction."""
+    parts: list[tuple[str, str]] = []
+    for item in context:
+        role, text = str(item["role"]), str(item["text"])
+        api_role = "assistant" if role == "assistant" else "user"
+        if role not in ("user", "assistant"):
+            text = f"[{role}]\n{text}"
+        if parts and parts[-1][0] == api_role:
+            parts[-1] = (api_role, parts[-1][1] + "\n\n" + text)
+        else:
+            parts.append((api_role, text))
     if error_note:
-        messages.append(
-            UserMessage(
-                content=(
-                    f"Rejected {STEP_TOOL_NAME} call: {error_note}\n"
-                    "Retry with a corrected call."
-                )
-            )
-        )
-    return messages
+        note = f"Rejected reply: {error_note}\nRetry with a corrected reply."
+        if parts and parts[-1][0] == "user":
+            parts[-1] = ("user", parts[-1][1] + "\n\n" + note)
+        else:
+            parts.append(("user", note))
+    if not parts or parts[0][0] != "user":
+        parts.insert(0, ("user", "(start of context)"))
+    if parts[-1][0] != "user":
+        parts.append(("user", "Continue."))
+    return [
+        AssistantMessage(content=text) if role == "assistant" else UserMessage(content=text)
+        for role, text in parts
+    ]

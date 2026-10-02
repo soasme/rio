@@ -1,10 +1,9 @@
 """Tests for rio.coding's non-TUI renderers and session export.
 
 Covers `rio.coding.rendering.{base,plain,json,steps}` and
-`rio.coding.session_export`. There is no conversation transcript to render
-under SKILL.state, so these tests exercise the redesigned surface: live
-per-step rendering of `rio.agent`/`rio.coding` events, an after-the-fact
-step account read back from the journal, and a self-contained HTML export.
+`rio.coding.session_export`: live per-step rendering of `rio.agent`/`rio.coding`
+events, an after-the-fact step account read back from the journal, and a
+self-contained HTML export.
 """
 
 from __future__ import annotations
@@ -16,8 +15,8 @@ import pytest
 from rio.agent import (
     ActionEndEvent,
     ActionStartEvent,
-    ReasoningDiscardedEvent,
-    StateUpdateEvent,
+    ContextEditEvent,
+    ReasoningEvent,
     StepEndEvent,
     StepStartEvent,
     ValidationErrorEvent,
@@ -50,23 +49,32 @@ from rio.coding.session_store import (
 # -- rendering.plain ----------------------------------------------------------
 
 
-def test_plain_renderer_hides_discarded_reasoning(
+def test_plain_renderer_hides_reasoning(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Human output contains the transcript, not internal reasoning."""
     renderer = PlainEventRenderer()
 
-    renderer.render(ReasoningDiscardedEvent(step=1, reasoning="I will check the file next"))
+    renderer.render(ReasoningEvent(step=1, reasoning="I will check the file next"))
 
     out = capsys.readouterr().out
     assert out == ""
 
 
+def test_plain_renderer_reports_context_edits(capsys: pytest.CaptureFixture[str]) -> None:
+    renderer = PlainEventRenderer()
+
+    renderer.render(
+        ContextEditEvent(step=1, accepted=True, before_tokens=900, after_tokens=200, turns=3)
+    )
+
+    assert "Context edited: ~900 -> ~200 tokens" in capsys.readouterr().out
+
+
 def test_plain_renderer_renders_step_lifecycle(capsys: pytest.CaptureFixture[str]) -> None:
     renderer = PlainEventRenderer()
 
-    renderer.render(StepStartEvent(step=1, state={"goal": ""}, observation="start"))
-    renderer.render(StateUpdateEvent(step=1, delta={"goal": "Fix bug"}, state={"goal": "Fix bug"}))
+    renderer.render(StepStartEvent(step=1, context=[{"role": "user", "text": "Fix bug"}]))
     renderer.render(ActionStartEvent(step=1, name="bash", arguments={"command": "ls"}))
     renderer.render(
         ActionEndEvent(
@@ -76,7 +84,9 @@ def test_plain_renderer_renders_step_lifecycle(capsys: pytest.CaptureFixture[str
             is_error=False,
         )
     )
-    renderer.render(StepEndEvent(step=1, state={"goal": "Fix bug"}, terminated=False))
+    renderer.render(
+        StepEndEvent(step=1, context=[{"role": "user", "text": "Fix bug"}], terminated=False)
+    )
 
     out = capsys.readouterr().out
     assert "Running ls" in out
@@ -219,18 +229,17 @@ def test_plain_renderer_recovers_after_successful_retry() -> None:
 def test_json_renderer_emits_one_json_object_per_event(capsys: pytest.CaptureFixture[str]) -> None:
     renderer = JsonEventRenderer()
 
-    renderer.render(StepStartEvent(step=1, state={"goal": ""}, observation="start"))
+    renderer.render(StepStartEvent(step=1, context=[{"role": "user", "text": "start"}]))
     renderer.render(
         ActionEndEvent(step=1, name="bash", result=AgentToolResult(content="ok"), is_error=False)
     )
-    renderer.render(SessionRunEndEvent(steps=1, state={"goal": ""}, answer="done"))
+    renderer.render(SessionRunEndEvent(steps=1, answer="done"))
 
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert lines[0] == {
         "type": "step_start",
         "step": 1,
-        "state": {"goal": ""},
-        "observation": "start",
+        "context": [{"role": "user", "text": "start"}],
     }
     assert lines[1]["type"] == "action_end"
     assert lines[1]["is_error"] is False
@@ -365,7 +374,6 @@ def _sample_entries() -> list:
             id="s1",
             parent_id="t1",
             step=1,
-            state_delta={"goal": "Fix bug"},
             state={"goal": "Fix bug"},
             action=ActionRecord(name="bash", arguments={"command": "ls"}),
             observation="file1\nfile2",
@@ -376,8 +384,7 @@ def _sample_entries() -> list:
             id="s2",
             parent_id="v1",
             step=2,
-            state_delta={"answer": "done"},
-            state={"goal": "Fix bug", "answer": "done"},
+            state={"context": [{"role": "notes", "text": "answer: done"}]},
             action=ActionRecord(name="respond", arguments={}),
             observation="",
             terminated=True,
@@ -394,11 +401,11 @@ def test_render_run_steps_produces_step_account() -> None:
     assert "(terminated)" in text
 
 
-def test_render_completed_run_includes_final_state() -> None:
+def test_render_completed_run_includes_final_context() -> None:
     text = render_completed_run(_sample_entries())
 
-    assert "Final execution state:" in text
-    assert '"answer": "done"' in text
+    assert "Final context:" in text
+    assert "[[CTX_TURN 1 role=notes]]\nanswer: done" in text
 
 
 # -- session_export ---------------------------------------------------------
@@ -409,7 +416,6 @@ def test_render_session_html_escapes_malicious_observation() -> None:
         StepEntry(
             id="s1",
             step=1,
-            state_delta={},
             state={},
             action=ActionRecord(name="bash", arguments={"command": "echo <script>"}),
             observation="<script>alert(1)</script>",
@@ -428,7 +434,6 @@ def test_render_session_html_includes_steps_table_and_footprint() -> None:
         StepEntry(
             id="s1",
             step=1,
-            state_delta={"goal": "x"},
             state={"goal": "x"},
             action=ActionRecord(name="bash", arguments={"command": "ls"}),
             observation="ok",
@@ -442,8 +447,7 @@ def test_render_session_html_includes_steps_table_and_footprint() -> None:
 
     assert '<table class="steps">' in html_out
     assert "bash" in html_out
-    assert "Projected cumulative tokens" in html_out
-    assert "Per-step footprint is fixed at" in html_out
+    assert '<table class="usage">' in html_out
     assert "<title>Steps test</title>" in html_out
 
 
@@ -454,7 +458,6 @@ def test_render_session_html_attaches_reasoning_to_its_step_collapsed() -> None:
             id="s1",
             parent_id="r1",
             step=1,
-            state_delta={"goal": "x"},
             state={"goal": "x"},
             action=ActionRecord(name="bash", arguments={"command": "ls"}),
             observation="ok",

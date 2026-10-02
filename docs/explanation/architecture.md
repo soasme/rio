@@ -1,30 +1,37 @@
 # How Rio runs tasks
 
-Rio builds structured execution state in the runtime while the model receives
-an append-only history. Each step adds an accepted state patch and an action
-observation.
+Rio is a Context Language Model (CLM) agent ([arXiv:2609.37725]): the model
+natively manages its own context, and the context is a file.
 
 ```text
-instructions + initial/rebuilt state + patches + observations
-                         |
-                         v
-                    one action + state patch
+           write before each step
+context ──────────────────────────▶ CONTEXT.md
+   ▲                                    │  model edits it with
+   │  read back after the action        │  edit / write / bash
+   └────────────────────────────────────┘
 ```
 
-The runtime applies RFC 7396 patches to build the state (plan, findings,
-files, and blockers). At 80% of the model context window it replaces history
-with one exact materialized-state record, then resumes appending. State fields
-remain intentionally bounded so an agent can decide what to forget when its
-rebuilt state needs more room.
+Each step the model sees fixed instructions plus its context, replies with its
+reasoning and one tool call, and the runtime runs the tool. The runtime then
+reads the context file back. If the model edited it and the result fits the
+limit, the edited turns become the context. The step's reply and observation
+are appended either way.
+
+The runtime never summarizes. Every observation ends with the current context
+size, and near the limit it asks the model to compact. If the context still
+outgrows the limit, the runtime withholds the oldest non-user turns so the next
+request fits.
 
 The package boundaries follow that design:
 
 | Package | Responsibility |
 | --- | --- |
 | `rio.ai` | Provider-neutral model streaming. |
-| `rio.agent` | Structured-state runtime and step loop. |
+| `rio.agent` | CLM runtime: the context file and the step loop. |
 | `rio.coding` | Coding skill, tools, sessions, resources, and CLI support. |
 | `rio.cli` | Public one-shot command-line entry point. |
 
-The coding layer journals committed state snapshots. Resuming loads the latest
-snapshot and starts a fresh history baseline.
+The coding layer journals the context after every step. Resuming loads the
+latest snapshot and appends the new task to it.
+
+[arXiv:2609.37725]: https://arxiv.org/abs/2609.37725

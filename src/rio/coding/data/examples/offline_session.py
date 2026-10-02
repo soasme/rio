@@ -12,14 +12,7 @@ from rio.coding.session_store import InMemorySessionStorage
 async def main() -> None:
     message = AssistantMessage(
         content=[
-            ToolCall(
-                id="example-step",
-                name="skill_step",
-                arguments={
-                    "state_delta": {"goal": "greet the user"},
-                    "action": {"name": "respond", "arguments": {"message": "Hello from Rio."}},
-                },
-            )
+            ToolCall(id="example-step", name="respond", arguments={"message": "Hello from Rio."})
         ],
         stop_reason="toolUse",
     )

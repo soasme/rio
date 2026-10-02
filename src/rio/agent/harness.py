@@ -1,12 +1,8 @@
-"""Harness: a reusable stateful runtime around `run_skill_loop`.
+"""Harness: a reusable stateful runtime around `run_context_loop`.
 
-Deliberately mirrors the public shape of `rio.ai`'s ported tau_agent-style
-`AgentHarness` -- construct with a config, `subscribe()` an event listener,
-call `run()`/`prompt()` to drive it, `cancel()` to stop it -- so callers
-already familiar with that loop interface can pick this one up directly.
-The difference is entirely internal: instead of holding a growing message
-transcript, this harness holds only the current execution state and
-replays `run_skill_loop`'s fixed-size per-step prompt.
+Construct with a config, `subscribe()` an event listener, call `run()` to
+drive it, `cancel()` to stop it. The harness holds the context between runs
+and keeps one context file for its lifetime.
 """
 
 from __future__ import annotations
@@ -15,14 +11,15 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from inspect import isawaitable
+from pathlib import Path
 
-from rio.agent.events import RunEndEvent, SkillEvent, StateUpdateEvent
-from rio.agent.loop import run_skill_loop
+from rio.agent.context import Turn
+from rio.agent.events import AgentEvent, RunEndEvent, StepEndEvent, StepStartEvent
+from rio.agent.loop import DEFAULT_CONTEXT_WINDOW_TOKENS, default_context_file, run_context_loop
 from rio.agent.skill import HarnessSpec
 from rio.ai.provider import ModelProvider
-from rio.ai.types import JSONObject, JSONValue
 
-EventListener = Callable[[SkillEvent], Awaitable[None] | None]
+EventListener = Callable[[AgentEvent], Awaitable[None] | None]
 
 
 @dataclass(slots=True)
@@ -32,7 +29,8 @@ class HarnessConfig:
     skill: HarnessSpec
     max_steps: int | None = None
     max_retries: int = 2
-    context_window_tokens: int = 128_000
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS
+    context_file: Path | None = None
 
 
 class HarnessCancellationToken:
@@ -47,23 +45,23 @@ class HarnessCancellationToken:
 
 
 class Harness:
-    """Reusable stateful long-horizon agent runtime built on SKILL.state."""
+    """Reusable stateful agent runtime that manages its own context."""
 
-    def __init__(
-        self,
-        config: HarnessConfig,
-        *,
-        state: JSONObject | None = None,
-    ) -> None:
+    def __init__(self, config: HarnessConfig, *, context: list[Turn] | None = None) -> None:
         self._config = config
-        self._state: JSONObject = dict(state if state is not None else config.skill.initial_state)
+        self._context: list[Turn] = [dict(item) for item in context or []]
+        self._context_file = config.context_file or default_context_file()
         self._listeners: list[EventListener] = []
         self._current_signal: HarnessCancellationToken | None = None
         self._running = False
 
     @property
-    def state(self) -> dict[str, JSONValue]:
-        return dict(self._state)
+    def context(self) -> list[Turn]:
+        return [dict(item) for item in self._context]
+
+    @property
+    def context_file(self) -> Path:
+        return self._context_file
 
     @property
     def config(self) -> HarnessConfig:
@@ -86,29 +84,31 @@ class Harness:
         if self._current_signal is not None:
             self._current_signal.cancel()
 
-    def run(self, observation: str | None = None) -> AsyncIterator[SkillEvent]:
-        """Run once, appending ``observation`` as the first history record."""
-        self._ensure_not_running()
+    def run(self, observation: str | None = None) -> AsyncIterator[AgentEvent]:
+        """Run once, appending ``observation`` to the context as a user turn."""
+        if self._running:
+            raise RuntimeError("Harness is already running")
         self._running = True
         return self._run(observation)
 
-    async def _run(self, observation: str | None) -> AsyncIterator[SkillEvent]:
+    async def _run(self, observation: str | None) -> AsyncIterator[AgentEvent]:
         signal = HarnessCancellationToken()
         self._current_signal = signal
         try:
-            async for event in run_skill_loop(
+            async for event in run_context_loop(
                 provider=self._config.provider,
                 model=self._config.model,
                 skill=self._config.skill,
-                state=self._state,
+                observation=observation,
+                context=self._context,
+                context_file=self._context_file,
                 max_steps=self._config.max_steps,
                 max_retries=self._config.max_retries,
                 context_window_tokens=self._config.context_window_tokens,
-                observation=observation,
                 signal=signal,
             ):
-                if isinstance(event, (StateUpdateEvent, RunEndEvent)):
-                    self._state = dict(event.state)
+                if isinstance(event, StepStartEvent | StepEndEvent | RunEndEvent):
+                    self._context = [dict(item) for item in event.context]
                 await self._notify(event)
                 yield event
         finally:
@@ -116,12 +116,8 @@ class Harness:
                 self._current_signal = None
             self._running = False
 
-    async def _notify(self, event: SkillEvent) -> None:
+    async def _notify(self, event: AgentEvent) -> None:
         for listener in list(self._listeners):
             result = listener(event)
             if isawaitable(result):
                 await result
-
-    def _ensure_not_running(self) -> None:
-        if self._running:
-            raise RuntimeError("Harness is already running")

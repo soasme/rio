@@ -1,4 +1,4 @@
-"""Extension actions and hooks participate in the state-only coding loop."""
+"""Extension actions and hooks participate in the coding loop."""
 
 from pathlib import Path
 
@@ -29,9 +29,9 @@ def setup(api):
     api.on("tool_call", lambda event, ctx: ToolCallHookResult(arguments={"value": "hooked"}))
     api.on("tool_result", lambda event, ctx: ToolResultHookResult(content="result hook"))
     def step(event, ctx):
-        SEEN.append((event.step, ctx.state))
-        ctx.state["environment"]["injected"] = "must not persist"
-        event.state["environment"]["injected"] = "must not persist"
+        SEEN.append((event.step, ctx.context))
+        ctx.context.append({"role": "notes", "text": "injected"})
+        event.context.append({"role": "notes", "text": "injected"})
     api.on("step_start", step)
     async def execute(call_id, arguments, signal=None, on_update=None):
         await api.append_entry("example", dict(arguments))
@@ -43,7 +43,6 @@ def setup(api):
         [
             step_response(
                 reasoning="discard",
-                state_delta={"goal": "rewritten"},
                 action="extension_action",
                 args={},
             )
@@ -67,7 +66,8 @@ def setup(api):
     assert any(
         isinstance(entry, CustomEntry) and entry.data == {"value": "hooked"} for entry in entries
     )
-    assert "injected" not in session.state["environment"]
+    assert "injected" not in str(session.context)
+    assert session.context[0] == {"role": "user", "text": "rewritten"}
     assert not session.extensions.diagnostics
     extension.unlink()
     await session.reload()

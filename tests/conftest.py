@@ -3,7 +3,7 @@ from __future__ import annotations
 import itertools
 from collections.abc import Mapping
 
-from rio.agent import STEP_TOOL_NAME, HarnessSpec
+from rio.agent import HarnessSpec
 from rio.ai import (
     AgentTool,
     AgentToolResult,
@@ -16,21 +16,12 @@ from rio.ai import (
 _call_ids = itertools.count()
 
 
-def step_response(*, reasoning: str, state_delta: Mapping, action: str, args: Mapping):
-    """Build one FakeProvider stream: a single skill_step tool call."""
+def step_response(*, reasoning: str = "", action: str, args: Mapping | None = None):
+    """Build one FakeProvider stream: reasoning text and a single tool call."""
     content = []
     if reasoning:
         content.append(TextContent(text=reasoning))
-    content.append(
-        ToolCall(
-            id=f"call-{next(_call_ids)}",
-            name=STEP_TOOL_NAME,
-            arguments={
-                "state_delta": dict(state_delta),
-                "action": {"name": action, "arguments": dict(args)},
-            },
-        )
-    )
+    content.append(ToolCall(id=f"call-{next(_call_ids)}", name=action, arguments=dict(args or {})))
     message = AssistantMessage(content=content, stop_reason="toolUse")
     return [AssistantDoneEvent(reason="toolUse", message=message)]
 
@@ -63,9 +54,7 @@ FINISH = AgentTool(
 def make_skill(**overrides) -> HarnessSpec:
     defaults = dict(
         name="demo",
-        instructions="You are the demo SKILL.state skill.",
-        state_fields=("counter", "notes"),
-        initial_state={"counter": 0},
+        instructions="You are the demo skill.",
         actions=(ADVANCE, FINISH),
     )
     defaults.update(overrides)

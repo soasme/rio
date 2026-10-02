@@ -1,37 +1,22 @@
-"""The coding-agent environment: resources, tools, and a SKILL.state run loop.
+"""The coding-agent environment: resources, tools, and a CLM run loop.
 
-tau's session had to be a librarian of conversation -- it held the transcript,
-estimated how close it was to the context window, summarized it when it got too
-long, and translated it whenever the provider changed. None of that exists here.
-A rio session holds one JSON object, and the model is handed a fresh prompt built
-from it every step.
-
-What is left is genuinely the session's own work: discovering project resources,
-assembling the skill specification `P` from them, owning the tools that become
-actions, and driving `SessionRunner` over a durable journal.
+The model manages its own context, so the session never summarizes or
+compacts. Its own work is discovering project resources, assembling the skill
+instructions from them, owning the tools that become actions, and driving
+`SessionRunner` over a durable journal.
 """
 
 from __future__ import annotations
 
-import os
-import platform
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import date
 from pathlib import Path
 
-from rio.agent import HarnessSpec
+from rio.agent import HarnessSpec, Turn, context_limit
 from rio.ai.provider import ModelProvider
 from rio.ai.tools import AgentTool
-from rio.ai.types import JSONObject, JSONValue
-from rio.coding.coding_skill import (
-    CodingSkillOptions,
-    build_coding_skill,
-    describe_state,
-    initial_coding_state,
-    plan_progress,
-    touched_files,
-)
+from rio.ai.types import JSONValue
+from rio.coding.coding_skill import CodingSkillOptions, build_coding_skill
 from rio.coding.context import discover_project_context_with_diagnostics
 from rio.coding.events import (
     CodingSessionEvent,
@@ -69,7 +54,7 @@ from rio.coding.session_store import (
     SessionStorage,
     ThinkingLevelChangeEntry,
     checkpoints,
-    entry_state,
+    entry_context,
 )
 from rio.coding.skills import (
     Skill,
@@ -83,7 +68,6 @@ from rio.coding.step_footprint import (
     StepFootprint,
     context_window_utilization,
     estimate_step_footprint,
-    projected_cumulative_tokens,
 )
 from rio.coding.system_prompt import (
     BuildSystemPromptOptions,
@@ -94,8 +78,6 @@ from rio.coding.system_prompt import (
 from rio.coding.tools import ImageSupportState, create_coding_tools
 
 #: A coding run is bounded so a runaway loop cannot burn tokens indefinitely.
-#: The bound is on step *count*, not on prompt size -- prompt size is already
-#: constant, which is the point.
 DEFAULT_MAX_STEPS = 200
 
 
@@ -147,12 +129,7 @@ class SessionResources:
 
 @dataclass(frozen=True, slots=True)
 class ContextUsage:
-    """How much of the model's context window one step occupies.
-
-    Unlike tau's equivalent this is not a running total that creeps toward a
-    limit. It is the same number on step 1 and on step 1000, so it reads as a
-    property of the session rather than a countdown.
-    """
+    """How much of the model's context window the next step occupies."""
 
     footprint: StepFootprint
     context_window_tokens: int
@@ -165,9 +142,10 @@ class ContextUsage:
     def total_tokens(self) -> int:
         return self.footprint.total_tokens
 
-    def projected_tokens(self, steps: int) -> int:
-        """Total prompt tokens after `steps` steps -- linear, not quadratic."""
-        return projected_cumulative_tokens(self.footprint, steps)
+    @property
+    def limit_tokens(self) -> int:
+        """The context size the model is asked to stay under."""
+        return context_limit(self.context_window_tokens)
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +187,7 @@ class CodingSession:
 
     @classmethod
     async def load(cls, config: CodingSessionConfig) -> CodingSession:
-        """Discover resources, build the skill specification, and resume state."""
+        """Discover resources, build the skill specification, and resume the context."""
         cwd = config.cwd.resolve()
         resource_paths = resource_paths_with_project_trust(
             resource_paths_with_cwd(config.resource_paths, cwd),
@@ -401,7 +379,7 @@ class CodingSession:
 
     @property
     def skill(self) -> HarnessSpec:
-        """The skill specification `P`: fixed for the whole run."""
+        """The skill specification: fixed for the whole run."""
         return self._skill
 
     @property
@@ -439,29 +417,22 @@ class CodingSession:
         assert self._config.extension_runtime is not None
         return self._config.extension_runtime
 
-    # -- execution state -----------------------------------------------------
+    # -- context -------------------------------------------------------------
 
     @property
-    def state(self) -> dict[str, JSONValue]:
-        """The execution state. This is the session's entire memory of the run."""
-        return self._runner.state
+    def context(self) -> list[Turn]:
+        """The context the model sees next. This is the session's entire memory of the run."""
+        return self._runner.context
 
     @property
-    def plan_progress(self) -> tuple[int, int]:
-        return plan_progress(self.state)
-
-    @property
-    def touched_files(self) -> list[str]:
-        return touched_files(self.state)
+    def context_file(self) -> Path:
+        """The file the model edits to manage its context."""
+        return self._runner.context_file
 
     @property
     def answer(self) -> str | None:
         """What the last run answered, if it has answered."""
         return self._runner.answer
-
-    @property
-    def state_summary(self) -> str:
-        return describe_state(self.state)
 
     # -- footprint -----------------------------------------------------------
 
@@ -469,10 +440,7 @@ class CodingSession:
     def step_footprint(self) -> StepFootprint:
         """The token cost of the next step's prompt."""
         return estimate_step_footprint(
-            instructions=self.system_prompt,
-            state=self.state,
-            observation="",
-            tools=self.tools,
+            instructions=self.system_prompt, context=self.context, tools=self.tools
         )
 
     @property
@@ -513,17 +481,14 @@ class CodingSession:
     # -- running -------------------------------------------------------------
 
     async def run(self, text: str) -> AsyncIterator[CodingSessionEvent]:
-        """Run one task, preserving its text as the first history observation."""
+        """Run one task, appending its text to the context as a user turn."""
         if self._has_run:
             raise RuntimeError("CodingSession supports one run only")
         self._has_run = True
         outcome = await self.extensions.run_input_hooks(text)
         if outcome.handled:
             return
-        state = dict(self._skill.initial_state)
-        state["goal"] = self.expand_prompt_text(outcome.text)
-        await self._runner.reset(state, reason="task initialized")
-        async for event in self._runner.run(outcome.text):
+        async for event in self._runner.run(self.expand_prompt_text(outcome.text)):
             await self.extensions.emit_event(event)
             yield event
 
@@ -563,7 +528,7 @@ class CodingSession:
         return checkpoints(await self.session_entries())
 
     async def restore(self, entry_id: str, *, reason: str | None = None) -> StateRestoredEvent:
-        """Branch: adopt an earlier execution state as the live one."""
+        """Branch: adopt an earlier context as the live one."""
         event = await self._runner.restore(entry_id, reason=reason)
         return event
 
@@ -596,9 +561,7 @@ class CodingSession:
     async def set_model(self, model: str, *, provider_name: str | None = None) -> None:
         """Point the session at a different model.
 
-        Nothing has to be converted. The next prompt is rebuilt from the
-        execution state, which is provider-neutral JSON, so a mid-run model
-        change carries the whole run across without translating a transcript.
+        Nothing has to be converted: the context is provider-neutral text.
         """
         self._config.model = model
         if provider_name is not None:
@@ -625,9 +588,7 @@ class CodingSession:
     async def reload(self) -> SessionResources:
         """Re-discover resources on disk and rebuild the skill specification.
 
-        Cheap and total: because `P` is only ever sent as the current step's
-        system prompt, a rebuilt specification takes effect on the very next
-        step with no history written against the old one.
+        A rebuilt specification takes effect on the very next step.
         """
         cwd = self.cwd
         resource_paths = resource_paths_with_project_trust(
@@ -663,28 +624,17 @@ class CodingSession:
         return self._resources
 
     async def new_session(self) -> None:
-        """Clear the execution state and start over in the same directory."""
-        await self._runner.reset(
-            initial_coding_state(cwd=self.cwd, environment=_environment(self.cwd)),
-            reason="new session",
-        )
+        """Clear the context and start over in the same directory."""
+        await self._runner.reset(reason="new session")
 
-    async def resume(self) -> dict[str, JSONValue]:
-        """Adopt the state recorded in the journal."""
-        state = await self._runner.load()
-        return state
+    async def resume(self) -> list[Turn]:
+        """Adopt the context recorded in the journal."""
+        return await self._runner.load()
 
-    async def fork_from(
-        self, state: dict[str, JSONValue], *, parent_session_id: str | None
-    ) -> None:
-        """Adopt `state` as the live state, journaling the session forked from.
-
-        Used to seed a brand-new session's journal from another session's live
-        state -- a state_reset, same as `new_session()`, but into an
-        empty journal rather than this one, with a lineage note beside it.
-        """
+    async def fork_from(self, context: list[Turn], *, parent_session_id: str | None) -> None:
+        """Adopt `context` as the live context, journaling the session forked from."""
         await self.append_custom_entry("fork", {"parent_session_id": parent_session_id})
-        await self._runner.reset(dict(state), reason=f"forked from session {parent_session_id}")
+        await self._runner.reset(context, reason=f"forked from session {parent_session_id}")
 
     async def aclose(self) -> None:
         self._runner.cancel()
@@ -725,16 +675,6 @@ def _with_shadow_diagnostics(
     if not diagnostics:
         return resources
     return replace(resources, diagnostics=(*resources.diagnostics, *diagnostics))
-
-
-def _environment(cwd: Path) -> JSONObject:
-    """The ambient facts a coding run needs, captured once into the state."""
-    return {
-        "cwd": str(cwd),
-        "os": platform.system(),
-        "shell": os.environ.get("SHELL", ""),
-        "date": date.today().isoformat(),
-    }
 
 
 def _discover(resource_paths: RioResourcePaths, config: CodingSessionConfig) -> SessionResources:
@@ -798,15 +738,7 @@ def _build_skill(
             + (config.extension_runtime.prompt_sections if config.extension_runtime else ()),
         )
     )
-    return build_coding_skill(
-        CodingSkillOptions(
-            instructions=instructions,
-            cwd=cwd,
-            tools=tuple(tools),
-            environment=_environment(cwd),
-            context_window_tokens=config.context_window_tokens,
-        )
-    )
+    return build_coding_skill(CodingSkillOptions(instructions=instructions, tools=tuple(tools)))
 
 
 def default_session_path(cwd: Path, *, paths: RioPaths | None = None) -> Path:
@@ -819,9 +751,9 @@ def jsonl_session_storage(path: Path | str) -> JsonlSessionStorage:
     return JsonlSessionStorage(path)
 
 
-def state_of(entry: SessionEntry) -> dict[str, JSONValue] | None:
-    """Return the execution state an entry captured, if it captured one."""
-    return entry_state(entry)
+def context_of(entry: SessionEntry) -> list[Turn] | None:
+    """Return the context an entry captured, if it captured one."""
+    return entry_context(entry)
 
 
 CommandHandler = Callable[[str], object]

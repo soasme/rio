@@ -776,16 +776,8 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
                                             "id": "step-1",
                                             "type": "function",
                                             "function": {
-                                                "name": "skill_step",
-                                                "arguments": json.dumps(
-                                                    {
-                                                        "state_delta": {"goal": "say hello"},
-                                                        "action": {
-                                                            "name": "respond",
-                                                            "arguments": {"message": "hello"},
-                                                        },
-                                                    }
-                                                ),
+                                                "name": "respond",
+                                                "arguments": json.dumps({"message": "hello"}),
                                             },
                                         }
                                     ]

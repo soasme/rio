@@ -1,13 +1,18 @@
-"""End-to-end checks for append-only history and runtime state rebuilds."""
+"""End-to-end checks that a long run stays inside the context window.
+
+The scripted model never edits its context, so these exercise the runtime's
+overflow guard: the last line of defense when a model lets its context grow.
+"""
 
 from __future__ import annotations
 
 from conftest import step_response
+from rio.agent import render_context
 from rio.ai import AgentTool, AgentToolResult, FakeProvider, TextContent
 from rio.coding.paths import RioPaths
 from rio.coding.resources import RioResourcePaths
 from rio.coding.session import CodingSession, CodingSessionConfig
-from rio.coding.session_store import InMemorySessionStorage, StepEntry
+from rio.coding.session_store import InMemorySessionStorage, StepEntry, entry_context
 from rio.coding.step_footprint import estimate_text_tokens
 
 STEPS = 100
@@ -16,7 +21,7 @@ CONTEXT_WINDOW = 10_000
 
 
 async def _inspect(tool_call_id, arguments, signal=None, on_update=None):
-    """A tool whose output is a fixed size, so growth can only come from history."""
+    """A tool whose output is a fixed size."""
     target = arguments.get("path", "?")
     body = f"inspect {target}\n" + ("data line\n" * (OBSERVATION_SIZE // 10))
     return AgentToolResult(content=[TextContent(text=body)])
@@ -45,20 +50,10 @@ RESPOND = AgentTool(
 
 
 def long_run_streams(steps: int = STEPS):
-    """A survey task: `steps` inspections, each recording one bounded finding.
-
-    The state is updated every step but stays bounded, because each step
-    overwrites the same two fields rather than accumulating new ones. That is
-    the state-sufficiency assumption the paper relies on: what matters is
-    projected into the schema as it is discovered.
-    """
+    """A survey task: `steps` inspections, then an answer."""
     streams = [
         step_response(
             reasoning="Thinking at length about what to inspect next. " * 20,
-            state_delta={
-                "scratch": {"last_inspected": f"module_{index}.py"},
-                "findings": {"latest": f"module_{index}.py looks fine"},
-            },
             action="inspect",
             args={"path": f"module_{index}.py"},
         )
@@ -67,7 +62,6 @@ def long_run_streams(steps: int = STEPS):
     streams.append(
         step_response(
             reasoning="Survey complete.",
-            state_delta={},
             action="respond",
             args={"message": f"Inspected {steps} modules; all fine."},
         )
@@ -107,7 +101,7 @@ def prompt_tokens(call) -> int:
     """Tokens in one recorded provider call's prompt: system plus messages."""
     _model, system, messages, _tools = call
     return estimate_text_tokens(system) + sum(
-        estimate_text_tokens(message.content) for message in messages
+        estimate_text_tokens(message.text) for message in messages
     )
 
 
@@ -117,83 +111,36 @@ async def test_the_survey_completes_all_steps(tmp_path) -> None:
     assert session.answer == f"Inspected {STEPS} modules; all fine."
 
 
-async def test_context_rebuild_bounds_history_across_a_hundred_steps(tmp_path) -> None:
-    """Prompts grow between rebuilds but remain below the context window."""
+async def test_the_overflow_guard_bounds_prompts_across_a_hundred_steps(tmp_path) -> None:
+    """Prompts grow, then the guard keeps them below the context window."""
     _session, provider = await run_survey(tmp_path)
     sizes = [prompt_tokens(call) for call in provider.calls]
 
-    assert max(sizes) < CONTEXT_WINDOW * 0.9
-    assert any(later < earlier for earlier, later in zip(sizes, sizes[1:], strict=False))
+    assert max(sizes) < CONTEXT_WINDOW
+    assert sizes[-1] > sizes[0]
 
 
-async def test_rebuild_keeps_cumulative_history_cost_near_linear(tmp_path) -> None:
-    _short_session, short_provider = await run_survey(tmp_path / "short", steps=25)
-    _long_session, long_provider = await run_survey(tmp_path / "long", steps=50)
-
-    short_total = sum(prompt_tokens(call) for call in short_provider.calls)
-    long_total = sum(prompt_tokens(call) for call in long_provider.calls)
-
-    ratio = long_total / short_total
-    assert 1.8 < ratio < 2.8, f"doubling the steps changed cost by {ratio:.2f}x"
-
-
-async def test_rebuild_beats_an_unbounded_history(tmp_path) -> None:
-    """The thresholded history costs less than never rebuilding it."""
-    session, provider = await run_survey(tmp_path)
-
-    actual_total = sum(prompt_tokens(call) for call in provider.calls)
-
-    entries = [e for e in await session.session_entries() if isinstance(e, StepEntry)]
-    instructions_tokens = estimate_text_tokens(session.system_prompt)
-    turn_tokens = [
-        estimate_text_tokens(entry.observation or "")
-        + estimate_text_tokens(entry.action.name)
-        + estimate_text_tokens(str(entry.action.arguments))
-        for entry in entries
-    ]
-    transcript_total = 0
-    running = 0
-    for tokens in turn_tokens:
-        transcript_total += instructions_tokens + running
-        running += tokens
-
-    assert transcript_total > actual_total
-
-
-async def test_the_state_stays_bounded_while_the_run_grows(tmp_path) -> None:
-    """The prompt can only stay flat if the state itself does not accumulate."""
+async def test_the_journaled_context_stays_under_the_limit(tmp_path) -> None:
     session, _provider = await run_survey(tmp_path)
+    limit = session.context_usage.limit_tokens
     entries = [e for e in await session.session_entries() if isinstance(e, StepEntry)]
 
-    sizes = [len(str(entry.state)) for entry in entries]
-    assert max(sizes) < min(sizes) * 1.5
-    # Every step wrote to the state; none of them made it bigger.
-    assert all(entry.state_delta for entry in entries[:-1])
+    sizes = [estimate_text_tokens(render_context(entry_context(entry))) for entry in entries]
+    assert max(sizes) < limit * 1.2
 
 
-async def test_reasoning_is_never_resent_even_at_scale(tmp_path) -> None:
-    """Each step reasons at length; the journal keeps it, no prompt resends it."""
-    session, provider = await run_survey(tmp_path)
+async def test_reasoning_stays_in_the_context_until_it_is_edited_out(tmp_path) -> None:
+    _session, provider = await run_survey(tmp_path, steps=3)
 
-    journal = repr(await session.session_entries())
-    assert "Thinking at length" in journal
-
-    prompts = " ".join(
-        message.content for _m, _s, messages, _t in provider.calls for message in messages
-    )
-    assert "Thinking at length" not in prompts
+    second_prompt = " ".join(message.text for message in provider.calls[1][2])
+    assert "Thinking at length" in second_prompt
 
 
 async def test_recovery_needs_no_catch_up_steps(tmp_path) -> None:
-    """A fresh session resumes mid-run with zero rebuild steps.
-
-    The paper measures this as state recovery: a history-based agent needs
-    several steps to re-derive its context after an interruption, and a
-    state-based one needs none, because the checkpoint is the context.
-    """
+    """A fresh session resumes with the same context and no model calls."""
     session, _provider = await run_survey(tmp_path)
     storage = session.storage
-    original_state = session.state
+    original_context = session.context
 
     repo = tmp_path / "repo"
     home = tmp_path / "home"
@@ -212,6 +159,6 @@ async def test_recovery_needs_no_catch_up_steps(tmp_path) -> None:
         )
     )
 
-    assert resumed.state == original_state
+    assert resumed.context == original_context
     # Nothing was sent to a model to get there.
     assert resumed.provider.calls == []

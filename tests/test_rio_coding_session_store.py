@@ -1,4 +1,4 @@
-"""Tests for the execution-state journal.
+"""Tests for the context journal.
 
 The property that matters here is the one that distinguishes a state journal
 from a transcript: resuming or branching reads a single snapshot, and never
@@ -11,7 +11,6 @@ import json
 
 import pytest
 
-from rio.coding.coding_skill import describe_state, plan_progress, touched_files
 from rio.coding.session_store import (
     ActionRecord,
     InMemorySessionStorage,
@@ -46,7 +45,6 @@ def make_chain(count: int, *, root_parent: str | None = None) -> list[StepEntry]
         entry = StepEntry(
             parent_id=parent,
             step=index,
-            state_delta={"findings": {f"f{index}": f"value {index}"}},
             state=state,
             action=ActionRecord(name="read", arguments={"path": f"file{index}.py"}),
             observation=f"observation {index}",
@@ -60,7 +58,6 @@ class TestSerialization:
     def test_step_entry_round_trips(self) -> None:
         entry = StepEntry(
             step=4,
-            state_delta={"cwd": "/tmp", "last_error": None},
             state={"cwd": "/tmp"},
             action=ActionRecord(name="bash", arguments={"command": "ls"}),
             observation="a.py\nb.py",
@@ -173,7 +170,6 @@ class TestStateRecovery:
         branched = StepEntry(
             parent_id=entries[1].id,
             step=2,
-            state_delta={"goal": "different"},
             state={**entries[1].state, "goal": "different"},
             action=ActionRecord(name="respond", arguments={"message": "done"}),
             terminated=True,
@@ -281,36 +277,3 @@ class TestStorage:
         storage = JsonlSessionStorage(tmp_path / "session.jsonl")
         await storage.append_batch(make_chain(6))
         assert len(resume_state(await storage.read_all())["findings"]) == 6
-
-
-class TestStateAccessors:
-    def test_plan_progress(self) -> None:
-        state = {
-            "plan": [
-                {"id": "1", "title": "a", "status": "done"},
-                {"id": "2", "title": "b", "status": "in_progress"},
-                {"id": "3", "title": "c", "status": "pending"},
-            ]
-        }
-        assert plan_progress(state) == (1, 3)
-
-    def test_plan_progress_tolerates_a_missing_or_malformed_plan(self) -> None:
-        assert plan_progress({}) == (0, 0)
-        assert plan_progress({"plan": "not a list"}) == (0, 0)
-
-    def test_touched_files_are_sorted(self) -> None:
-        state = {"files": {"b.py": {"status": "edited"}, "a.py": {"status": "read"}}}
-        assert touched_files(state) == ["a.py", "b.py"]
-
-    def test_describe_state_summarizes_without_dumping(self) -> None:
-        state = {
-            "plan": [{"id": "1", "title": "a", "status": "done"}],
-            "findings": {"x": "y"},
-            "files": {"a.py": {}},
-            "blockers": ["network is down"],
-        }
-        summary = describe_state(state)
-        assert "plan 1/1" in summary
-        assert "1 findings" in summary
-        assert "1 files" in summary
-        assert "1 blockers" in summary

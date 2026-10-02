@@ -148,7 +148,7 @@ class ConfiguredSession:
                     session_title=title,
                 )
             )
-            await session.fork_from(self.session.state, parent_session_id=self.session_id)
+            await session.fork_from(self.session.context, parent_session_id=self.session_id)
         except BaseException:
             await provider.aclose()
             raise

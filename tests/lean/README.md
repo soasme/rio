@@ -3,18 +3,21 @@
 Run `lake build` in this directory. CI builds all three targets.
 
 The Lean files model decisions in the coding runtime. They are independent
-specifications, not proofs extracted from Python. Filesystem contents, hashes,
-provider responses, and extension callbacks are supplied as model inputs.
+specifications, not proofs extracted from Python. Filesystem contents, the
+parsed context file, provider responses, and extension callbacks are supplied
+as model inputs. Context size is total text length rather than a token
+estimate.
 Python tests remain necessary to check that implementation behavior matches.
 
 | Lean file | Python behavior represented |
 | --- | --- |
-| `RioAgent.lean` | Agent state merge, validation, retries, action execution, event order, cancellation, termination |
-| `RioCoding.lean` | Initial coding state and respond's plan gate; file write preflight and cache budget; edit validation; journal checkpoints; command routing; thinking cycle |
+| `RioAgent.lean` | CLM loop: context edit adoption under the limit, overflow guard, retries, action failure recovery, event order, cancellation, termination |
+| `RioCoding.lean` | Respond termination; edit validation; journal checkpoints and resume with a new task; command routing; thinking cycle |
 | `RioCodingLifecycle.lean` | Tool exposure defaults and overrides; prepared session adoption; one-run guard; model and thinking selection; blank API-key fallback; prompt expansion precedence; extension input hooks |
 
-The models deliberately omit transport, OAuth, filesystem and JSONL I/O,
-rendering, CLI/TUI interaction, local inference, catalog loading, and extension
+The models deliberately omit transport, OAuth, filesystem and JSONL I/O, the
+context file's text format (rendering, parsing, header escaping), rendering,
+CLI/TUI interaction, local inference, catalog loading, and extension
 registration. The journal model receives an already resolved branch path; it
 does not validate or traverse parent links. `validateEdit` receives occurrence
 and overlap results instead of searching text. These behaviors are covered by
