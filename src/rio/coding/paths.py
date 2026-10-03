@@ -70,6 +70,16 @@ class RioPaths:
         return self.home / "extensions"
 
     @property
+    def mcp_config_path(self) -> Path:
+        """Return the user-level MCP server configuration."""
+        return self.home / "mcp.json"
+
+    @property
+    def mcp_auth_path(self) -> Path:
+        """Return the stored OAuth credentials of MCP servers."""
+        return self.home / "mcp-auth.json"
+
+    @property
     def user_agents_skills_dir(self) -> Path:
         """Return the user-level `.agents/skills` directory."""
         return self.agents_home / "skills"
@@ -98,6 +108,10 @@ class RioPaths:
     def project_themes_dir(self, cwd: Path) -> Path:
         """Return the project-local rio TUI themes directory."""
         return self.project_rio_dir(cwd) / "themes"
+
+    def project_mcp_config_path(self, cwd: Path) -> Path:
+        """Return the project-local MCP server configuration."""
+        return self.project_rio_dir(cwd) / "mcp.json"
 
     def project_agents_skills_dir(self, cwd: Path) -> Path:
         """Return the project-local `.agents/skills` directory."""
