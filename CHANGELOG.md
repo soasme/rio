@@ -1,3 +1,13 @@
+# 0.7.0
+
+* feat(evals): add SWE-bench Verified cases ([#113](https://github.com/soasme/rio/pull/113))
+* fix(cli): do not crash on long task text ([#114](https://github.com/soasme/rio/pull/114))
+* fix(agent): do not end the run on a blank reply ([#112](https://github.com/soasme/rio/pull/112))
+* feat: add basic coding evals ([#103](https://github.com/soasme/rio/pull/103))
+* feat(agent)!: replace SKILL.state with a notebook-context CLM loop ([#111](https://github.com/soasme/rio/pull/111))
+* fix(coding): stop echoing file content for read/edit/write in console ([#110](https://github.com/soasme/rio/pull/110))
+* revert(coding): bring back the respond action ([#109](https://github.com/soasme/rio/pull/109))
+
 # 0.6.3
 
 * refactor(coding): remove codemode ([#108](https://github.com/soasme/rio/pull/108))
