@@ -8,6 +8,7 @@ replays the patches on one branch.
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 
@@ -20,6 +21,7 @@ from rio.coding.session_store import (
     SessionInfoEntry,
     SessionJsonlError,
     SessionTreeError,
+    SqliteSessionStorage,
     StateResetEntry,
     StepEntry,
     TurnEntry,
@@ -231,6 +233,41 @@ class TestStorage:
         await storage.append_batch(entries)
         await storage.append(LeafEntry(entry_id=entries[-1].id))
         assert len(await storage.read_all()) == 3
+
+    async def test_in_memory_read_returns_a_snapshot(self) -> None:
+        storage = InMemorySessionStorage()
+        entry = TurnEntry(observation="kept")
+        await storage.append(entry)
+        snapshot = await storage.read_all()
+        snapshot.clear()
+        assert await storage.read_all() == [entry]
+
+    async def test_sqlite_persists_order_across_instances(self, tmp_path) -> None:
+        path = tmp_path / "nested" / "session.db"
+        first = SqliteSessionStorage(path)
+        assert await first.read_all() == []
+        entries = make_chain(3)
+        await first.append_batch(entries[:2])
+        await SqliteSessionStorage(path).append(entries[2])
+        assert await SqliteSessionStorage(path).read_all() == entries
+        assert resume_notebook(await first.read_all()) == resume_notebook(entries)
+
+    async def test_sqlite_batch_rolls_back_on_write_failure(self, tmp_path) -> None:
+        path = tmp_path / "session.db"
+        storage = SqliteSessionStorage(path)
+        first = TurnEntry(observation="kept")
+        await storage.append(first)
+        with sqlite3.connect(path) as connection:
+            connection.execute(
+                "CREATE TRIGGER reject_entry BEFORE INSERT ON entries "
+                "WHEN NEW.data LIKE '%rejected%' "
+                "BEGIN SELECT RAISE(FAIL, 'rejected'); END"
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="rejected"):
+            await storage.append_batch(
+                [TurnEntry(observation="would be partial"), TurnEntry(observation="rejected")]
+            )
+        assert await storage.read_all() == [first]
 
     async def test_resume_from_a_written_journal(self, tmp_path) -> None:
         storage = JsonlSessionStorage(tmp_path / "session.jsonl")

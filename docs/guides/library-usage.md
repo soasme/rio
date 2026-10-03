@@ -113,3 +113,33 @@ session = await CodingSession.load(
 async for event in session.run("Run the test suite"):
     renderer.render(event)
 ```
+
+## Session storage backends
+
+Pass a storage instance as `CodingSessionConfig.storage`. The default is
+`JsonlSessionStorage`, which writes a local JSONL file. SQLite stores the same
+ordered journal in a local database file. In-memory storage keeps it only for
+the life of the storage instance, making it useful for tests and single-process
+applications.
+
+```python
+from rio.coding.session_store import (
+    InMemorySessionStorage,
+    JsonlSessionStorage,
+    SqliteSessionStorage,
+)
+
+storage = JsonlSessionStorage(Path("sessions.jsonl"))  # default format
+storage = SqliteSessionStorage(Path("sessions.db"))
+storage = InMemorySessionStorage()
+
+config = CodingSessionConfig(
+    provider=provider,
+    model=selection.model,
+    cwd=Path.cwd(),
+    storage=storage,
+)
+```
+
+Reuse the same in-memory instance to continue a session. For SQLite or JSONL,
+create another storage instance with the same path to resume after a restart.
