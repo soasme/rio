@@ -612,7 +612,7 @@ class CodingSession:
     async def new_session(self) -> None:
         """Clear the notebook and start over in the same directory, with a fresh kernel."""
         await self._runner.reset(reason="new session")
-        await self.kernel.shutdown()
+        await self.kernel.aclose()
 
     async def resume(self) -> Notebook:
         """Adopt the notebook recorded in the journal, with a fresh kernel."""
@@ -624,11 +624,11 @@ class CodingSession:
         """Adopt `notebook` as the live one, journaling the session forked from."""
         await self.append_custom_entry("fork", {"parent_session_id": parent_session_id})
         await self._runner.reset(notebook, reason=f"forked from session {parent_session_id}")
-        await self.kernel.shutdown()
+        await self.kernel.aclose()
 
     async def aclose(self) -> None:
         self._runner.cancel()
-        await self.kernel.shutdown()
+        await self.kernel.aclose()
         await self.extensions.emit_session_shutdown("quit")
         await self.extensions.aclose()
 

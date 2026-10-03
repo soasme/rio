@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import sys
+import zipfile
+from pathlib import Path
+
 import pytest
 
 from conftest import add_code, add_markdown
@@ -147,11 +151,54 @@ def test_a_live_cell_that_defines_the_name_satisfies_the_read():
 async def kernel(tmp_path):
     executor = KernelExecutor(tmp_path)
     yield executor
-    await executor.shutdown()
+    await executor.aclose()
 
 
 def _text(cell) -> str:
     return "".join(output.get("text", "") for output in cell["outputs"])
+
+
+@pytest.mark.asyncio
+async def test_sessions_have_separate_python_environments(tmp_path):
+    wheel = tmp_path / "rio_session_probe-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("rio_session_probe.py", "VALUE = 42\n")
+        archive.writestr(
+            "rio_session_probe-1.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: rio-session-probe\nVersion: 1.0\n",
+        )
+        archive.writestr(
+            "rio_session_probe-1.0.dist-info/WHEEL", "Wheel-Version: 1.0\nTag: py3-none-any\n"
+        )
+        archive.writestr("rio_session_probe-1.0.dist-info/RECORD", "")
+    first, second = KernelExecutor(tmp_path), KernelExecutor(tmp_path)
+    try:
+        source = (
+            "import sys, os\n"
+            "print(sys.executable, os.environ['VIRTUAL_ENV'])\n"
+            f"!pip install --no-index {wheel}\n"
+            "import rio_session_probe\nprint(rio_session_probe.VALUE)"
+        )
+        installed = await first(apply_patch(new_notebook(), [add_code(source)]), [0])
+        output = _text(installed["cells"][0])
+        assert "42\n" in output
+        executable, environment = output.splitlines()[:2][0].split()
+        assert executable.startswith(environment)
+        assert executable != sys.executable
+        await first.shutdown()
+        reload_package = "import rio_session_probe\nprint(rio_session_probe.VALUE)"
+        restarted = await first(
+            apply_patch(new_notebook(), [add_code(reload_package)]),
+            [0],
+        )
+        assert _text(restarted["cells"][0]) == "42\n"
+        check = "import importlib.util\nprint(importlib.util.find_spec('rio_session_probe'))"
+        other = await second(apply_patch(new_notebook(), [add_code(check)]), [0])
+        assert _text(other["cells"][0]) == "None\n"
+    finally:
+        await first.aclose()
+        await second.aclose()
+    assert not Path(environment).exists()
 
 
 @pytest.mark.asyncio
