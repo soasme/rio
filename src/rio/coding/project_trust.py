@@ -30,6 +30,7 @@ TrustChoice = Literal["trust-exact", "trust-parent", "trust-run", "decline-exact
 _RESOURCE_CATEGORIES = (
     "context",
     "extensions",
+    "mcp",
     "prompts",
     "settings",
     "skills",
@@ -198,6 +199,7 @@ class ProtectedResourceDetector:
         self._glob(found, "themes", root / ".rio" / "themes", "*.json")
         self._file(found, "system-prompts", root / ".rio" / "SYSTEM.md")
         self._file(found, "system-prompts", root / ".rio" / "APPEND_SYSTEM.md")
+        self._file(found, "mcp", root / ".rio" / "mcp.json")
         self._context(found, root)
         self._extensions(found, root / ".rio" / "extensions")
         counts = {

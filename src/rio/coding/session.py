@@ -12,6 +12,8 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+import anyio
+
 from rio.agent import HarnessSpec, KernelExecutor, Notebook, context_limit
 from rio.ai.provider import ModelProvider
 from rio.ai.types import JSONValue
@@ -24,6 +26,7 @@ from rio.coding.events import (
     ThinkingLevelChangedEvent,
 )
 from rio.coding.extensions import DynamicProvider, ExtensionRuntime
+from rio.coding.mcp import prepare as prepare_mcp
 from rio.coding.paths import RioPaths
 from rio.coding.prompt_templates import (
     expand_prompt_template_command,
@@ -106,6 +109,8 @@ class CodingSessionConfig:
     extension_runtime: ExtensionRuntime | None = None
     extension_paths: Sequence[Path] = ()
     load_extensions: bool = True
+    #: Connect the servers in `mcp.json` and install `mcp` in the kernel.
+    load_mcp: bool = True
     #: Hold the session's own journal writes until `_commit_prepared_entries()`.
     #: A candidate session that is never adopted -- a declined trust prompt, a
     #: failed provider -- then leaves no trace in the journal.
@@ -202,7 +207,18 @@ class CodingSession:
         if config.command_registry is None:
             config.command_registry = runtime.build_command_registry()
         resources = _with_shadow_diagnostics(resources, config.command_registry)
-        kernel = KernelExecutor(cwd, startup=KERNEL_STARTUP)
+        startup = KERNEL_STARTUP
+        if config.load_mcp:
+            mcp = await anyio.to_thread.run_sync(
+                lambda: prepare_mcp(
+                    cwd, project_trusted=config.project_resources_trusted, paths=config.paths
+                )
+            )
+            if mcp.section is not None:
+                config.extra_sections = (*config.extra_sections, mcp.section)
+            if mcp.startup:
+                startup = f"{startup}\n{mcp.startup}"
+        kernel = KernelExecutor(cwd, startup=startup)
         skill = _build_skill(config, resources, kernel)
 
         storage = config.storage

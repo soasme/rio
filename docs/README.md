@@ -14,6 +14,7 @@ resume its durable session when needed.
 - [Use a local llama-server model](guides/local-llama-server.md)
 - [Resume a session](guides/sessions.md)
 - [Trust project resources](guides/project-trust.md)
+- [Use MCP servers](guides/mcp.md)
 
 ## Reference
 
