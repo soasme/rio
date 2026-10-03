@@ -127,9 +127,11 @@ def _resolve_task(parts: Sequence[str]) -> str:
     """Join task arguments, expanding a sole Markdown task file."""
     task = " ".join(parts).strip()
     path = Path(task).expanduser()
-    if path.is_file() and path.suffix.lower() == ".md":
-        return path.read_text(encoding="utf-8")
-    return task
+    try:
+        is_task_file = path.suffix.lower() == ".md" and path.is_file()
+    except OSError:  # A long task can exceed the file name limit.
+        is_task_file = False
+    return path.read_text(encoding="utf-8") if is_task_file else task
 
 
 def main() -> None:
