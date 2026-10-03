@@ -3,6 +3,25 @@ import RioCoding
 
 namespace RioCodingLifecycle
 
+/- notebook.py: a session owns its environment across kernel restarts. -/
+structure KernelSession where
+  kernel : Nat
+  packages : List String
+deriving DecidableEq, Repr
+
+def restartKernel (session : KernelSession) (next : Nat) : KernelSession :=
+  { session with kernel := next }
+
+def installPackage (session : KernelSession) (package : String) : KernelSession :=
+  { session with packages := package :: session.packages }
+
+theorem restart_keeps_session_packages (session : KernelSession) (next : Nat) :
+    (restartKernel session next).packages = session.packages := by rfl
+
+theorem installing_in_one_session_leaves_another_unchanged
+    (first second : KernelSession) (package : String) :
+    (installPackage first package, second).2 = second := by rfl
+
 /- session_preparation.py: staged writes become authoritative only on adoption. -/
 inductive Preparation where
   | prepared | adopted | aborted

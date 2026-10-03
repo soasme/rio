@@ -13,11 +13,11 @@ Python tests remain necessary to check that implementation behavior matches.
 | --- | --- |
 | `RioAgent.lean` | Notebook loop: which cells run (including after a removed kernel stamp), output merging, kernel stamps, recorded definitions, stale cells, rejecting reads of stale-only names, and placeholders, stop after a failing cell, the size gate on patches, retries, event order, reply termination, cancellation, step limit |
 | `RioCoding.lean` | Edit validation; journal replay of resets and step patches, batch append visibility and order, and resume with a new task; command routing; thinking cycle |
-| `RioCodingLifecycle.lean` | Prepared session adoption; one-run guard; model and thinking selection; blank API-key fallback; prompt expansion precedence; extension input hooks |
+| `RioCodingLifecycle.lean` | Session package isolation across kernel restarts; prepared session adoption; one-run guard; model and thinking selection; blank API-key fallback; prompt expansion precedence; extension input hooks |
 
 The models deliberately omit transport, OAuth, filesystem and JSONL I/O, JSON
-Patch application, nbformat validation, the kernel's lifetime and its
-variables, `%%edit` parsing, output cleaning, rendering,
+Patch application, nbformat validation, kernel process and venv creation,
+kernel variables, `%%edit` parsing, output cleaning, rendering,
 CLI/TUI interaction, local inference, catalog loading, and extension
 registration. The journal model receives an already resolved branch path; it
 does not validate or traverse parent links. `validateEdit` receives occurrence

@@ -12,11 +12,15 @@ build up and no cell runs twice by accident. Other cells keep their outputs.
 from __future__ import annotations
 
 import ast
+import asyncio
 import copy
 import json
+import os
 import re
+import sysconfig
 import tempfile
 import uuid
+import venv
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -287,6 +291,7 @@ class KernelExecutor:
         self.output_chars = output_chars
         self._client: NotebookClient | None = None
         self._sockets: tempfile.TemporaryDirectory | None = None
+        self._environment: tempfile.TemporaryDirectory | None = None
         self._kernel_id = _new_id()
 
     async def __call__(self, notebook: Notebook, changed: list[int]) -> Notebook:
@@ -333,20 +338,65 @@ class KernelExecutor:
             self._sockets.cleanup()
             self._sockets = None
 
+    async def aclose(self) -> None:
+        """Stop the kernel and discard its private Python environment."""
+        await self.shutdown()
+        if self._environment is not None:
+            self._environment.cleanup()
+            self._environment = None
+
     async def _started(self) -> NotebookClient:
         if self._client is not None:
             return self._client
+        from jupyter_client.kernelspec import KernelSpecManager
         from jupyter_client.manager import AsyncKernelManager
+
+        if self._environment is None:
+            self._environment = tempfile.TemporaryDirectory(prefix="rio-session-")
+            environment = Path(self._environment.name)
+            try:
+                await asyncio.to_thread(venv.create, environment, with_pip=True, symlinks=True)
+                packages = next((environment / "lib").glob("python*/site-packages"))
+                # Rio and its runtime dependencies remain readable, while pip writes
+                # only to this session's site-packages.
+                (packages / "rio-runtime.pth").write_text(
+                    f"{sysconfig.get_path('purelib')}\n{Path(__file__).resolve().parents[2]}\n"
+                )
+            except BaseException:
+                self._environment.cleanup()
+                self._environment = None
+                raise
+
+        environment = Path(self._environment.name)
+        python = environment / "bin" / "python"
+        kernels = environment / "kernels"
+        spec = kernels / KERNEL_NAME
+        spec.mkdir(parents=True, exist_ok=True)
+        (spec / "kernel.json").write_text(
+            json.dumps(
+                {
+                    "argv": [str(python), "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+                    "display_name": "Python 3",
+                    "language": "python",
+                }
+            )
+        )
+        env = os.environ.copy()
+        env.pop("PYTHONHOME", None)
+        env["VIRTUAL_ENV"] = str(environment)
+        env["PATH"] = f"{environment / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+        env["PYTHONNOUSERSITE"] = "1"
 
         # Local sockets in a private directory: no open TCP ports, and no
         # socket files in the project.
         self._sockets = tempfile.TemporaryDirectory(prefix="rio-kernel-")
         manager = AsyncKernelManager(
             kernel_name=KERNEL_NAME,
+            kernel_spec_manager=KernelSpecManager(kernel_dirs=[str(kernels)]),
             transport="ipc",
             ip=str(Path(self._sockets.name) / "kernel"),
         )
-        await manager.start_kernel(cwd=str(self.cwd) if self.cwd is not None else None)
+        await manager.start_kernel(cwd=str(self.cwd) if self.cwd is not None else None, env=env)
         client = NotebookClient(
             nbformat.v4.new_notebook(),
             km=manager,

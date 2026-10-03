@@ -26,6 +26,9 @@ All cells run in one IPython kernel that lives for the session, so variables
 build up across steps. Rio's own executor (`KernelExecutor`, built on nbclient)
 keeps that kernel alive; it talks to it over local sockets. A resume, rewind,
 or new session starts an empty kernel.
+Each session's kernel uses a private temporary Python environment. Packages
+installed with pip from a cell go into that environment and remain available
+after a kernel restart. Closing the session removes the environment.
 
 The notebook records the kernel. `metadata.rio.kernel` holds the current
 kernel's `id` and whether it is `running`. Each code cell that ran has
