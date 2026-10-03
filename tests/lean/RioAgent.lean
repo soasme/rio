@@ -1,4 +1,4 @@
-/- A formal control-flow model of `rio.agent.loop.run_notebook_loop`.
+/- A formal control-flow model of `rio.agent.loop.run_context_loop`.
 
 The context is a notebook: a list of cells. The model abstracts provider I/O,
 JSON Patch application, nbformat validation, and kernel execution. A patch is

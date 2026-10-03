@@ -15,7 +15,7 @@ rio.coding  CLI app, resources, skills, extensions, commands, session journal
 - `rio.ai`: providers, wire-level message/tool types, and the provider-neutral
   assistant stream event union. No knowledge of skills, notebooks, or sessions.
 - `rio.agent`: the portable CLM runtime -- `HarnessSpec`, `Harness`,
-  `run_notebook_loop`, `rio.agent.notebook`, and the step event stream. No
+  `run_context_loop`, `rio.agent.notebook`, and the step event stream. No
   knowledge of the coding domain or any frontend.
 - `rio.coding`: the coding domain expressed as one skill (see
   `rio.coding.coding_skill`), plus resource discovery, project trust, the

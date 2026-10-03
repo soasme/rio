@@ -1,4 +1,4 @@
-"""Errors raised by the notebook loop."""
+"""Errors raised by the context loop."""
 
 from __future__ import annotations
 

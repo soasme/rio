@@ -3,7 +3,7 @@
 import pytest
 
 from conftest import make_skill, step_response
-from rio.agent import run_notebook_loop
+from rio.agent import run_context_loop
 from rio.ai import FakeProvider
 from rio.cli import _resolve_task, app
 
@@ -29,7 +29,7 @@ def test_markdown_task_file_is_expanded(tmp_path):
 async def test_task_is_the_first_user_cell():
     provider = FakeProvider([step_response(reply="done")])
 
-    async for _ in run_notebook_loop(
+    async for _ in run_context_loop(
         provider=provider, model="fake", skill=make_skill(), observation="fix the parser"
     ):
         pass

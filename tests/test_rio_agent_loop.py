@@ -1,4 +1,4 @@
-"""Tests for `run_notebook_loop`, the CLM loop whose context is a notebook.
+"""Tests for `run_context_loop`, the CLM loop whose context is a notebook.
 
 Uses `rio.ai.FakeProvider` to script model replies and an in-process executor,
 so these assert the runtime's own guarantees: patches become the next context,
@@ -21,7 +21,7 @@ from rio.agent import (
     RunEndEvent,
     StepEndEvent,
     ValidationErrorEvent,
-    run_notebook_loop,
+    run_context_loop,
 )
 from rio.ai import (
     AssistantDoneEvent,
@@ -37,7 +37,7 @@ from rio.ai import (
 async def _run(provider, *, skill=None, **kwargs) -> list:
     return [
         event
-        async for event in run_notebook_loop(
+        async for event in run_context_loop(
             provider=provider, model="m", skill=skill or make_skill(), **kwargs
         )
     ]
@@ -155,6 +155,20 @@ async def test_an_invalid_notebook_is_retried_with_a_transient_correction():
     assert "invalid notebook" in error
     assert "Rejected reply" in provider.calls[1][2][0].text
     assert len(events[-1].notebook["cells"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_arguments_of_the_wrong_type_are_retried():
+    call = ToolCall(id="c", name="skill_step", arguments={"patch": "nope"})
+    message = AssistantMessage(content=[call], stop_reason="toolUse")
+    provider = FakeProvider(
+        [[AssistantDoneEvent(reason="toolUse", message=message)], step_response(reply="ok")]
+    )
+
+    events = await _run(provider, observation="start")
+
+    error = next(e for e in events if isinstance(e, ValidationErrorEvent)).error
+    assert error.startswith("invalid `skill_step` arguments: `patch`")
 
 
 @pytest.mark.asyncio

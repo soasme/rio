@@ -1,4 +1,4 @@
-"""Harness: a reusable stateful runtime around `run_notebook_loop`.
+"""Harness: a reusable stateful runtime around `run_context_loop`.
 
 Construct with a config, `subscribe()` an event listener, call `run()` to
 drive it, `cancel()` to stop it. The harness holds the notebook between runs.
@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from inspect import isawaitable
 
 from rio.agent.events import AgentEvent, RunEndEvent, StepEndEvent, StepStartEvent
-from rio.agent.loop import DEFAULT_CONTEXT_WINDOW_TOKENS, run_notebook_loop
+from rio.agent.loop import DEFAULT_CONTEXT_WINDOW_TOKENS, run_context_loop
 from rio.agent.notebook import Notebook, new_notebook
-from rio.agent.skill import HarnessSpec
+from rio.agent.spec import HarnessSpec
 from rio.ai.provider import ModelProvider
 
 EventListener = Callable[[AgentEvent], Awaitable[None] | None]
@@ -88,7 +88,7 @@ class Harness:
         signal = HarnessCancellationToken()
         self._current_signal = signal
         try:
-            async for event in run_notebook_loop(
+            async for event in run_context_loop(
                 provider=self._config.provider,
                 model=self._config.model,
                 skill=self._config.skill,

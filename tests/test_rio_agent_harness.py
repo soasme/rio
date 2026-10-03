@@ -1,4 +1,4 @@
-"""Tests for Harness, the stateful wrapper around run_notebook_loop."""
+"""Tests for Harness, the stateful wrapper around run_context_loop."""
 
 from __future__ import annotations
 
