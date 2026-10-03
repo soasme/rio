@@ -1,0 +1,36 @@
+{
+  "instance_id": "pytest-dev__pytest-7571",
+  "difficulty": "15 min - 1 hour",
+  "repo": "pytest-dev/pytest",
+  "base_commit": "422685d0bdc110547535036c1ff398b5e1c44145",
+  "version": "6.0",
+  "python": "3.9",
+  "install": [
+    "-e",
+    ".",
+    "attrs==23.1.0",
+    "iniconfig==2.0.0",
+    "more-itertools==10.1.0",
+    "packaging==23.1",
+    "pluggy==0.13.1",
+    "py==1.11.0",
+    "toml==0.10.2"
+  ],
+  "tests": [
+    "testing/logging/test_fixture.py::test_change_level_undos_handler_level",
+    "testing/logging/test_fixture.py::test_change_level",
+    "testing/logging/test_fixture.py::test_with_statement",
+    "testing/logging/test_fixture.py::test_log_access",
+    "testing/logging/test_fixture.py::test_messages",
+    "testing/logging/test_fixture.py::test_record_tuples",
+    "testing/logging/test_fixture.py::test_unicode",
+    "testing/logging/test_fixture.py::test_clear",
+    "testing/logging/test_fixture.py::test_caplog_captures_for_all_stages",
+    "testing/logging/test_fixture.py::test_fixture_help",
+    "testing/logging/test_fixture.py::test_change_level_undo",
+    "testing/logging/test_fixture.py::test_ini_controls_global_log_level",
+    "testing/logging/test_fixture.py::test_caplog_can_override_global_log_level",
+    "testing/logging/test_fixture.py::test_caplog_captures_despite_exception",
+    "testing/logging/test_fixture.py::test_log_report_captures_according_to_config_option_upon_failure"
+  ]
+}
