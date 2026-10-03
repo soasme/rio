@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rio.agent import Notebook, notebook_tokens, skill_step_tool
+from rio.agent import STEP_TOOL, Notebook, notebook_tokens
 from rio.ai.messages import (
     AgentMessage,
     AssistantMessage,
@@ -82,7 +82,7 @@ def estimate_step_footprint(
     return StepFootprint(
         instructions_tokens=estimate_text_tokens(instructions),
         context_tokens=notebook_tokens(notebook),
-        tools_tokens=estimate_tool_tokens(skill_step_tool()),
+        tools_tokens=estimate_tool_tokens(STEP_TOOL),
     )
 
 

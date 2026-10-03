@@ -1,4 +1,4 @@
-"""Events emitted by `rio.agent.loop.run_notebook_loop`.
+"""Events emitted by `rio.agent.loop.run_context_loop`.
 
 A flat stream of small, typed records a UI or logger can subscribe to. Each
 step is one model call, one patch, and one run of the changed cells;

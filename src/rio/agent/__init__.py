@@ -21,7 +21,7 @@ from rio.agent.events import (
     ValidationErrorEvent,
 )
 from rio.agent.harness import EventListener, Harness, HarnessCancellationToken, HarnessConfig
-from rio.agent.loop import context_limit, run_notebook_loop
+from rio.agent.loop import context_limit, run_context_loop
 from rio.agent.notebook import (
     KernelExecutor,
     Notebook,
@@ -35,7 +35,7 @@ from rio.agent.notebook import (
     notebook_tokens,
     render_notebook,
 )
-from rio.agent.prompt import STEP_TOOL_NAME, build_messages, notebook_protocol, skill_step_tool
-from rio.agent.skill import HarnessSpec
+from rio.agent.prompt import build_messages, system_prompt
+from rio.agent.spec import STEP_TOOL, STEP_TOOL_NAME, HarnessSpec, StepArgs
 
 __all__ = [name for name in globals() if not name.startswith("_")]
