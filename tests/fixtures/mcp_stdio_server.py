@@ -1,6 +1,7 @@
 """A minimal MCP server over stdio for tests: tools, resources, prompts, and a roots request."""
 
 import json
+import os
 import sys
 
 
@@ -30,6 +31,7 @@ TOOLS = [
     },
     {"name": "fail", "inputSchema": {"type": "object"}},
     {"name": "roots", "inputSchema": {"type": "object"}},
+    {"name": "venv", "inputSchema": {"type": "object"}},
 ]
 
 print("not json: servers sometimes log to stdout", flush=True)
@@ -61,6 +63,8 @@ while (message := receive()) is not None:
             result = {"content": [{"type": "text", "text": args.get("text", "")}]}
         elif name == "fail":
             result = {"content": [{"type": "text", "text": "boom"}], "isError": True}
+        elif name == "venv":
+            result = {"content": [{"type": "text", "text": os.environ.get("VIRTUAL_ENV", "none")}]}
         elif name == "roots":
             send({"jsonrpc": "2.0", "id": "r1", "method": "roots/list"})
             reply = receive()

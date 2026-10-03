@@ -29,7 +29,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlparse
 
 from rio.coding.paths import RioPaths
 
@@ -37,7 +36,6 @@ Scope = Literal["global", "project"]
 
 SERVER_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 OVERRIDE_KEYS = frozenset({"enabled"})
-LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 DEFAULT_TIMEOUT_SECONDS = 60.0
 _VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
@@ -250,8 +248,14 @@ def expand(value: str, environ: dict[str, str] | None = None) -> str:
     return _VARIABLE.sub(substitute, value)
 
 
-def is_loopback(url: str) -> bool:
-    return urlparse(url).hostname in LOOPBACK_HOSTS
+def check_variables(config: dict[str, Any]) -> None:
+    """Raise `McpConfigError` when a value that is expanded names an unset variable."""
+    values = [config.get("command", ""), config.get("url", ""), config.get("cwd", "")]
+    values += config.get("args", [])
+    values += list(config.get("env", {}).values()) + list(config.get("headers", {}).values())
+    values.append(config.get("oauth", {}).get("clientSecret", ""))
+    for value in values:
+        expand(value)
 
 
 # -- editing -----------------------------------------------------------------

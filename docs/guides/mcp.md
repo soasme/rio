@@ -67,10 +67,13 @@ deletes them.
 
 ## How the model calls tools
 
-At session start, Rio connects to each enabled server and lists its tools in
-the instructions. Cells call them through the preloaded `mcp` object:
+The instructions list each enabled server and its description. Session start
+does not connect to servers: when the kernel starts, every server begins
+connecting in the background, and the first use of `mcp.<server>` waits for
+that server only. Cells call tools through the preloaded `mcp` object:
 
 ```python
+print(mcp.linear)                  # tools and server instructions
 issues = mcp.linear.list_issues(query="login bug")
 help(mcp.linear.list_issues)       # description and parameters
 mcp["my-server"].call("tool-name", {"arg": 1})
@@ -78,6 +81,7 @@ mcp.fs.resources(); mcp.fs.read_resource("file:///README.md")
 ```
 
 A tool returns its structured content, else its text, else its content
-blocks, and raises `McpToolError` when it reports an error. Servers connect on
-first use inside the kernel. A server that is down or needs sign-in is listed
-as unavailable.
+blocks, and raises `McpToolError` when it reports an error. A failed
+connection is retried on the next use, so a server that needed `rio mcp login`
+works once you sign in. Stdio servers run with your environment, not the
+session's private venv.

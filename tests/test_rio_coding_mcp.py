@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -14,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 import pytest
 
-from rio.coding.mcp import ServerStatus, prepare, probe, prompt_section
+from rio.coding.mcp import prepare, probe, prompt_section
 from rio.coding.mcp.client import McpError, iter_sse
 from rio.coding.mcp.commands import AddOptions, McpCommandError, add, list_servers, login, logout
 from rio.coding.mcp.commands import remove as remove_command
@@ -28,7 +30,7 @@ from rio.coding.mcp.config import (
     validate_server,
 )
 from rio.coding.mcp.connection import create_client
-from rio.coding.mcp.kernel import Mcp, McpToolError, startup_code, tool_result
+from rio.coding.mcp.kernel import Mcp, McpToolError, host_environ, startup_code, tool_result
 from rio.coding.mcp.oauth import McpAuthStore, parse_www_authenticate, select_resource
 from rio.coding.paths import RioPaths
 from rio.coding.project_trust import CanonicalProjectPath, ProtectedResourceDetector
@@ -171,6 +173,7 @@ class TestStdio:
                 "echo-text",
                 "fail",
                 "roots",
+                "venv",
             ]
             result = client.call_tool("add", {"a": 1, "b": 2})
             assert result["structuredContent"] == {"sum": 3}
@@ -233,27 +236,64 @@ class TestStdio:
         assert isinstance(namespace["mcp"], Mcp)
         assert namespace["McpToolError"] is McpToolError
 
-    def test_prepare_lists_tools_for_the_prompt(self, paths, repo):
-        write(paths.mcp_config_path, {"fake-srv": {**STDIO, "description": "Math."}})
+    def test_prepare_does_not_connect(self, paths, repo):
+        # A server that never answers must not hold up session start.
+        hang = {"command": sys.executable, "args": ["-c", "import time; time.sleep(60)"]}
+        write(paths.mcp_config_path, {"fake-srv": {**hang, "description": "Math."}})
+        started = time.monotonic()
         setup = prepare(repo, project_trusted=True, paths=paths)
-        assert setup.section is not None
-        assert "- `fake_srv`: Math.. Tools: add, echo_text, fail, roots" in setup.section.body
-        assert "Use add for sums." in setup.section.body
+        assert time.monotonic() - started < 1
+        assert "- `fake_srv`: Math." in setup.section.body
+        assert "print(mcp.<server>)" in setup.section.body
         assert "_rio_mcp_install" in setup.startup
 
     def test_prepare_without_servers(self, paths, repo):
         assert prepare(repo, project_trusted=True, paths=paths).section is None
 
-    def test_prompt_section_reports_unavailable_servers(self, tmp_path):
-        server = stdio_server(tmp_path)
-        section = prompt_section(
-            [
-                ServerStatus(server, error="exited\ntrace"),
-                ServerStatus(server, error="401", needs_login=True),
-            ]
+    def test_prompt_section_reports_unset_variables(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("RIO_TEST_UNSET", raising=False)
+        server = stdio_server(tmp_path, env={"TOKEN": "${RIO_TEST_UNSET}"})
+        section = prompt_section((server,))
+        assert "(unavailable: environment variable RIO_TEST_UNSET is not set)" in section.body
+
+    def test_servers_connect_in_the_background(self, tmp_path):
+        mcp = Mcp({"fake-srv": STDIO}, tmp_path, McpAuthStore(tmp_path / "auth.json"))
+        try:
+            mcp.start()
+            server = mcp.fake_srv
+            assert server._ready.wait(10)
+            assert server._tools is not None  # listed before any cell asked
+            assert "add, echo_text" in repr(server)
+            assert "Use add for sums." in repr(server)
+        finally:
+            mcp.close()
+
+    def test_a_failed_background_connection_is_retried_on_use(self, tmp_path):
+        script = tmp_path / "server.py"
+        mcp = Mcp(
+            {"late": {"command": sys.executable, "args": [str(script)]}},
+            tmp_path,
+            McpAuthStore(tmp_path / "auth.json"),
         )
-        assert "(unavailable: exited)" in section.body
-        assert "rio mcp login fake-srv" in section.body
+        try:
+            mcp.start()
+            assert mcp.late._ready.wait(10) and mcp.late._tools is None
+            script.write_text(FAKE_SERVER.read_text())
+            assert mcp.late.add(a=1, b=1) == {"sum": 2}
+        finally:
+            mcp.close()
+
+    def test_host_environ_drops_the_session_venv(self):
+        venv = "/tmp/rio-session-x"
+        env = host_environ(
+            {
+                "VIRTUAL_ENV": venv,
+                "PYTHONNOUSERSITE": "1",
+                "PATH": f"{venv}/bin{os.pathsep}/usr/bin",
+                "HOME": "/h",
+            }
+        )
+        assert env == {"PATH": "/usr/bin", "HOME": "/h"}
 
 
 # -- streamable HTTP and OAuth -------------------------------------------------------
@@ -539,7 +579,7 @@ class TestCommands:
             ("fake", "connected"),
             ("off", "disabled"),
         ]
-        assert data["servers"][0]["tools"] == ["add", "echo-text", "fail", "roots"]
+        assert data["servers"][0]["tools"] == ["add", "echo-text", "fail", "roots", "venv"]
 
 
 # -- a real kernel -----------------------------------------------------------------------
@@ -553,11 +593,12 @@ async def test_cells_call_tools_through_mcp_in_the_kernel(tmp_path):
     kernel = KernelExecutor(tmp_path, startup=startup)
     try:
         notebook = apply_patch(
-            new_notebook(), [add_code("total = mcp.fake_srv.add(a=1, b=2)\nprint(total)")]
+            new_notebook(),
+            [add_code("total = mcp.fake_srv.add(a=1, b=2)\nprint(total, mcp.fake_srv.venv())")],
         )
         result = await kernel(notebook, [0])
     finally:
         await kernel.shutdown()
     cell = result["cells"][0]
-    assert "".join(output.get("text", "") for output in cell["outputs"]) == "{'sum': 3}\n"
+    assert "".join(output.get("text", "") for output in cell["outputs"]) == "{'sum': 3} none\n"
     assert cell["metadata"]["rio"]["defines"] == ["total"]

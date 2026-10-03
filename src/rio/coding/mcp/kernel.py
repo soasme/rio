@@ -6,19 +6,23 @@
     help(mcp.github.search_issues)       # its description and parameters
     mcp["my-server"].call("tool-name", {"arg": 1})
 
-Servers connect on first use and stay connected for the kernel's lifetime.
+Servers start connecting when the kernel starts; using one waits for its
+connection. They stay connected for the kernel's lifetime.
 """
 
 from __future__ import annotations
 
 import atexit
+import contextlib
 import inspect
 import json
+import os
+import threading
 from pathlib import Path
 from typing import Any
 
 from rio.coding.mcp.client import McpClient
-from rio.coding.mcp.config import attribute
+from rio.coding.mcp.config import McpConfigError, attribute
 from rio.coding.mcp.connection import create_client
 from rio.coding.mcp.oauth import McpAuthStore
 
@@ -92,8 +96,32 @@ class ServerProxy:
 
     def __init__(self, name: str, client: McpClient) -> None:
         self._name = name
-        self._client = client
+        self.__client = client
         self._tools: dict[str, dict[str, Any]] | None = None
+        self._ready = threading.Event()
+        self._ready.set()
+
+    def start(self) -> None:
+        """Connect and list the tools in the background. Uses of the server wait for it.
+
+        A failure is not kept: the first use connects again and raises the error.
+        """
+        self._ready.clear()
+
+        def warm() -> None:
+            try:
+                self._tool_map()
+            except Exception:  # noqa: BLE001 - raised again by the first use
+                pass
+            finally:
+                self._ready.set()
+
+        threading.Thread(target=warm, name=f"mcp-{self._name}", daemon=True).start()
+
+    @property
+    def _client(self) -> McpClient:
+        self._ready.wait()
+        return self.__client
 
     @property
     def instructions(self) -> str | None:
@@ -102,6 +130,7 @@ class ServerProxy:
 
     def tools(self) -> list[dict[str, Any]]:
         """The server's tools, with their input schemas."""
+        self._ready.wait()
         return list(self._tool_map().values())
 
     def call(self, tool: str, arguments: dict[str, Any] | None = None, /, **kwargs: Any) -> Any:
@@ -129,11 +158,12 @@ class ServerProxy:
         return self._client.get_prompt(name, arguments).get("messages", [])
 
     def close(self) -> None:
-        self._client.close()
+        self.__client.close()
 
     def _tool_map(self) -> dict[str, dict[str, Any]]:
         if self._tools is None:
-            self._tools = {tool["name"]: tool for tool in self._client.list_tools()}
+            # The background connection calls this before `_ready` is set.
+            self._tools = {tool["name"]: tool for tool in self.__client.list_tools()}
         return self._tools
 
     def _function(self, tool: dict[str, Any]) -> Any:
@@ -151,6 +181,7 @@ class ServerProxy:
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
             raise AttributeError(name)
+        self._ready.wait()
         tools = self._tool_map()
         tool = tools.get(name) or next(
             (tool for key, tool in tools.items() if attribute(key) == name), None
@@ -162,25 +193,44 @@ class ServerProxy:
     __getitem__ = __getattr__
 
     def __dir__(self) -> list[str]:
+        self._ready.wait()
         own = ["call", "tools", "resources", "resource_templates", "read_resource", "prompts"]
         return [*own, "get_prompt", "instructions", *(attribute(t) for t in self._tool_map())]
 
     def __repr__(self) -> str:
+        self._ready.wait()
         try:
             names = ", ".join(attribute(name) for name in self._tool_map())
         except Exception as exc:  # noqa: BLE001 - shown instead of the tools
             return f"<mcp server {self._name}: {type(exc).__name__}: {exc}>"
-        return f"<mcp server {self._name}: {names or 'no tools'}>"
+        text = f"<mcp server {self._name}: {names or 'no tools'}>"
+        instructions = self.__client.instructions
+        return f"{text}\n{instructions.strip()}" if instructions else text
 
 
 class Mcp:
     """The configured MCP servers, by name."""
 
-    def __init__(self, servers: dict[str, dict[str, Any]], cwd: Path, store: McpAuthStore) -> None:
+    def __init__(
+        self,
+        servers: dict[str, dict[str, Any]],
+        cwd: Path,
+        store: McpAuthStore,
+        *,
+        environ: dict[str, str] | None = None,
+    ) -> None:
         self._configs = servers
         self._cwd = cwd
         self._store = store
+        self._environ = environ
         self._servers: dict[str, ServerProxy] = {}
+
+    def start(self) -> None:
+        """Connect every server in the background."""
+        for key in self._configs:
+            # A missing variable is raised again when a cell uses the server.
+            with contextlib.suppress(McpConfigError):
+                self[key].start()
 
     def __getattr__(self, name: str) -> ServerProxy:
         if name.startswith("_"):
@@ -193,7 +243,8 @@ class Mcp:
         if key is None:
             raise AttributeError(f"no MCP server {name!r}; configured: {', '.join(self._configs)}")
         if key not in self._servers:
-            client = create_client(key, self._configs[key], self._cwd, self._store)
+            config = self._configs[key]
+            client = create_client(key, config, self._cwd, self._store, environ=self._environ)
             self._servers[key] = ServerProxy(key, client)
         return self._servers[key]
 
@@ -211,10 +262,28 @@ class Mcp:
         self._servers.clear()
 
 
+def host_environ(environ: dict[str, str] | None = None) -> dict[str, str]:
+    """The kernel's environment without the session venv, for the servers it starts.
+
+    The kernel runs in a private venv; a server command such as `python` or `uvx`
+    must resolve as it would in the user's shell.
+    """
+    env = dict(os.environ if environ is None else environ)
+    venv = env.pop("VIRTUAL_ENV", None)
+    env.pop("PYTHONNOUSERSITE", None)
+    if venv is not None:
+        bin_dir = str(Path(venv) / "bin")
+        env["PATH"] = os.pathsep.join(
+            entry for entry in env.get("PATH", "").split(os.pathsep) if entry != bin_dir
+        )
+    return env
+
+
 def install(ipython: Any, servers: dict[str, dict[str, Any]], cwd: str, store: str) -> None:
     """Bind `mcp` (and `McpToolError`) in the kernel, hidden from the cells' defined names."""
-    mcp = Mcp(servers, Path(cwd), McpAuthStore(Path(store)))
+    mcp = Mcp(servers, Path(cwd), McpAuthStore(Path(store)), environ=host_environ())
     atexit.register(mcp.close)
+    mcp.start()
     ipython.push({"mcp": mcp, "McpToolError": McpToolError}, interactive=False)
 
 

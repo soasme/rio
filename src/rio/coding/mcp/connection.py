@@ -10,8 +10,17 @@ from rio.coding.mcp.config import DEFAULT_TIMEOUT_SECONDS, expand
 from rio.coding.mcp.oauth import McpAuthStore, OAuthAuth, configured_client
 
 
-def create_client(name: str, config: dict[str, Any], cwd: Path, store: McpAuthStore) -> McpClient:
+def create_client(
+    name: str,
+    config: dict[str, Any],
+    cwd: Path,
+    store: McpAuthStore,
+    *,
+    environ: dict[str, str] | None = None,
+) -> McpClient:
     """A client for one server entry. It connects on first use.
+
+    A stdio server runs with `environ` (default: this process's environment) plus its `env`.
 
     Raises `McpConfigError` when a `${NAME}` variable is not set.
     """
@@ -37,6 +46,8 @@ def create_client(name: str, config: dict[str, Any], cwd: Path, store: McpAuthSt
     workdir = cwd / expand(config["cwd"]) if "cwd" in config else cwd
 
     def stdio(handle: RequestHandler) -> StdioTransport:
-        return StdioTransport(command, args, env=env, cwd=str(workdir), handle_request=handle)
+        return StdioTransport(
+            command, args, env=env, base_env=environ, cwd=str(workdir), handle_request=handle
+        )
 
     return McpClient(stdio, timeout=timeout, roots=roots)

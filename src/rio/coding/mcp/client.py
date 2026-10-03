@@ -117,11 +117,12 @@ class StdioTransport:
         args: list[str],
         *,
         env: dict[str, str] | None = None,
+        base_env: dict[str, str] | None = None,
         cwd: str | None = None,
         handle_request: RequestHandler,
     ) -> None:
         self._argv = [command, *args]
-        self._env = {**os.environ, **(env or {})}
+        self._env = {**(os.environ if base_env is None else base_env), **(env or {})}
         self._cwd = cwd
         self._handle_request = handle_request
         self._process: subprocess.Popen[bytes] | None = None
