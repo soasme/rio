@@ -74,6 +74,21 @@ theorem metadata_does_not_change_the_notebook (history : List JournalEntry) (id 
     resumeNotebook (history ++ [{ id := id, parent := none }]) = resumeNotebook history := by
   simp [resumeNotebook, applyEntry]
 
+/- session_store/storage.py: all backends expose the same ordered journal. A
+failed batch leaves the prior journal visible; a committed batch extends it. -/
+def appendBatch (journal batch : List JournalEntry) (committed : Bool) : List JournalEntry :=
+  if committed then journal ++ batch else journal
+
+theorem failed_batch_preserves_journal (journal batch : List JournalEntry) :
+    appendBatch journal batch false = journal := by rfl
+
+theorem committed_batch_preserves_order (journal batch : List JournalEntry) :
+    appendBatch journal batch true = journal ++ batch := by rfl
+
+theorem empty_batch_changes_nothing (journal : List JournalEntry) (committed : Bool) :
+    appendBatch journal [] committed = journal := by
+  cases committed <;> simp [appendBatch]
+
 /- session.py: a resumed run appends the new task to the journaled notebook. -/
 def userCell (task : String) : Cell := { id := 0, code := false, source := task, outputs := [] }
 

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import tempfile
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import closing, contextmanager, suppress
 from pathlib import Path
 from typing import BinaryIO, Protocol
 
@@ -137,20 +138,61 @@ class InMemorySessionStorage:
     """Deterministic storage useful for tests and embedded frontends."""
 
     def __init__(self, entries: Sequence[SessionEntry] = ()) -> None:
-        self.entries = list(entries)
+        self.entries = dict(enumerate(entries))
         self._lock = asyncio.Lock()
 
     async def append(self, entry: SessionEntry) -> None:
         async with self._lock:
-            self.entries.append(entry)
+            self.entries[len(self.entries)] = entry
 
     async def append_batch(self, entries: Sequence[SessionEntry]) -> None:
+        batch = tuple(entries)
         async with self._lock:
-            self.entries.extend(entries)
+            self.entries.update(enumerate(batch, start=len(self.entries)))
 
     async def read_all(self) -> list[SessionEntry]:
         async with self._lock:
-            return list(self.entries)
+            return list(self.entries.values())
+
+
+class SqliteSessionStorage:
+    """Persist an ordered session journal in a local SQLite database."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+
+    def _connect(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS entries "
+                "(position INTEGER PRIMARY KEY, data TEXT NOT NULL)"
+            )
+            connection.commit()
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+
+    async def append(self, entry: SessionEntry) -> None:
+        await self.append_batch((entry,))
+
+    async def append_batch(self, entries: Sequence[SessionEntry]) -> None:
+        encoded = [entry_to_json_line(entry) for entry in entries]
+        if not encoded:
+            return
+        with closing(self._connect()) as connection, connection:
+            connection.executemany(
+                "INSERT INTO entries (data) VALUES (?)", ((line,) for line in encoded)
+            )
+
+    async def read_all(self) -> list[SessionEntry]:
+        with closing(self._connect()) as connection:
+            lines = [
+                row[0] for row in connection.execute("SELECT data FROM entries ORDER BY position")
+            ]
+        return entries_from_json_lines(lines)
 
 
 @contextmanager
@@ -200,4 +242,9 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-__all__ = ["InMemorySessionStorage", "JsonlSessionStorage", "SessionStorage"]
+__all__ = [
+    "InMemorySessionStorage",
+    "JsonlSessionStorage",
+    "SessionStorage",
+    "SqliteSessionStorage",
+]

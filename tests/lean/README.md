@@ -12,7 +12,7 @@ Python tests remain necessary to check that implementation behavior matches.
 | Lean file | Python behavior represented |
 | --- | --- |
 | `RioAgent.lean` | Notebook loop: which cells run (including after a removed kernel stamp), output merging, kernel stamps, recorded definitions, stale cells, rejecting reads of stale-only names, and placeholders, stop after a failing cell, the size gate on patches, retries, event order, reply termination, cancellation, step limit |
-| `RioCoding.lean` | Edit validation; journal replay of resets and step patches, and resume with a new task; command routing; thinking cycle |
+| `RioCoding.lean` | Edit validation; journal replay of resets and step patches, batch append visibility and order, and resume with a new task; command routing; thinking cycle |
 | `RioCodingLifecycle.lean` | Prepared session adoption; one-run guard; model and thinking selection; blank API-key fallback; prompt expansion precedence; extension input hooks |
 
 The models deliberately omit transport, OAuth, filesystem and JSONL I/O, JSON

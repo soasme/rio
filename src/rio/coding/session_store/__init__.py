@@ -35,6 +35,7 @@ from rio.coding.session_store.storage import (
     InMemorySessionStorage,
     JsonlSessionStorage,
     SessionStorage,
+    SqliteSessionStorage,
 )
 from rio.coding.session_store.tree import (
     SessionTreeError,
