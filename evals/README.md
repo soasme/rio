@@ -4,8 +4,8 @@ These are end-to-end checks of Rio's one-shot coding workflow. Each trial copies
 small starting project into a fresh temporary directory, runs the public `rio run`
 command there, then runs a test file that was kept outside that directory. A pass
 requires both Rio to finish successfully and the test to pass. The runner saves
-Rio's JSON event stream, stderr, grader output, final workspace, and a
-machine-readable summary.
+Rio's JSON event stream, stderr, grader output, final workspace (or `agent.diff`
+for repository cases), and a machine-readable summary.
 
 Run with an already configured provider and model:
 
@@ -18,7 +18,24 @@ Use `--case 001-divide` to run one case, or `--timeout 600` for a slower model. 
 go to `.eval-results/` by default. This is a manual eval; it is not part of CI
 because it makes model calls and outcomes can vary.
 
-The current cases are deliberately small. They check the runner and provide an
+Cases `003` and `004` are SWE-bench Verified instances from the two short
+difficulty buckets, so each trial finishes in a few minutes:
+
+| case | instance | difficulty |
+|---|---|---|
+| 003-flask-blueprint-name | pallets__flask-5014 | <15 min fix |
+| 004-pytest-caplog-level | pytest-dev__pytest-7571 | 15 min - 1 hour |
+
+A SWE-bench case has `task.md` (the issue text), `swebench.json`, and `test.patch`
+instead of `workspace/` and `grade.py`. The runner keeps a bare mirror of the
+repository in `.eval-cache/`, exports the base commit into a fresh one-commit git
+repository (so the fix is not in history), and installs `install` into
+`workspace/.venv` with `uv`, which Rio's shell uses as its active environment. To
+grade, it restores the patched test files, applies `test.patch`, and runs the
+listed `tests` (FAIL_TO_PASS plus PASS_TO_PASS) with pytest. Setup needs network
+access and `uv`; it is not counted in the agent's time.
+
+The local cases are deliberately small. They check the runner and provide an
 initial signal, not a reliable comparison between models. Grow the suite from
 real Rio failures and representative user tasks. Prefix each case directory with
 a numeric id, such as `003-name`. For each new case, make the task unambiguous, keep the grader outside `workspace/`, check that the starting

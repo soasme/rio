@@ -15,13 +15,124 @@ from pathlib import Path
 CASES = Path(__file__).resolve().parent / "cases"
 
 
+def prepare_workspace(case: Path, workspace: Path, cache: Path) -> None:
+    """Copy a local workspace, or check out a SWE-bench repository with its own venv."""
+    if (case / "workspace").is_dir():
+        shutil.copytree(case / "workspace", workspace)
+        return
+    spec = json.loads((case / "swebench.json").read_text(encoding="utf-8"))
+    mirror = cache / (spec["repo"].replace("/", "__") + ".git")
+    if not mirror.exists():
+        url = f"https://github.com/{spec['repo']}"
+        _run("git", "clone", "-q", "--bare", "--filter=blob:none", url, str(mirror))
+    # Export one commit into a fresh repository so later history, including the fix, is absent.
+    workspace.mkdir()
+    archive = subprocess.run(
+        ["git", "-C", str(mirror), "archive", spec["base_commit"]], capture_output=True, check=True
+    ).stdout
+    subprocess.run(["tar", "-x", "-C", str(workspace)], input=archive, check=True)
+    with (workspace / ".gitignore").open("a", encoding="utf-8") as gitignore:
+        gitignore.write("\n.venv/\n")
+    _run("git", "init", "-q", cwd=workspace)
+    _run("git", "add", "-A", cwd=workspace)
+    _run(
+        "git",
+        "-c",
+        "user.name=eval",
+        "-c",
+        "user.email=eval@localhost",
+        "commit",
+        "-qm",
+        "base",
+        cwd=workspace,
+    )
+    _run("uv", "venv", "-q", "--python", spec["python"], ".venv", cwd=workspace)
+    _run(
+        "uv",
+        "pip",
+        "install",
+        "-q",
+        "--python",
+        ".venv",
+        *spec["install"],
+        cwd=workspace,
+        env={**os.environ, "SETUPTOOLS_SCM_PRETEND_VERSION": spec["version"]},
+    )
+
+
+def grade(case: Path, workspace: Path) -> subprocess.CompletedProcess[str]:
+    """Run grade.py, or apply the hidden SWE-bench test patch and run its tests."""
+    if (case / "grade.py").is_file():
+        return subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", str(case / "grade.py")],
+            cwd=workspace,
+            env={**os.environ, "PYTHONPATH": str(workspace)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    spec = json.loads((case / "swebench.json").read_text(encoding="utf-8"))
+    patch = str(case / "test.patch")
+    # Restore test files the agent may have edited so the patch applies cleanly.
+    paths = subprocess.run(
+        ["git", "apply", "--numstat", patch],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    for line in paths.splitlines():
+        subprocess.run(
+            ["git", "checkout", "HEAD", "--", line.split("\t")[2]],
+            cwd=workspace,
+            capture_output=True,
+            check=False,
+        )
+    applied = subprocess.run(
+        ["git", "apply", patch], cwd=workspace, capture_output=True, text=True, check=False
+    )
+    if applied.returncode != 0:
+        return applied
+    return subprocess.run(
+        [
+            str(workspace / ".venv" / "bin" / "python"),
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            *spec["tests"],
+        ],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _run(*command: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
+    subprocess.run(command, cwd=cwd, env=env, check=True)
+
+
 def run_case(
-    case: Path, *, provider: str | None, model: str | None, timeout: int, output: Path
+    case: Path,
+    *,
+    provider: str | None,
+    model: str | None,
+    timeout: int,
+    output: Path,
+    cache: Path,
 ) -> dict[str, object]:
     """Run one trial; keep graders outside the directory given to Rio."""
     with tempfile.TemporaryDirectory(prefix=f"rio-eval-{case.name}-") as temporary:
         workspace = Path(temporary) / "workspace"
-        shutil.copytree(case / "workspace", workspace)
+        prepare_workspace(case, workspace, cache)
+        env = dict(os.environ)
+        venv = workspace / ".venv"
+        if venv.is_dir():
+            # Let `python` and `pytest` in Rio's shell resolve to the project environment.
+            env["VIRTUAL_ENV"] = str(venv)
+            env["PATH"] = f"{venv / 'bin'}{os.pathsep}{env.get('PATH', '')}"
         command = [
             sys.executable,
             "-c",
@@ -41,7 +152,7 @@ def run_case(
         start = time.monotonic()
         try:
             agent = subprocess.run(
-                command, capture_output=True, text=True, timeout=timeout, check=False
+                command, capture_output=True, text=True, timeout=timeout, check=False, env=env
             )
             agent_exit: int | None = agent.returncode
             agent_stdout, agent_stderr = agent.stdout, agent.stderr
@@ -54,20 +165,21 @@ def run_case(
         (output / "agent.jsonl").write_text(agent_stdout, encoding="utf-8")
         (output / "agent.stderr").write_text(agent_stderr, encoding="utf-8")
 
-        grader = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", str(case / "grade.py")],
-            cwd=workspace,
-            env={**os.environ, "PYTHONPATH": str(workspace)},
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        if (workspace / ".git").is_dir():
+            # A repository is too large to copy per trial; keep the agent's diff instead.
+            subprocess.run(["git", "add", "-A", "-N"], cwd=workspace, check=False)
+            diff = subprocess.run(
+                ["git", "diff"], cwd=workspace, capture_output=True, text=True, check=False
+            ).stdout
+            (output / "agent.diff").write_text(diff, encoding="utf-8")
+        else:
+            shutil.copytree(
+                workspace,
+                output / "workspace",
+                ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"),
+            )
+        grader = grade(case, workspace)
         (output / "grade.txt").write_text(grader.stdout + grader.stderr, encoding="utf-8")
-        shutil.copytree(
-            workspace,
-            output / "workspace",
-            ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"),
-        )
         result: dict[str, object] = {
             "case": case.name,
             "passed": agent_exit == 0 and grader.returncode == 0,
@@ -93,6 +205,9 @@ def main() -> int:
     parser.add_argument("--trials", type=int, default=1, help="Independent attempts per case")
     parser.add_argument("--timeout", type=int, default=300, help="Seconds allowed per Rio run")
     parser.add_argument("--output-dir", type=Path, default=Path(".eval-results"))
+    parser.add_argument(
+        "--cache-dir", type=Path, default=Path(".eval-cache"), help="SWE-bench repo mirrors"
+    )
     args = parser.parse_args()
     if args.trials < 1 or args.timeout < 1:
         parser.error("--trials and --timeout must be positive")
@@ -102,6 +217,7 @@ def main() -> int:
         if name not in cases:
             parser.error(f"unknown case: {name}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    args.cache_dir.mkdir(parents=True, exist_ok=True)
     results = []
     for name in names:
         for trial in range(1, args.trials + 1):
@@ -111,6 +227,7 @@ def main() -> int:
                 model=args.model,
                 timeout=args.timeout,
                 output=args.output_dir / name / str(trial),
+                cache=args.cache_dir,
             )
             results.append(result)
             print(f"{name} trial {trial}: {'pass' if result['passed'] else 'fail'}", flush=True)
