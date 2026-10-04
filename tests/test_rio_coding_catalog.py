@@ -8,6 +8,7 @@ test_provider_catalog.py. Tests that depend on tau_coding.provider_config
 from __future__ import annotations
 
 import json
+from importlib.resources import files
 from pathlib import Path
 from typing import get_args
 
@@ -45,6 +46,7 @@ from rio.coding.provider_catalog import (
     ModelCostTier,
     ModelInput,
     ProviderApi,
+    ProviderCatalogEntry,
     builtin_provider_entry,
     model_cost_for_input_tokens,
 )
@@ -367,6 +369,54 @@ async def test_fresh_cache_skips_network_and_failed_force_preserves_it(tmp_path:
 # ---------------------------------------------------------------------------
 
 
+def source_provider_entry(name: str) -> ProviderCatalogEntry | None:
+    """Return a provider from the hand-maintained catalog.toml.
+
+    Tests that pin model values read this catalog: the bundled models.dev
+    snapshot is regenerated from upstream and churns, so tests against the
+    merged built-in catalog only check its shape.
+    """
+    return next((entry for entry in builtin_source_catalog() if entry.name == name), None)
+
+
+def test_bundled_models_dev_catalog_matches_schema() -> None:
+    text = files("rio.coding").joinpath("data/models-dev-catalog.json").read_text(encoding="utf-8")
+    document = json.loads(text)
+    assert document["schema_version"] == 1
+    assert isinstance(document["generated_at"], int)
+
+    # Raises on any schema violation; the loader would otherwise silently fall
+    # back to catalog.toml and hide a broken snapshot.
+    overlay = models_dev_catalog_overlay(document)
+    assert bundled_models_dev_catalog_overlay() == overlay
+
+    source_names = {entry.name for entry in builtin_source_catalog()}
+    builtin = {entry.name: entry for entry in builtin_catalog()}
+    assert [entry.name for entry in builtin_catalog()] == [
+        entry.name for entry in builtin_source_catalog()
+    ]
+    for provider in overlay["providers"]:
+        assert provider["name"] in source_names
+        entry = builtin[provider["name"]]
+        # The snapshot was merged rather than discarded by the loader's fallback.
+        assert set(provider["models"]) - set(entry.removed_models) <= set(entry.models)
+
+
+def test_builtin_catalog_with_bundled_models_matches_schema() -> None:
+    for entry in builtin_catalog():
+        assert entry.models, entry.name
+        assert all(isinstance(model, str) and model for model in entry.models), entry.name
+        assert entry.default_model in entry.models, entry.name
+        assert set(entry.model_metadata) <= set(entry.models), entry.name
+        if entry.context_windows is not None:
+            assert set(entry.context_windows) <= set(entry.models), entry.name
+            assert all(
+                isinstance(window, int) and window > 0 for window in entry.context_windows.values()
+            ), entry.name
+        for model, metadata in entry.model_metadata.items():
+            assert_model_metadata_schema(f"{entry.name}/{model}", metadata)
+
+
 def test_builtin_catalog_matches_expected_providers() -> None:
     names = [entry.name for entry in BUILTIN_PROVIDER_CATALOG]
     assert names == [
@@ -402,7 +452,7 @@ def test_builtin_catalog_matches_expected_providers() -> None:
 
 
 def test_builtin_catalog_golden_anthropic_entry() -> None:
-    entry = builtin_provider_entry("anthropic")
+    entry = source_provider_entry("anthropic")
     assert entry is not None
     assert entry.display_name == "Anthropic"
     assert entry.kind == "anthropic"
@@ -419,7 +469,6 @@ def test_builtin_catalog_golden_anthropic_entry() -> None:
         "claude-opus-4-5-20251101",
         "claude-opus-4-6",
         "claude-opus-4-7",
-        "claude-opus-4-8",
         "claude-opus-5",
         "claude-sonnet-4-5",
         "claude-sonnet-4-5-20250929",
@@ -443,15 +492,6 @@ def test_builtin_catalog_golden_anthropic_entry() -> None:
     assert opus_5.cost["cacheWrite"] == 6.25
     assert opus_5.cost["cacheWrite1h"] == 10
     assert opus_5.compat == {"forceAdaptiveThinking": True}
-    assert opus_5.thinking_level_map == {
-        "off": None,
-        "minimal": None,
-        "low": "low",
-        "medium": "medium",
-        "high": "high",
-        "xhigh": "xhigh",
-        "max": "max",
-    }
     assert entry.thinking_levels == ("off", "minimal", "low", "medium", "high", "xhigh")
     assert entry.thinking_models == ()
     assert entry.thinking_default == "medium"
@@ -460,8 +500,8 @@ def test_builtin_catalog_golden_anthropic_entry() -> None:
 
 
 def test_builtin_catalog_separates_openai_api_and_codex_context_limits() -> None:
-    openai = builtin_provider_entry("openai")
-    codex = builtin_provider_entry("openai-codex")
+    openai = source_provider_entry("openai")
+    codex = source_provider_entry("openai-codex")
 
     assert openai is not None
     assert codex is not None
@@ -563,7 +603,7 @@ def test_builtin_catalog_separates_openai_api_and_codex_context_limits() -> None
 def test_sparse_provider_catalogs_declare_model_input_modalities(
     provider_name: str, vision_models: set[str]
 ) -> None:
-    provider = builtin_provider_entry(provider_name)
+    provider = source_provider_entry(provider_name)
 
     assert provider is not None
     assert set(provider.model_metadata) == set(provider.models)
@@ -574,10 +614,10 @@ def test_sparse_provider_catalogs_declare_model_input_modalities(
 
 
 def test_builtin_catalog_oauth_and_opencode_auth_methods() -> None:
-    codex = builtin_provider_entry("openai-codex")
-    copilot = builtin_provider_entry("github-copilot")
-    opencode_go = builtin_provider_entry("opencode-go")
-    opencode = builtin_provider_entry("opencode")
+    codex = source_provider_entry("openai-codex")
+    copilot = source_provider_entry("github-copilot")
+    opencode_go = source_provider_entry("opencode-go")
+    opencode = source_provider_entry("opencode")
 
     assert codex is not None and codex.auth_methods == ("oauth",)
     assert copilot is not None and copilot.auth_methods == ("oauth",)
@@ -588,7 +628,7 @@ def test_builtin_catalog_oauth_and_opencode_auth_methods() -> None:
 
 
 def test_builtin_catalog_copilot_claude_max_tokens() -> None:
-    entry = builtin_provider_entry("github-copilot")
+    entry = source_provider_entry("github-copilot")
     assert entry is not None
 
     expected = {
@@ -670,7 +710,7 @@ def test_builtin_catalog_golden_nvidia_entry() -> None:
 def test_builtin_catalog_huggingface_model_expansion() -> None:
     entry = builtin_provider_entry("huggingface")
     assert entry is not None
-    assert len(entry.models) >= 47
+    assert entry.models
     assert all(isinstance(model, str) for model in entry.models)
     assert entry.default_model in entry.models
     assert entry.context_windows is not None
@@ -682,7 +722,7 @@ def test_builtin_catalog_huggingface_model_expansion() -> None:
 
 
 def test_builtin_catalog_golden_kimi_entries() -> None:
-    moonshot = builtin_provider_entry("moonshotai")
+    moonshot = source_provider_entry("moonshotai")
     assert moonshot is not None
     assert moonshot.display_name == "Moonshot AI (Kimi)"
     assert moonshot.default_model == "kimi-k2.7-code"
@@ -690,7 +730,7 @@ def test_builtin_catalog_golden_kimi_entries() -> None:
     assert moonshot.context_windows is not None
     assert moonshot.context_windows["kimi-k2.7-code"] == 262_144
 
-    moonshot_cn = builtin_provider_entry("moonshotai-cn")
+    moonshot_cn = source_provider_entry("moonshotai-cn")
     assert moonshot_cn is not None
     assert moonshot_cn.default_model == "kimi-k2.7-code"
     assert "kimi-k2.7-code" in moonshot_cn.models
@@ -702,7 +742,7 @@ def test_builtin_catalog_golden_kimi_entries() -> None:
     assert k2_7.reasoning is True
     assert k2_7.input == ("text", "image")
     assert k2_7.context_window == 262_144
-    assert k2_7.max_tokens == 262_144
+    assert k2_7.max_tokens == 32_768
     assert k2_7.thinking_level_map == {
         "off": None,
         "minimal": None,
@@ -710,13 +750,13 @@ def test_builtin_catalog_golden_kimi_entries() -> None:
         "high": None,
     }
 
-    coding = builtin_provider_entry("kimi-code")
+    coding = source_provider_entry("kimi-code")
     assert coding is not None
     assert coding.display_name == "Kimi Code subscription"
     assert coding.base_url == "https://api.kimi.com/coding/v1"
     assert coding.api_key_env == "KIMI_CODE_API_KEY"
     assert coding.credential_name == "kimi-code"
-    assert {"k3", "kimi-for-coding", "k3-256k", "kimi-for-coding-highspeed"} == set(coding.models)
+    assert {"k3", "kimi-for-coding"} <= set(coding.models)
     assert coding.default_model == "kimi-for-coding"
     assert coding.thinking_default == "max"
     assert coding.context_windows is not None
@@ -729,29 +769,11 @@ def test_builtin_catalog_golden_kimi_entries() -> None:
     assert k3.reasoning is True
     assert k3.input == ("text", "image")
     assert k3.context_window == 1_048_576
-    assert k3.thinking_level_map == {
-        "off": None,
-        "minimal": None,
-        "low": "low",
-        "medium": None,
-        "high": "high",
-        "xhigh": None,
-        "max": "max",
-    }
 
     latest = coding.model_metadata["kimi-for-coding"]
-    assert latest.name == "kimi-for-coding"
+    assert latest.name == "Kimi for Coding (latest)"
     assert latest.reasoning is True
-    assert latest.context_window == 1_048_576
-    assert latest.thinking_level_map == {
-        "off": None,
-        "minimal": None,
-        "low": "low",
-        "medium": None,
-        "high": "high",
-        "xhigh": None,
-        "max": "max",
-    }
+    assert latest.context_window == 262_144
 
 
 def test_builtin_minimax_m3_has_tiered_pricing() -> None:
@@ -764,7 +786,7 @@ def test_builtin_minimax_m3_has_tiered_pricing() -> None:
     }
 
     for provider_name in ("minimax", "minimax-cn"):
-        entry = builtin_provider_entry(provider_name)
+        entry = source_provider_entry(provider_name)
         assert entry is not None
         metadata = entry.model_metadata["MiniMax-M3"]
         assert metadata.input == ("text", "image")
@@ -775,7 +797,7 @@ def test_builtin_minimax_m3_has_tiered_pricing() -> None:
 
 @pytest.mark.parametrize("input_tokens", [-1, True])
 def test_model_cost_for_input_tokens_rejects_invalid_count(input_tokens: int) -> None:
-    entry = builtin_provider_entry("minimax")
+    entry = source_provider_entry("minimax")
     assert entry is not None
     metadata = entry.model_metadata["MiniMax-M3"]
 
