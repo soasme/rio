@@ -12,9 +12,9 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from rio.agent import HarnessSpec, KernelExecutor, Notebook, context_limit
 from rio.ai.provider import ModelProvider
 from rio.ai.types import JSONValue
+from rio.coding.agent import HarnessSpec, KernelExecutor, Notebook, context_limit
 from rio.coding.coding_skill import CodingSkillOptions, build_coding_skill
 from rio.coding.context import discover_project_context_with_diagnostics
 from rio.coding.events import (

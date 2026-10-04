@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rio.agent import Notebook, notebook_tokens, skill_step_tool
 from rio.ai.messages import (
     AgentMessage,
     AssistantMessage,
@@ -18,6 +17,7 @@ from rio.ai.messages import (
     message_text,
 )
 from rio.ai.tools import AgentTool
+from rio.coding.agent import Notebook, notebook_tokens, skill_step_tool
 
 CHARS_PER_TOKEN = 4
 MESSAGE_OVERHEAD_TOKENS = 4

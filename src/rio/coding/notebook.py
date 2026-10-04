@@ -24,6 +24,8 @@ import jsonpatch
 import nbformat
 from nbclient import NotebookClient
 
+from rio.agent.state import PatchError
+from rio.agent.state import apply_patch as apply_json_patch
 from rio.ai.types import JSONObject, JSONValue
 
 type Notebook = JSONObject
@@ -93,9 +95,9 @@ def apply_patch(notebook: Notebook, patch: JSONValue) -> Notebook:
         raise NotebookError(f"patch must be a JSON array of operations, got {type(patch).__name__}")
     try:
         # Copy the patch too: values it adds become cells that are filled in below.
-        result = jsonpatch.apply_patch(notebook, copy.deepcopy(patch))
-    except (jsonpatch.JsonPatchException, jsonpatch.JsonPointerException, TypeError) as exc:
-        raise NotebookError(f"patch failed: {exc}") from exc
+        result = apply_json_patch(notebook, patch)
+    except PatchError as exc:
+        raise NotebookError(str(exc)) from exc
     if not isinstance(result, dict) or not isinstance(result.get("cells"), list):
         raise NotebookError("the patched document has no `cells` array")
     if result.get("nbformat") != 4:
@@ -359,7 +361,7 @@ class KernelExecutor:
         client.kc.start_channels()
         await client.kc.wait_for_ready(timeout=60)
         self._client = client
-        startup = "%load_ext rio.agent.kernel_ext\n" + self.startup
+        startup = "%load_ext rio.coding.kernel_ext\n" + self.startup
         try:
             await _run_silently(client, startup)
         except RuntimeError:

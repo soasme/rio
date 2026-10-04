@@ -14,7 +14,7 @@ from types import MappingProxyType
 from typing import Literal
 from uuid import uuid4
 
-from rio.agent import HarnessCancellationToken
+from rio.coding.agent import HarnessCancellationToken
 from rio.coding.extensions.providers import (
     CredentialReader,
     DynamicProvider,

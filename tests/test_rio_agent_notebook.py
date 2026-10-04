@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from conftest import add_code, add_markdown
-from rio.agent import KernelExecutor, NotebookError, apply_patch, changed_cells, new_notebook
-from rio.agent.notebook import cell_names, stale_cells, stale_uses, with_kernel
+from rio.coding.agent import KernelExecutor, NotebookError, apply_patch, changed_cells, new_notebook
+from rio.coding.notebook import cell_names, stale_cells, stale_uses, with_kernel
 
 
 def test_added_cells_get_ids_metadata_and_outputs():

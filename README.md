@@ -64,9 +64,8 @@ cd tests/lean && lake build
 See [the Lean behavior models](tests/lean/README.md) for their scope and limits.
 
 * `rio.ai` is a multi-provider LLM streaming SDK.
-* `rio.agent` is the [Context Language Model][CLM] runtime: the context is a
-  Jupyter notebook the model patches, and the runtime runs the changed cells.
-* `rio.coding` supplies the autonomous coding skill.
+* `rio.agent` is a small JSON state and JSON Patch agent core.
+* `rio.coding` extends that core with notebook prompts, execution, and the autonomous coding skill.
 * `rio.cli` is the public one-shot command-line entry point.
 
 [CLM]: https://arxiv.org/abs/2609.37725

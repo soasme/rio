@@ -3,9 +3,9 @@
 import pytest
 
 from conftest import make_skill, step_response
-from rio.agent import run_notebook_loop
 from rio.ai import FakeProvider
 from rio.cli import _resolve_task, app
+from rio.coding.agent import run_notebook_loop
 
 
 def test_cli_requires_a_task():

@@ -8,18 +8,15 @@ notebook.
 
 ```text
 rio.ai      provider/model streaming layer
-rio.agent   CLM runtime: the notebook, patch checks, cell execution, the step loop
-rio.coding  CLI app, resources, skills, extensions, commands, session journal
+rio.agent   JSON state and JSON Patch core
+rio.coding  notebook loop, kernel, CLI app, skills, extensions, session journal
 ```
 
 - `rio.ai`: providers, wire-level message/tool types, and the provider-neutral
   assistant stream event union. No knowledge of skills, notebooks, or sessions.
-- `rio.agent`: the portable CLM runtime -- `HarnessSpec`, `Harness`,
-  `run_notebook_loop`, `rio.agent.notebook`, and the step event stream. No
-  knowledge of the coding domain or any frontend.
-- `rio.coding`: the coding domain expressed as one skill (see
-  `rio.coding.coding_skill`), plus resource discovery, project trust, the
-  session journal, and frontends.
+- `rio.agent`: a portable JSON state and JSON Patch loop with a default patch prompt.
+- `rio.coding`: extends that prompt with the notebook protocol, validates notebook
+  patches, runs changed cells in a kernel, and manages sessions and frontends.
 
 ## The context is a notebook
 
@@ -38,7 +35,7 @@ oversized notebook is accepted.
 
 Code cells the patch added or whose source changed then run in order, in the
 session's working directory; the first one that fails stops the rest. All cells
-share one IPython kernel that lives for the session (`rio.agent.KernelExecutor`,
+share one IPython kernel that lives for the session (`rio.coding.KernelExecutor`,
 built on nbclient), so variables build up across steps and no cell runs twice
 unless its source changes. A resume, rewind, or new session starts an empty
 kernel. Only the cells that ran get new outputs; every other cell keeps its own.
@@ -48,7 +45,7 @@ The notebook records the kernel. `metadata.rio.kernel` holds the current
 kernel's `id` and whether it is `running`. Each code cell that ran has
 `metadata.rio.kernel` set to the id of the kernel that ran it, and
 `metadata.rio.defines` listing the names it bound. The kernel records those
-names itself (`rio.agent.kernel_ext` compares the namespace before and after
+names itself (`rio.coding.kernel_ext` compares the namespace before and after
 the cell), so names made by `exec` count and a function's locals do not.
 
 A new kernel gets a new id, so after a resume, rewind, or new session every

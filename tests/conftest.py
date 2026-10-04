@@ -4,10 +4,10 @@ import contextlib
 import io
 import itertools
 
-from rio.agent import HarnessSpec, Notebook
-from rio.agent.notebook import with_kernel
 from rio.ai import AssistantDoneEvent, AssistantMessage, TextContent, ToolCall
 from rio.ai.types import JSONObject
+from rio.coding.agent import HarnessSpec, Notebook
+from rio.coding.notebook import with_kernel
 
 _call_ids = itertools.count()
 

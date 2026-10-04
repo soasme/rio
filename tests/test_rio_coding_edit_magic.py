@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import add_code
-from rio.agent import KernelExecutor, apply_patch, new_notebook
+from rio.coding.agent import KernelExecutor, apply_patch, new_notebook
 from rio.coding.edit_magic import parse_edit_blocks, run_edit
 from rio.coding.session import KERNEL_STARTUP
 from rio.coding.tools import ToolInputError

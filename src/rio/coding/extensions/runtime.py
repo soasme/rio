@@ -14,7 +14,6 @@ from typing import Literal, Protocol, cast
 import httpx
 
 import rio.coding.built_in_extensions as built_in_extension_registry
-from rio.agent.events import AgentEvent
 from rio.ai.messages import TextContent
 from rio.ai.tools import (
     AgentTool,
@@ -23,6 +22,7 @@ from rio.ai.tools import (
     ToolUpdateCallback,
 )
 from rio.ai.types import JSONValue
+from rio.coding.agent_events import AgentEvent
 from rio.coding.built_in_extensions import BuiltInExtension, BuiltInExtensionContext
 from rio.coding.commands import (
     CommandContext,

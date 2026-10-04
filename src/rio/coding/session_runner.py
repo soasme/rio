@@ -1,6 +1,6 @@
 """Drives notebook runs and writes them to the journal.
 
-This is the layer between `rio.agent.Harness` and the coding session proper.
+This is the layer between `rio.coding.Harness` and the coding session proper.
 It owns what the runtime deliberately does not:
 
 * **Journaling.** Each step is written as a `StepEntry` holding the JSON Patch
@@ -17,7 +17,8 @@ import copy
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from rio.agent import (
+from rio.ai.provider import ModelProvider
+from rio.coding.agent import (
     Harness,
     HarnessConfig,
     HarnessSpec,
@@ -30,7 +31,6 @@ from rio.agent import (
     diff,
     new_notebook,
 )
-from rio.ai.provider import ModelProvider
 from rio.coding.events import (
     AgentSettledEvent,
     CodingSessionEvent,

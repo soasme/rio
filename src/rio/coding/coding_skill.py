@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rio.agent import HarnessSpec, NotebookExecutor
+from rio.coding.agent import HarnessSpec, NotebookExecutor
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from rio.agent import markdown_cell, new_notebook
+from rio.coding.agent import markdown_cell, new_notebook
 from rio.coding.session_store import (
     InMemorySessionStorage,
     JsonlSessionStorage,

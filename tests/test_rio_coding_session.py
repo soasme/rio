@@ -10,8 +10,8 @@ from __future__ import annotations
 import pytest
 
 from conftest import add_markdown, step_response
-from rio.agent import new_notebook
 from rio.ai import FakeProvider
+from rio.coding.agent import new_notebook
 from rio.coding.events import EntryAppendedEvent, SessionRunEndEvent
 from rio.coding.session import CodingSession, CodingSessionConfig
 from rio.coding.session_store import (

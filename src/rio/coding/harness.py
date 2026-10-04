@@ -12,11 +12,11 @@ from contextlib import suppress
 from dataclasses import dataclass
 from inspect import isawaitable
 
-from rio.agent.events import AgentEvent, RunEndEvent, StepEndEvent, StepStartEvent
-from rio.agent.loop import DEFAULT_CONTEXT_WINDOW_TOKENS, run_notebook_loop
-from rio.agent.notebook import Notebook, new_notebook
-from rio.agent.skill import HarnessSpec
 from rio.ai.provider import ModelProvider
+from rio.coding.agent_events import AgentEvent, RunEndEvent, StepEndEvent, StepStartEvent
+from rio.coding.loop import DEFAULT_CONTEXT_WINDOW_TOKENS, run_notebook_loop
+from rio.coding.notebook import Notebook, new_notebook
+from rio.coding.skill import HarnessSpec
 
 EventListener = Callable[[AgentEvent], Awaitable[None] | None]
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import make_skill, step_response
-from rio.agent import Harness, HarnessConfig, RunEndEvent, markdown_cell, new_notebook
+from rio.coding.agent import Harness, HarnessConfig, RunEndEvent, markdown_cell, new_notebook
 
 
 @pytest.mark.asyncio

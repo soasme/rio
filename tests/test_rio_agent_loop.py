@@ -12,7 +12,16 @@ import json
 import pytest
 
 from conftest import FakeExecutor, add_code, add_markdown, make_skill, step_response
-from rio.agent import (
+from rio.ai import (
+    AssistantDoneEvent,
+    AssistantErrorEvent,
+    AssistantMessage,
+    FakeProvider,
+    TextContent,
+    ToolCall,
+    malformed_tool_arguments,
+)
+from rio.coding.agent import (
     ExecutionEvent,
     PatchEvent,
     ProviderResponseError,
@@ -22,15 +31,6 @@ from rio.agent import (
     StepEndEvent,
     ValidationErrorEvent,
     run_notebook_loop,
-)
-from rio.ai import (
-    AssistantDoneEvent,
-    AssistantErrorEvent,
-    AssistantMessage,
-    FakeProvider,
-    TextContent,
-    ToolCall,
-    malformed_tool_arguments,
 )
 
 

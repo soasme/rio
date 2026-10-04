@@ -4,11 +4,11 @@ These are executable specifications of decisions made by the Python code, not
 proofs about Python source. External I/O, hashes, and provider calls are inputs.
 See README.md for the correspondence and limits.
 -/
-import RioAgent
+import RioCodingNotebook
 
 namespace RioCoding
 
-open RioAgent (Notebook Cell)
+open RioCodingNotebook (Notebook Cell)
 
 /- tools.py: edit validation. -/
 inductive EditError where

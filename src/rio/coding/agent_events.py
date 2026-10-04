@@ -1,4 +1,4 @@
-"""Events emitted by `rio.agent.loop.run_notebook_loop`.
+"""Events emitted by `rio.coding.loop.run_notebook_loop`.
 
 A flat stream of small, typed records a UI or logger can subscribe to. Each
 step is one model call, one patch, and one run of the changed cells;
@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rio.agent.notebook import Notebook
 from rio.ai.types import JSONObject
+from rio.coding.notebook import Notebook
 
 
 @dataclass(frozen=True, slots=True)

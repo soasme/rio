@@ -14,7 +14,6 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from rio.agent.harness import HarnessCancellationToken as SimpleCancellationToken
 from rio.ai.env import DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS, OpenAICompatibleConfig
 from rio.ai.http import create_async_client
 from rio.ai.messages import TextContent, UserMessage
@@ -38,6 +37,7 @@ from rio.coding.extensions.providers import (
     ProviderRefreshContext,
     ResolvedProviderAuth,
 )
+from rio.coding.harness import HarnessCancellationToken as SimpleCancellationToken
 from rio.coding.local_backends import (
     LocalAction,
     LocalArtifactOption,

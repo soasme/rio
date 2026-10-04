@@ -13,7 +13,7 @@ import json
 import pytest
 
 from conftest import add_code
-from rio.agent import (
+from rio.coding.agent import (
     ExecutionEvent,
     PatchEvent,
     ReasoningEvent,

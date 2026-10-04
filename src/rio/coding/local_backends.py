@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal, Protocol
 
-from rio.agent import HarnessCancellationToken
+from rio.coding.agent import HarnessCancellationToken
 from rio.coding.extensions.provider_registry import (
     DynamicProviderRegistry,
     ProviderLayerToken,

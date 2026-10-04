@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import sys
 
-from rio.agent import ExecutionEvent, PatchEvent, ValidationErrorEvent
 from rio.ai.types import JSONObject
+from rio.coding.agent import ExecutionEvent, PatchEvent, ValidationErrorEvent
 from rio.coding.events import (
     AutoRetryEndEvent,
     AutoRetryStartEvent,

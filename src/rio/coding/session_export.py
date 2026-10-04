@@ -22,7 +22,7 @@ from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import JsonLexer
 
-from rio.agent import render_notebook
+from rio.coding.agent import render_notebook
 from rio.coding.session_store import (
     BranchSummaryEntry,
     CustomEntry,

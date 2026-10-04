@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 from uuid import uuid4
 
-from rio.agent.events import StepEndEvent, StepStartEvent
 from rio.ai.tools import AgentTool, AgentToolResult
 from rio.ai.types import JSONValue
+from rio.coding.agent_events import StepEndEvent, StepStartEvent
 
 if TYPE_CHECKING:
     from rio.coding.extensions.providers import DynamicProvider
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from rio.coding.local_backends import LocalBackend
 
 # Every string here is one step in the CLM step lifecycle or one session-level
-# event a coding session emits (see `rio.coding.events` and `rio.agent.events`).
+# event a coding session emits (see `rio.coding.events` and `rio.coding.agent_events`).
 # There is no per-message streaming: a step's reply is not surfaced
 # incrementally to extensions.
 AGENT_EVENT_TYPES: frozenset[str] = frozenset(

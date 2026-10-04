@@ -12,7 +12,7 @@ from collections.abc import Sequence
 
 import jsonpatch
 
-from rio.agent import Notebook, new_notebook
+from rio.coding.agent import Notebook, new_notebook
 from rio.coding.session_store.entries import (
     NOTEBOOK_ENTRY_TYPES,
     SessionEntry,

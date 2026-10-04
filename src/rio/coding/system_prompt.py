@@ -1,8 +1,8 @@
 """Skill instruction assembly for rio coding skills.
 
-Produces the fixed instructions handed to `rio.agent.HarnessSpec.instructions`:
+Produces the fixed instructions handed to `rio.coding.HarnessSpec.instructions`:
 guidelines, project context, and skills. The runtime appends the notebook
-protocol (see `rio.agent.prompt`).
+protocol (see `rio.coding.prompt`).
 """
 
 from __future__ import annotations

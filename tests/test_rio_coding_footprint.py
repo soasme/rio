@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import json
 
-from rio.agent import markdown_cell, new_notebook
 from rio.ai.messages import AssistantMessage, AssistantMessageDiagnostic, TextContent
 from rio.ai.tools import AgentTool, AgentToolResult
+from rio.coding.agent import markdown_cell, new_notebook
 from rio.coding.diagnostics import (
     AgentCallDiagnosticContext,
     AgentCallDiagnosticLogger,

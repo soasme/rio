@@ -1,7 +1,7 @@
 """Coding-session events consumed by frontends and SDK users.
 
 A coding session emits two kinds of event. The first kind comes straight from
-`rio.agent`: the notebook step lifecycle (`StepStartEvent`, `PatchEvent`,
+`rio.coding.agent_events`: the notebook step lifecycle (`StepStartEvent`, `PatchEvent`,
 `ExecutionEvent`, ...). The second kind, defined here, is about the session
 rather than the run -- queued input, model changes, journal writes, retries.
 """
@@ -12,9 +12,9 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from rio.agent.events import AgentEvent
 from rio.ai.messages import WireModel
 from rio.ai.types import JSONValue
+from rio.coding.agent_events import AgentEvent
 from rio.coding.session_store.entries import SessionEntry
 
 

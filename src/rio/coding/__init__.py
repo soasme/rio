@@ -1,7 +1,16 @@
-"""Coding tools, stateful sessions, and frontends built on rio.agent."""
+"""Notebook coding agent, sessions, and frontends built on rio.agent."""
 
 from __future__ import annotations
 
+from rio.coding.agent import (
+    Harness,
+    HarnessConfig,
+    HarnessSpec,
+    KernelExecutor,
+    Notebook,
+    NotebookError,
+    run_notebook_loop,
+)
 from rio.coding.built_in_extensions import (
     BuiltInExtension,
     BuiltInExtensionSetup,
@@ -194,6 +203,12 @@ __all__ = [
     "DEFAULT_THINKING_LEVEL",
     "EventRenderer",
     "FileCredentialStore",
+    "Harness",
+    "HarnessConfig",
+    "HarnessSpec",
+    "KernelExecutor",
+    "Notebook",
+    "NotebookError",
     "ImageSupportState",
     "JsonEventRenderer",
     "OAuthAuthInfo",
@@ -290,6 +305,7 @@ __all__ = [
     "provider_thinking_unavailable_reason",
     "reasoning_effort_for_level",
     "register_oauth_provider",
+    "run_notebook_loop",
     "render_prompt_template",
     "render_session_html",
     "reset_oauth_providers",

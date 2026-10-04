@@ -31,7 +31,7 @@ The notebook records the kernel. `metadata.rio.kernel` holds the current
 kernel's `id` and whether it is `running`. Each code cell that ran has
 `metadata.rio.kernel` set to the id of the kernel that ran it, and
 `metadata.rio.defines` listing the names it bound. The kernel records those
-names itself (`rio.agent.kernel_ext` compares the namespace before and after
+names itself (`rio.coding.kernel_ext` compares the namespace before and after
 the cell), so names made by `exec` count and a function's locals do not.
 
 A new kernel gets a new id, so after a resume, rewind, or new session every
@@ -75,8 +75,8 @@ The package boundaries follow that design:
 | Package | Responsibility |
 | --- | --- |
 | `rio.ai` | Provider-neutral model streaming. |
-| `rio.agent` | Runtime: the notebook, patch checks, cell execution, and the step loop. |
-| `rio.coding` | Coding skill, sessions, resources. |
+| `rio.agent` | JSON state and JSON Patch core. |
+| `rio.coding` | Notebook prompt, kernel, coding skill, sessions, resources. |
 | `rio.cli` | Public one-shot command-line entry point. |
 
 The coding layer journals each step as the JSON Patch from the previous

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from rio.agent import render_notebook
+from rio.coding.agent import render_notebook
 from rio.coding.session_store import (
     BranchSummaryEntry,
     CustomEntry,

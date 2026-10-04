@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from rio.agent import render_notebook
 from rio.ai.types import JSONValue
+from rio.coding.agent import render_notebook
 from rio.coding.prompt_templates import PromptTemplate
 from rio.coding.provider_catalog import BUILTIN_PROVIDER_CATALOG, builtin_provider_entry
 from rio.coding.reload import CodingReloadSummary, ReloadCategorySummary

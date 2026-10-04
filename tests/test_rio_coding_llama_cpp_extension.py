@@ -10,7 +10,6 @@ from pathlib import Path
 import httpx
 import pytest
 
-from rio.agent.harness import HarnessCancellationToken as SimpleCancellationToken
 from rio.ai.env import DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS
 from rio.coding.credentials import FileCredentialStore
 from rio.coding.extensions import ExtensionRuntime
@@ -36,6 +35,7 @@ from rio.coding.extensions.builtins.llama_cpp.state import (
     LlamaCppStoredModel,
 )
 from rio.coding.extensions.providers import ProviderRefreshContext, ResolvedProviderAuth
+from rio.coding.harness import HarnessCancellationToken as SimpleCancellationToken
 from rio.coding.local_backends import LocalOperationContext, LocalProgress
 from rio.coding.paths import RioPaths
 from rio.coding.provider_runtime import create_dynamic_model_provider

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rio.agent.notebook import NotebookExecutor
+from rio.coding.notebook import NotebookExecutor
 
 
 @dataclass(frozen=True, slots=True)
