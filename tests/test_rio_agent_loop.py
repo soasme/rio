@@ -206,6 +206,17 @@ async def test_a_patch_that_shrinks_an_oversized_notebook_is_accepted():
 
 
 @pytest.mark.asyncio
+async def test_every_request_asks_to_review_each_cell_but_messages():
+    provider = FakeProvider([step_response(patch=[add_code("x = 1")]), step_response(reply="ok")])
+
+    await _run(provider, observation="task")
+
+    assert "Manage every cell, every step" in provider.calls[0][1]
+    assert "review cells" not in provider.calls[0][2][0].text
+    assert "[review cells [1]: keep, summarize, or remove each]" in provider.calls[1][2][0].text
+
+
+@pytest.mark.asyncio
 async def test_a_reply_without_the_step_tool_is_retried():
     no_call = AssistantMessage(content=[TextContent(text="I am done")], stop_reason="stop")
     provider = FakeProvider(

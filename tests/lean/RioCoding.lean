@@ -101,6 +101,73 @@ theorem resume_keeps_the_journaled_notebook (history : List JournalEntry)
       fresh ++ [userCell task] := by
   simp [resumeWithTask, a_reset_shadows_everything_before_it]
 
+/- cell_magic.py: `%cell ID` reads a cell back from the journal. Every notebook
+along the branch is a snapshot; the versions of a cell are its copies in them, in
+order. Recall returns the last version, skipping versions that match the cell now
+holding that id (a summary written in place). -/
+def snapshots (path : List JournalEntry) : List Notebook := (path.scanl applyEntry []).tail
+
+def versions (path : List JournalEntry) (id : Nat) : List Cell :=
+  (snapshots path).flatMap (·.filter (·.id == id))
+
+def recall (path : List JournalEntry) (id : Nat) : Option Cell :=
+  let current := (resumeNotebook path).find? (·.id == id)
+  let all := versions path id
+  let earlier := all.filter (fun cell => current.all (fun now =>
+    (cell.code, cell.source) != (now.code, now.source)))
+  (if earlier.isEmpty then all else earlier).getLast?
+
+theorem snapshots_append (history : List JournalEntry) (entry : JournalEntry) :
+    snapshots (history ++ [entry]) =
+      snapshots history ++ [applyEntry (resumeNotebook history) entry] := by
+  simp [snapshots, resumeNotebook, List.scanl_append]
+
+/-- A cell that was ever in the notebook on this branch can be read back. -/
+theorem every_journaled_cell_is_recallable (path : List JournalEntry) (notebook : Notebook)
+    (cell : Cell) (hn : notebook ∈ snapshots path) (hc : cell ∈ notebook) :
+    (recall path cell.id).isSome := by
+  have hv : cell ∈ versions path cell.id := by
+    simp only [versions, List.mem_flatMap, List.mem_filter]
+    exact ⟨notebook, hn, hc, by simp⟩
+  simp only [recall]
+  split
+  · simp [List.getLast?_isSome, List.ne_nil_of_mem hv]
+  · rename_i h
+    simp [List.isEmpty_iff] at h
+    simp [h]
+
+/-- The patch of a step that removes a cell. -/
+def removeCell (id : Nat) (notebook : Notebook) : Notebook := notebook.filter (·.id != id)
+
+def removalStep (entry : JournalEntry) (id : Nat) : JournalEntry :=
+  { entry with reset := none, patch := some (removeCell id) }
+
+/-- A step that removes a cell leaves it recallable as it last was. -/
+theorem a_removed_cell_is_recalled_as_it_last_was (history : List JournalEntry)
+    (entry : JournalEntry) (cell : Cell)
+    (hlast : (resumeNotebook history).filter (·.id == cell.id) = [cell]) :
+    recall (history ++ [removalStep entry cell.id]) cell.id = some cell := by
+  have hres : resumeNotebook (history ++ [removalStep entry cell.id]) =
+      removeCell cell.id (resumeNotebook history) := by
+    simp [resumeNotebook, applyEntry, removalStep]
+  have hver : versions (history ++ [removalStep entry cell.id]) cell.id =
+      versions history cell.id := by
+    simp [versions, snapshots_append, applyEntry, removalStep, removeCell, List.filter_filter]
+  have hlastv : (versions history cell.id).getLast? = some cell := by
+    rcases List.eq_nil_or_concat history with rfl | ⟨h, e, rfl⟩
+    · simp [resumeNotebook] at hlast
+    · have hstep : resumeNotebook (h ++ [e]) = applyEntry (resumeNotebook h) e := by
+        simp [resumeNotebook]
+      simp only [List.concat_eq_append] at hlast ⊢
+      rw [hstep] at hlast
+      simp [versions, snapshots_append, hlast]
+  have hgone : (removeCell cell.id (resumeNotebook history)).find? (·.id == cell.id) = none := by
+    simp [removeCell, List.find?_eq_none]
+  simp only [recall, hres, hver, hgone]
+  split
+  · exact hlastv
+  · rw [List.filter_eq_self.mpr (by simp)]; exact hlastv
+
 /- commands.py and thinking.py: command routing and mode cycling. -/
 inductive Route where
   | prompt | skillPrompt | command (name : String) | unknownCommand

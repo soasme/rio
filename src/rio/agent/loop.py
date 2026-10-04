@@ -8,8 +8,9 @@ valid notebook or outgrows the limit, then runs the changed code cells. The
 notebook with their outputs is the next step's context. A step that sets a
 non-blank `reply` ends the run.
 
-Validity is the runtime's job; strategy is the model's. The runtime never
-summarizes or drops cells. It only caps each new output's size.
+Validity is the runtime's job; strategy is the model's. Each step the model
+decides, cell by cell, what to keep, replace with a markdown summary, or remove.
+The runtime never summarizes or drops cells. It only caps each new output's size.
 """
 
 from __future__ import annotations

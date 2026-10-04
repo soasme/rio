@@ -17,6 +17,7 @@ import anyio
 from rio.agent import HarnessSpec, KernelExecutor, Notebook, context_limit
 from rio.ai.provider import ModelProvider
 from rio.ai.types import JSONValue
+from rio.coding.cell_magic import journal_startup
 from rio.coding.coding_skill import CodingSkillOptions, build_coding_skill
 from rio.coding.context import discover_project_context_with_diagnostics
 from rio.coding.events import (
@@ -77,7 +78,8 @@ from rio.coding.system_prompt import (
     build_skill_instructions,
 )
 
-#: Run once when a session's kernel starts: adds the `%%edit` cell magic.
+#: Run once when a session's kernel starts: adds the `%%edit` cell magic. Each
+#: session also adds `%cell`, bound to its journal.
 KERNEL_STARTUP = "%load_ext rio.coding.edit_magic"
 
 #: A coding run is bounded so a runaway loop cannot burn tokens indefinitely.
@@ -207,7 +209,10 @@ class CodingSession:
         if config.command_registry is None:
             config.command_registry = runtime.build_command_registry()
         resources = _with_shadow_diagnostics(resources, config.command_registry)
-        startup = KERNEL_STARTUP
+        storage = config.storage
+        if storage is None:
+            storage = JsonlSessionStorage(config.paths.default_session_path(cwd))
+        startup = f"{KERNEL_STARTUP}\n{journal_startup(storage)}"
         if config.load_mcp:
             mcp = await anyio.to_thread.run_sync(
                 lambda: prepare_mcp(
@@ -220,10 +225,6 @@ class CodingSession:
                 startup = f"{startup}\n{mcp.startup}"
         kernel = KernelExecutor(cwd, startup=startup)
         skill = _build_skill(config, resources, kernel)
-
-        storage = config.storage
-        if storage is None:
-            storage = JsonlSessionStorage(config.paths.default_session_path(cwd))
 
         runner = SessionRunner(
             SessionRunnerConfig(

@@ -110,3 +110,30 @@ async def test_the_agent_fixes_the_file_and_the_journal_rebuilds_the_notebook(tm
     request = followup.calls[0][2][0].text
     assert "[stale cells [1, 2, 3, 4]" in request
     assert resumed.kernel.kernel_id in request
+
+
+async def test_a_summarized_cell_is_read_back_from_the_journal(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    probe = {"id": "probe", "cell_type": "code", "source": "print('the answer is', 6 * 7)"}
+    summary = {"cell_type": "markdown", "source": "The answer is 42 (cell probe)."}
+    provider = FakeProvider(
+        [
+            step_response(patch=[{"op": "add", "path": "/cells/-", "value": probe}]),
+            step_response(patch=[{"op": "replace", "path": "/cells/1", "value": summary}]),
+            step_response(patch=[add_code("%cell probe")]),
+            step_response(reply="42"),
+        ]
+    )
+    session = await CodingSession.load(_config(tmp_path, repo, provider))
+    try:
+        async for _event in session.prompt("what is 6 * 7?"):
+            pass
+    finally:
+        await session.aclose()
+
+    cells = session.notebook["cells"]
+    assert [cell["id"] for cell in cells].count("probe") == 0
+    assert cells[2]["outputs"][0]["text"] == (
+        "[code cell probe]\nprint('the answer is', 6 * 7)\nthe answer is 42\n"
+    )

@@ -19,17 +19,27 @@ def system_prompt(spec: HarnessSpec, limit_tokens: int) -> str:
         spec.instructions + "\n\n## Context protocol\n\n"
         "Your context is one Jupyter notebook N (nbformat v4 JSON), sent in full each step.\n\n"
         "Step:\n"
-        f"1. Call `{STEP_TOOL_NAME}` with `patch` (RFC 6902 JSON Patch on N) and optional "
-        "`reply`.\n"
-        "2. N' = patch(N). Rejected, and you retry, if N' is not a valid notebook, a run cell "
+        "1. Manage every cell, every step, whatever N's size; never wait until N nears L. "
+        "Go through N from the top and decide each cell:\n"
+        "   - keep: a coming step needs its exact content;\n"
+        "   - summarize: replace it with a markdown cell holding only what still matters "
+        "(decisions, file paths, exact values) and the id of each cell it replaces, e.g. "
+        "`calc.py: divide() uses //, line 4. (cells 3f2a9c1d, 9c1d0b7e)`;\n"
+        "   - remove: nothing in it matters any more.\n"
+        "   Once you have read an output, summarize it. Once a fix is verified, fold its "
+        "exploration and attempts into one note. A failed attempt becomes one line.\n"
+        f"2. Call `{STEP_TOOL_NAME}` with `patch` (RFC 6902 JSON Patch on N: step 1's edits, "
+        "then new cells) and optional `reply`. Operations apply in order, so remove and "
+        "replace from the last index to the first.\n"
+        "3. N' = patch(N). Rejected, and you retry, if N' is not a valid notebook, a run cell "
         "reads a name only a stale cell defined, or N' is over L and not smaller than N.\n"
-        "3. Run cells of N' run in order until one fails; outputs go into N'. Other cells keep "
+        "4. Run cells of N' run in order until one fails; outputs go into N'. Other cells keep "
         "their outputs and never rerun.\n"
-        "4. A non-blank `reply` is appended to N' and ends the run; set it when the task is "
+        "5. A non-blank `reply` is appended to N' and ends the run; set it when the task is "
         "done or blocked. Else N' is the next N.\n\n"
         "Terms:\n"
-        f"- L: ~{limit_tokens} tokens; each request shows N's size. Keep N under L: remove "
-        "stale outputs and cells; keep notes of decisions, file paths, exact values.\n"
+        f"- L: ~{limit_tokens} tokens; each request shows N's size. Keep N under L with the "
+        "step 1 review.\n"
         "- Code cell: Python run by IPython. All cells share one live kernel, so variables "
         "persist across steps. Shell: `!cmd` or `%%bash`. Files: Python.\n"
         "- Markdown cell: a note. A cell with `metadata.rio.role` is a user message or your "
@@ -59,6 +69,13 @@ def build_messages(
         f"```json\n{render_notebook(notebook)}\n```\n"
         f"[notebook: ~{notebook_tokens(notebook)}/{limit_tokens} tokens]"
     )
+    review = [
+        index
+        for index, cell in enumerate(notebook["cells"])  # type: ignore[arg-type]
+        if not cell.get("metadata", {}).get("rio", {}).get("role")  # type: ignore[union-attr]
+    ]
+    if review:
+        text += f"\n[review cells {review}: keep, summarize, or remove each]"
     stale = stale_cells(notebook)
     if stale:
         text += (
