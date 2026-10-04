@@ -693,6 +693,38 @@ def _anthropic_image(image: ImageContent) -> dict[str, JSONValue]:
     }
 
 
+# Keywords Anthropic strict tool use rejects with a 400 for the whole request.
+# https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations
+_ANTHROPIC_STRICT_UNSUPPORTED_KEYWORDS = frozenset(
+    {
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "maxItems",
+        "uniqueItems",
+        "minContains",
+        "maxContains",
+        "minProperties",
+        "maxProperties",
+    }
+)
+_ANTHROPIC_STRICT_STRING_FORMATS = frozenset(
+    {"date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"}
+)
+
+
+def _is_anthropic_strict_unsupported_keyword(key: str, value: object) -> bool:
+    if key in _ANTHROPIC_STRICT_UNSUPPORTED_KEYWORDS:
+        return True
+    if key == "minItems":
+        return value not in (0, 1)
+    if key == "format":
+        return not isinstance(value, str) or value not in _ANTHROPIC_STRICT_STRING_FORMATS
+    return False
+
+
 def _anthropic_tool(
     tool: AgentTool,
     *,
@@ -700,7 +732,9 @@ def _anthropic_tool(
     compat: Mapping[str, JSONValue] | None = None,
 ) -> dict[str, JSONValue]:
     supports_strict_mode = (compat or {}).get("supportsStrictMode") is not False
-    strict = resolve_json_schema_strict_sampling(tool, supports_strict_mode)
+    strict = resolve_json_schema_strict_sampling(
+        tool, supports_strict_mode, _is_anthropic_strict_unsupported_keyword
+    )
     parameters = get_json_schema_tool_parameters(tool.input_schema, strict)
     if strict is True:
         # Anthropic's classic input_schema is just {type, properties, required}. Send

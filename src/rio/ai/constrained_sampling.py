@@ -17,7 +17,7 @@ of being patched after the fact in the tool executor.
 from __future__ import annotations
 
 import copy
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from rio.ai.types import JSONValue
@@ -43,6 +43,10 @@ _UNSUPPORTED_STRICT_SCHEMA_KEYS = (
     "then",
     "else",
 )
+
+
+UnsupportedStrictSchemaKeywordCheck = Callable[[str, Any], bool]
+"""Returns True when a provider's strict mode rejects this schema keyword with this value."""
 
 
 class UnsupportedStrictJsonSchemaError(ValueError):
@@ -88,12 +92,19 @@ def _schema_allows_null(schema: object) -> bool:
     return False
 
 
-def _make_json_schema_node_strict(schema: dict[str, Any]) -> None:
+def _make_json_schema_node_strict(
+    schema: dict[str, Any],
+    is_unsupported_keyword: UnsupportedStrictSchemaKeywordCheck | None = None,
+) -> None:
     if not _is_schema_object(schema):
         raise UnsupportedStrictJsonSchemaError("boolean schemas are unsupported")
     for key in _UNSUPPORTED_STRICT_SCHEMA_KEYS:
         if schema.get(key) is not None:
             raise UnsupportedStrictJsonSchemaError(f"{key} schemas are unsupported")
+    if is_unsupported_keyword is not None:
+        for key, value in schema.items():
+            if is_unsupported_keyword(key, value):
+                raise UnsupportedStrictJsonSchemaError(f"{key}: {value!r} is unsupported")
 
     any_of = schema.get("anyOf")
     if any_of is not None:
@@ -102,13 +113,13 @@ def _make_json_schema_node_strict(schema: dict[str, Any]) -> None:
         for variant in any_of:
             if _is_structured_schema(variant):
                 raise UnsupportedStrictJsonSchemaError("object and array unions are unsupported")
-            _make_json_schema_node_strict(variant)
+            _make_json_schema_node_strict(variant, is_unsupported_keyword)
 
     items = schema.get("items")
     if items is not None:
         if isinstance(items, list):
             raise UnsupportedStrictJsonSchemaError("tuple schemas are unsupported")
-        _make_json_schema_node_strict(items)
+        _make_json_schema_node_strict(items, is_unsupported_keyword)
 
     is_object_schema = schema.get("type") == "object"
     if schema.get("properties") is not None and not is_object_schema:
@@ -137,7 +148,7 @@ def _make_json_schema_node_strict(schema: dict[str, Any]) -> None:
         raise UnsupportedStrictJsonSchemaError("required contains an unknown property")
 
     for key, property_schema in properties.items():
-        _make_json_schema_node_strict(property_schema)
+        _make_json_schema_node_strict(property_schema, is_unsupported_keyword)
         if key not in required_set and not _schema_allows_null(property_schema):
             properties[key] = {"anyOf": [property_schema, {"type": "null"}]}
 
@@ -146,17 +157,20 @@ def _make_json_schema_node_strict(schema: dict[str, Any]) -> None:
     schema["additionalProperties"] = False
 
 
-def make_strict_json_schema(schema: Mapping[str, JSONValue]) -> dict[str, JSONValue]:
+def make_strict_json_schema(
+    schema: Mapping[str, JSONValue],
+    is_unsupported_keyword: UnsupportedStrictSchemaKeywordCheck | None = None,
+) -> dict[str, JSONValue]:
     """Convert a tool schema to the strict subset expected by constrained sampling.
 
     Raises `UnsupportedStrictJsonSchemaError` when the schema uses a construct that
     cannot be safely rewritten (`$ref`, `oneOf`, object/array unions, schema-valued
-    `additionalProperties`, ...).
+    `additionalProperties`, ...) or a keyword `is_unsupported_keyword` rejects.
     """
     cloned = copy.deepcopy(dict(schema))
     if not _is_schema_object(cloned):
         raise UnsupportedStrictJsonSchemaError("root schema must have type object")
-    _make_json_schema_node_strict(cloned)
+    _make_json_schema_node_strict(cloned, is_unsupported_keyword)
     if cloned.get("type") != "object":
         raise UnsupportedStrictJsonSchemaError("root schema must have type object")
     return cloned
@@ -172,7 +186,9 @@ def get_json_schema_tool_parameters(
 
 
 def resolve_json_schema_strict_sampling(
-    tool: AgentTool, supports_strict_mode: bool
+    tool: AgentTool,
+    supports_strict_mode: bool,
+    is_unsupported_keyword: UnsupportedStrictSchemaKeywordCheck | None = None,
 ) -> bool | None:
     """Decide whether to request strict/constrained decoding for `tool`.
 
@@ -180,7 +196,9 @@ def resolve_json_schema_strict_sampling(
     converts cleanly; `None` when the tool didn't opt in, the config isn't
     `json_schema`, or conversion isn't possible and the tool only "prefer"s strict
     mode. Raises `ValueError` when the tool "require"s strict mode but it isn't
-    available or the schema can't be converted.
+    available or the schema can't be converted. `is_unsupported_keyword` lets a provider
+    reject extra keywords its strict mode does not accept, so "prefer" tools fall back
+    to non-strict.
     """
     config = tool.constrained_sampling
     if not config or config.get("type") != "json_schema":
@@ -189,7 +207,7 @@ def resolve_json_schema_strict_sampling(
 
     if supports_strict_mode:
         try:
-            make_strict_json_schema(tool.input_schema)
+            make_strict_json_schema(tool.input_schema, is_unsupported_keyword)
             return True
         except UnsupportedStrictJsonSchemaError as exc:
             if strict_requirement != "require":

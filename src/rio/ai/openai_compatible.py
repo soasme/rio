@@ -580,6 +580,7 @@ class _ResponsesStreamParser:
         self._tool_call_builders: dict[str, _ResponsesToolCallBuilder] = {}
         self._status: str | None = None
         self._usage: Usage | None = None
+        self._saw_terminal_event = False
 
     def feed(self, event: str) -> tuple[list[ProviderEvent], bool]:
         # The Responses API has no [DONE] sentinel; it ends with a terminal
@@ -644,6 +645,7 @@ class _ResponsesStreamParser:
                     arguments=chunk.get("arguments"),
                     output_index=_int_or_none(chunk.get("output_index")),
                 )
+                builder.done = True
 
         elif chunk_type == "response.output_item.done":
             item = chunk.get("item")
@@ -655,6 +657,7 @@ class _ResponsesStreamParser:
             )
 
         elif chunk_type in ("response.completed", "response.incomplete"):
+            self._saw_terminal_event = True
             self._status = _responses_finish_reason(chunk)
             self._usage = _usage_from_responses_event(chunk) or self._usage
             return [], True
@@ -672,10 +675,27 @@ class _ResponsesStreamParser:
         return [], False
 
     def finalize(self) -> list[ProviderEvent]:
-        tool_calls = [
-            builder.build(index)
-            for index, builder in enumerate(_ordered_builders(self._tool_call_builders))
-        ]
+        if not self._saw_terminal_event:
+            return [
+                ProviderErrorEvent(
+                    message="OpenAI Responses stream ended before a terminal response event"
+                )
+            ]
+        builders = _ordered_builders(self._tool_call_builders)
+        # The agent runs every tool call in the final message. Refuse calls that never
+        # got a done event: their arguments may be cut off or mixed up, e.g. when a
+        # non-compliant server omits output_index.
+        for builder in builders:
+            if not builder.done:
+                return [
+                    ProviderErrorEvent(
+                        message=(
+                            "OpenAI Responses stream completed with an unfinished tool call: "
+                            f"{builder.name} ({builder.call_id})"
+                        )
+                    )
+                ]
+        tool_calls = [builder.build(index) for index, builder in enumerate(builders)]
         events: list[ProviderEvent] = [
             ProviderToolCallEvent(tool_call=tool_call) for tool_call in tool_calls
         ]
@@ -756,6 +776,7 @@ class _ResponsesToolCallBuilder:
         self.output_index = output_index
         self.arguments_parts: list[str] = []
         self.arguments_final: str | None = None
+        self.done = False
 
     def add_arguments_delta(self, delta: object) -> None:
         if isinstance(delta, str):
@@ -1094,6 +1115,7 @@ def _finalize_responses_item(
         arguments=item.get("arguments"),
         output_index=_int_or_none(output_index),
     )
+    builder.done = True
 
 
 def _ordered_builders(
