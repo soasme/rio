@@ -7,7 +7,13 @@ against that notebook, and an optional reply that ends the run.
 
 from __future__ import annotations
 
-from rio.agent.notebook import Notebook, notebook_tokens, render_notebook, stale_cells
+from rio.agent.notebook import (
+    Notebook,
+    cell_paths,
+    notebook_tokens,
+    render_notebook,
+    stale_cells,
+)
 from rio.agent.spec import STEP_TOOL_NAME, HarnessSpec
 from rio.ai.messages import AgentMessage, UserMessage
 
@@ -30,7 +36,8 @@ def system_prompt(spec: HarnessSpec, limit_tokens: int) -> str:
         "exploration and attempts into one note. A failed attempt becomes one line.\n"
         f"2. Call `{STEP_TOOL_NAME}` with `patch` (RFC 6902 JSON Patch on N: step 1's edits, "
         "then new cells) and optional `reply`. Operations apply in order, so remove and "
-        "replace from the last index to the first.\n"
+        "replace from the last index to the first. Paths use cell indices, not ids; "
+        "each request lists the paths that exist.\n"
         "3. N' = patch(N). Rejected, and you retry, if N' is not a valid notebook, a run cell "
         "reads a name only a stale cell defined, or N' is over L and not smaller than N.\n"
         "4. Run cells of N' run in order until one fails; outputs go into N'. Other cells keep "
@@ -68,6 +75,7 @@ def build_messages(
     text = (
         f"```json\n{render_notebook(notebook)}\n```\n"
         f"[notebook: ~{notebook_tokens(notebook)}/{limit_tokens} tokens]"
+        f"\n{cell_paths(notebook)}"
     )
     review = [
         index

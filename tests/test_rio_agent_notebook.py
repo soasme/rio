@@ -49,6 +49,19 @@ def test_bad_patches_raise(patch, message):
         apply_patch(new_notebook(), patch)
 
 
+def test_a_failed_patch_names_the_cell_paths_that_exist():
+    notebook = apply_patch(new_notebook(), [add_code("x"), add_code("y")])
+    ids = [cell["id"] for cell in notebook["cells"]]
+
+    with pytest.raises(NotebookError) as error:
+        apply_patch(notebook, [{"op": "remove", "path": "/cells/4"}])
+
+    message = str(error.value)
+    assert message.startswith("patch failed")
+    assert f"/cells/0 = {ids[0]}, /cells/1 = {ids[1]}" in message
+    assert "each remove shifts later indices down" in message
+
+
 def test_duplicate_cell_ids_are_rejected():
     notebook = apply_patch(new_notebook(), [add_code("x")])
     duplicate = {"op": "copy", "from": "/cells/0", "path": "/cells/-"}

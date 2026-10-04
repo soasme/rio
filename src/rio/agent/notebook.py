@@ -99,7 +99,7 @@ def apply_patch(notebook: Notebook, patch: JSONValue) -> Notebook:
         # Copy the patch too: values it adds become cells that are filled in below.
         result = jsonpatch.apply_patch(notebook, copy.deepcopy(patch))
     except (jsonpatch.JsonPatchException, jsonpatch.JsonPointerException, TypeError) as exc:
-        raise NotebookError(f"patch failed: {exc}") from exc
+        raise NotebookError(f"patch failed: {exc}. {cell_paths(notebook)}") from exc
     if not isinstance(result, dict) or not isinstance(result.get("cells"), list):
         raise NotebookError("the patched document has no `cells` array")
     if result.get("nbformat") != 4:
@@ -115,6 +115,21 @@ def apply_patch(notebook: Notebook, patch: JSONValue) -> Notebook:
     except nbformat.ValidationError as exc:
         raise NotebookError(f"invalid notebook: {exc.message}") from exc
     return result
+
+
+def cell_paths(notebook: Notebook) -> str:
+    """Name the cell paths a patch can address, so a model need not guess an index."""
+    cells = notebook["cells"]  # type: ignore[index]
+    if not cells:
+        return "[cell paths: none yet; add cells at /cells/-]"
+    paths = ", ".join(
+        f"/cells/{index} = {cell.get('id')}"  # type: ignore[union-attr]
+        for index, cell in enumerate(cells)  # type: ignore[arg-type]
+    )
+    return (
+        f"[cell paths before the patch (index = id): {paths}; add cells at /cells/-. "
+        "Operations apply in order, so each remove shifts later indices down.]"
+    )
 
 
 def diff(before: Notebook, after: Notebook) -> list[JSONObject]:

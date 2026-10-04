@@ -217,6 +217,17 @@ async def test_every_request_asks_to_review_each_cell_but_messages():
 
 
 @pytest.mark.asyncio
+async def test_every_request_lists_the_cell_paths_a_patch_can_address():
+    provider = FakeProvider([step_response(patch=[add_code("x = 1")]), step_response(reply="ok")])
+
+    events = await _run(provider, observation="task")
+
+    ids = [cell["id"] for cell in events[-1].notebook["cells"]]
+    second = provider.calls[1][2][0].text
+    assert f"/cells/0 = {ids[0]}, /cells/1 = {ids[1]}; add cells at /cells/-" in second
+
+
+@pytest.mark.asyncio
 async def test_a_reply_without_the_step_tool_is_retried():
     no_call = AssistantMessage(content=[TextContent(text="I am done")], stop_reason="stop")
     provider = FakeProvider(
