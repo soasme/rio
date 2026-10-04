@@ -1,3 +1,13 @@
+# 0.7.1
+
+* feat(agent): manage every cell each step; recall removed cells from the journal ([#122](https://github.com/soasme/rio/pull/122))
+* docs: update readme
+* test(coding): decouple catalog tests from models.dev snapshot ([#121](https://github.com/soasme/rio/pull/121))
+* feat(coding): support MCP servers ([#119](https://github.com/soasme/rio/pull/119))
+* feat(agent): isolate each session kernel in a private venv ([#118](https://github.com/soasme/rio/pull/118))
+* feat(coding): add SQLite session storage ([#117](https://github.com/soasme/rio/pull/117))
+* refactor(agent): move spec definitions to rio.agent.spec ([#116](https://github.com/soasme/rio/pull/116))
+
 # 0.7.0
 
 * feat(evals): add SWE-bench Verified cases ([#113](https://github.com/soasme/rio/pull/113))
