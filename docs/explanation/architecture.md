@@ -68,9 +68,24 @@ change part of a file with `%%edit`:
 Each search text must match the file exactly once, blocks must not overlap,
 and nothing is written unless every block applies. The cell prints a diff.
 
-The model manages the notebook itself: it removes stale outputs and cells and
-keeps notes in markdown cells. The runtime never summarizes. It only caps each
-new output and rejects a patch that grows the notebook past the limit. A step
+The model manages the notebook itself. Each step it reviews every cell and
+decides one of:
+
+| Decision | Patch |
+| --- | --- |
+| Keep | No change. |
+| Delete | Remove the cell. |
+| Summarize | Replace the cell with a markdown note: decisions, file paths, exact values. |
+| Offload | Summarize, and link the archived cell for later reads. |
+
+A coding session gives the runtime a temporary archive directory. Each cell
+whose id leaves the notebook is saved there as `<id>.json`, source and outputs,
+and the prompt names the directory. A summary that links that file keeps the
+cell's full content resolvable from a code cell without keeping it in context.
+The directory is deleted when the session closes.
+
+The runtime never summarizes. It only caps each new output, archives removed
+cells, and rejects a patch that grows the notebook past the limit. A step
 that sets `reply` ends the run, and the reply is kept as a markdown cell.
 
 The package boundaries follow that design:

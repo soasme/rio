@@ -8,6 +8,9 @@ instructions from them, and driving `SessionRunner` over a durable journal.
 
 from __future__ import annotations
 
+import shutil
+import tempfile
+import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -219,7 +222,9 @@ class CodingSession:
             if mcp.startup:
                 startup = f"{startup}\n{mcp.startup}"
         kernel = KernelExecutor(cwd, startup=startup)
-        skill = _build_skill(config, resources, kernel)
+        # Created on the first removed cell; deleted when the session closes.
+        archive = Path(tempfile.gettempdir()) / f"rio-cells-{uuid.uuid4().hex}"
+        skill = _build_skill(config, resources, kernel, archive)
 
         storage = config.storage
         if storage is None:
@@ -612,7 +617,7 @@ class CodingSession:
             )
         resources = _discover(resource_paths, self._config)
         candidate_config = replace(self._config, extension_runtime=successor)
-        skill = _build_skill(candidate_config, resources, self.kernel)
+        skill = _build_skill(candidate_config, resources, self.kernel, self._skill.archive)
         await runtime.emit_session_shutdown("reload")
         await runtime.aclose()
         self._config.extension_runtime = successor
@@ -645,6 +650,8 @@ class CodingSession:
     async def aclose(self) -> None:
         self._runner.cancel()
         await self.kernel.aclose()
+        if self._skill.archive is not None:
+            shutil.rmtree(self._skill.archive, ignore_errors=True)
         await self.extensions.emit_session_shutdown("quit")
         await self.extensions.aclose()
 
@@ -714,7 +721,10 @@ def _discover(resource_paths: RioResourcePaths, config: CodingSessionConfig) -> 
 
 
 def _build_skill(
-    config: CodingSessionConfig, resources: SessionResources, kernel: KernelExecutor
+    config: CodingSessionConfig,
+    resources: SessionResources,
+    kernel: KernelExecutor,
+    archive: Path | None,
 ) -> HarnessSpec:
     assert kernel.cwd is not None
     instructions = build_skill_instructions(
@@ -730,7 +740,9 @@ def _build_skill(
             + (config.extension_runtime.prompt_sections if config.extension_runtime else ()),
         )
     )
-    return build_coding_skill(CodingSkillOptions(instructions=instructions, executor=kernel))
+    return build_coding_skill(
+        CodingSkillOptions(instructions=instructions, executor=kernel, archive=archive)
+    )
 
 
 def default_session_path(cwd: Path, *, paths: RioPaths | None = None) -> Path:

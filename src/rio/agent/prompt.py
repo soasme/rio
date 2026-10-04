@@ -19,17 +19,20 @@ def system_prompt(spec: HarnessSpec, limit_tokens: int) -> str:
         spec.instructions + "\n\n## Context protocol\n\n"
         "Your context is one Jupyter notebook N (nbformat v4 JSON), sent in full each step.\n\n"
         "Step:\n"
-        f"1. Call `{STEP_TOOL_NAME}` with `patch` (RFC 6902 JSON Patch on N) and optional "
-        "`reply`.\n"
-        "2. N' = patch(N). Rejected, and you retry, if N' is not a valid notebook, a run cell "
+        "1. Review every cell of N. Keep a cell only while you still need it. Otherwise "
+        "remove it, or replace it with a markdown cell summarizing what matters: decisions, "
+        f"file paths, exact values.{_archive_note(spec)}\n"
+        f"2. Call `{STEP_TOOL_NAME}` with `patch` (RFC 6902 JSON Patch on N, including the "
+        "review's edits) and optional `reply`.\n"
+        "3. N' = patch(N). Rejected, and you retry, if N' is not a valid notebook, a run cell "
         "reads a name only a stale cell defined, or N' is over L and not smaller than N.\n"
-        "3. Run cells of N' run in order until one fails; outputs go into N'. Other cells keep "
+        "4. Run cells of N' run in order until one fails; outputs go into N'. Other cells keep "
         "their outputs and never rerun.\n"
-        "4. A non-blank `reply` is appended to N' and ends the run; set it when the task is "
+        "5. A non-blank `reply` is appended to N' and ends the run; set it when the task is "
         "done or blocked. Else N' is the next N.\n\n"
         "Terms:\n"
-        f"- L: ~{limit_tokens} tokens; each request shows N's size. Keep N under L: remove "
-        "stale outputs and cells; keep notes of decisions, file paths, exact values.\n"
+        f"- L: ~{limit_tokens} tokens; each request shows N's size. Keep N under L with the "
+        "step 1 review.\n"
         "- Code cell: Python run by IPython. All cells share one live kernel, so variables "
         "persist across steps. Shell: `!cmd` or `%%bash`. Files: Python.\n"
         "- Markdown cell: a note. A cell with `metadata.rio.role` is a user message or your "
@@ -48,6 +51,16 @@ def system_prompt(spec: HarnessSpec, limit_tokens: int) -> str:
         "the same patch remove that cell's stamp before its readers "
         '(`{"op": "remove", "path": "/cells/<i>/metadata/rio/kernel"}`), or define the name '
         "again."
+    )
+
+
+def _archive_note(spec: HarnessSpec) -> str:
+    if spec.archive is None:
+        return ""
+    return (
+        f" A cell whose id leaves N is saved to `{spec.archive}/<id>.json` (source and "
+        "outputs). When you may need it again, link that path in the summary and read the "
+        "file from a code cell instead of keeping the cell."
     )
 
 

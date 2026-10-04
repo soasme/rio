@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from pydantic import BaseModel, ValidationError, field_validator
 
@@ -19,6 +20,9 @@ class HarnessSpec:
     #: Runs the changed cells of a patched notebook, e.g. a `KernelExecutor`.
     #: The caller owns its lifetime.
     executor: NotebookExecutor
+    #: Where cells a patch removes are saved as `<id>.json`, so a summary can
+    #: link them. `None` saves nothing. The caller owns the directory.
+    archive: Path | None = None
 
 
 STEP_TOOL_NAME = "skill_step"

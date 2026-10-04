@@ -216,6 +216,37 @@ theorem accepted_patch_fits_or_shrinks (limit : Nat) (current candidate : Notebo
     size candidate <= limit ∨ size candidate < size current := by
   simpa [accepts] using h
 
+/-! ## Archiving removed cells -/
+
+/-- Cells whose ids leave the notebook. With an archive, each is saved with its
+outputs, so a summary can link it. -/
+def removed (before after : Notebook) : Notebook :=
+  before.filter (fun cell => !after.any (·.id == cell.id))
+
+theorem archived_cells_are_whole_cells_of_the_old_notebook (before after : Notebook)
+    (cell : Cell) (h : cell ∈ removed before after) : cell ∈ before := by
+  simp [removed, List.mem_filter] at h
+  exact h.1
+
+theorem archived_cells_left_the_notebook (before after : Notebook) (cell : Cell)
+    (h : cell ∈ removed before after) : ∀ kept ∈ after, kept.id ≠ cell.id := by
+  simp [removed, List.mem_filter] at h
+  intro kept hk heq
+  exact h.2 kept hk heq
+
+/-- Every cell is either still in the notebook (by id) or archived: removal loses nothing. -/
+theorem every_cell_is_kept_or_archived (before after : Notebook) (cell : Cell)
+    (h : cell ∈ before) : after.any (·.id == cell.id) = true ∨ cell ∈ removed before after := by
+  by_cases hk : after.any (·.id == cell.id) = true
+  · exact Or.inl hk
+  · right
+    simp only [Bool.not_eq_true] at hk
+    simp [removed, List.mem_filter, h, hk]
+
+theorem a_summary_in_place_archives_the_cell (cell summary : Cell) (fresh : summary.id ≠ cell.id) :
+    removed [cell] [summary] = [cell] := by
+  simp [removed, fresh]
+
 /-! ## One step -/
 
 inductive ReplyError where
@@ -238,11 +269,13 @@ structure StepResult where
   notebook : Notebook
   ran : List Cell
   reply : Option String
+  /-- Cells the patch removed, saved before changed cells run. -/
+  archived : Notebook
 
 def commit (kernel : Kernel) (notebook patched : Notebook) (reply : Option String) :
     StepResult :=
   { notebook := merge notebook kernel patched ++ (reply.map replyCell).toList,
-    ran := changed notebook patched, reply := reply }
+    ran := changed notebook patched, reply := reply, archived := removed notebook patched }
 
 def blank (text : String) : Bool := text.toList.all Char.isWhitespace
 
@@ -284,14 +317,16 @@ theorem a_reply_is_kept_as_the_last_cell (limit : Nat) (kernel : Kernel)
     (hText : blank text = false) :
     runAttempt limit kernel notebook (.step (some patched) (some text)) =
       .committed { notebook := merge notebook kernel patched ++ [replyCell text],
-                   ran := changed notebook patched, reply := some text } := by
+                   ran := changed notebook patched, reply := some text,
+                   archived := removed notebook patched } := by
   simp [runAttempt, commit, answer_keeps_text text hText, h]
 
 theorem a_blank_reply_is_no_reply (limit : Nat) (kernel : Kernel)
     (notebook patched : Notebook) (h : accepts limit notebook patched = true) :
     runAttempt limit kernel notebook (.step (some patched) (some "")) =
       .committed { notebook := merge notebook kernel patched,
-                   ran := changed notebook patched, reply := none } := by
+                   ran := changed notebook patched, reply := none,
+                   archived := removed notebook patched } := by
   simp [runAttempt, commit, answer, blank, h]
 
 inductive StepStop where

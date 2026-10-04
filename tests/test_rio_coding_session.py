@@ -93,6 +93,16 @@ class TestLoad:
         session = await make_session(project, [])
         assert session.notebook == new_notebook()
 
+    async def test_removed_cells_archive_lasts_the_session(self, project) -> None:
+        session = await make_session(project, [])
+        archive = session._skill.archive
+        assert archive is not None and not archive.exists()
+        await session.reload()
+        assert session._skill.archive == archive
+        archive.mkdir()
+        await session.aclose()
+        assert not archive.exists()
+
     async def test_session_info_is_journaled_once(self, project) -> None:
         storage = InMemorySessionStorage()
         await make_session(project, [], storage=storage)

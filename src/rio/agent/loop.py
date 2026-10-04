@@ -8,8 +8,11 @@ valid notebook or outgrows the limit, then runs the changed code cells. The
 notebook with their outputs is the next step's context. A step that sets a
 non-blank `reply` ends the run.
 
-Validity is the runtime's job; strategy is the model's. The runtime never
-summarizes or drops cells. It only caps each new output's size.
+Validity is the runtime's job; strategy is the model's. Each step the model
+decides, cell by cell, what to keep, remove, or replace with a markdown summary.
+The runtime never summarizes or drops cells. It caps each new output's size and,
+when the skill has an archive, saves each removed cell there so a summary can
+link it.
 """
 
 from __future__ import annotations
@@ -33,11 +36,13 @@ from rio.agent.notebook import (
     NotebookError,
     append_cell,
     apply_patch,
+    archive_cells,
     changed_cells,
     error_output,
     markdown_cell,
     new_notebook,
     notebook_tokens,
+    removed_cells,
     stale_uses,
     with_kernel,
 )
@@ -116,6 +121,8 @@ async def run_context_loop(
             if attempt > max_retries:
                 raise RetriesExhaustedError(error_note)
 
+        if skill.archive is not None:
+            archive_cells(skill.archive, removed_cells(notebook, patched))
         if assistant.text:
             yield ReasoningEvent(step=step, reasoning=assistant.text)
         cells = changed_cells(notebook, patched)
