@@ -1,16 +1,25 @@
 # rio
 
-Rio is a fully autonomous, one-shot coding agent. It has no interactive terminal UI,
-no conversation history, no human steer in the middle and no follow-up turns.
-Start a task, let it run, and Rio exits only when the task completes or aborts.
+Rio is a fully autonomous, one-shot coding agent.
+It has no built-in interactive TUI, no conversation history, no human steer in the middle and no follow-up turns.
+Start a task and Rio runs until the task completes or aborts.
 
-## Use
+## Getting Started
 
 Install via `uv`:
 
 ```bash
 uv tool install rio
 ```
+
+## Usage
+
+Login to your preferred providers:
+
+* `rio login anthropic`
+* `rio login github-copilot`
+* `rio login codex`
+* ...
 
 Run a adhoc task:
 ```
@@ -36,9 +45,9 @@ You can add a short instruction when invoking it:
 uv run rio run "Follow feature.md, run the tests, and finish the implementation"
 ```
 
-Use `rio login PROVIDER` to configure a provider. Use `--provider NAME --model MODEL` to choose one and
-`--approve` to allow project instructions and extensions for that run. Rio
-prints a compact human transcript by default. Use `--output json` for one JSON
+Use `--provider NAME --model MODEL` to choose a provider and a model.
+
+Rio prints a compact human transcript by default. Use `--output json` for one JSON
 event per line. Each human-mode run prints a session id; continue it with
 `rio run --resume SESSION_ID "Next task"`.
 
