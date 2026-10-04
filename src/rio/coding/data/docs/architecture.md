@@ -74,10 +74,10 @@ rules. Markdown cells are notes. User tasks are markdown cells with
 `metadata.rio.role = "user"`.
 
 Validity is the runtime's job; strategy is the model's. The runtime never
-summarizes or drops cells. Each step the model reviews every cell: it keeps it,
-replaces it with a markdown summary, or removes it when nothing in it matters.
-Each removed cell is saved to the session's archive as `<id>.json`, and the
-summary links it, so the full cell can be read back.
+summarizes or drops cells. Every step the model goes through every cell: it
+keeps it, replaces it with a markdown summary that names the cell's id, or
+removes it. A replaced or removed cell stays in the session journal, and
+`%cell ID` (`rio.coding.cell_magic`) prints its last source and outputs.
 
 ## Sessions journal the notebook
 

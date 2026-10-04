@@ -59,6 +59,10 @@ new text
 >>>>>>> REPLACE
 ```"""
 
+CELL_MAGIC_HELP = """A summarized or removed cell stays in the session journal. `%cell ID` \
+prints its last source and outputs, so summarize freely instead of keeping a cell in case \
+you need it again."""
+
 
 def build_skill_instructions(options: BuildSystemPromptOptions) -> str:
     """Build the deterministic skill instructions for a rio coding skill."""
@@ -83,6 +87,7 @@ def build_skill_instructions(options: BuildSystemPromptOptions) -> str:
         "executing commands, editing code, and writing new files from notebook cells."
         f"\n\nGuidelines:\n{format_guidelines(options.extra_guidelines)}"
         f"\n\n{EDIT_MAGIC_HELP}"
+        f"\n\n{CELL_MAGIC_HELP}"
     )
 
     prompt += append_section

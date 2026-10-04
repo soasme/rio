@@ -10,9 +10,7 @@ non-blank `reply` ends the run.
 
 Validity is the runtime's job; strategy is the model's. Each step the model
 decides, cell by cell, what to keep, replace with a markdown summary, or remove.
-The runtime never summarizes or drops cells. It caps each new output's size and,
-when the skill has an archive, saves each removed cell there for the summary to
-link.
+The runtime never summarizes or drops cells. It only caps each new output's size.
 """
 
 from __future__ import annotations
@@ -36,13 +34,11 @@ from rio.agent.notebook import (
     NotebookError,
     append_cell,
     apply_patch,
-    archive_cells,
     changed_cells,
     error_output,
     markdown_cell,
     new_notebook,
     notebook_tokens,
-    removed_cells,
     stale_uses,
     with_kernel,
 )
@@ -121,8 +117,6 @@ async def run_context_loop(
             if attempt > max_retries:
                 raise RetriesExhaustedError(error_note)
 
-        if skill.archive is not None:
-            archive_cells(skill.archive, removed_cells(notebook, patched))
         if assistant.text:
             yield ReasoningEvent(step=step, reasoning=assistant.text)
         cells = changed_cells(notebook, patched)

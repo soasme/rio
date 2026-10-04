@@ -68,23 +68,23 @@ change part of a file with `%%edit`:
 Each search text must match the file exactly once, blocks must not overlap,
 and nothing is written unless every block applies. The cell prints a diff.
 
-The model manages the notebook itself. Each step it reviews every cell and
-decides one of:
+The model manages the notebook itself. Every step, whatever the notebook's
+size, it goes through every cell and decides one of:
 
 | Decision | Patch |
 | --- | --- |
-| Keep | No change. |
-| Summarize | Replace the cell with a markdown note: decisions, file paths, exact values, and a link to the archived cell. |
-| Delete | Remove the cell; only when nothing in it matters. |
+| Keep | No change. A coming step needs the cell's exact content. |
+| Summarize | Replace the cell with a markdown note: decisions, file paths, exact values, and the replaced cell's id. |
+| Remove | Remove the cell. Nothing in it matters any more. |
 
-A coding session gives the runtime a temporary archive directory. Each cell
-whose id leaves the notebook is saved there as `<id>.json`, source and outputs,
-and the prompt names the directory. Because the summary links that file, the
-cell's full content stays readable from a code cell without staying in context.
-The directory is deleted when the session closes.
+A removed or replaced cell is not lost. The session journal records every
+step's patch, so every version of every cell is in it. `%cell ID`
+(`rio.coding.cell_magic`) replays the journal and prints the cell's last
+source and outputs, so the model can summarize without keeping a cell in
+case it needs it again.
 
-The runtime never summarizes. It only caps each new output, archives removed
-cells, and rejects a patch that grows the notebook past the limit. A step
+The runtime never summarizes. It only caps each new output and rejects a patch
+that grows the notebook past the limit. A step
 that sets `reply` ends the run, and the reply is kept as a markdown cell.
 
 The package boundaries follow that design:

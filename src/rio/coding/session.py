@@ -8,9 +8,6 @@ instructions from them, and driving `SessionRunner` over a durable journal.
 
 from __future__ import annotations
 
-import shutil
-import tempfile
-import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -20,6 +17,7 @@ import anyio
 from rio.agent import HarnessSpec, KernelExecutor, Notebook, context_limit
 from rio.ai.provider import ModelProvider
 from rio.ai.types import JSONValue
+from rio.coding.cell_magic import journal_startup
 from rio.coding.coding_skill import CodingSkillOptions, build_coding_skill
 from rio.coding.context import discover_project_context_with_diagnostics
 from rio.coding.events import (
@@ -80,7 +78,8 @@ from rio.coding.system_prompt import (
     build_skill_instructions,
 )
 
-#: Run once when a session's kernel starts: adds the `%%edit` cell magic.
+#: Run once when a session's kernel starts: adds the `%%edit` cell magic. Each
+#: session also adds `%cell`, bound to its journal.
 KERNEL_STARTUP = "%load_ext rio.coding.edit_magic"
 
 #: A coding run is bounded so a runaway loop cannot burn tokens indefinitely.
@@ -210,7 +209,10 @@ class CodingSession:
         if config.command_registry is None:
             config.command_registry = runtime.build_command_registry()
         resources = _with_shadow_diagnostics(resources, config.command_registry)
-        startup = KERNEL_STARTUP
+        storage = config.storage
+        if storage is None:
+            storage = JsonlSessionStorage(config.paths.default_session_path(cwd))
+        startup = f"{KERNEL_STARTUP}\n{journal_startup(storage)}"
         if config.load_mcp:
             mcp = await anyio.to_thread.run_sync(
                 lambda: prepare_mcp(
@@ -222,13 +224,7 @@ class CodingSession:
             if mcp.startup:
                 startup = f"{startup}\n{mcp.startup}"
         kernel = KernelExecutor(cwd, startup=startup)
-        # Created on the first removed cell; deleted when the session closes.
-        archive = Path(tempfile.gettempdir()) / f"rio-cells-{uuid.uuid4().hex}"
-        skill = _build_skill(config, resources, kernel, archive)
-
-        storage = config.storage
-        if storage is None:
-            storage = JsonlSessionStorage(config.paths.default_session_path(cwd))
+        skill = _build_skill(config, resources, kernel)
 
         runner = SessionRunner(
             SessionRunnerConfig(
@@ -617,7 +613,7 @@ class CodingSession:
             )
         resources = _discover(resource_paths, self._config)
         candidate_config = replace(self._config, extension_runtime=successor)
-        skill = _build_skill(candidate_config, resources, self.kernel, self._skill.archive)
+        skill = _build_skill(candidate_config, resources, self.kernel)
         await runtime.emit_session_shutdown("reload")
         await runtime.aclose()
         self._config.extension_runtime = successor
@@ -650,8 +646,6 @@ class CodingSession:
     async def aclose(self) -> None:
         self._runner.cancel()
         await self.kernel.aclose()
-        if self._skill.archive is not None:
-            shutil.rmtree(self._skill.archive, ignore_errors=True)
         await self.extensions.emit_session_shutdown("quit")
         await self.extensions.aclose()
 
@@ -721,10 +715,7 @@ def _discover(resource_paths: RioResourcePaths, config: CodingSessionConfig) -> 
 
 
 def _build_skill(
-    config: CodingSessionConfig,
-    resources: SessionResources,
-    kernel: KernelExecutor,
-    archive: Path | None,
+    config: CodingSessionConfig, resources: SessionResources, kernel: KernelExecutor
 ) -> HarnessSpec:
     assert kernel.cwd is not None
     instructions = build_skill_instructions(
@@ -740,9 +731,7 @@ def _build_skill(
             + (config.extension_runtime.prompt_sections if config.extension_runtime else ()),
         )
     )
-    return build_coding_skill(
-        CodingSkillOptions(instructions=instructions, executor=kernel, archive=archive)
-    )
+    return build_coding_skill(CodingSkillOptions(instructions=instructions, executor=kernel))
 
 
 def default_session_path(cwd: Path, *, paths: RioPaths | None = None) -> Path:

@@ -206,38 +206,14 @@ async def test_a_patch_that_shrinks_an_oversized_notebook_is_accepted():
 
 
 @pytest.mark.asyncio
-async def test_a_cell_replaced_by_a_summary_is_archived_and_linked_in_the_prompt(tmp_path):
-    archive = tmp_path / "cells"
-    summary = {
-        "op": "replace",
-        "path": "/cells/1",
-        "value": {"cell_type": "markdown", "source": f"x is 42; see {archive}"},
-    }
-    provider = FakeProvider(
-        [
-            step_response(patch=[add_code("x = 41\nprint(x + 1)")]),
-            step_response(patch=[summary], reply="done"),
-        ]
-    )
+async def test_every_request_asks_to_review_each_cell_but_messages():
+    provider = FakeProvider([step_response(patch=[add_code("x = 1")]), step_response(reply="ok")])
 
-    events = await _run(provider, skill=make_skill(archive=archive), observation="task")
+    await _run(provider, observation="task")
 
-    first = next(e for e in events if isinstance(e, StepEndEvent)).notebook["cells"][1]
-    assert json.loads((archive / f"{first['id']}.json").read_text()) == first
-    assert [path.name for path in archive.iterdir()] == [f"{first['id']}.json"]
-    assert f"`{archive}/<id>.json`" in provider.calls[0][1]
-
-
-@pytest.mark.asyncio
-async def test_without_an_archive_removed_cells_are_not_saved():
-    remove = {"op": "remove", "path": "/cells/0"}
-    provider = FakeProvider([step_response(patch=[remove], reply="ok")])
-
-    events = await _run(provider, observation="task")
-
-    assert events[-1].notebook["cells"][0]["metadata"] == {"rio": {"role": "assistant"}}
-    assert "Review every cell" in provider.calls[0][1]
-    assert "<id>.json" not in provider.calls[0][1]
+    assert "Manage every cell, every step" in provider.calls[0][1]
+    assert "review cells" not in provider.calls[0][2][0].text
+    assert "[review cells [1]: keep, summarize, or remove each]" in provider.calls[1][2][0].text
 
 
 @pytest.mark.asyncio

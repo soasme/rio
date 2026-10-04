@@ -140,26 +140,6 @@ def changed_cells(before: Notebook, after: Notebook) -> list[int]:
     return result
 
 
-def removed_cells(before: Notebook, after: Notebook) -> list[JSONObject]:
-    """Return the cells of `before` whose ids are not in `after`."""
-    kept = {cell["id"] for cell in after["cells"]}  # type: ignore[union-attr]
-    return [cell for cell in before["cells"] if cell["id"] not in kept]  # type: ignore[union-attr]
-
-
-def archive_cells(directory: Path, cells: list[JSONObject]) -> None:
-    """Save each cell, source and outputs, to `directory/<id>.json`.
-
-    nbformat limits ids to letters, digits, `-`, and `_`, so an id is a safe file name.
-    """
-    if not cells:
-        return
-    directory.mkdir(parents=True, exist_ok=True)
-    for cell in cells:
-        (directory / f"{cell['id']}.json").write_text(
-            json.dumps(cell, indent=1, ensure_ascii=False), encoding="utf-8"
-        )
-
-
 def cell_kernel(cell: JSONObject) -> str | None:
     """Return the id of the kernel that last ran `cell`, or None."""
     kernel = cell.get("metadata", {}).get("rio", {}).get("kernel")  # type: ignore[union-attr]

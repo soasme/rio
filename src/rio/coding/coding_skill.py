@@ -7,7 +7,6 @@ varies between steps lives in the notebook, which the model manages itself.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from rio.agent import HarnessSpec, NotebookExecutor
 
@@ -19,15 +18,10 @@ class CodingSkillOptions:
     instructions: str
     executor: NotebookExecutor
     name: str = "rio-coding"
-    #: Where removed cells are saved; see `HarnessSpec.archive`.
-    archive: Path | None = None
 
 
 def build_coding_skill(options: CodingSkillOptions) -> HarnessSpec:
     """Return the `HarnessSpec` that drives a coding session."""
     return HarnessSpec(
-        name=options.name,
-        instructions=options.instructions,
-        executor=options.executor,
-        archive=options.archive,
+        name=options.name, instructions=options.instructions, executor=options.executor
     )

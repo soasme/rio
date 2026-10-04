@@ -19,12 +19,18 @@ def system_prompt(spec: HarnessSpec, limit_tokens: int) -> str:
         spec.instructions + "\n\n## Context protocol\n\n"
         "Your context is one Jupyter notebook N (nbformat v4 JSON), sent in full each step.\n\n"
         "Step:\n"
-        "1. Review every cell of N. Keep a cell only while you still need it. Otherwise "
-        "summarize it: replace it with a markdown cell of what matters (decisions, file "
-        f"paths, exact values){_archive_note(spec)}. Remove it outright only when nothing "
-        "in it matters.\n"
-        f"2. Call `{STEP_TOOL_NAME}` with `patch` (RFC 6902 JSON Patch on N, including the "
-        "review's edits) and optional `reply`.\n"
+        "1. Manage every cell, every step, whatever N's size; never wait until N nears L. "
+        "Go through N from the top and decide each cell:\n"
+        "   - keep: a coming step needs its exact content;\n"
+        "   - summarize: replace it with a markdown cell holding only what still matters "
+        "(decisions, file paths, exact values) and the id of each cell it replaces, e.g. "
+        "`calc.py: divide() uses //, line 4. (cells 3f2a9c1d, 9c1d0b7e)`;\n"
+        "   - remove: nothing in it matters any more.\n"
+        "   Once you have read an output, summarize it. Once a fix is verified, fold its "
+        "exploration and attempts into one note. A failed attempt becomes one line.\n"
+        f"2. Call `{STEP_TOOL_NAME}` with `patch` (RFC 6902 JSON Patch on N: step 1's edits, "
+        "then new cells) and optional `reply`. Operations apply in order, so remove and "
+        "replace from the last index to the first.\n"
         "3. N' = patch(N). Rejected, and you retry, if N' is not a valid notebook, a run cell "
         "reads a name only a stale cell defined, or N' is over L and not smaller than N.\n"
         "4. Run cells of N' run in order until one fails; outputs go into N'. Other cells keep "
@@ -55,16 +61,6 @@ def system_prompt(spec: HarnessSpec, limit_tokens: int) -> str:
     )
 
 
-def _archive_note(spec: HarnessSpec) -> str:
-    if spec.archive is None:
-        return ""
-    return (
-        f" and a link to `{spec.archive}/<id>.json`, where the runtime saves every cell "
-        "whose id leaves N (source and outputs); read that file from a code cell to "
-        "recover the full cell"
-    )
-
-
 def build_messages(
     notebook: Notebook, *, limit_tokens: int, error_note: str | None = None
 ) -> list[AgentMessage]:
@@ -73,6 +69,13 @@ def build_messages(
         f"```json\n{render_notebook(notebook)}\n```\n"
         f"[notebook: ~{notebook_tokens(notebook)}/{limit_tokens} tokens]"
     )
+    review = [
+        index
+        for index, cell in enumerate(notebook["cells"])  # type: ignore[arg-type]
+        if not cell.get("metadata", {}).get("rio", {}).get("role")  # type: ignore[union-attr]
+    ]
+    if review:
+        text += f"\n[review cells {review}: keep, summarize, or remove each]"
     stale = stale_cells(notebook)
     if stale:
         text += (

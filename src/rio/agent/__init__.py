@@ -28,13 +28,11 @@ from rio.agent.notebook import (
     NotebookError,
     NotebookExecutor,
     apply_patch,
-    archive_cells,
     changed_cells,
     diff,
     markdown_cell,
     new_notebook,
     notebook_tokens,
-    removed_cells,
     render_notebook,
 )
 from rio.agent.prompt import build_messages, system_prompt
