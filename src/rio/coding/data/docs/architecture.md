@@ -75,8 +75,9 @@ rules. Markdown cells are notes. User tasks are markdown cells with
 
 Validity is the runtime's job; strategy is the model's. The runtime never
 summarizes or drops cells. Each step the model reviews every cell: it keeps it,
-removes it, or replaces it with a markdown summary. Each removed cell is saved
-to the session's archive as `<id>.json`, so a summary can link the full cell.
+replaces it with a markdown summary, or removes it when nothing in it matters.
+Each removed cell is saved to the session's archive as `<id>.json`, and the
+summary links it, so the full cell can be read back.
 
 ## Sessions journal the notebook
 

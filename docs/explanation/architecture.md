@@ -74,14 +74,13 @@ decides one of:
 | Decision | Patch |
 | --- | --- |
 | Keep | No change. |
-| Delete | Remove the cell. |
-| Summarize | Replace the cell with a markdown note: decisions, file paths, exact values. |
-| Offload | Summarize, and link the archived cell for later reads. |
+| Summarize | Replace the cell with a markdown note: decisions, file paths, exact values, and a link to the archived cell. |
+| Delete | Remove the cell; only when nothing in it matters. |
 
 A coding session gives the runtime a temporary archive directory. Each cell
 whose id leaves the notebook is saved there as `<id>.json`, source and outputs,
-and the prompt names the directory. A summary that links that file keeps the
-cell's full content resolvable from a code cell without keeping it in context.
+and the prompt names the directory. Because the summary links that file, the
+cell's full content stays readable from a code cell without staying in context.
 The directory is deleted when the session closes.
 
 The runtime never summarizes. It only caps each new output, archives removed

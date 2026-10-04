@@ -9,10 +9,10 @@ notebook with their outputs is the next step's context. A step that sets a
 non-blank `reply` ends the run.
 
 Validity is the runtime's job; strategy is the model's. Each step the model
-decides, cell by cell, what to keep, remove, or replace with a markdown summary.
+decides, cell by cell, what to keep, replace with a markdown summary, or remove.
 The runtime never summarizes or drops cells. It caps each new output's size and,
-when the skill has an archive, saves each removed cell there so a summary can
-link it.
+when the skill has an archive, saves each removed cell there for the summary to
+link.
 """
 
 from __future__ import annotations

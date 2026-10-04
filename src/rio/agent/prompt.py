@@ -20,8 +20,9 @@ def system_prompt(spec: HarnessSpec, limit_tokens: int) -> str:
         "Your context is one Jupyter notebook N (nbformat v4 JSON), sent in full each step.\n\n"
         "Step:\n"
         "1. Review every cell of N. Keep a cell only while you still need it. Otherwise "
-        "remove it, or replace it with a markdown cell summarizing what matters: decisions, "
-        f"file paths, exact values.{_archive_note(spec)}\n"
+        "summarize it: replace it with a markdown cell of what matters (decisions, file "
+        f"paths, exact values){_archive_note(spec)}. Remove it outright only when nothing "
+        "in it matters.\n"
         f"2. Call `{STEP_TOOL_NAME}` with `patch` (RFC 6902 JSON Patch on N, including the "
         "review's edits) and optional `reply`.\n"
         "3. N' = patch(N). Rejected, and you retry, if N' is not a valid notebook, a run cell "
@@ -58,9 +59,9 @@ def _archive_note(spec: HarnessSpec) -> str:
     if spec.archive is None:
         return ""
     return (
-        f" A cell whose id leaves N is saved to `{spec.archive}/<id>.json` (source and "
-        "outputs). When you may need it again, link that path in the summary and read the "
-        "file from a code cell instead of keeping the cell."
+        f" and a link to `{spec.archive}/<id>.json`, where the runtime saves every cell "
+        "whose id leaves N (source and outputs); read that file from a code cell to "
+        "recover the full cell"
     )
 
 
