@@ -18,8 +18,9 @@ from typing import Protocol
 
 from rio.agent import render_notebook
 from rio.ai.types import JSONValue
+from rio.coding.catalog_loader import builtin_catalog
 from rio.coding.prompt_templates import PromptTemplate
-from rio.coding.provider_catalog import BUILTIN_PROVIDER_CATALOG, builtin_provider_entry
+from rio.coding.provider_catalog import builtin_provider_entry
 from rio.coding.reload import CodingReloadSummary, ReloadCategorySummary
 from rio.coding.resources import ResourceDiagnostic
 from rio.coding.session_manager import (
@@ -792,7 +793,7 @@ def _login_command(context: CommandContext) -> CommandResult:
         if entry is None:
             providers = ", ".join(
                 [
-                    *(entry.name for entry in BUILTIN_PROVIDER_CATALOG),
+                    *(entry.name for entry in builtin_catalog()),
                     *LOGIN_PROVIDER_ALIASES,
                 ]
             )
@@ -812,7 +813,7 @@ def _logout_command(context: CommandContext) -> CommandResult:
     if provider_name:
         entry = builtin_provider_entry(provider_name)
         if entry is None:
-            providers = ", ".join(entry.name for entry in BUILTIN_PROVIDER_CATALOG)
+            providers = ", ".join(entry.name for entry in builtin_catalog())
             return CommandResult(
                 handled=True,
                 message=(
