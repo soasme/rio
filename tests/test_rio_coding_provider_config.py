@@ -233,6 +233,7 @@ def test_builtin_openai_declares_model_scoped_thinking_capabilities() -> None:
     )
     assert provider_thinking_levels(openrouter, model="openai/gpt-5.5") == (
         "off",
+        "minimal",
         "low",
         "medium",
         "high",
@@ -240,10 +241,11 @@ def test_builtin_openai_declares_model_scoped_thinking_capabilities() -> None:
     )
     assert provider_thinking_unavailable_reason(openrouter, model="openai/gpt-5.5") is None
     assert provider_thinking_levels(openrouter, model="anthropic/claude-sonnet-4.6") == (
+        "off",
+        "minimal",
         "low",
         "medium",
         "high",
-        "max",
     )
     assert (
         provider_thinking_unavailable_reason(openrouter, model="anthropic/claude-sonnet-4.6")
@@ -267,10 +269,10 @@ def test_builtin_openai_declares_model_scoped_thinking_capabilities() -> None:
     )
     assert provider_thinking_unavailable_reason(codex, model="gpt-5.5") is None
     assert provider_thinking_levels(anthropic, model="claude-sonnet-4-6") == (
+        "off",
         "low",
         "medium",
         "high",
-        "max",
     )
     assert provider_thinking_unavailable_reason(anthropic, model="claude-sonnet-4-6") is None
     assert provider_thinking_levels(anthropic, model="claude-haiku-4-5") == (
@@ -281,11 +283,11 @@ def test_builtin_openai_declares_model_scoped_thinking_capabilities() -> None:
         "high",
     )
     assert provider_thinking_levels(anthropic, model="claude-opus-5") == (
+        "off",
         "low",
         "medium",
         "high",
         "xhigh",
-        "max",
     )
 
 
@@ -1156,7 +1158,7 @@ def test_openai_compatible_config_from_provider_sets_reasoning_effort(
 
 @pytest.mark.parametrize(
     ("level", "expected_effort"),
-    [("low", "low"), ("high", "high"), ("max", "max")],
+    [("low", "low"), ("high", "high"), ("xhigh", "max")],
 )
 def test_kimi_k3_maps_thinking_levels_to_reasoning_effort(
     monkeypatch: pytest.MonkeyPatch,
@@ -1173,13 +1175,13 @@ def test_kimi_k3_maps_thinking_levels_to_reasoning_effort(
         thinking_level=level,
     )
 
-    assert provider_thinking_levels(provider, model="k3") == ("low", "high", "max")
+    assert provider_thinking_levels(provider, model="k3") == ("low", "high", "xhigh")
     assert config.reasoning_effort == expected_effort
 
 
 @pytest.mark.parametrize(
     ("level", "expected_effort"),
-    [("low", "low"), ("high", "high"), ("max", "max")],
+    [("low", "low"), ("high", "high"), ("xhigh", "max")],
 )
 def test_huggingface_kimi_k3_maps_thinking_levels_to_reasoning_effort(
     monkeypatch: pytest.MonkeyPatch,
@@ -1199,7 +1201,7 @@ def test_huggingface_kimi_k3_maps_thinking_levels_to_reasoning_effort(
     assert provider_thinking_levels(provider, model="moonshotai/Kimi-K3") == (
         "low",
         "high",
-        "max",
+        "xhigh",
     )
     assert config.reasoning_effort == expected_effort
 
@@ -1402,7 +1404,7 @@ def test_anthropic_config_from_provider_maps_opus_5_adaptive_thinking(
     assert medium_config.thinking_mode == "adaptive"
     assert medium_config.thinking_effort == "medium"
     assert xhigh_config.thinking_mode == "adaptive"
-    assert xhigh_config.thinking_effort == "xhigh"
+    assert xhigh_config.thinking_effort == "max"
 
 
 def test_anthropic_config_from_provider_sets_model_max_tokens(

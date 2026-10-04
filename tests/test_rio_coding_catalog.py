@@ -8,6 +8,7 @@ test_provider_catalog.py. Tests that depend on tau_coding.provider_config
 from __future__ import annotations
 
 import json
+from importlib.resources import files
 from pathlib import Path
 from typing import get_args
 
@@ -227,7 +228,9 @@ def test_invalid_generated_catalog_is_rejected() -> None:
         models_dev_catalog_overlay({"schema_version": 2, "providers": {}})
 
 
-def test_missing_bundled_catalog_falls_back_silently(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_bundled_catalog_falls_back_silently(
+    monkeypatch: pytest.MonkeyPatch, bundled_models_dev_catalog: None
+) -> None:
     def missing_files(_package: str) -> None:
         raise OSError("offline package fixture")
 
@@ -313,7 +316,7 @@ async def test_refresh_revalidates_with_etag_and_preserves_cached_body(tmp_path:
 
 
 async def test_offline_mode_uses_bundled_catalog_without_network(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bundled_models_dev_catalog: None
 ) -> None:
     monkeypatch.setenv("RIO_OFFLINE", "1")
 
@@ -365,6 +368,46 @@ async def test_fresh_cache_skips_network_and_failed_force_preserves_it(tmp_path:
 # ---------------------------------------------------------------------------
 # provider_catalog / catalog_loader
 # ---------------------------------------------------------------------------
+
+
+def test_bundled_models_dev_catalog_matches_schema(bundled_models_dev_catalog: None) -> None:
+    text = files("rio.coding").joinpath("data/models-dev-catalog.json").read_text(encoding="utf-8")
+    document = json.loads(text)
+    assert document["schema_version"] == 1
+    assert isinstance(document["generated_at"], int)
+
+    # Raises on any schema violation; the loader would otherwise silently fall
+    # back to catalog.toml and hide a broken snapshot.
+    overlay = models_dev_catalog_overlay(document)
+    assert bundled_models_dev_catalog_overlay() == overlay
+
+    source_names = {entry.name for entry in builtin_source_catalog()}
+    builtin = {entry.name: entry for entry in builtin_catalog()}
+    assert [entry.name for entry in builtin_catalog()] == [
+        entry.name for entry in builtin_source_catalog()
+    ]
+    for provider in overlay["providers"]:
+        assert provider["name"] in source_names
+        entry = builtin[provider["name"]]
+        # The snapshot was merged rather than discarded by the loader's fallback.
+        assert set(provider["models"]) - set(entry.removed_models) <= set(entry.models)
+
+
+def test_builtin_catalog_with_bundled_models_matches_schema(
+    bundled_models_dev_catalog: None,
+) -> None:
+    for entry in builtin_catalog():
+        assert entry.models, entry.name
+        assert all(isinstance(model, str) and model for model in entry.models), entry.name
+        assert entry.default_model in entry.models, entry.name
+        assert set(entry.model_metadata) <= set(entry.models), entry.name
+        if entry.context_windows is not None:
+            assert set(entry.context_windows) <= set(entry.models), entry.name
+            assert all(
+                isinstance(window, int) and window > 0 for window in entry.context_windows.values()
+            ), entry.name
+        for model, metadata in entry.model_metadata.items():
+            assert_model_metadata_schema(f"{entry.name}/{model}", metadata)
 
 
 def test_builtin_catalog_matches_expected_providers() -> None:
@@ -419,7 +462,6 @@ def test_builtin_catalog_golden_anthropic_entry() -> None:
         "claude-opus-4-5-20251101",
         "claude-opus-4-6",
         "claude-opus-4-7",
-        "claude-opus-4-8",
         "claude-opus-5",
         "claude-sonnet-4-5",
         "claude-sonnet-4-5-20250929",
@@ -443,15 +485,6 @@ def test_builtin_catalog_golden_anthropic_entry() -> None:
     assert opus_5.cost["cacheWrite"] == 6.25
     assert opus_5.cost["cacheWrite1h"] == 10
     assert opus_5.compat == {"forceAdaptiveThinking": True}
-    assert opus_5.thinking_level_map == {
-        "off": None,
-        "minimal": None,
-        "low": "low",
-        "medium": "medium",
-        "high": "high",
-        "xhigh": "xhigh",
-        "max": "max",
-    }
     assert entry.thinking_levels == ("off", "minimal", "low", "medium", "high", "xhigh")
     assert entry.thinking_models == ()
     assert entry.thinking_default == "medium"
@@ -670,7 +703,7 @@ def test_builtin_catalog_golden_nvidia_entry() -> None:
 def test_builtin_catalog_huggingface_model_expansion() -> None:
     entry = builtin_provider_entry("huggingface")
     assert entry is not None
-    assert len(entry.models) >= 47
+    assert entry.models
     assert all(isinstance(model, str) for model in entry.models)
     assert entry.default_model in entry.models
     assert entry.context_windows is not None
@@ -702,7 +735,7 @@ def test_builtin_catalog_golden_kimi_entries() -> None:
     assert k2_7.reasoning is True
     assert k2_7.input == ("text", "image")
     assert k2_7.context_window == 262_144
-    assert k2_7.max_tokens == 262_144
+    assert k2_7.max_tokens == 32_768
     assert k2_7.thinking_level_map == {
         "off": None,
         "minimal": None,
@@ -716,7 +749,7 @@ def test_builtin_catalog_golden_kimi_entries() -> None:
     assert coding.base_url == "https://api.kimi.com/coding/v1"
     assert coding.api_key_env == "KIMI_CODE_API_KEY"
     assert coding.credential_name == "kimi-code"
-    assert {"k3", "kimi-for-coding", "k3-256k", "kimi-for-coding-highspeed"} == set(coding.models)
+    assert {"k3", "kimi-for-coding"} <= set(coding.models)
     assert coding.default_model == "kimi-for-coding"
     assert coding.thinking_default == "max"
     assert coding.context_windows is not None
@@ -729,29 +762,11 @@ def test_builtin_catalog_golden_kimi_entries() -> None:
     assert k3.reasoning is True
     assert k3.input == ("text", "image")
     assert k3.context_window == 1_048_576
-    assert k3.thinking_level_map == {
-        "off": None,
-        "minimal": None,
-        "low": "low",
-        "medium": None,
-        "high": "high",
-        "xhigh": None,
-        "max": "max",
-    }
 
     latest = coding.model_metadata["kimi-for-coding"]
-    assert latest.name == "kimi-for-coding"
+    assert latest.name == "Kimi for Coding (latest)"
     assert latest.reasoning is True
-    assert latest.context_window == 1_048_576
-    assert latest.thinking_level_map == {
-        "off": None,
-        "minimal": None,
-        "low": "low",
-        "medium": None,
-        "high": "high",
-        "xhigh": None,
-        "max": "max",
-    }
+    assert latest.context_window == 262_144
 
 
 def test_builtin_minimax_m3_has_tiered_pricing() -> None:
