@@ -48,3 +48,36 @@ def test_tool_to_mistral_falls_back_when_tool_did_not_opt_in():
     function = payload["function"]
     assert function["strict"] is False
     assert function["parameters"] == tool.input_schema
+
+
+def test_mistral_medium_reasoning_models_use_reasoning_effort():
+    from rio.ai.mistral import _build_mistral_payload
+
+    for model in ("mistral-medium-2604", "mistral-medium-latest", "mistral-medium-3.5"):
+        payload = _build_mistral_payload(
+            model=model,
+            system="",
+            messages=[],
+            tools=[],
+            reasoning_effort="high",
+            max_tokens=None,
+        )
+
+        assert payload["reasoning_effort"] == "high", model
+        assert "prompt_mode" not in payload, model
+
+
+def test_magistral_uses_prompt_mode():
+    from rio.ai.mistral import _build_mistral_payload
+
+    payload = _build_mistral_payload(
+        model="magistral-medium-latest",
+        system="",
+        messages=[],
+        tools=[],
+        reasoning_effort="high",
+        max_tokens=None,
+    )
+
+    assert payload["prompt_mode"] == "reasoning"
+    assert "reasoning_effort" not in payload

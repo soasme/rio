@@ -49,3 +49,35 @@ def test_anthropic_tool_keeps_cache_control():
     payload = _anthropic_tool(_read_like_tool(), cache_control=cache_control, compat={})
 
     assert payload["cache_control"] == cache_control
+
+
+def _tool_with_property(property_schema: dict) -> AgentTool:
+    return AgentTool(
+        name="sample",
+        label="sample",
+        description="Sample tool",
+        parameters={"type": "object", "properties": {"value": property_schema}},
+        execute_fn=_noop_execute,
+        constrained_sampling={"type": "json_schema", "strict": "prefer"},
+    )
+
+
+def test_anthropic_tool_sends_non_strict_when_schema_uses_rejected_keywords():
+    for property_schema in (
+        {"type": "integer", "minimum": 1},
+        {"type": "array", "items": {"type": "string"}, "minItems": 2},
+        {"type": "string", "format": "binary"},
+    ):
+        payload = _anthropic_tool(_tool_with_property(property_schema), compat={})
+
+        assert "strict" not in payload, property_schema
+
+
+def test_anthropic_tool_keeps_strict_for_supported_keywords():
+    for property_schema in (
+        {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        {"type": "string", "format": "date-time"},
+    ):
+        payload = _anthropic_tool(_tool_with_property(property_schema), compat={})
+
+        assert payload["strict"] is True, property_schema

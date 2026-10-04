@@ -530,6 +530,7 @@ async def _codex_provider_events(
     tools_by_output_index: dict[int, _ToolCallBuilder] = {}
     finish_reason: str | None = None
     usage: Usage | None = None
+    saw_terminal_event = False
 
     async for event in _iter_sse_objects(response):
         if signal is not None and signal.is_cancelled():
@@ -667,9 +668,27 @@ async def _codex_provider_events(
             "response.completed",
             "response.incomplete",
         }:
+            saw_terminal_event = True
             finish_reason = _finish_reason_from_response(event)
             usage = _usage_from_response(event) or usage
             break
+
+    if not saw_terminal_event:
+        yield ProviderErrorEvent(
+            message="OpenAI Codex stream ended before a terminal response event"
+        )
+        return
+    # The agent runs every tool call in the final message. Refuse calls whose
+    # output_item.done never arrived: their arguments may be cut off or mixed up.
+    if active_tools:
+        unfinished = active_tools[0]
+        yield ProviderErrorEvent(
+            message=(
+                "OpenAI Codex stream completed with an unfinished tool call: "
+                f"{unfinished.name} ({unfinished.call_id})"
+            )
+        )
+        return
 
     content = assistant_content("".join(content_parts), tool_calls)
     if thinking_parts:
@@ -950,6 +969,8 @@ def _stream_error_details(event: Mapping[str, Any]) -> tuple[str | None, str | N
 
 _TRANSIENT_STREAM_ERROR_MARKERS = (
     "overloaded",
+    "model is at capacity",
+    "currently experiencing high demand",
     "service_unavailable",
     "temporarily_unavailable",
     "rate_limit",
@@ -1090,5 +1111,6 @@ def _is_terminal_rate_limit(body: str) -> bool:
         "out of budget",
         "quota exceeded",
         "billing",
+        "subscription_sharing_usage_limit_exceeded",
     )
     return any(marker in normalized for marker in markers)

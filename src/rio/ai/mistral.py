@@ -464,7 +464,11 @@ def _mistral_base_url(base_url: str) -> str:
 
 
 def _uses_reasoning_effort(model: str) -> bool:
-    return model in {"mistral-small-2603", "mistral-small-latest", "mistral-medium-3.5"}
+    # Mistral Medium reasoning models ignore `prompt_mode`; only `reasoning_effort` works.
+    return model.startswith("mistral-medium-") or model in {
+        "mistral-small-2603",
+        "mistral-small-latest",
+    }
 
 
 def _parse_sse_line(line: str) -> str | None:

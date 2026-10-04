@@ -175,3 +175,26 @@ def test_get_json_schema_tool_parameters_passes_through_when_not_strict():
     parameters = {"type": "object", "properties": {"path": {"type": "string"}}}
     assert get_json_schema_tool_parameters(parameters, None) == parameters
     assert get_json_schema_tool_parameters(parameters, False) == parameters
+
+
+def _rejects_minimum(key: str, value: object) -> bool:
+    return key == "minimum"
+
+
+def test_resolve_falls_back_when_provider_rejects_a_keyword():
+    tool = _make_tool(
+        {"type": "object", "properties": {"n": {"type": "integer", "minimum": 0}}},
+        constrained_sampling={"type": "json_schema", "strict": "prefer"},
+    )
+
+    assert resolve_json_schema_strict_sampling(tool, True, _rejects_minimum) is None
+
+
+def test_resolve_raises_when_required_strict_tool_uses_a_rejected_keyword():
+    tool = _make_tool(
+        {"type": "object", "properties": {"n": {"type": "integer", "minimum": 0}}},
+        constrained_sampling={"type": "json_schema", "strict": "require"},
+    )
+
+    with pytest.raises(ValueError, match="minimum: 0 is unsupported"):
+        resolve_json_schema_strict_sampling(tool, True, _rejects_minimum)

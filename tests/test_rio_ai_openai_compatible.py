@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from itertools import count
 
-from rio.ai._provider_events import ProviderResponseEndEvent
+from rio.ai._provider_events import ProviderErrorEvent, ProviderResponseEndEvent
 from rio.ai.openai_compatible import _ResponsesStreamParser, _tool_to_openai, _tool_to_responses
 from rio.ai.tools import AgentTool
 
@@ -114,7 +114,7 @@ def _function_call_events(output_index: int, name: str, arguments: str) -> list[
 
 def _parse(chunks: list[dict]):
     parser = _ResponsesStreamParser()
-    for chunk in chunks:
+    for chunk in [*chunks, {"type": "response.completed", "response": {"status": "completed"}}]:
         parser.feed(json.dumps(chunk))
     end = next(e for e in parser.finalize() if isinstance(e, ProviderResponseEndEvent))
     return end.message.tool_calls
@@ -151,3 +151,34 @@ def test_arguments_events_alone_carry_name_and_are_ordered_by_output_index():
 
     assert [call.name for call in tool_calls] == ["skill_step", "skill_step"]
     assert [call.arguments for call in tool_calls] == [{"a": 1}, {"b": 2}]
+
+
+def _finalize(chunks: list[dict]):
+    parser = _ResponsesStreamParser()
+    for chunk in chunks:
+        parser.feed(json.dumps(chunk))
+    return parser.finalize()
+
+
+def test_stream_without_terminal_event_ends_with_error():
+    events = _finalize(_function_call_events(0, "read", '{"path": "a"}'))
+
+    assert len(events) == 1
+    assert isinstance(events[0], ProviderErrorEvent)
+    assert "terminal response event" in events[0].message
+
+
+def test_tool_call_without_done_event_ends_with_error():
+    """Servers that omit output_index (llama.cpp) can leave calls mixed up; don't run them."""
+    chunks = [
+        chunk
+        for chunk in _function_call_events(0, "read", '{"path": "a"}')
+        if not chunk["type"].endswith(".done")
+    ]
+    chunks.append({"type": "response.completed", "response": {"status": "completed"}})
+
+    events = _finalize(chunks)
+
+    assert len(events) == 1
+    assert isinstance(events[0], ProviderErrorEvent)
+    assert "unfinished tool call: read (call-0)" in events[0].message
