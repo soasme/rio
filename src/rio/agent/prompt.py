@@ -12,6 +12,7 @@ Your entire working context is the supplied State. Use exactly one `step` tool c
 Use concise notes to retain facts; remove obsolete Cells and outputs to keep context small.
 The goal and runtime are read-only. The only edits are RFC 6902 tests, append at /cells/-,
 replace a whole /cells/N object, and remove /cells/N in descending index order.
+N is the Cell's 0-based position in the cells array, NOT its id.
 Begin every patch with {"op":"test","path":"/revision","value":REVISION}.
 Cells have increasing integer IDs allocated from runtime.next_cell_id in patch order.
 A new Cell has previous_id:null. A replacement gets a NEW id and previous_id equal to the

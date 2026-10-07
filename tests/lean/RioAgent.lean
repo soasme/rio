@@ -36,6 +36,19 @@ def replaceHead (cells : List Cell) (next : Nat) : List Cell :=
 theorem replacement_preserves_position (a b : Cell) (next : Nat) :
     replaceHead [a,b] next = [⟨next, some a.id⟩, b] := by rfl
 
+/-- /cells/N addresses a position; a rejected id-as-index names the id's position. -/
+def positionOf (cells : List Cell) (id : Nat) : Option Nat :=
+  cells.findIdx? (·.id == id)
+
+def indexHint (cells : List Cell) (n : Nat) : Option Nat :=
+  if n < cells.length then none else positionOf cells n
+
+theorem in_range_index_needs_no_hint (cells : List Cell) (n : Nat) (h : n < cells.length) :
+    indexHint cells n = none := by simp [indexHint, h]
+
+theorem id_used_as_index_points_to_position :
+    indexHint [⟨2, none⟩] 2 = some 0 := by rfl
+
 inductive Kind where
   | note | code | cmd
   deriving DecidableEq, Repr
