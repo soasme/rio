@@ -9,8 +9,6 @@ resume its durable session when needed.
 
 ## Guides
 
-- [Durable Sessions](durable.md) (default runtime)
-
 - [Configure providers and models](guides/providers.md)
 - [Use Rio as a library](guides/library-usage.md)
 - [Use a local llama-server model](guides/local-llama-server.md)

@@ -65,23 +65,30 @@ Rio discovers the authorization server, registers itself (or uses
 `~/.rio/mcp-auth.json` and refreshed automatically. `rio mcp logout linear`
 deletes them.
 
-## How the model calls tools
+## Call tools from Python
 
-The instructions list each enabled server and its description. Session start
-does not connect to servers: when the kernel starts, every server begins
-connecting in the background, and the first use of `mcp.<server>` waits for
-that server only. Cells call tools through the preloaded `mcp` object:
+Use the Python client explicitly. Declare `rio` in the script's PEP 723
+dependencies when running through uv.
 
 ```python
-print(mcp.linear)                  # tools and server instructions
-issues = mcp.linear.list_issues(query="login bug")
-help(mcp.linear.list_issues)       # description and parameters
-mcp["my-server"].call("tool-name", {"arg": 1})
-mcp.fs.resources(); mcp.fs.read_resource("file:///README.md")
+from pathlib import Path
+from rio.coding.mcp.api import Mcp
+from rio.coding.mcp.config import load_mcp_config
+from rio.coding.mcp.oauth import McpAuthStore, auth_store_path
+
+cwd = Path.cwd()
+config = load_mcp_config(cwd, project_trusted=False)
+client = Mcp(
+    {server.name: server.config for server in config.enabled},
+    cwd, McpAuthStore(auth_store_path()),
+)
+try:
+    print(client.linear.tools())
+    issues = client.linear.list_issues(query="login bug")
+finally:
+    client.close()
 ```
 
-A tool returns its structured content, else its text, else its content
-blocks, and raises `McpToolError` when it reports an error. A failed
-connection is retried on the next use, so a server that needed `rio mcp login`
-works once you sign in. Stdio servers run with your environment, not the
-session's private venv.
+A tool returns structured content, text, or content blocks. It raises
+`McpToolError` when the server reports an error. Connections last for this
+script only. The CLI does not preload an MCP object into scripts.

@@ -296,7 +296,7 @@ Implement the SQLite reducer and commit protocol, step admission, serial executi
 
 BEAM informs process ownership and supervision. Rio keeps Python. The CLM approach informs model-managed context. Rio v0.7.0–v0.7.1 provide the earlier notebook-based direction; this design keeps JSON Patch and Session history while replacing shared kernel execution. [R8–R10, R13]
 
-Import legacy notes and outputs as historical material. Code with implicit variable dependencies must become an independent script before execution. Importing historical code does not run it; accepting a new code Cell does. JSONL is only a one-time import source.
+Sessions use SQLite only. There is no legacy session importer. Each accepted code Cell must be an independent script.
 
 Pi Durable is a reference for committed state and interrupted-work handling. This design deliberately uses a smaller Cell-boundary protocol. It does not adopt per-operation intent/effect/result tracking, and therefore cannot promise its associated operation-level recovery behavior. [R11–R12]
 

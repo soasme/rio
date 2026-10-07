@@ -19,12 +19,7 @@ def trace_metrics(trace: str) -> dict:
             continue
         kind = event.get("type")
         changes = event.get("changes", {})
-        if kind == "step_start":
-            rounds += 1
-            input_bytes += len(json.dumps(event.get("notebook", {})).encode())
-        elif kind == "execution":
-            executions += len(event.get("cells", []))
-        elif kind == "turn_prepared":
+        if kind == "turn_prepared":
             rounds += 1
             turn = next(iter(changes["turns"].values()))
             input_bytes += len(json.dumps(turn["state"]).encode())
@@ -98,5 +93,5 @@ def compare(baseline: dict, candidate: dict) -> dict:
     return {
         "cases": comparison,
         "note": "Observed differences are descriptive, not evidence of statistical significance. "
-        "Repeat paired trials; inspect failures and report regressions.",
+        "Repeat trials on both revisions; inspect failures and report regressions.",
     }

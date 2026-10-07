@@ -8,14 +8,14 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 
-from rio.agent.loop import _call_model
+from rio.agent.owner import Owner
+from rio.agent.prompt import SCHEMA, STEP, SYSTEM
+from rio.agent.session import Session, observation
+from rio.agent.state import InvalidPatch
+from rio.agent.store import encode
+from rio.ai.events import AssistantDoneEvent, AssistantErrorEvent
 from rio.ai.messages import AssistantMessage, UserMessage, raw_tool_arguments
 from rio.ai.provider import ModelProvider
-from rio.durable.owner import Owner
-from rio.durable.prompt import SCHEMA, STEP, SYSTEM
-from rio.durable.session import Session, observation
-from rio.durable.state import InvalidPatch
-from rio.durable.store import encode
 
 
 async def run(
@@ -90,7 +90,6 @@ async def run(
                             turn["system"],
                             messages,
                             [replace(STEP, parameters=turn["tool_schema"])],
-                            None,
                         )
                     )
                     try:
@@ -139,3 +138,23 @@ async def run(
             flush()
         flush()
     return session.meta["terminal"]["result"] == "success"
+
+
+async def _call_model(
+    provider: ModelProvider,
+    model: str,
+    system: str,
+    messages: list,
+    tools: list,
+) -> AssistantMessage:
+    result: AssistantMessage | None = None
+    async for event in provider.stream_response(
+        model=model, system=system, messages=messages, tools=tools
+    ):
+        if isinstance(event, AssistantDoneEvent):
+            result = event.message
+        elif isinstance(event, AssistantErrorEvent):
+            result = event.error
+    if result is None:
+        raise RuntimeError("provider produced no assistant message")
+    return result

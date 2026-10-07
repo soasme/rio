@@ -8,7 +8,6 @@ import json
 import os
 import sys
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -16,7 +15,8 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 import pytest
 
-from rio.coding.mcp import prepare, probe, prompt_section
+from rio.coding.mcp import probe, prompt_section
+from rio.coding.mcp.api import Mcp, McpToolError, host_environ, tool_result
 from rio.coding.mcp.client import McpError, iter_sse
 from rio.coding.mcp.commands import AddOptions, McpCommandError, add, list_servers, login, logout
 from rio.coding.mcp.commands import remove as remove_command
@@ -30,7 +30,6 @@ from rio.coding.mcp.config import (
     validate_server,
 )
 from rio.coding.mcp.connection import create_client
-from rio.coding.mcp.kernel import Mcp, McpToolError, host_environ, startup_code, tool_result
 from rio.coding.mcp.oauth import McpAuthStore, parse_www_authenticate, select_resource
 from rio.coding.paths import RioPaths
 from rio.coding.project_trust import CanonicalProjectPath, ProtectedResourceDetector
@@ -223,32 +222,6 @@ class TestStdio:
         assert tool_result({"content": [], "structuredContent": {"k": 1}}) == {"k": 1}
         with pytest.raises(McpToolError):
             tool_result({"content": [text], "isError": True})
-
-    def test_startup_code_installs_mcp(self, tmp_path):
-        namespace: dict = {}
-
-        class IPython:
-            def push(self, values, interactive):
-                namespace.update(values)
-
-        code = startup_code({"fake": STDIO}, tmp_path, tmp_path / "auth.json")
-        exec(code, {"get_ipython": IPython})
-        assert isinstance(namespace["mcp"], Mcp)
-        assert namespace["McpToolError"] is McpToolError
-
-    def test_prepare_does_not_connect(self, paths, repo):
-        # A server that never answers must not hold up session start.
-        hang = {"command": sys.executable, "args": ["-c", "import time; time.sleep(60)"]}
-        write(paths.mcp_config_path, {"fake-srv": {**hang, "description": "Math."}})
-        started = time.monotonic()
-        setup = prepare(repo, project_trusted=True, paths=paths)
-        assert time.monotonic() - started < 1
-        assert "- `fake_srv`: Math." in setup.section.body
-        assert "print(mcp.<server>)" in setup.section.body
-        assert "_rio_mcp_install" in setup.startup
-
-    def test_prepare_without_servers(self, paths, repo):
-        assert prepare(repo, project_trusted=True, paths=paths).section is None
 
     def test_prompt_section_reports_unset_variables(self, tmp_path, monkeypatch):
         monkeypatch.delenv("RIO_TEST_UNSET", raising=False)
@@ -580,25 +553,3 @@ class TestCommands:
             ("off", "disabled"),
         ]
         assert data["servers"][0]["tools"] == ["add", "echo-text", "fail", "roots", "venv"]
-
-
-# -- a real kernel -----------------------------------------------------------------------
-
-
-async def test_cells_call_tools_through_mcp_in_the_kernel(tmp_path):
-    from conftest import add_code
-    from rio.agent import KernelExecutor, apply_patch, new_notebook
-
-    startup = startup_code({"fake-srv": STDIO}, tmp_path, tmp_path / "auth.json")
-    kernel = KernelExecutor(tmp_path, startup=startup)
-    try:
-        notebook = apply_patch(
-            new_notebook(),
-            [add_code("total = mcp.fake_srv.add(a=1, b=2)\nprint(total, mcp.fake_srv.venv())")],
-        )
-        result = await kernel(notebook, [0])
-    finally:
-        await kernel.shutdown()
-    cell = result["cells"][0]
-    assert "".join(output.get("text", "") for output in cell["outputs"]) == "{'sum': 3} none\n"
-    assert cell["metadata"]["rio"]["defines"] == ["total"]

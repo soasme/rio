@@ -890,15 +890,13 @@ def test_packaged_docs_do_not_describe_compaction_or_transcripts_as_a_feature(na
     assert "transcript replay" not in lowered
 
 
-def test_architecture_doc_cites_the_clm_paper_and_the_three_packages() -> None:
+def test_architecture_doc_describes_the_runtime_and_packages() -> None:
     text = (rio_docs_path() / "architecture.md").read_text(encoding="utf-8")
-    assert "Context Language Models" in text
-    assert "arXiv:2609.37725" in text
+    assert "SQLite" in text
     assert "rio.ai" in text
     assert "rio.agent" in text
     assert "rio.coding" in text
-    assert "session_store" in text
-    assert "session_runner" in text
+    assert "UnknownExecution" in text
 
 
 def test_release_notes_json_resets_to_a_single_rio_entry() -> None:

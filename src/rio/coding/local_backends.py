@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal, Protocol
 
-from rio.agent import HarnessCancellationToken
+from rio.coding.cancellation import CancellationToken
 from rio.coding.extensions.provider_registry import (
     DynamicProviderRegistry,
     ProviderLayerToken,
@@ -354,7 +354,7 @@ class LocalBackendStatus:
 class LocalOperationContext:
     """Inputs owned by one backend operation."""
 
-    signal: HarnessCancellationToken
+    signal: CancellationToken
     action: LocalAction
     generation_id: str
     backend_id: str
@@ -536,7 +536,7 @@ class LocalBackend:
 
 @dataclass(eq=False, slots=True)
 class _Operation:
-    signal: HarnessCancellationToken
+    signal: CancellationToken
     task: asyncio.Task[LocalOperationResult]
     progress: list[LocalProgress]
     listeners: list[ProgressCallback]
@@ -903,7 +903,7 @@ class LocalBackendRegistry:
         prior = self._operations.get(key)
         if prior is not None:
             self._cancel_token(token, action)
-        signal = HarnessCancellationToken()
+        signal = CancellationToken()
         progress_events: list[LocalProgress] = []
         listeners = [progress] if progress is not None else []
         operation: _Operation

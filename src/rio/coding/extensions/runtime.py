@@ -14,7 +14,6 @@ from typing import Literal, Protocol, cast
 import httpx
 
 import rio.coding.built_in_extensions as built_in_extension_registry
-from rio.agent.events import AgentEvent
 from rio.ai.messages import TextContent
 from rio.ai.tools import (
     AgentTool,
@@ -29,7 +28,6 @@ from rio.coding.commands import (
     CommandRegistry,
     CommandResult,
     SlashCommand,
-    create_default_command_registry,
 )
 from rio.coding.credentials import CredentialStore, FileCredentialStore, credentials_path
 from rio.coding.extensions.api import (
@@ -85,7 +83,7 @@ TurnRequestedCallback = Callable[[str, "str | None", "dict[str, JSONValue] | Non
 
 
 class BoundSession(Protocol):
-    """The slice of `CodingSession` the extension runtime binds to."""
+    """The session view the extension runtime binds to."""
 
     @property
     def cwd(self) -> Path: ...
@@ -118,7 +116,7 @@ class BoundSession(Protocol):
     def is_running(self) -> bool: ...
 
     @property
-    def notebook(self) -> dict[str, JSONValue]: ...
+    def state(self) -> dict[str, JSONValue]: ...
 
     def queue_steering_message(
         self,
@@ -771,7 +769,7 @@ class ExtensionRuntime:
 
     def attach_harness_listener(
         self,
-        subscribe: Callable[[Callable[[AgentEvent], Awaitable[None] | None]], Callable[[], None]],
+        subscribe: Callable[[Callable[[dict], Awaitable[None] | None]], Callable[[], None]],
     ) -> None:
         """Subscribe the event fan-out to a harness, replacing any prior one."""
         if self._harness_unsubscribe is not None:
@@ -1068,7 +1066,7 @@ class ExtensionRuntime:
 
     def build_command_registry(self) -> CommandRegistry:
         """Build a session command registry: defaults plus extension commands."""
-        registry = create_default_command_registry()
+        registry = CommandRegistry()
         for command in self._commands.values():
             slash_command = SlashCommand(
                 name=command.name,
@@ -1183,7 +1181,7 @@ class ExtensionRuntime:
 
     async def emit_event(self, event: object) -> None:
         """Dispatch one canonical agent or coding-session event to extensions."""
-        event_type = getattr(event, "type", None)
+        event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
         if not isinstance(event_type, str):
             import re
 
@@ -1199,7 +1197,7 @@ class ExtensionRuntime:
             except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
                 self._record_runtime_failure(owner.name, event_type, exc)
 
-    async def _on_agent_event(self, event: AgentEvent) -> None:
+    async def _on_agent_event(self, event: dict) -> None:
         """Forward the step lifecycle."""
         await self.emit_event(event)
 

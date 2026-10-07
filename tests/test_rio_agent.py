@@ -10,14 +10,14 @@ from pathlib import Path
 
 import pytest
 
+from rio.agent import InvalidPatch, Limits, Session, StorageFailure, Store
+from rio.agent.owner import Owner, RecoveryFailure, stop_worker
+from rio.agent.prompt import SCHEMA, SYSTEM
+from rio.agent.runner import run
+from rio.agent.store import reduce_event
 from rio.ai import FakeProvider
 from rio.ai.messages import AssistantMessage, ToolCall
 from rio.ai.provider_events import AssistantDoneEvent
-from rio.durable import InvalidPatch, Limits, Session, StorageFailure, Store
-from rio.durable.owner import Owner, RecoveryFailure, stop_worker
-from rio.durable.prompt import SCHEMA, SYSTEM
-from rio.durable.runner import run
-from rio.durable.store import reduce_event
 
 
 @pytest.fixture
@@ -343,7 +343,7 @@ async def test_public_loop_finishes_and_reopens_without_model_call(session):
 
 
 async def test_uv_timer_api_acknowledges_committed_registration(session):
-    accept(session, code(1, "from rio.durable.api import timer\ntimer('wake:1', 0, {'done':True})"))
+    accept(session, code(1, "from rio.agent.api import timer\ntimer('wake:1', 0, {'done':True})"))
     async with Owner(session) as owner:
         await settle(owner)
     assert session.data["timers"]["wake:1"]["fired"]
@@ -416,9 +416,9 @@ async def test_process_kill_at_commit_boundaries(tmp_path, boundary):
     source = """
 import asyncio, sys
 from pathlib import Path
-from rio.durable import Session, Store
-from rio.durable.owner import Owner
-from rio.durable.prompt import SYSTEM, SCHEMA
+from rio.agent import Session, Store
+from rio.agent.owner import Owner
+from rio.agent.prompt import SYSTEM, SCHEMA
 async def main():
     root=Path(sys.argv[1]); boundary=sys.argv[2]
     with Store(root/'crash.db') as store:
@@ -472,7 +472,7 @@ asyncio.run(main())
 async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch):
     from dataclasses import replace
 
-    from rio.durable import runner
+    from rio.agent import runner
 
     monkeypatch.setattr(runner.time, "time", lambda: 1e20)
     with Store(tmp_path / "budget.db") as store:
@@ -517,7 +517,7 @@ async def test_saved_complete_response_is_accepted_without_another_provider_call
 
 
 async def test_lost_and_partial_model_responses_are_bounded(session, monkeypatch):
-    from rio.durable import runner
+    from rio.agent import runner
 
     monkeypatch.setattr(runner.time, "time", lambda: 1e20)
     provider = FakeProvider([])
@@ -525,20 +525,6 @@ async def test_lost_and_partial_model_responses_are_bounded(session, monkeypatch
     assert len(provider.calls) == session.limits.invalid_attempts
     assert not session.data["cells"]
     assert session.meta["usage"]["unknown_usage"] == session.limits.invalid_attempts
-
-
-def test_legacy_import_is_data_only_and_idempotent(session, tmp_path):
-    from rio.coding.session_store.entries import TurnEntry
-    from rio.coding.session_store.jsonl import entry_to_json_line
-
-    path = tmp_path / "legacy.jsonl"
-    path.write_text(entry_to_json_line(TurnEntry(observation="old goal")))
-    session.import_legacy(path)
-    seq = session.store.sequence
-    session.import_legacy(path)
-    assert session.store.sequence == seq
-    assert session.data["legacy"]
-    assert not session.data["executions"]
 
 
 def test_success_receipt_and_ending_share_a_transaction(session):
@@ -577,7 +563,8 @@ async def test_uncertain_output_commit_stops_worker_before_more_effects(session,
 
 
 def test_cli_defaults_to_durable_and_resume_needs_no_new_goal(monkeypatch):
-    from rio.cli import app, durable
+    from rio.cli import app
+    from rio.cli import run as run_module
 
     calls = []
 
@@ -585,7 +572,7 @@ def test_cli_defaults_to_durable_and_resume_needs_no_new_goal(monkeypatch):
         calls.append(args)
         return True, "abc"
 
-    monkeypatch.setattr(durable, "run_durable_session", run_session)
+    monkeypatch.setattr(run_module, "run_persistent_session", run_session)
     app(["run", "--resume", "abc", "--output", "json"])
     assert calls[0][0] == ""
     assert calls[0][7] == "abc"
@@ -620,19 +607,12 @@ def test_terminal_run_cannot_prepare_an_unaccepted_request(session):
         prepare(session)
 
 
-def test_legacy_cli_does_not_import_posix_runtime(monkeypatch):
-    import importlib
+def test_runtime_selector_is_removed():
+    from rio.cli import build_parser
 
-    from rio.cli import app
-
-    legacy = importlib.import_module("rio.cli.run")
-
-    async def run_legacy(*args):
-        return True, "legacy"
-
-    monkeypatch.setattr(legacy, "run_persistent_session", run_legacy)
-    monkeypatch.setitem(sys.modules, "rio.cli.durable", None)
-    app(["run", "--runtime", "notebook", "goal", "--output", "json"])
+    with pytest.raises(SystemExit) as error:
+        build_parser().parse_args(["run", "--runtime", "notebook", "goal"])
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize("prefix", ["execution", "control", "timer", "idle"])
@@ -641,3 +621,62 @@ def test_external_ids_cannot_overwrite_harness_observations(session, prefix):
     with pytest.raises(ValueError, match="reserved"):
         session.receive(f"{prefix}:1", "external", {"fact": "new"})
     assert session.store.sequence == before
+
+
+async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
+    tmp_path, monkeypatch, capsys
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from rio.cli import run as cli
+    from rio.coding.paths import RioPaths
+    from rio.coding.rendering import PrintOutputMode
+
+    paths = RioPaths(home=tmp_path / "home")
+    monkeypatch.setattr(cli, "RioPaths", lambda: paths)
+    selection = SimpleNamespace(provider=SimpleNamespace(name="fake"), model="fake")
+    monkeypatch.setattr(cli, "load_provider_settings", lambda: None)
+    monkeypatch.setattr(cli, "resolve_provider_selection", lambda *a, **kw: selection)
+    monkeypatch.setattr(cli, "resolve_startup_thinking_level", lambda *a, **kw: None)
+    provider = FakeProvider(
+        [
+            response(
+                [
+                    {"op": "test", "path": "/revision", "value": 1},
+                    append(code(1, "from pathlib import Path\nPath('effect').write_text('once')")),
+                ]
+            ),
+            response(
+                [
+                    {"op": "test", "path": "/revision", "value": 3},
+                    append(note(2, "done", role="conclusion", result="success")),
+                ]
+            ),
+        ]
+    )
+    provider.aclose = AsyncMock()
+    monkeypatch.setattr(cli, "create_model_provider", lambda *a, **kw: provider)
+    ok, session_id = await cli.run_persistent_session(
+        "write a file",
+        cwd=tmp_path,
+        output_mode=PrintOutputMode.json,
+    )
+    assert ok
+    assert (tmp_path / "effect").read_text() == "once"
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert {event["session_id"] for event in events} == {session_id}
+    assert events[-1]["type"] == "durability_metrics"
+    path = paths.sessions_dir / f"{session_id}.sqlite3"
+    with Store(path) as store:
+        assert Session(store).state["goal"] == "write a file"
+        assert len(store.data["executions"]) == 1
+    (tmp_path / "effect").write_text("changed after completion")
+    assert await cli.run_persistent_session(
+        "",
+        resume=session_id,
+        output_mode=PrintOutputMode.json,
+    ) == (True, session_id)
+    assert len(provider.calls) == 2
+    assert (tmp_path / "effect").read_text() == "changed after completion"
+    assert provider.aclose.await_count == 2

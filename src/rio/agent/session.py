@@ -9,8 +9,8 @@ import uuid
 from dataclasses import asdict
 from pathlib import Path
 
-from rio.durable.state import InvalidPatch, Limits, admit
-from rio.durable.store import Store, encode
+from rio.agent.state import InvalidPatch, Limits, admit
+from rio.agent.store import Store, encode
 
 
 def observation(message_id: str, kind: str, payload: dict, seq: int) -> dict:
@@ -481,22 +481,3 @@ class Session:
                 note_id: {**self.data["controls"][note_id], "handled": True, "outcome": "accepted"}
             }
         self.store.commit("run_ended", changes, identity="terminal")
-
-    def import_legacy(self, path: Path) -> None:
-        """Archive a JSONL journal once as data. Import never schedules historical code."""
-        from hashlib import sha256
-
-        from rio.coding.session_store.jsonl import entries_from_json_lines
-
-        raw = path.read_bytes()
-        identity = sha256(raw).hexdigest()
-        if identity in self.data.get("legacy", {}):
-            return
-        if len(raw) + self.store.journal_bytes > self.limits.storage_bytes:
-            raise ValueError("Legacy history exceeds storage budget")
-        entries = entries_from_json_lines(raw.decode().splitlines())
-        self.store.commit(
-            "legacy_imported",
-            {"legacy": {identity: [entry.model_dump(mode="json") for entry in entries]}},
-            identity=f"legacy:{identity}",
-        )

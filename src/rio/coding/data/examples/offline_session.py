@@ -1,12 +1,12 @@
 """Run with ``uv run python src/rio/coding/data/examples/offline_session.py``."""
 
 import asyncio
+import tempfile
 from pathlib import Path
 
+from rio.agent import Session, Store
+from rio.agent.runner import run
 from rio.ai import AssistantDoneEvent, AssistantMessage, FakeProvider, ToolCall
-from rio.coding import CodingSession, CodingSessionConfig
-from rio.coding.rendering import PlainEventRenderer
-from rio.coding.session_store import InMemorySessionStorage
 
 
 async def main() -> None:
@@ -14,30 +14,35 @@ async def main() -> None:
         content=[
             ToolCall(
                 id="example-step",
-                name="skill_step",
-                arguments={"patch": [], "reply": "Hello from Rio."},
+                name="step",
+                arguments={
+                    "patch": [
+                        {"op": "test", "path": "/revision", "value": 1},
+                        {
+                            "op": "add",
+                            "path": "/cells/-",
+                            "value": {
+                                "id": 1,
+                                "kind": "note",
+                                "role": "conclusion",
+                                "text": "Hello from Rio.",
+                                "previous_id": None,
+                                "result": "success",
+                            },
+                        },
+                    ]
+                },
             )
         ],
         stop_reason="toolUse",
     )
     provider = FakeProvider([[AssistantDoneEvent(reason="toolUse", message=message)]])
-    session = await CodingSession.load(
-        CodingSessionConfig(
-            provider=provider,
-            model="offline",
-            cwd=Path.cwd(),
-            storage=InMemorySessionStorage(),
-            project_resources_trusted=False,
-            load_extensions=False,
-        )
-    )
-    renderer = PlainEventRenderer()
-    try:
-        async for event in session.run("Say hello"):
-            renderer.render(event)
-    finally:
-        await session.aclose()
-    assert session.answer == "Hello from Rio."
+    with (
+        tempfile.TemporaryDirectory() as directory,
+        Store(Path(directory) / "session.sqlite3") as store,
+    ):
+        session = Session.create(store, "Say hello", Path.cwd())
+        assert await run(session, provider, "offline", print)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,4 @@
-"""MCP servers for coding sessions, called from notebook cells through `mcp`.
-
-A session reads `mcp.json` (see `rio.coding.mcp.config`), lists the enabled
-servers in its instructions, and installs the `mcp` object (see
-`rio.coding.mcp.kernel`) in its kernel, which connects them in the background.
-Session start never waits for a server.
-"""
+"""MCP configuration, discovery, and connections for coding tools."""
 
 from __future__ import annotations
 
@@ -22,9 +16,7 @@ from rio.coding.mcp.config import (
     load_mcp_config,
 )
 from rio.coding.mcp.connection import create_client
-from rio.coding.mcp.kernel import startup_code
-from rio.coding.mcp.oauth import McpAuthStore, auth_store_path
-from rio.coding.paths import RioPaths
+from rio.coding.mcp.oauth import McpAuthStore
 from rio.coding.system_prompt import PromptSection
 
 
@@ -72,14 +64,10 @@ def probe_all(servers: tuple[McpServer, ...], cwd: Path, store: McpAuthStore) ->
         return list(pool.map(lambda server: probe(server, cwd, store), servers))
 
 
-PROMPT_INTRO = """MCP servers are reachable from Python cells through the preloaded `mcp` \
-object. They connect in the background when the kernel starts. `print(mcp.<server>)` lists a \
-server's tools and instructions; `help(mcp.<server>.<tool>)` shows a tool's description and \
-parameters. Call a tool as a function with keyword arguments: `mcp.<server>.<tool>(arg=value)`. \
-It returns the tool's structured content, else its text, else a list of content blocks, and \
-raises `McpToolError` when the tool reports an error. `mcp.<server>.resources()`, \
-`.read_resource(uri)`, `.prompts()`, and `.get_prompt(name, **arguments)` reach resources and \
-prompts."""
+PROMPT_INTRO = """Call MCP servers from Python with `rio.coding.mcp.api.Mcp`.
+Create a client with the server configuration, working directory and auth store.
+Call `client.<server>.<tool>(arg=value)` and close the client after use.
+`client.<server>.tools()` lists tool names and input schemas."""
 
 
 def unavailable_reason(server: McpServer) -> str | None:
@@ -107,31 +95,11 @@ def prompt_section(servers: tuple[McpServer, ...]) -> PromptSection | None:
     return PromptSection(title="MCP servers", body="\n".join(lines))
 
 
-@dataclass(frozen=True, slots=True)
-class McpSetup:
-    """The instructions section and kernel startup code for a session's MCP servers."""
-
-    section: PromptSection | None = None
-    startup: str = ""
-
-
-def prepare(cwd: Path, *, project_trusted: bool, paths: RioPaths | None = None) -> McpSetup:
-    """Load the configuration. Servers connect later, in the kernel; nothing waits for them."""
-    config = load_mcp_config(cwd, project_trusted=project_trusted, paths=paths)
-    servers = config.enabled
-    if not servers:
-        return McpSetup()
-    configs = {server.name: server.config for server in servers}
-    return McpSetup(prompt_section(servers), startup_code(configs, cwd, auth_store_path(paths)))
-
-
 __all__ = [
     "McpConfig",
     "McpServer",
-    "McpSetup",
     "ServerStatus",
     "load_mcp_config",
-    "prepare",
     "probe",
     "probe_all",
     "prompt_section",

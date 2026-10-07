@@ -28,8 +28,7 @@ rio run "Fix gh issue 123."
 
 Rio keeps its State in SQLite and executes independent Python scripts through `uv`.
 Committed work survives restart; interrupted scripts return `UnknownExecution` for
-inspection. See [Durable Sessions](docs/durable.md). Use `--runtime notebook` for
-the earlier Jupyter workflow.
+inspection. See [Architecture](docs/explanation/architecture.md).
 
 Run a predefined workflow:
 
@@ -74,11 +73,7 @@ cd tests/lean && lake build
 
 See [the Lean behavior models](tests/lean/README.md) for their scope and limits.
 
-* `rio.ai` is a multi-provider LLM streaming SDK.
-* `rio.durable` owns SQLite State, immutable Cells, independent workers, and recovery.
-* `rio.agent` is the legacy [Context Language Model][CLM] runtime: the context is a
-  Jupyter notebook the model patches, and the runtime runs the changed cells.
-* `rio.coding` supplies the autonomous coding skill.
-* `rio.cli` is the public one-shot command-line entry point.
-
-[CLM]: https://arxiv.org/abs/2609.37725
+* `rio.ai` streams model responses from multiple providers.
+* `rio.agent` owns SQLite state, immutable cells, workers, and recovery.
+* `rio.coding` supplies provider configuration, credentials, and MCP clients.
+* `rio.cli` runs coding tasks.

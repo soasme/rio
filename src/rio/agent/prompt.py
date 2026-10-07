@@ -1,87 +1,86 @@
-"""The prompt a step sends: the system prompt and the notebook.
+"""The complete model-facing durable protocol."""
 
-Each request is the system prompt plus one user message holding the whole
-notebook as JSON. The model answers with one `skill_step` call: a JSON Patch
-against that notebook, and an optional reply that ends the run.
+from rio.ai.tools import AgentTool
+
+SYSTEM = """You are Rio, an autonomous coding agent. Complete the goal in SKILL.state.
+Your process working directory is the target project. Inspect its relative files first;
+use pathlib or rg scoped to this directory. Do not search / or /usr for project source.
+Repository code may differ from an installed package. Check local files and available
+project tests before choosing commands. Avoid running broad test suites when a focused
+regression test can verify the change.
+Your entire working context is the supplied State. Use exactly one `step` tool call per round.
+Use concise notes to retain facts; remove obsolete Cells and outputs to keep context small.
+The goal and runtime are read-only. The only edits are RFC 6902 tests, append at /cells/-,
+replace a whole /cells/N object, and remove /cells/N in descending index order.
+Begin every patch with {"op":"test","path":"/revision","value":REVISION}.
+Cells have increasing integer IDs allocated from runtime.next_cell_id in patch order.
+A new Cell has previous_id:null. A replacement gets a NEW id and previous_id equal to the
+old Cell's id, at the same array position. Never replace a queued or started Cell.
+Notes: {"id":N,"previous_id":null,"kind":"note","text":"..."}.
+Code: {"id":N,"previous_id":null,"kind":"code","runtime":"python","source":"..."}.
+Every new code version runs ONCE, in accepted order, in a fresh Python process via uv run.
+Each script MUST include PEP 723 metadata, even when no dependencies are needed:
+# /// script
+# dependencies = []
+# ///
+from pathlib import Path
+print(Path('README.md').read_text())
+No shared variables, kernel, magics, top-level return, or cell imports. Use normal Python,
+pathlib, subprocess, and ordinary files. Use subprocess.run([...], check=True) to run tests
+or shell tools. Check whether a workspace .venv/bin/python exists before using it for project tests.
+Otherwise use PEP 723 dependencies for packages your script imports, or run a test
+command through uv run --with pytest python -m pytest. uv's script interpreter is
+separate from a project environment. When writing multiline files, prefer triple-quoted
+Python strings so newline escaping does not break the script.
+Read existing code before editing it. Make the smallest correct change and run relevant tests.
+Inspect output in runtime.cells (stdout is named output), plus completion notices in runtime.inbox.
+An ordinary execution error pauses the queue. Consume it by accepting your next patch;
+you can cancel queued work and add a corrected code Cell in that patch. Ordinary errors
+DO NOT require resolution notes. A resolution note is ONLY for UnknownExecution.
+Cancel stale work using a note with role:"cancel", target_cell_id:N, and text explaining why.
+Removing a Cell only removes context; it never cancels accepted work or erases history.
+UnknownExecution means the script may have performed effects. Never assume it rolled back.
+Investigate current files/services with a NEW code Cell before deciding whether to retry.
+Resolve uncertainty with a note: role:"resolution", target_cell_id:N, evidence_refs containing
+recorded "session:event:N" references, and text explaining the decision. History is retained.
+To finish, append a note with role:"conclusion", result:"success" or "failure", and text
+explaining the result. Ordinary text does not end the run. Success requires no outstanding
+work or unresolved uncertainty, consumed observations, and passing configured validators.
+Scripts can use `from rio.agent.api import timer, records`. timer(request_id, unix_deadline,
+payload) durably registers one timer generation; it does not suspend or rerun the script.
+records(after=0) retrieves journal events as data. Files and package caches are not durable State.
+If no work, timer or external wake-up remains, conclude; an idle patch is invalid.
 """
 
-from __future__ import annotations
-
-from rio.agent.notebook import Notebook, notebook_tokens, render_notebook, stale_cells
-from rio.agent.spec import STEP_TOOL_NAME, HarnessSpec
-from rio.ai.messages import AgentMessage, UserMessage
-
-
-def system_prompt(spec: HarnessSpec, limit_tokens: int) -> str:
-    """Return the spec's instructions, then the context protocol: a step procedure
-    plus the terms it uses."""
-    return (
-        spec.instructions + "\n\n## Context protocol\n\n"
-        "Your context is one Jupyter notebook N (nbformat v4 JSON), sent in full each step.\n\n"
-        "Step:\n"
-        "1. Manage every cell, every step, whatever N's size; never wait until N nears L. "
-        "Go through N from the top and decide each cell:\n"
-        "   - keep: a coming step needs its exact content;\n"
-        "   - summarize: replace it with a markdown cell holding only what still matters "
-        "(decisions, file paths, exact values) and the id of each cell it replaces, e.g. "
-        "`calc.py: divide() uses //, line 4. (cells 3f2a9c1d, 9c1d0b7e)`;\n"
-        "   - remove: nothing in it matters any more.\n"
-        "   Once you have read an output, summarize it. Once a fix is verified, fold its "
-        "exploration and attempts into one note. A failed attempt becomes one line.\n"
-        f"2. Call `{STEP_TOOL_NAME}` with `patch` (RFC 6902 JSON Patch on N: step 1's edits, "
-        "then new cells) and optional `reply`. Operations apply in order, so remove and "
-        "replace from the last index to the first.\n"
-        "3. N' = patch(N). Rejected, and you retry, if N' is not a valid notebook, a run cell "
-        "reads a name only a stale cell defined, or N' is over L and not smaller than N.\n"
-        "4. Run cells of N' run in order until one fails; outputs go into N'. Other cells keep "
-        "their outputs and never rerun.\n"
-        "5. A non-blank `reply` is appended to N' and ends the run; set it when the task is "
-        "done or blocked. Else N' is the next N.\n\n"
-        "Terms:\n"
-        f"- L: ~{limit_tokens} tokens; each request shows N's size. Keep N under L with the "
-        "step 1 review.\n"
-        "- Code cell: Python run by IPython. All cells share one live kernel, so variables "
-        "persist across steps. Shell: `!cmd` or `%%bash`. Files: Python.\n"
-        "- Markdown cell: a note. A cell with `metadata.rio.role` is a user message or your "
-        "reply.\n"
-        "- New cell: needs only `cell_type` and `source`, e.g. "
-        '`{"op": "add", "path": "/cells/-", "value": {"cell_type": "code", "source": "..."}}`.\n'
-        "- Run cell: a code cell that is new, whose `source` changed, or whose stamp was "
-        "removed. Editing only outputs runs nothing.\n"
-        "- `N.metadata.rio.kernel`: current kernel `id` and `running`.\n"
-        "- Stamp: a cell that ran has `metadata.rio.kernel` (id of the kernel that ran it) and "
-        "`metadata.rio.defines` (names it bound).\n"
-        "- Stale cell: stamp is not the current kernel id. After resume, rewind, or new "
-        "session the kernel is new and empty; stale cells' variables, open files, and "
-        "subprocesses are gone. Each request lists stale cells. Leaving a cell stale is fine. "
-        "Using a name only a stale cell defined raises `StaleVariableError`. To use it, in "
-        "the same patch remove that cell's stamp before its readers "
-        '(`{"op": "remove", "path": "/cells/<i>/metadata/rio/kernel"}`), or define the name '
-        "again."
-    )
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "patch": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "op": {"type": "string", "enum": ["test", "add", "replace", "remove"]},
+                    "path": {"type": "string"},
+                    "value": {},
+                },
+                "required": ["op", "path"],
+            },
+        }
+    },
+    "required": ["patch"],
+    "additionalProperties": False,
+}
 
 
-def build_messages(
-    notebook: Notebook, *, limit_tokens: int, error_note: str | None = None
-) -> list[AgentMessage]:
-    """Return the request messages for `notebook`, plus a transient correction."""
-    text = (
-        f"```json\n{render_notebook(notebook)}\n```\n"
-        f"[notebook: ~{notebook_tokens(notebook)}/{limit_tokens} tokens]"
-    )
-    review = [
-        index
-        for index, cell in enumerate(notebook["cells"])  # type: ignore[arg-type]
-        if not cell.get("metadata", {}).get("rio", {}).get("role")  # type: ignore[union-attr]
-    ]
-    if review:
-        text += f"\n[review cells {review}: keep, summarize, or remove each]"
-    stale = stale_cells(notebook)
-    if stale:
-        text += (
-            f"\n[stale cells {stale}: they ran in an older kernel. Run one again before "
-            "reading its variables.]"
-        )
-    if error_note:
-        text += f"\n\nRejected reply: {error_note}\nRetry with a corrected reply."
-    return [UserMessage(content=text)]
+async def _unavailable(*args, **kwargs):
+    raise RuntimeError("step is applied transactionally by the owner")
+
+
+STEP = AgentTool(
+    name="step",
+    label="Step",
+    description="Commit a State patch and request Cell runs.",
+    parameters=SCHEMA,
+    execute_fn=_unavailable,
+)

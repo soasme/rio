@@ -17,9 +17,9 @@ from pathlib import Path
 
 import psutil
 
-from rio.durable import worker
-from rio.durable.session import Session
-from rio.durable.store import StorageFailure
+from rio.agent import worker
+from rio.agent.session import Session
+from rio.agent.store import StorageFailure
 
 
 class RecoveryFailure(RuntimeError):

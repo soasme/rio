@@ -1,13 +1,15 @@
-"""One-shot task execution command."""
+"""Run a coding task in a SQLite session."""
 
 from __future__ import annotations
 
-import sys
+import json
+import statistics
+import uuid
 from pathlib import Path
 
-from rio.ai.provider import ModelProvider
 from rio.coding.extensions.startup import resolve_dynamic_startup
-from rio.coding.project_trust import ProjectTrustCoordinator, ProjectTrustStore, TrustOverride
+from rio.coding.paths import RioPaths
+from rio.coding.project_trust import TrustOverride
 from rio.coding.provider_config import (
     ProviderConfigError,
     load_provider_settings,
@@ -15,24 +17,7 @@ from rio.coding.provider_config import (
     resolve_startup_thinking_level,
 )
 from rio.coding.provider_runtime import create_model_provider
-from rio.coding.rendering import PlainEventRenderer, PrintOutputMode, create_event_renderer
-from rio.coding.session import CodingSession, CodingSessionConfig
-from rio.coding.session_manager import CodingSessionRecord, SessionManager
-from rio.coding.session_store import InMemorySessionStorage, JsonlSessionStorage, SessionStorage
-from rio.coding.shell_config import load_shell_settings
-from rio.coding.thinking import ThinkingLevel
-
-
-class SessionNotFoundError(ValueError):
-    """Raised when a --resume session id does not exist."""
-
-
-class CwdMismatchError(ValueError):
-    """Raised when --cwd conflicts with the resumed session's directory."""
-
-
-class CwdNotFoundError(ValueError):
-    """Raised when the requested working directory does not exist."""
+from rio.coding.rendering import PrintOutputMode
 
 
 async def run_persistent_session(
@@ -40,169 +25,116 @@ async def run_persistent_session(
     cwd: Path | None = None,
     provider_name: str | None = None,
     model: str | None = None,
-    thinking_level: ThinkingLevel | None = None,
+    thinking_level: str | None = None,
     extension_paths: tuple[Path, ...] = (),
     trust_override: TrustOverride | None = None,
     resume: str | None = None,
     output_mode: PrintOutputMode = PrintOutputMode.human,
-    *,
-    session_manager: SessionManager | None = None,
 ) -> tuple[bool, str]:
-    """Run against a durable session journal, creating or resuming one."""
-    manager = session_manager or SessionManager()
-    requested_cwd = cwd or Path.cwd()
-    record: CodingSessionRecord | None = None
-    if resume is not None:
-        record = manager.get_session(resume)
-        if record is None:
-            raise SessionNotFoundError(f"No session found with id '{resume}'")
-        if cwd is not None and cwd.resolve() != record.cwd:
-            raise CwdMismatchError("--cwd must match the resumed session's working directory")
-        requested_cwd = record.cwd
-        provider_name = provider_name or record.provider_name
-        model = model or record.model
-    if record is None:
-        record = manager.create_session(
-            cwd=requested_cwd, model=model or "default", provider_name=provider_name
-        )
-    succeeded, selected_name, selected_model = await _run_configured_session(
-        prompt,
-        requested_cwd,
-        provider_name,
-        model,
-        thinking_level,
-        extension_paths,
-        trust_override,
-        output_mode,
-        storage=JsonlSessionStorage(record.path),
-    )
-    manager.touch_session(record.id, model=selected_model, provider_name=selected_name)
-    return succeeded, record.id
+    from rio.agent import Session, Store
+    from rio.agent.runner import run
 
-
-async def run_configured_session(
-    prompt: str,
-    cwd: Path,
-    provider_name: str | None = None,
-    model: str | None = None,
-    thinking_level: ThinkingLevel | None = None,
-    extension_paths: tuple[Path, ...] = (),
-    trust_override: TrustOverride | None = None,
-    output_mode: PrintOutputMode = PrintOutputMode.human,
-    *,
-    storage: SessionStorage | None = None,
-) -> bool:
-    """Construct and execute one coding session."""
-    succeeded, _, _ = await _run_configured_session(
-        prompt,
-        cwd,
-        provider_name,
-        model,
-        thinking_level,
-        extension_paths,
-        trust_override,
-        output_mode,
-        storage=storage,
-    )
-    return succeeded
-
-
-async def _run_configured_session(
-    prompt: str,
-    cwd: Path,
-    provider_name: str | None = None,
-    model: str | None = None,
-    thinking_level: ThinkingLevel | None = None,
-    extension_paths: tuple[Path, ...] = (),
-    trust_override: TrustOverride | None = None,
-    output_mode: PrintOutputMode = PrintOutputMode.human,
-    *,
-    storage: SessionStorage | None = None,
-) -> tuple[bool, str, str]:
-    """Construct and execute one coding session."""
-    if not cwd.is_dir():
-        raise CwdNotFoundError(f"Working directory does not exist: {cwd}")
-    dynamic = None
-    try:
-        selection = resolve_provider_selection(
-            load_provider_settings(), provider_name=provider_name, model=model
-        )
-    except ProviderConfigError:
-        if provider_name is None:
-            raise
-        dynamic = await resolve_dynamic_startup(
-            provider_name=provider_name, model=model, cwd=cwd, extension_paths=extension_paths
-        )
-        if dynamic is None:
-            raise
-        selected_name, selected_model = dynamic.provider_name, dynamic.model
-        active_provider, level = dynamic.provider, thinking_level
-    else:
-        selected_name, selected_model = selection.provider.name, selection.model
-        level = resolve_startup_thinking_level(
-            selection.provider, selection.model, cli_override=thinking_level
-        )
-        active_provider = create_model_provider(
-            selection.provider, model=selection.model, thinking_level=level
-        )
-    session: CodingSession | None = None
-    try:
-        shell = load_shell_settings()
-        _, trust = await ProjectTrustCoordinator(ProjectTrustStore()).resolve(
-            cwd, override=trust_override, default=shell.default_project_trust
-        )
-        for diagnostic in trust.diagnostics:
-            print(diagnostic, file=sys.stderr)
-        session = await CodingSession.load(
-            CodingSessionConfig(
-                provider=active_provider,
-                extension_runtime=dynamic.runtime if dynamic else None,
-                extension_paths=extension_paths,
-                model=selected_model,
-                cwd=cwd,
-                provider_name=selected_name,
-                storage=storage or InMemorySessionStorage(),
-                project_resources_trusted=trust.trusted,
-                thinking_level=level,
+    root = RioPaths().sessions_dir
+    if resume is not None and (
+        len(resume) != 32 or any(c not in "0123456789abcdef" for c in resume)
+    ):
+        raise ValueError("Expected a 32-character session ID")
+    session_id = resume or uuid.uuid4().hex
+    path = root / f"{session_id}.sqlite3"
+    if resume and not path.is_file():
+        raise ValueError(f"No Session found with id '{resume}'")
+    with Store(path) as store:
+        if store.data:
+            session = Session(store)
+            recorded = Path(session.meta["cwd"])
+            if cwd is not None and cwd.resolve() != recorded:
+                raise ValueError("--cwd must match the resumed Session")
+            cwd = recorded
+            if prompt and prompt != session.state["goal"]:
+                raise ValueError("Resume preserves the original goal; omit TASK or start a new run")
+            saved = session.meta["model_config"]
+            if provider_name and provider_name != saved["provider"]:
+                raise ValueError("Resume preserves the configured provider")
+            if model and model != saved["model"]:
+                raise ValueError("Resume preserves the configured model")
+            provider_name, model = saved["provider"], saved["model"]
+            thinking_level = saved.get("thinking")
+        else:
+            session = None
+            cwd = (cwd or Path.cwd()).resolve()
+        if not cwd.is_dir():
+            raise ValueError(f"Working directory does not exist: {cwd}")
+        dynamic = None
+        try:
+            selection = resolve_provider_selection(
+                load_provider_settings(), provider_name=provider_name, model=model
             )
-        )
-        return await _render_run(session, prompt, output_mode), selected_name, selected_model
-    finally:
-        if session is not None:
-            await session.aclose()
-        await active_provider.aclose()
-        if session is None and dynamic is not None:
-            await dynamic.runtime.aclose()
+        except ProviderConfigError:
+            if provider_name is None:
+                raise
+            dynamic = await resolve_dynamic_startup(
+                provider_name=provider_name,
+                model=model,
+                cwd=cwd,
+                extension_paths=extension_paths,
+                trust_override=trust_override,
+            )
+            if dynamic is None:
+                raise
+            provider = dynamic.provider
+            provider_name, model = dynamic.provider_name, dynamic.model
+        else:
+            provider_name, model = selection.provider.name, selection.model
+            thinking_level = resolve_startup_thinking_level(
+                selection.provider, selection.model, cli_override=thinking_level
+            )
+            provider = create_model_provider(
+                selection.provider, model=model, thinking_level=thinking_level
+            )
+        try:
+            if session is None:
+                session = Session.create(
+                    store,
+                    prompt,
+                    cwd,
+                    model_config={
+                        "provider": provider_name,
+                        "model": model,
+                        "thinking": thinking_level,
+                    },
+                )
 
+            def publish(event):
+                if output_mode == PrintOutputMode.json:
+                    print(json.dumps({"session_id": session_id, **event}), flush=True)
+                elif event["type"] == "execution_output":
+                    # Print only newly committed bytes from each bounded output snapshot.
+                    for key, execution in event["changes"]["executions"].items():
+                        for name in ("output", "stderr"):
+                            text = execution[name]
+                            previous = displayed.get((key, name), 0)
+                            print(text[previous:], end="", flush=True)
+                            displayed[key, name] = len(text)
+                elif event["type"] == "run_ended":
+                    print(event["changes"]["meta"]["terminal"]["reason"], flush=True)
 
-async def _render_run(
-    session: CodingSession, prompt: str, output_mode: PrintOutputMode = PrintOutputMode.human
-) -> bool:
-    """Render a session run in the requested output format."""
-    renderer = create_event_renderer(output_mode)
-    if isinstance(renderer, PlainEventRenderer):
-        renderer.render_message(prompt)
-    async for event in session.run(prompt):
-        renderer.render(event)
-    return renderer.finish()
-
-
-async def run_print_mode(
-    *,
-    prompt: str,
-    model: str,
-    cwd: Path,
-    provider: ModelProvider,
-    storage: SessionStorage | None = None,
-    output_mode: PrintOutputMode = PrintOutputMode.human,
-) -> bool:
-    """Run one task with an injected provider for integration tests."""
-    session = await CodingSession.load(
-        CodingSessionConfig(
-            provider=provider, model=model, cwd=cwd, storage=storage or InMemorySessionStorage()
-        )
-    )
-    try:
-        return await _render_run(session, prompt, output_mode)
-    finally:
-        await session.aclose()
+            displayed = {}
+            succeeded = await run(session, provider, model, publish)
+            if "metrics" not in store.data:
+                store.commit(
+                    "durability_metrics",
+                    {
+                        "metrics": {
+                            "commit_p50_seconds": statistics.median(store.commit_seconds),
+                            "commit_max_seconds": max(store.commit_seconds),
+                            "rebuild_seconds": store.rebuild_seconds,
+                            "journal_bytes": store.journal_bytes,
+                        }
+                    },
+                )
+                publish(store.events(store.sequence - 1)[0])
+            return succeeded, session_id
+        finally:
+            await provider.aclose()
+            if dynamic:
+                await dynamic.runtime.aclose()

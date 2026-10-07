@@ -37,6 +37,6 @@ A skill with `disable-model-invocation: true` in its `SKILL.md` frontmatter is e
 
 Templates load from user and project `.rio/prompts/` and `.agents/prompts/` directories. They are prompt shortcuts, not background knowledge, and support Pi-compatible argument placeholders such as `$1`, `$@`, `$ARGUMENTS`, defaults, and slices. Legacy `{{ arguments }}` and `{{ args }}` placeholders remain supported.
 
-Use a skill for reference know-how and a template for a frequently repeated prompt. Reloading resources (`rio.coding.session.CodingSession.reload`) re-discovers both from disk and rebuilds the skill instructions. Because those instructions are only ever sent as the *current* step's system prompt -- there is no transcript they were already baked into -- a reload takes effect on the very next step, not just on new sessions.
-
-When modifying rio's resource system, read `src/rio/coding/skills.py`, `src/rio/coding/prompt_templates.py`, and `src/rio/coding/resources.py`, then test discovery, precedence, diagnostics, prompt formatting, and reload behavior.
+Use a skill for reference material and a template for repeated prompt text.
+The library can discover and format these resources. To use them in a CLI task,
+include their instructions in the task file.

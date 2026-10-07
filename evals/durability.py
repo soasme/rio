@@ -12,9 +12,9 @@ from pathlib import Path
 
 import psutil
 
-from rio.durable import Session, Store
-from rio.durable.owner import Owner
-from rio.durable.prompt import SCHEMA, SYSTEM
+from rio.agent import Session, Store
+from rio.agent.owner import Owner
+from rio.agent.prompt import SCHEMA, SYSTEM
 
 
 async def measure(samples: int) -> dict:

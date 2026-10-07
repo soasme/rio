@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 import jsonpatch
 from jsonpointer import JsonPointerException
 
-from rio.durable.store import encode
+from rio.agent.store import encode
 
 
 class InvalidPatch(ValueError):

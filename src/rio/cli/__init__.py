@@ -32,12 +32,6 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "task", nargs="*", metavar="TASK", help="Task text or a Markdown task file."
     )
-    run_parser.add_argument(
-        "--runtime",
-        choices=("durable", "notebook"),
-        default="durable",
-        help="Execution runtime (default: durable; notebook supports legacy sessions).",
-    )
     run_parser.add_argument("--provider", help="Provider name.")
     run_parser.add_argument("-m", "--model", help="Model name.")
     run_parser.add_argument("--cwd", type=Path, help="Working directory.")
@@ -147,18 +141,10 @@ def _run(args: argparse.Namespace) -> None:
         os.environ["NO_COLOR"] = "1"
     try:
         level = normalize_thinking_level(args.thinking) if args.thinking else None
-        if args.runtime == "durable":
-            if os.name != "posix":
-                raise ValueError(
-                    "Durable Sessions require POSIX; use --runtime notebook on this host"
-                )
-            from rio.cli.durable import run_durable_session
-
-            execute = run_durable_session
-        else:
-            execute = run_module.run_persistent_session
+        if os.name != "posix":
+            raise ValueError("Rio execution requires POSIX process supervision")
         succeeded, session_id = anyio.run(
-            execute,
+            run_module.run_persistent_session,
             prompt,
             args.cwd,
             args.provider,
@@ -172,10 +158,7 @@ def _run(args: argparse.Namespace) -> None:
     except ValueError as exc:
         args.parser.error(str(exc))
     if args.output == PrintOutputMode.human:
-        from rio.coding.rendering.ansi import dot
-
-        indicator = dot(success=succeeded)
-        print(f"\n{indicator} Session: {session_id}")
+        print(f"\nSession: {session_id}")
     if not succeeded:
         raise SystemExit(1)
 

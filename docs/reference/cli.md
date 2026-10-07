@@ -22,20 +22,18 @@ text; otherwise the positional arguments are joined into the task.
 
 | Option | Description |
 | --- | --- |
-| `--runtime durable\|notebook` | Runtime; defaults to SQLite State and independent scripts. |
 | `--provider NAME` | Provider to use. |
 | `-m`, `--model MODEL` | Model to use. |
 | `--cwd PATH` | Project directory. |
 | `-t`, `--thinking LEVEL` | Reasoning-effort level. |
-| `-e`, `--extension PATH` | Provider extensions; notebook mode also loads coding hooks. Repeatable. |
-| `-a`, `--approve` | Trust notebook project resources. |
-| `--no-approve` | Do not trust notebook project resources. |
+| `-e`, `--extension PATH` | Provider extension path. Repeatable. |
+| `-a`, `--approve` | Allow project provider extensions. |
+| `--no-approve` | Do not load project provider extensions. |
 | `-r`, `--resume SESSION_ID` | Resume a durable session. |
 | `--output human\|json` | Output format; defaults to `human`. |
 
 Omit TASK when resuming a SQLite Session. Resume keeps the original goal and model
-configuration; terminal runs remain terminal. Use `--runtime notebook` for legacy
-JSONL sessions, Jupyter magics, MCP, and coding extension hooks.
+configuration; terminal runs remain terminal. Sessions use SQLite only.
 
 `human` prints a compact transcript and session ID. `json` emits one JSON
 event per line and is intended for programmatic consumers.

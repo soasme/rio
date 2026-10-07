@@ -1,41 +1,21 @@
-"""rio.agent: a Context Language Model (CLM) agent runtime (arXiv:2609.37725).
+"""Durable computation at immutable Cell boundaries.
 
-The model manages its own context, and the context is a Jupyter notebook. Each
-step the model patches the notebook with RFC 6902 JSON Patch; the runtime
-checks the result is a valid notebook, runs the changed code cells, and sends
-the notebook with their outputs back as the next context.
+Keep imports lazy so ``rio.agent.api`` works inside dependency-free uv scripts.
 """
 
-# ruff: noqa: F401 - this module intentionally defines the public facade
+from importlib import import_module
 
-from rio.agent.errors import ProviderResponseError, RetriesExhaustedError
-from rio.agent.events import (
-    AgentEvent,
-    ExecutionEvent,
-    PatchEvent,
-    ReasoningEvent,
-    RunEndEvent,
-    RunStartEvent,
-    StepEndEvent,
-    StepStartEvent,
-    ValidationErrorEvent,
-)
-from rio.agent.harness import EventListener, Harness, HarnessCancellationToken, HarnessConfig
-from rio.agent.loop import context_limit, run_context_loop
-from rio.agent.notebook import (
-    KernelExecutor,
-    Notebook,
-    NotebookError,
-    NotebookExecutor,
-    apply_patch,
-    changed_cells,
-    diff,
-    markdown_cell,
-    new_notebook,
-    notebook_tokens,
-    render_notebook,
-)
-from rio.agent.prompt import build_messages, system_prompt
-from rio.agent.spec import STEP_TOOL, STEP_TOOL_NAME, HarnessSpec, StepArgs
+_EXPORTS = {
+    "InvalidPatch": "state",
+    "Limits": "state",
+    "Session": "session",
+    "StorageFailure": "store",
+    "Store": "store",
+}
+__all__ = list(_EXPORTS)
 
-__all__ = [name for name in globals() if not name.startswith("_")]
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    return getattr(import_module(f"rio.agent.{_EXPORTS[name]}"), name)

@@ -1,17 +1,10 @@
-"""Coding tools, stateful sessions, and frontends built on rio.agent."""
+"""Provider configuration and coding utilities."""
 
 from __future__ import annotations
 
 from rio.coding.built_in_extensions import (
     BuiltInExtension,
     BuiltInExtensionSetup,
-)
-from rio.coding.coding_skill import CodingSkillOptions, build_coding_skill
-from rio.coding.commands import (
-    CommandRegistry,
-    CommandResult,
-    SlashCommand,
-    create_default_command_registry,
 )
 from rio.coding.context import (
     discover_project_context,
@@ -88,34 +81,10 @@ from rio.coding.provider_config import (
     upsert_saved_provider,
     validate_provider_model,
 )
-from rio.coding.rendering import (
-    EventRenderer,
-    JsonEventRenderer,
-    PlainEventRenderer,
-    PrintOutputMode,
-    create_event_renderer,
-)
 from rio.coding.resources import (
     ResourceDiagnostic,
     ResourceError,
     RioResourcePaths,
-)
-from rio.coding.session import (
-    CodingSession,
-    CodingSessionConfig,
-    ModelChoice,
-    default_session_path,
-    jsonl_session_storage,
-)
-from rio.coding.session_export import (
-    SessionExportError,
-    default_session_export_path,
-    export_session_html,
-    render_session_html,
-)
-from rio.coding.session_manager import (
-    CodingSessionRecord,
-    SessionManager,
 )
 from rio.coding.shell_config import (
     ShellConfigError,
@@ -136,7 +105,6 @@ from rio.coding.skills import (
     parse_skill_invocation,
     shadowed_skill_diagnostics,
 )
-from rio.coding.step_footprint import StepFootprint, estimate_step_footprint
 from rio.coding.system_prompt import (
     BuildSystemPromptOptions,
     ProjectContextFile,
@@ -181,21 +149,12 @@ __all__ = [
     "BuildSystemPromptOptions",
     "BuiltInExtension",
     "BuiltInExtensionSetup",
-    "CodingSession",
-    "CodingSessionConfig",
-    "ModelChoice",
-    "CodingSessionRecord",
-    "CodingSkillOptions",
-    "CommandRegistry",
-    "CommandResult",
     "CredentialStoreError",
     "DEFAULT_MODEL",
     "DEFAULT_PROVIDER_NAME",
     "DEFAULT_THINKING_LEVEL",
-    "EventRenderer",
     "FileCredentialStore",
     "ImageSupportState",
-    "JsonEventRenderer",
     "OAuthAuthInfo",
     "OAuthCredential",
     "OAuthDeviceCodeInfo",
@@ -205,8 +164,6 @@ __all__ = [
     "OAuthRuntimeAuth",
     "OpenAICodexProviderConfig",
     "OpenAICompatibleProviderConfig",
-    "PlainEventRenderer",
-    "PrintOutputMode",
     "ProjectContextFile",
     "PromptTemplate",
     "ProviderCatalogEntry",
@@ -221,20 +178,15 @@ __all__ = [
     "RioPaths",
     "RioResourcePaths",
     "ScopedModelConfig",
-    "SessionExportError",
-    "SessionManager",
     "ShellConfigError",
     "ShellSettings",
     "Skill",
-    "SlashCommand",
-    "StepFootprint",
     "THINKING_LEVELS",
     "ThinkingLevel",
     "ThinkingParameter",
     "ToolDefinition",
     "__version__",
     "anthropic_config_from_provider",
-    "build_coding_skill",
     "build_skill_index",
     "build_system_prompt",
     "builtin_provider_configs",
@@ -243,10 +195,8 @@ __all__ = [
     "create_bash_tool",
     "create_bash_tool_definition",
     "create_coding_tools",
-    "create_default_command_registry",
     "create_edit_tool",
     "create_edit_tool_definition",
-    "create_event_renderer",
     "create_read_tool",
     "create_read_tool_definition",
     "create_write_tool",
@@ -254,15 +204,11 @@ __all__ = [
     "credentials_path",
     "current_version",
     "default_openai_provider_config",
-    "default_session_export_path",
-    "default_session_path",
     "discover_project_context",
     "discover_project_context_with_diagnostics",
-    "estimate_step_footprint",
     "expand_prompt_template_command",
     "expand_skill_command",
     "expand_skill_name_command",
-    "export_session_html",
     "format_guidelines",
     "format_project_context",
     "format_skill_invocation",
@@ -270,7 +216,6 @@ __all__ = [
     "format_skills_for_prompt",
     "get_oauth_provider",
     "get_oauth_providers",
-    "jsonl_session_storage",
     "load_prompt_templates",
     "load_prompt_templates_with_diagnostics",
     "load_provider_settings",
@@ -291,7 +236,6 @@ __all__ = [
     "reasoning_effort_for_level",
     "register_oauth_provider",
     "render_prompt_template",
-    "render_session_html",
     "reset_oauth_providers",
     "resolve_provider_selection",
     "resolve_startup_thinking_level",

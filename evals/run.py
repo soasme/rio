@@ -130,7 +130,6 @@ def run_case(
     timeout: int,
     output: Path,
     cache: Path,
-    runtime: str = "durable",
 ) -> dict[str, object]:
     """Run one trial; keep graders outside the directory given to Rio."""
     with tempfile.TemporaryDirectory(prefix=f"rio-eval-{case.name}-") as temporary:
@@ -147,8 +146,6 @@ def run_case(
             "-c",
             "from rio.cli import main; main()",
             "run",
-            "--runtime",
-            runtime,
             (case / "task.md").read_text(encoding="utf-8"),
             "--cwd",
             str(workspace),
@@ -208,7 +205,6 @@ def run_case(
             "agent_exit": agent_exit,
             "grader_exit": grader.returncode,
             "seconds": duration,
-            "runtime": runtime,
             **trace_metrics(agent_stdout),
         }
         (output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
@@ -225,12 +221,6 @@ def fingerprint(paths: list[Path]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runtime", choices=("durable", "notebook"), default="durable")
-    parser.add_argument(
-        "--paired",
-        action="store_true",
-        help="Alternate notebook and durable trials under identical settings",
-    )
     parser.add_argument("--compare", type=Path, help="Baseline summary.json to compare per case")
     parser.add_argument("--provider", help="Rio provider; defaults to saved selection")
     parser.add_argument("--model", help="Rio model; defaults to provider selection")
@@ -249,8 +239,6 @@ def main() -> int:
     for name in names:
         if name not in cases:
             parser.error(f"unknown case: {name}")
-    if args.paired and (args.compare or args.runtime != "durable"):
-        parser.error("--paired cannot be combined with --compare or --runtime notebook")
     if not args.provider or not args.model:
         from rio.coding.provider_config import load_provider_settings, resolve_provider_selection
 
@@ -281,64 +269,49 @@ def main() -> int:
         "python": platform.python_version(),
         "platform": platform.platform(),
     }
-    runtimes = ["notebook", "durable"] if args.paired else [args.runtime]
-    results = {runtime: [] for runtime in runtimes}
-    summaries = {}
+    results = []
     for trial in range(1, args.trials + 1):
-        for index, name in enumerate(names):
-            order = runtimes if (trial + index) % 2 else list(reversed(runtimes))
-            for runtime in order:
-                destination = args.output_dir / runtime if args.paired else args.output_dir
-                result = run_case(
-                    CASES / name,
-                    provider=args.provider,
-                    model=args.model,
-                    timeout=args.timeout,
-                    output=destination.resolve() / name / str(trial),
-                    cache=args.cache_dir.resolve(),
-                    runtime=runtime,
-                )
-                result["trial"] = trial
-                results[runtime].append(result)
-                rows = results[runtime]
-                passed = sum(bool(row["passed"]) for row in rows)
-                summaries[runtime] = {
-                    **metadata,
-                    "runtime": runtime,
-                    "passed": passed,
-                    "total": len(rows),
-                    "pass_rate": passed / len(rows),
-                    "per_case": aggregate(rows),
-                    "results": rows,
-                }
-                (destination / "summary.json").write_text(
-                    json.dumps(summaries[runtime], indent=2) + "\n", encoding="utf-8"
-                )
-                print(
-                    f"{runtime} {name} trial {trial}: "
-                    f"{'pass' if result['passed'] else 'fail'} ({result['seconds']}s)",
-                    flush=True,
-                )
+        for name in names:
+            result = run_case(
+                CASES / name,
+                provider=args.provider,
+                model=args.model,
+                timeout=args.timeout,
+                output=args.output_dir.resolve() / name / str(trial),
+                cache=args.cache_dir.resolve(),
+            )
+            result["trial"] = trial
+            results.append(result)
+            passed = sum(bool(row["passed"]) for row in results)
+            summary = {
+                **metadata,
+                "passed": passed,
+                "total": len(results),
+                "pass_rate": passed / len(results),
+                "per_case": aggregate(results),
+                "results": results,
+            }
+            (args.output_dir / "summary.json").write_text(
+                json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+            )
+            print(
+                f"{name} trial {trial}: "
+                f"{'pass' if result['passed'] else 'fail'} ({result['seconds']}s)",
+                flush=True,
+            )
     if fingerprint(sources) != metadata["source_sha256"]:
         raise RuntimeError("Source changed during evaluation; rerun before comparing")
-    baseline = (
-        summaries["notebook"]
-        if args.paired
-        else json.loads(args.compare.read_text())
-        if args.compare
-        else None
-    )
-    if baseline:
-        comparison = compare(baseline, summaries[args.runtime])
+    if args.compare:
+        baseline = json.loads(args.compare.read_text())
+        comparison = compare(baseline, summary)
         (args.output_dir / "comparison.json").write_text(json.dumps(comparison, indent=2) + "\n")
         for name, row in comparison["cases"].items():
             print(
                 f"{name}: pass-rate delta {row['pass_rate_delta']:+.2f}; "
                 f"successful latency ratio {row['successful_latency_ratio']}"
             )
-    for runtime, summary in summaries.items():
-        print(f"{runtime}: {summary['passed']}/{summary['total']} passed")
-    return 0 if all(r["passed"] for rows in results.values() for r in rows) else 1
+    print(f"{summary['passed']}/{summary['total']} passed")
+    return 0 if all(r["passed"] for r in results) else 1
 
 
 if __name__ == "__main__":

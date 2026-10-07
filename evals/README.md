@@ -53,35 +53,42 @@ Trace inspection complements outcome scoring:
 For larger repository tasks, use issue-style fixtures and tests as in
 [SWE-bench](https://arxiv.org/abs/2310.06770), while reviewing grader quality.
 
-## Compare the durable runtime with the notebook baseline
+## Compare revisions on all four cases
 
-Use repeated, alternating trials on all four cases:
+Run the baseline and candidate in separate Git worktrees with the same provider,
+model, timeout, and trial count. Keep the first summary outside those worktrees.
+For example, run this on the baseline revision:
 
 ```sh
-uv run --dev python -m evals.run --paired --trials 3 --timeout 600 \
-  --provider PROVIDER --model MODEL --output-dir .eval-results/paired
+uv run python -m evals.run --trials 3 --timeout 600 \
+  --provider PROVIDER --model MODEL --output-dir /tmp/rio-baseline
 ```
 
-Each runtime gets an independent workspace and hidden grading. Alternating their
-order reduces cache and ordering bias. `notebook/summary.json` and
-`durable/summary.json` contain per-case completion rates, median elapsed time,
-median successful elapsed time, model rounds, and context bytes. `comparison.json`
-reports each case's pass-rate delta and successful latency ratio (below 1 means
-faster). Faster failures never count as improvements. Individual trials and
-traces remain available for inspection; summaries checkpoint after every trial.
+Then run this on the candidate revision:
 
-Provider token usage is reported where available. Missing notebook usage and
-interrupted provider requests remain unknown, not zero. Context bytes measure
-serialized State/notebook content, not provider tokens or the complete prompt.
-Durable traces also include measured SQLite commit and rebuild times.
+```sh
+uv run python -m evals.run --trials 3 --timeout 600 \
+  --provider PROVIDER --model MODEL --output-dir /tmp/rio-candidate \
+  --compare /tmp/rio-baseline/summary.json
+```
 
-The manifest records the resolved model/provider, runtime, timeout, source and
-fixture hashes, Git revision, Python, and platform. A source edit during the run
-invalidates the comparison. Separate runs can be compared with
-`--runtime durable --compare PATH/TO/notebook/summary.json`; settings, fixtures,
-cases, and trial counts must match. Review setup/grading failures and outliers
-before attributing a difference to the runtime. These small samples are
-observations, not a statistical significance claim.
+Each trial gets a fresh workspace and hidden grading. `summary.json` records
+per-case completion rate, median time, median successful time, model rounds,
+and context bytes. `comparison.json` reports each case's pass-rate delta and
+successful latency ratio (below 1 means faster). Faster failures do not count
+as improvements. Summaries checkpoint after each trial.
+
+The manifest records model, provider, timeout, source and fixture hashes, Git
+revision, Python, and platform. Comparisons require matching settings, fixtures,
+cases, and trial counts. Editing source during a run invalidates the result.
+Token usage stays unknown when the provider does not report it. Context bytes
+measure serialized state, not tokens or the full prompt. SQLite commit and
+rebuild times are also recorded.
+
+Repeat trials on both revisions, alternate revision order across batches, and
+inspect failures before attributing differences to the change. Small samples
+are descriptive; they do not establish statistical significance. Historical
+results in `results/` keep their original revision and runtime labels.
 
 Measure local durability costs without model calls:
 
@@ -92,5 +99,5 @@ uv run python -m evals.durability --samples 20
 This records commit percentiles, rebuild time, supervisor startup, a minimal uv
 script's duration, Inbox fold time, idle owner RSS, and recovery at the committed
 launch boundary. Actual process/child termination is covered by
-`tests/test_rio_durable.py`. Host/power failure is a separate deployment test;
+`tests/test_rio_agent.py`. Host/power failure is a separate deployment test;
 no process-kill result establishes a power-loss guarantee.

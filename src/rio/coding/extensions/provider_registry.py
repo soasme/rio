@@ -14,7 +14,7 @@ from types import MappingProxyType
 from typing import Literal
 from uuid import uuid4
 
-from rio.agent import HarnessCancellationToken
+from rio.coding.cancellation import CancellationToken
 from rio.coding.extensions.providers import (
     CredentialReader,
     DynamicProvider,
@@ -97,7 +97,7 @@ class ProviderRegistryCloseResult:
 class _RefreshOperation:
     """One owned refresh operation, independently of coalescing eligibility."""
 
-    signal: HarnessCancellationToken
+    signal: CancellationToken
     task: asyncio.Task[ProviderRefreshResult]
     waiters: int = 0
     cancellation_requested: bool = False
@@ -330,7 +330,7 @@ class DynamicProviderRegistry:
             self._detach_refresh_operation(key, operation)
             operation = None
         if operation is None:
-            signal = HarnessCancellationToken()
+            signal = CancellationToken()
             revision = self._refresh_revisions.get(token, 0) + 1
             self._refresh_revisions[token] = revision
             task = asyncio.create_task(
@@ -414,7 +414,7 @@ class DynamicProviderRegistry:
         self,
         token: ProviderLayerToken,
         provider: DynamicProvider,
-        signal: HarnessCancellationToken,
+        signal: CancellationToken,
         *,
         allow_network: bool,
         revision: int,
@@ -469,7 +469,7 @@ class DynamicProviderRegistry:
     async def _discover_snapshot(
         self,
         provider: DynamicProvider,
-        signal: HarnessCancellationToken,
+        signal: CancellationToken,
         *,
         allow_network: bool,
     ) -> ProviderModelSnapshot:
