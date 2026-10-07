@@ -36,7 +36,7 @@ def test_thinking_flag_reaches_thinking_level_param(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(run_module, "run_persistent_session", fake_run_persistent_session)
 
-    app(["run", "--thinking", "high", "--approve", "do it"])
+    app(["run", "--runtime", "notebook", "--thinking", "high", "--approve", "do it"])
     assert captured["thinking_level"] == "high"
     assert captured["extension_paths"] == ()
     assert captured["trust_override"] == "approve"
@@ -52,7 +52,7 @@ def test_json_output_reaches_session_runner(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(run_module, "run_persistent_session", fake_run)
 
-    app(["run", "--output", "json", "do it"])
+    app(["run", "--runtime", "notebook", "--output", "json", "do it"])
 
     assert captured["output_mode"] == "json"
 
@@ -102,7 +102,7 @@ def test_unrelated_value_error_does_not_blame_cwd(
     monkeypatch.setattr(run_module, "run_persistent_session", fake_run_persistent_session)
 
     with pytest.raises(SystemExit) as error:
-        app(["run", "--provider", "bonsai2", "do it"])
+        app(["run", "--runtime", "notebook", "--provider", "bonsai2", "do it"])
 
     assert error.value.code == 2
     stderr = capsys.readouterr().err

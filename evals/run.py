@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import json
 import os
+import platform
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+import psutil
+
+from evals.metrics import aggregate, compare, trace_metrics
 
 CASES = Path(__file__).resolve().parent / "cases"
 
@@ -122,6 +130,7 @@ def run_case(
     timeout: int,
     output: Path,
     cache: Path,
+    runtime: str = "durable",
 ) -> dict[str, object]:
     """Run one trial; keep graders outside the directory given to Rio."""
     with tempfile.TemporaryDirectory(prefix=f"rio-eval-{case.name}-") as temporary:
@@ -138,6 +147,8 @@ def run_case(
             "-c",
             "from rio.cli import main; main()",
             "run",
+            "--runtime",
+            runtime,
             (case / "task.md").read_text(encoding="utf-8"),
             "--cwd",
             str(workspace),
@@ -150,16 +161,27 @@ def run_case(
         if model:
             command.extend(("--model", model))
         start = time.monotonic()
-        try:
-            agent = subprocess.run(
-                command, capture_output=True, text=True, timeout=timeout, check=False, env=env
-            )
-            agent_exit: int | None = agent.returncode
-            agent_stdout, agent_stderr = agent.stdout, agent.stderr
-        except subprocess.TimeoutExpired as exc:
-            agent_exit = None
-            agent_stdout = _decode(exc.stdout)
-            agent_stderr = _decode(exc.stderr) + f"\nTimed out after {timeout}s"
+        with subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            start_new_session=True,
+        ) as agent:
+            try:
+                agent_stdout, agent_stderr = agent.communicate(timeout=timeout)
+                agent_exit: int | None = agent.returncode
+            except subprocess.TimeoutExpired:
+                children = psutil.Process(agent.pid).children(recursive=True)
+                for child in children:
+                    with contextlib.suppress(psutil.NoSuchProcess):
+                        child.kill()
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(agent.pid, signal.SIGKILL)
+                agent_stdout, agent_stderr = agent.communicate(timeout=10)
+                agent_stderr += f"\nTimed out after {timeout}s"
+                agent_exit = None
         duration = round(time.monotonic() - start, 2)
         output.mkdir(parents=True, exist_ok=True)
         (output / "agent.jsonl").write_text(agent_stdout, encoding="utf-8")
@@ -186,19 +208,30 @@ def run_case(
             "agent_exit": agent_exit,
             "grader_exit": grader.returncode,
             "seconds": duration,
+            "runtime": runtime,
+            **trace_metrics(agent_stdout),
         }
         (output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         return result
 
 
-def _decode(value: bytes | str | None) -> str:
-    if value is None:
-        return ""
-    return value.decode(errors="replace") if isinstance(value, bytes) else value
+def fingerprint(paths: list[Path]) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        digest.update(str(path.relative_to(CASES.parent.parent)).encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--runtime", choices=("durable", "notebook"), default="durable")
+    parser.add_argument(
+        "--paired",
+        action="store_true",
+        help="Alternate notebook and durable trials under identical settings",
+    )
+    parser.add_argument("--compare", type=Path, help="Baseline summary.json to compare per case")
     parser.add_argument("--provider", help="Rio provider; defaults to saved selection")
     parser.add_argument("--model", help="Rio model; defaults to provider selection")
     parser.add_argument("--case", action="append", help="Case name; defaults to all cases")
@@ -216,38 +249,96 @@ def main() -> int:
     for name in names:
         if name not in cases:
             parser.error(f"unknown case: {name}")
+    if args.paired and (args.compare or args.runtime != "durable"):
+        parser.error("--paired cannot be combined with --compare or --runtime notebook")
+    if not args.provider or not args.model:
+        from rio.coding.provider_config import load_provider_settings, resolve_provider_selection
+
+        selection = resolve_provider_selection(
+            load_provider_settings(), provider_name=args.provider, model=args.model
+        )
+        args.provider, args.model = selection.provider.name, selection.model
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.cache_dir.mkdir(parents=True, exist_ok=True)
-    results = []
-    for name in names:
-        for trial in range(1, args.trials + 1):
-            result = run_case(
-                CASES / name,
-                provider=args.provider,
-                model=args.model,
-                timeout=args.timeout,
-                output=args.output_dir / name / str(trial),
-                cache=args.cache_dir,
-            )
-            results.append(result)
-            print(f"{name} trial {trial}: {'pass' if result['passed'] else 'fail'}", flush=True)
-    passed = sum(bool(result["passed"]) for result in results)
-    revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False
-    ).stdout.strip()
-    summary = {
+    root = CASES.parent.parent
+    sources = list((root / "src").rglob("*.py")) + [root / "pyproject.toml"]
+    metadata = {
+        "timeout": args.timeout,
         "provider": args.provider,
         "model": args.model,
-        "revision": revision,
-        "passed": passed,
-        "total": len(results),
-        "pass_rate": passed / len(results),
+        "revision": subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+        ).stdout.strip(),
+        "source_sha256": fingerprint(sources),
+        "fixtures_sha256": fingerprint(
+            [
+                p
+                for name in names
+                for p in (CASES / name).rglob("*")
+                if p.is_file() and "__pycache__" not in p.parts
+            ]
+        ),
+        "python": platform.python_version(),
+        "platform": platform.platform(),
     }
-    (args.output_dir / "summary.json").write_text(
-        json.dumps({**summary, "results": results}, indent=2) + "\n", encoding="utf-8"
+    runtimes = ["notebook", "durable"] if args.paired else [args.runtime]
+    results = {runtime: [] for runtime in runtimes}
+    summaries = {}
+    for trial in range(1, args.trials + 1):
+        for index, name in enumerate(names):
+            order = runtimes if (trial + index) % 2 else list(reversed(runtimes))
+            for runtime in order:
+                destination = args.output_dir / runtime if args.paired else args.output_dir
+                result = run_case(
+                    CASES / name,
+                    provider=args.provider,
+                    model=args.model,
+                    timeout=args.timeout,
+                    output=destination.resolve() / name / str(trial),
+                    cache=args.cache_dir.resolve(),
+                    runtime=runtime,
+                )
+                result["trial"] = trial
+                results[runtime].append(result)
+                rows = results[runtime]
+                passed = sum(bool(row["passed"]) for row in rows)
+                summaries[runtime] = {
+                    **metadata,
+                    "runtime": runtime,
+                    "passed": passed,
+                    "total": len(rows),
+                    "pass_rate": passed / len(rows),
+                    "per_case": aggregate(rows),
+                    "results": rows,
+                }
+                (destination / "summary.json").write_text(
+                    json.dumps(summaries[runtime], indent=2) + "\n", encoding="utf-8"
+                )
+                print(
+                    f"{runtime} {name} trial {trial}: "
+                    f"{'pass' if result['passed'] else 'fail'} ({result['seconds']}s)",
+                    flush=True,
+                )
+    if fingerprint(sources) != metadata["source_sha256"]:
+        raise RuntimeError("Source changed during evaluation; rerun before comparing")
+    baseline = (
+        summaries["notebook"]
+        if args.paired
+        else json.loads(args.compare.read_text())
+        if args.compare
+        else None
     )
-    print(f"{passed}/{len(results)} passed; details: {args.output_dir / 'summary.json'}")
-    return 0 if passed == len(results) else 1
+    if baseline:
+        comparison = compare(baseline, summaries[args.runtime])
+        (args.output_dir / "comparison.json").write_text(json.dumps(comparison, indent=2) + "\n")
+        for name, row in comparison["cases"].items():
+            print(
+                f"{name}: pass-rate delta {row['pass_rate_delta']:+.2f}; "
+                f"successful latency ratio {row['successful_latency_ratio']}"
+            )
+    for runtime, summary in summaries.items():
+        print(f"{runtime}: {summary['passed']}/{summary['total']} passed")
+    return 0 if all(r["passed"] for rows in results.values() for r in rows) else 1
 
 
 if __name__ == "__main__":

@@ -32,6 +32,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "task", nargs="*", metavar="TASK", help="Task text or a Markdown task file."
     )
+    run_parser.add_argument(
+        "--runtime",
+        choices=("durable", "notebook"),
+        default="durable",
+        help="Execution runtime (default: durable; notebook supports legacy sessions).",
+    )
     run_parser.add_argument("--provider", help="Provider name.")
     run_parser.add_argument("-m", "--model", help="Model name.")
     run_parser.add_argument("--cwd", type=Path, help="Working directory.")
@@ -135,14 +141,19 @@ def app(argv: Sequence[str] | None = None) -> None:
 
 def _run(args: argparse.Namespace) -> None:
     prompt = _resolve_task(args.task)
-    if not prompt:
+    if not prompt and not args.resume:
         args.parser.error("a task or Markdown task file is required")
     if args.no_color:
         os.environ["NO_COLOR"] = "1"
     try:
         level = normalize_thinking_level(args.thinking) if args.thinking else None
+        from rio.cli.durable import run_durable_session
+
+        execute = (
+            run_durable_session if args.runtime == "durable" else run_module.run_persistent_session
+        )
         succeeded, session_id = anyio.run(
-            run_module.run_persistent_session,
+            execute,
             prompt,
             args.cwd,
             args.provider,

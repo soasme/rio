@@ -1,5 +1,8 @@
 # How Rio runs tasks
 
+> This page describes the legacy `--runtime notebook` architecture.
+> The default runtime is documented in [Durable Sessions](../durable.md).
+
 Rio treats LLM context as a runnable Jupyter notebook and lets he model manages
 its own context. The agent core is inspired by
 

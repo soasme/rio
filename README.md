@@ -26,8 +26,10 @@ Run a adhoc task:
 rio run "Fix gh issue 123."
 ```
 
-Rio works in a Jupyter notebook: it acts by adding Python, shell, and `%%edit`
-cells, which run in one live kernel in the project directory.
+Rio keeps its State in SQLite and executes independent Python scripts through `uv`.
+Committed work survives restart; interrupted scripts return `UnknownExecution` for
+inspection. See [Durable Sessions](docs/durable.md). Use `--runtime notebook` for
+the earlier Jupyter workflow.
 
 Run a predefined workflow:
 
@@ -49,7 +51,7 @@ Use `--provider NAME --model MODEL` to choose a provider and a model.
 
 Rio prints a compact human transcript by default. Use `--output json` for one JSON
 event per line. Each human-mode run prints a session id; continue it with
-`rio run --resume SESSION_ID "Next task"`.
+`rio run --resume SESSION_ID`. Start a new run for a new task.
 
 ## Documentation
 
@@ -73,7 +75,8 @@ cd tests/lean && lake build
 See [the Lean behavior models](tests/lean/README.md) for their scope and limits.
 
 * `rio.ai` is a multi-provider LLM streaming SDK.
-* `rio.agent` is the [Context Language Model][CLM] runtime: the context is a
+* `rio.durable` owns SQLite State, immutable Cells, independent workers, and recovery.
+* `rio.agent` is the legacy [Context Language Model][CLM] runtime: the context is a
   Jupyter notebook the model patches, and the runtime runs the changed cells.
 * `rio.coding` supplies the autonomous coding skill.
 * `rio.cli` is the public one-shot command-line entry point.

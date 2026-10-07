@@ -1,6 +1,6 @@
 # Lean behavior models
 
-Run `lake build` in this directory. CI builds all four targets.
+Run `lake build` in this directory. CI builds all five targets.
 
 The Lean files model decisions in the coding runtime. They are independent
 specifications, not proofs extracted from Python. Filesystem contents, patch
@@ -11,6 +11,7 @@ Python tests remain necessary to check that implementation behavior matches.
 
 | Lean file | Python behavior represented |
 | --- | --- |
+| `RioDurable.lean` | Immutable successor placement, duplicate turn admission, recovery idempotence, pause consumption, terminal dispatch, conclusion guards, and one timer event per generation (`rio.durable`) |
 | `RioAgent.lean` | Notebook loop: which cells run (including after a removed kernel stamp), output merging, kernel stamps, recorded definitions, stale cells, rejecting reads of stale-only names, and placeholders, stop after a failing cell, the size gate on patches, retries, event order, reply termination, cancellation, step limit |
 | `RioCoding.lean` | Edit validation; journal replay of resets and step patches, `%cell` recall of every journaled cell (a removed cell as it last was), batch append visibility and order, and resume with a new task; command routing; thinking cycle |
 | `RioCodingMcp.lean` | `mcp.json` merging: project entries replace global ones only when trusted, `enabled`-only project overrides keep the global entry, invalid entries change nothing; a configured `Authorization` header disables OAuth and a stored token is sent only to the URL it was issued for |

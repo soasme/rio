@@ -52,3 +52,45 @@ Trace inspection complements outcome scoring:
 [OpenAI, *Evaluate agent workflows*](https://developers.openai.com/api/docs/guides/agent-evals).
 For larger repository tasks, use issue-style fixtures and tests as in
 [SWE-bench](https://arxiv.org/abs/2310.06770), while reviewing grader quality.
+
+## Compare the durable runtime with the notebook baseline
+
+Use repeated, alternating trials on all four cases:
+
+```sh
+uv run --dev python -m evals.run --paired --trials 3 --timeout 600 \
+  --provider PROVIDER --model MODEL --output-dir .eval-results/paired
+```
+
+Each runtime gets an independent workspace and hidden grading. Alternating their
+order reduces cache and ordering bias. `notebook/summary.json` and
+`durable/summary.json` contain per-case completion rates, median elapsed time,
+median successful elapsed time, model rounds, and context bytes. `comparison.json`
+reports each case's pass-rate delta and successful latency ratio (below 1 means
+faster). Faster failures never count as improvements. Individual trials and
+traces remain available for inspection; summaries checkpoint after every trial.
+
+Provider token usage is reported where available. Missing notebook usage and
+interrupted provider requests remain unknown, not zero. Context bytes measure
+serialized State/notebook content, not provider tokens or the complete prompt.
+Durable traces also include measured SQLite commit and rebuild times.
+
+The manifest records the resolved model/provider, runtime, timeout, source and
+fixture hashes, Git revision, Python, and platform. A source edit during the run
+invalidates the comparison. Separate runs can be compared with
+`--runtime durable --compare PATH/TO/notebook/summary.json`; settings, fixtures,
+cases, and trial counts must match. Review setup/grading failures and outliers
+before attributing a difference to the runtime. These small samples are
+observations, not a statistical significance claim.
+
+Measure local durability costs without model calls:
+
+```sh
+uv run python -m evals.durability --samples 20
+```
+
+This records commit percentiles, rebuild time, supervisor startup, a minimal uv
+script's duration, Inbox fold time, idle owner RSS, and recovery at the committed
+launch boundary. Actual process/child termination is covered by
+`tests/test_rio_durable.py`. Host/power failure is a separate deployment test;
+no process-kill result establishes a power-loss guarantee.
