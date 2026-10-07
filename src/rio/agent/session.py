@@ -271,8 +271,8 @@ class Session:
         state, new = admit(
             turn["state"], patch, self.data["executions"], self.limits.context_bytes // 2
         )
-        new_code = [cell for cell in new if cell["kind"] == "code"]
-        if len(self.pending()) + len(self.unresolved()) + len(new_code) > self.limits.pending_cells:
+        runs = [cell for cell in new if cell["kind"] != "note"]
+        if len(self.pending()) + len(self.unresolved()) + len(runs) > self.limits.pending_cells:
             raise InvalidPatch("Too much outstanding work or uncertainty")
         for cell in new:
             if cell.get("role") in ("cancel", "resolution"):
@@ -317,7 +317,7 @@ class Session:
                 "truncated": False,
                 "accepted": self.store.sequence + 1,
             }
-            for c in new_code
+            for c in runs
         }
         controls = {
             str(c["id"]): {"cell": c, "handled": False}

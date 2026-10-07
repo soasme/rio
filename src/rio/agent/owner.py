@@ -1,4 +1,4 @@
-"""Serial uv execution, immediate controls, and conservative recovery."""
+"""Serial uv and command execution, immediate controls, and conservative recovery."""
 
 from __future__ import annotations
 
@@ -349,7 +349,7 @@ class Owner:
 
     async def _execute(self, cell_id: int) -> None:
         session = self.session
-        script = Path(self.temporary.name) / f"cell-{cell_id}.py"
+        cell = session.data["cells"][str(cell_id)]
         env = {
             **os.environ,
             "RIO_TIMER_SOCKET": self.socket_path,
@@ -357,12 +357,17 @@ class Owner:
             "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
         }
         try:
-            script.write_text(session.data["cells"][str(cell_id)]["source"], encoding="utf-8")
+            if cell["kind"] == "cmd":
+                command = ["--command", *cell["argv"]]
+            else:
+                script = Path(self.temporary.name) / f"cell-{cell_id}.py"
+                script.write_text(cell["source"], encoding="utf-8")
+                command = [str(script)]
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
                 str(Path(worker.__file__)),
                 self.identity["token"],
-                str(script),
+                *command,
                 cwd=session.meta["cwd"],
                 env=env,
                 start_new_session=True,

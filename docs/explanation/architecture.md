@@ -23,10 +23,10 @@ flowchart LR
     I --> S
 ```
 
-State has a goal, a revision, cells, and runtime observations. A cell is a note
-or a complete Python script. The model calls one tool, `step`, with a JSON Patch.
-The patch must test the revision first. It can append, replace, or remove whole
-cells. A replacement gets a new ID and links to the old cell. Old versions stay
+State has a goal, a revision, cells, and runtime observations. A cell is a note,
+a complete Python script, or a command. The model calls one tool, `step`, with a
+JSON Patch. The patch must test the revision first. It can append, replace, or
+remove whole cells. A replacement gets a new ID and links to the old cell. Old versions stay
 in history. Removing a cell from context does not cancel its work.
 
 Each model round uses a saved, fixed state. New observations wait in the inbox.
@@ -48,6 +48,9 @@ not carry over. For example:
 from pathlib import Path
 print(Path("README.md").read_text())
 ```
+
+A `cmd` cell, such as `{"kind": "cmd", "argv": ["pytest", "-q"]}`, runs its argv
+directly, without a shell or uv. It shares the script queue and supervision.
 
 The owner commits launch permission and the supervisor's identity before allowing
 code to start. It commits output before printing it, normally every 100 ms.
