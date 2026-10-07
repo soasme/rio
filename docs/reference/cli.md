@@ -36,8 +36,10 @@ text; otherwise the positional arguments are joined into the task.
 Omit TASK when resuming a SQLite Session. Resume keeps the original goal, project instructions, and model
 configuration; terminal runs remain terminal. Sessions use SQLite only.
 
-`human` prints a compact transcript and session ID. `json` emits one JSON
-event per line and is intended for programmatic consumers.
+`human` prints accepted content (notes, commands, and Python source), execution output and
+outcomes, and the session ID. Cell labels and numbers are not displayed. Resume replays the committed
+transcript before showing new progress. See the [message design](../design/coding-tui-messages.md).
+`json` emits one JSON event per line and is intended for programmatic consumers.
 
 ## `rio mcp`
 
