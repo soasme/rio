@@ -7,6 +7,7 @@ import statistics
 import uuid
 from pathlib import Path
 
+from rio.coding.context import load_agents_md
 from rio.coding.extensions.startup import resolve_dynamic_startup
 from rio.coding.paths import RioPaths
 from rio.coding.project_trust import TrustOverride
@@ -19,6 +20,7 @@ from rio.coding.provider_config import (
 from rio.coding.provider_runtime import create_model_provider
 from rio.coding.rendering import PrintOutputMode
 from rio.coding.rendering.steps import PlainEventRenderer
+from rio.coding.system_prompt import format_project_context
 
 
 async def run_persistent_session(
@@ -31,6 +33,7 @@ async def run_persistent_session(
     trust_override: TrustOverride | None = None,
     resume: str | None = None,
     output_mode: PrintOutputMode = PrintOutputMode.human,
+    agents_md: Path | None = None,
 ) -> tuple[bool, str]:
     from rio.agent import Session, Store
     from rio.agent.runner import run
@@ -58,6 +61,8 @@ async def run_persistent_session(
                 raise ValueError("Resume preserves the configured provider")
             if model and model != saved["model"]:
                 raise ValueError("Resume preserves the configured model")
+            if agents_md is not None:
+                raise ValueError("Resume preserves the project instructions")
             provider_name, model = saved["provider"], saved["model"]
             thinking_level = saved.get("thinking")
         else:
@@ -65,6 +70,9 @@ async def run_persistent_session(
             cwd = (cwd or Path.cwd()).resolve()
         if not cwd.is_dir():
             raise ValueError(f"Working directory does not exist: {cwd}")
+        if session is None:
+            context = load_agents_md(cwd, agents_md)
+            instructions = format_project_context((context,) if context else ())
         dynamic = None
         try:
             selection = resolve_provider_selection(
@@ -103,6 +111,7 @@ async def run_persistent_session(
                         "model": model,
                         "thinking": thinking_level,
                     },
+                    instructions=instructions,
                 )
 
             def publish(event):

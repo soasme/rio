@@ -79,4 +79,20 @@ def fireTimer (fired expired : Bool) : Bool × Nat :=
 theorem expired_timer_is_not_redelivered : fireTimer (fireTimer false true).1 true = (true, 0) := by
   rfl
 
+/-- An explicit --agents-md path wins; otherwise the working directory's AGENTS.md. -/
+def resolveAgentsMd (explicit cwdFile : Option String) : Option String :=
+  explicit <|> cwdFile
+
+theorem explicit_agents_md_wins (path : String) (cwdFile : Option String) :
+    resolveAgentsMd (some path) cwdFile = some path := rfl
+
+theorem cwd_agents_md_is_default (cwdFile : Option String) :
+    resolveAgentsMd none cwdFile = cwdFile := rfl
+
+/-- Instructions are fixed at Session creation and appended to the protocol prompt. -/
+def systemPrompt (protocol instructions : String) : String := protocol ++ instructions
+
+theorem no_instructions_keeps_protocol (protocol : String) :
+    systemPrompt protocol "" = protocol := by simp [systemPrompt]
+
 end RioAgent

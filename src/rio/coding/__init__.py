@@ -9,6 +9,7 @@ from rio.coding.built_in_extensions import (
 from rio.coding.context import (
     discover_project_context,
     discover_project_context_with_diagnostics,
+    load_agents_md,
 )
 from rio.coding.credentials import (
     CredentialStoreError,
@@ -216,6 +217,7 @@ __all__ = [
     "format_skills_for_prompt",
     "get_oauth_provider",
     "get_oauth_providers",
+    "load_agents_md",
     "load_prompt_templates",
     "load_prompt_templates_with_diagnostics",
     "load_provider_settings",
