@@ -1,3 +1,9 @@
+# 0.8.0
+
+* chore: update vendor bundled models catalog ([#126](https://github.com/soasme/rio/pull/126))
+* feat(agent)!: implement durable state as the only runtime ([#125](https://github.com/soasme/rio/pull/125))
+* feat(ai): rio.ai module enhancement ([#123](https://github.com/soasme/rio/pull/123))
+
 # 0.7.1
 
 * feat(agent): manage every cell each step; recall removed cells from the journal ([#122](https://github.com/soasme/rio/pull/122))
