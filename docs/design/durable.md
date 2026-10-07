@@ -9,7 +9,7 @@ This document defines the agreed next Rio core. It describes intended behavior, 
 
 Rio uses one SKILL.state. The whole State is model context. Each round, the LLM calls one tool, `step`, with a JSON Patch. The Harness commits the patch, evaluates State, runs accepted code Cells, and records output. The LLM manages its context by adding, replacing, summarizing, and removing Cells.
 
-Cells are immutable and independent. Each new code Cell version requests one finite execution. Notes do not execute code. A Session can last for months without retaining a worker between events.
+Cells are immutable and independent. Each new code or cmd Cell version requests one finite execution. Notes do not execute code. A Session can last for months without retaining a worker between events.
 
 Session stores the facts required to rebuild State and find unfinished work. Memory contains only disposable projections, buffers, and live processes. Recovery restores the computation model, not the Working Environment. Files, installed environments, processes, and remote services may change or disappear.
 
@@ -23,7 +23,7 @@ Rio does not guarantee identical model responses, restoration of external inputs
 | --- | --- |
 | Session | SQLite records of State changes, Cells, executions, observations, and run endings |
 | State | Current goal, selected immutable Cells, and relevant runtime facts |
-| Cell | An immutable note or Python script, identified by an increasing integer |
+| Cell | An immutable note, Python script, or command, identified by an increasing integer |
 | Inbox | Persistent observations waiting for a model round |
 
 The first version has one State and one local owner per Session. One code Cell runs at a time in each Session. Different Sessions may run concurrently; their shared external resources are not coordinated by Rio.
@@ -209,6 +209,10 @@ Runtime credentials and host environment configuration stay outside source and m
 Use ordinary files or temporary files for scratch scripts, notes, and intermediate data. Rio supplies no scratch namespace, versioned filesystem, or scratch garbage collector. A recorded path is not a backup. Missing or changed files are conditions for the model to inspect or recreate. Code can check expected hashes when exact bytes matter.
 
 Record required recovery facts in SQLite, not solely in temporary files. Large output may spill to a file, with an explicit notice that the full content is not retained in Session. File loss does not prevent State reconstruction, but it can prevent task completion.
+
+### Commands
+
+A `cmd` Cell holds an argv array, such as `{"kind": "cmd", "argv": ["pytest", "-q"]}`. The worker executes it directly in the Session working directory, without a shell or uv. It follows the same execution, output, cancellation, and recovery rules as a code Cell. Use `["sh", "-c", "..."]` when shell syntax is needed.
 
 ## 9. Inbox, timers, and control notes
 

@@ -36,6 +36,25 @@ def replaceHead (cells : List Cell) (next : Nat) : List Cell :=
 theorem replacement_preserves_position (a b : Cell) (next : Nat) :
     replaceHead [a,b] next = [⟨next, some a.id⟩, b] := by rfl
 
+inductive Kind where
+  | note | code | cmd
+  deriving DecidableEq, Repr
+
+/-- Code and cmd Cells request one execution; notes never run. -/
+def runs : Kind → Bool
+  | .note => false
+  | .code | .cmd => true
+
+def requested (cells : List (Nat × Kind)) : List Nat :=
+  (cells.filter (runs ·.2)).map (·.1)
+
+theorem notes_request_no_execution (ids : List Nat) :
+    requested (ids.map (·, .note)) = [] := by
+  induction ids <;> simp_all [requested, runs]
+
+theorem cmd_requests_like_code (id : Nat) :
+    requested [(id, .cmd)] = requested [(id, .code)] := rfl
+
 structure Journal where
   accepted : List Nat := []
   executions : List Nat := []

@@ -41,6 +41,10 @@ def code(n, source="print('hello')", **extra):
     }
 
 
+def cmd(n, *argv, **extra):
+    return {"id": n, "previous_id": None, "kind": "cmd", "argv": list(argv), **extra}
+
+
 def prepare(session):
     return session.prepare_turn(SYSTEM, SCHEMA)
 
@@ -105,6 +109,9 @@ def test_atomic_admission_and_linear_history(session):
         {"op": "copy", "path": "/cells/-", "from": "/cells/0"},
         {"op": "add", "path": "/cells/0", "value": note(2)},
         {"op": "replace", "path": "/cells/0", "value": note(2, previous_id=77)},
+        append(cmd(2)),
+        append(cmd(2, "ls", 1)),
+        append(cmd(2, "ls", source="x")),
     ],
 )
 def test_restricted_patch(session, operation):
@@ -223,6 +230,16 @@ async def test_serial_uv_runs_and_independent_variables(session):
     assert (Path(session.meta["cwd"]) / "order").read_text() == "12"
     assert session.data["executions"]["2"]["output"] == "ok\n"
     assert all(e["result"]["type"] == "success" for e in session.data["executions"].values())
+
+
+async def test_cmd_runs_argv_without_shell(session):
+    accept(session, cmd(1, sys.executable, "-c", "import sys; print(sys.argv[1])", "$HOME"))
+    accept(session, cmd(2, "rio-missing-command"))
+    async with Owner(session) as owner:
+        await settle(owner)
+    assert session.data["executions"]["1"]["output"] == "$HOME\n"
+    assert session.data["executions"]["2"]["result"]["exit_code"] == 127
+    assert session.meta["pause"] == "execution:2"
 
 
 async def test_error_pauses_queue_then_cancel_before_dispatch(session):
