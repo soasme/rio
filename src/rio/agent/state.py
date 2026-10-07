@@ -97,6 +97,19 @@ def validate_cell(cell: object) -> None:
         raise InvalidPatch(f"Unknown Cell fields: {sorted(set(cell) - allowed)}")
 
 
+def index_error(cells: list[dict], index: int) -> str:
+    """Explain that /cells/N is an array position, and where Cell id N lives if it exists."""
+    positions = f"0..{len(cells) - 1}" if cells else "none; append at /cells/-"
+    message = (
+        f"Cell index {index} out of range: /cells/N is the array position, not the Cell id "
+        f"(valid positions: {positions})"
+    )
+    for position, cell in enumerate(cells):
+        if cell["id"] == index:
+            return f"{message}. Cell id {index} is at /cells/{position}"
+    return message
+
+
 def admit(state: dict, patch: object, executions: dict, limit: int) -> tuple[dict, list[dict]]:
     if not isinstance(patch, list):
         raise InvalidPatch("patch must be an array")
@@ -127,7 +140,7 @@ def admit(state: dict, patch: object, executions: dict, limit: int) -> tuple[dic
         ):
             index = int(path.rsplit("/", 1)[1])
             if index >= len(candidate["cells"]):
-                raise InvalidPatch("Cell index out of range")
+                raise InvalidPatch(index_error(candidate["cells"], index))
             old = candidate["cells"][index]
             if old["id"] in touched or old["id"] >= state["runtime"]["next_cell_id"]:
                 raise InvalidPatch("Only one operation per existing Cell per patch")

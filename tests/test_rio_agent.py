@@ -121,6 +121,19 @@ def test_restricted_patch(session, operation):
         session.accept(turn["id"], patch(turn, operation))
 
 
+def test_out_of_range_index_points_to_cell_id_position(session):
+    accept(session, note(1), note(2))
+    turn = prepare(session)
+    session.accept(turn["id"], patch(turn, {"op": "remove", "path": "/cells/0"}))
+    turn = prepare(session)
+    with pytest.raises(InvalidPatch, match=r"not the Cell id .*0\.\.0.*id 2 is at /cells/0"):
+        session.accept(turn["id"], patch(turn, {"op": "remove", "path": "/cells/2"}))
+    session.accept(turn["id"], patch(turn, {"op": "remove", "path": "/cells/0"}))
+    turn = prepare(session)
+    with pytest.raises(InvalidPatch, match="append at /cells/-"):
+        session.accept(turn["id"], patch(turn, {"op": "remove", "path": "/cells/0"}))
+
+
 def test_deduplication_and_conflicting_turn(session):
     turn = prepare(session)
     operations = patch(turn, append(code(1)))
