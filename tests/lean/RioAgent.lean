@@ -58,6 +58,12 @@ theorem successor_is_admitted (old : Cell) (next : Nat) :
 theorem null_predecessor_is_stale (old : Cell) (next : Nat) :
     admitsReplacement old ⟨next, none⟩ = false := by simp [admitsReplacement]
 
+/-- Replace/remove may target only Cells that existed before the patch (id < next). -/
+def changeable (cellId nextId : Nat) : Bool := cellId < nextId
+
+theorem cell_added_in_patch_is_not_changeable (nextId k : Nat) :
+    changeable (nextId + k) nextId = false := by simp [changeable]
+
 inductive Kind where
   | note | code | cmd
   deriving DecidableEq, Repr

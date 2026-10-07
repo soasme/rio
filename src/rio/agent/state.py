@@ -122,6 +122,8 @@ def stale_error(cells: list[dict], index: int, previous_id: object) -> str:
         f"Stale predecessor: /cells/{index} holds Cell id {old_id}, so its "
         f"replacement needs previous_id: {old_id} (got {previous_id})"
     )
+    if previous_id is None:
+        return f"{message}. To add a new Cell instead, append at /cells/-"
     return located(cells, message, previous_id)
 
 
@@ -132,7 +134,6 @@ def admit(state: dict, patch: object, executions: dict, limit: int) -> tuple[dic
         raise InvalidPatch("First operation must test the current /revision")
     candidate = copy.deepcopy(state)
     new = []
-    touched = set()
     last_removed = len(state["cells"])
     for operation in patch:
         if not isinstance(operation, dict):
@@ -157,9 +158,11 @@ def admit(state: dict, patch: object, executions: dict, limit: int) -> tuple[dic
             if index >= len(candidate["cells"]):
                 raise InvalidPatch(index_error(candidate["cells"], index))
             old = candidate["cells"][index]
-            if old["id"] in touched or old["id"] >= state["runtime"]["next_cell_id"]:
-                raise InvalidPatch("Only one operation per existing Cell per patch")
-            touched.add(old["id"])
+            if old["id"] >= state["runtime"]["next_cell_id"]:
+                raise InvalidPatch(
+                    f"/cells/{index} holds Cell id {old['id']}, added earlier in this patch; "
+                    "edit or drop that operation instead of changing the Cell again"
+                )
             if op == "remove":
                 if index >= last_removed:
                     raise InvalidPatch("Remove cells in descending index order")

@@ -144,10 +144,27 @@ def test_stale_predecessor_names_required_id_and_position(session):
             turn["id"],
             patch(turn, {"op": "replace", "path": "/cells/0", "value": note(3, previous_id=2)}),
         )
-    with pytest.raises(InvalidPatch, match=r"needs previous_id: 1 \(got None\)$"):
+    with pytest.raises(InvalidPatch, match=r"\(got None\)\. To add a new Cell instead, append"):
         session.accept(
             turn["id"], patch(turn, {"op": "replace", "path": "/cells/0", "value": note(3)})
         )
+
+
+def test_second_operation_on_a_cell_names_the_cell(session):
+    accept(session, note(1), note(2))
+    turn = prepare(session)
+    replace = {"op": "replace", "path": "/cells/0", "value": note(3, previous_id=1)}
+    with pytest.raises(InvalidPatch, match="id 3, added earlier in this patch"):
+        session.accept(
+            turn["id"],
+            patch(
+                turn,
+                replace,
+                {"op": "replace", "path": "/cells/0", "value": note(4, previous_id=3)},
+            ),
+        )
+    with pytest.raises(InvalidPatch, match="id 3, added earlier in this patch"):
+        session.accept(turn["id"], patch(turn, replace, {"op": "remove", "path": "/cells/0"}))
 
 
 def test_deduplication_and_conflicting_turn(session):
