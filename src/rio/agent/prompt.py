@@ -16,7 +16,8 @@ N is the Cell's 0-based position in the cells array, NOT its id.
 Begin every patch with {"op":"test","path":"/revision","value":REVISION}.
 Cells have increasing integer IDs allocated from runtime.next_cell_id in patch order.
 A new Cell has previous_id:null. A replacement gets a NEW id and previous_id equal to the
-old Cell's id, at the same array position. Never replace a queued or started Cell.
+old Cell's id (never null), at the same array position. Never replace a queued or started Cell.
+Replace or remove only Cells that existed before this patch, each at most once.
 Notes: {"id":N,"previous_id":null,"kind":"note","text":"..."}.
 Code: {"id":N,"previous_id":null,"kind":"code","runtime":"python","source":"..."}.
 Cmd: {"id":N,"previous_id":null,"kind":"cmd","argv":["pytest","-q"]}.
