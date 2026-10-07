@@ -671,11 +671,12 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
         assert {event["session_id"] for event in events} == {session_id}
         assert events[-1]["type"] == "durability_metrics"
     else:
-        assert "• Cell 1 (code)\n  # /// script" in transcript
+        assert "• # /// script" in transcript
         assert "  Path('effect').write_text('once')" in transcript
-        assert "• Running Cell 1\n  └ Cell 1: success (exit 0)" in transcript
-        assert "• Cell 2 (note), conclusion requested: success\n  done" in transcript
+        assert "  └ success (exit 0)" in transcript
+        assert "• done" in transcript
         assert transcript.endswith("• Success: done\n")
+        assert "Cell" not in transcript
     path = paths.sessions_dir / f"{session_id}.sqlite3"
     with Store(path) as store:
         assert Session(store).state["goal"] == "write a file"

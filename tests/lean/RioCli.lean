@@ -14,12 +14,16 @@ inductive Event where
   | rejected
   deriving DecidableEq, Repr
 
-def visibleCells : Event → List Cell
-  | .accepted cells => cells
+def visibleCells : Event → List String
+  | .accepted cells => cells.map Cell.body
   | _ => []
 
 theorem accepted_source_is_visible (id : Nat) (source : String) :
-    visibleCells (.accepted [⟨id, source⟩]) = [⟨id, source⟩] := by rfl
+    visibleCells (.accepted [⟨id, source⟩]) = [source] := by rfl
+
+theorem cell_ids_do_not_affect_content (first second : Nat) (body : String) :
+    visibleCells (.accepted [⟨first, body⟩]) =
+      visibleCells (.accepted [⟨second, body⟩]) := by rfl
 
 theorem proposals_are_not_published (cells : List Cell) :
     visibleCells (.proposed cells) = [] := by rfl

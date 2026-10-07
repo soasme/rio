@@ -36,7 +36,7 @@ Omit TASK when resuming a SQLite Session. Resume keeps the original goal and mod
 configuration; terminal runs remain terminal. Sessions use SQLite only.
 
 `human` prints accepted cells (note text and Python source), execution output and
-outcomes labeled by cell ID, and the session ID. Resume replays the committed
+outcomes, and the session ID. Cell labels and numbers are not displayed. Resume replays the committed
 transcript before showing new progress. See the [message design](../design/coding-tui-messages.md).
 `json` emits one JSON event per line and is intended for programmatic consumers.
 

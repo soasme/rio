@@ -24,17 +24,14 @@ def test_committed_cells_show_literal_source_notes_and_successors(capsys):
     assert capsys.readouterr().out == ""
     emit(renderer, "patch_accepted", cells=cells)
     emit(renderer, "patch_accepted", cells={})
-    assert capsys.readouterr().out == (
-        "• Cell 9 (note)\n  Inspect files.\n  Then test.\n\n"
-        "• Cell 10 (code), replaces Cell 2\n  print('[red]')\n"
-    )
+    assert capsys.readouterr().out == ("• Inspect files.\n  Then test.\n\n• print('[red]')\n")
 
 
 def test_streamed_snapshots_preserve_partial_lines_and_do_not_repeat(capsys):
     renderer = PlainEventRenderer()
     emit(renderer, "execution_started", executions={"2": execution()})
     emit(renderer, "execution_output", executions={"2": execution("hel")})
-    assert capsys.readouterr().out == "• Running Cell 2\n  └ Cell 2 stdout: hel"
+    assert capsys.readouterr().out == "  └ hel"
     emit(renderer, "execution_output", executions={"2": execution("hello\n")})
     emit(renderer, "execution_output", executions={"2": execution("hello\nworld")})
     emit(renderer, "execution_output", executions={"2": execution("hello\nworld")})
@@ -43,10 +40,10 @@ def test_streamed_snapshots_preserve_partial_lines_and_do_not_repeat(capsys):
         "execution_finished",
         executions={"2": execution("hello\nworld", result={"type": "success", "exit_code": 0})},
     )
-    assert capsys.readouterr().out == "lo\n    world\n  └ Cell 2: success (exit 0)\n"
+    assert capsys.readouterr().out == "lo\n    world\n  └ success (exit 0)\n"
 
 
-def test_interleaved_notes_and_stderr_keep_cell_attribution(capsys):
+def test_interleaved_notes_and_stderr_keep_separate_entries(capsys):
     renderer = PlainEventRenderer()
     emit(renderer, "execution_started", executions={"2": execution()})
     emit(renderer, "execution_output", executions={"2": execution("one")})
@@ -60,10 +57,7 @@ def test_interleaved_notes_and_stderr_keep_cell_attribution(capsys):
     emit(renderer, "execution_output", executions={"2": execution("onetwo", "warning\n")})
     emit(renderer, "run_ended", meta={"terminal": {"result": "failure", "reason": "Stopped"}})
     assert capsys.readouterr().out == (
-        "• Running Cell 2\n  └ Cell 2 stdout: one\n\n"
-        "• Cell 3 (note)\n  Waiting [literal]\n"
-        "  └ Cell 2 stdout: two\n  └ Cell 2 stderr: warning\n\n"
-        "• Failure: Stopped\n"
+        "  └ one\n• Waiting [literal]\n  └ two\n  └ stderr: warning\n\n• Failure: Stopped\n"
     )
 
 
@@ -79,7 +73,7 @@ def test_interleaved_notes_and_stderr_keep_cell_attribution(capsys):
 )
 def test_silent_executions_still_show_outcome(result, expected, capsys):
     emit(PlainEventRenderer(), "execution_finished", executions={"2": execution(result=result)})
-    assert capsys.readouterr().out == f"  └ Cell 2: {expected}\n"
+    assert capsys.readouterr().out == f"  └ {expected}\n"
 
 
 @pytest.mark.parametrize("durable_truncation", [False, True])
@@ -94,7 +88,7 @@ def test_truncation_is_explicit_and_only_reported_once(durable_truncation, capsy
     output = capsys.readouterr().out
     assert output.count("x") == (20 if durable_truncation else 8_000)
     assert output.count("[output truncated]") == 1
-    assert output.endswith("  └ Cell 2: success\n")
+    assert output.endswith("  └ success\n")
 
 
 def test_conclusion_request_does_not_claim_success_and_retries_are_visible(capsys):
@@ -114,6 +108,4 @@ def test_conclusion_request_does_not_claim_success_and_retries_are_visible(capsy
         },
     )
     emit(renderer, "patch_rejected", turns={"t1": {"error": "Invalid patch"}})
-    assert capsys.readouterr().out == (
-        "• Cell 3 (note), conclusion requested: success\n  Done?\n\n• Retry: Invalid patch\n"
-    )
+    assert capsys.readouterr().out == ("• Done?\n\n• Retry: Invalid patch\n")

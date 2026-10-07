@@ -6,7 +6,7 @@ _OUTPUT_CHARS = 8_000
 
 
 class PlainEventRenderer:
-    """Show immutable cells and attribute streaming results to their exact IDs."""
+    """Show code, notes, and streaming results without internal cell metadata."""
 
     def __init__(self) -> None:
         self._has_entries = False
@@ -21,20 +21,8 @@ class PlainEventRenderer:
         if kind == "patch_accepted":
             # Only new versions, in allocated ID order; State also contains old cells.
             for cell in sorted(changes["cells"].values(), key=lambda cell: cell["id"]):
-                label = f"Cell {cell['id']} ({cell['kind']})"
-                if cell["previous_id"] is not None:
-                    label += f", replaces Cell {cell['previous_id']}"
-                if role := cell.get("role"):
-                    label += f", {role}"
-                    if "target_cell_id" in cell:
-                        label += f" for Cell {cell['target_cell_id']}"
-                    if role == "conclusion":
-                        label += f" requested: {cell['result']}"
                 body = cell["source"] if cell["kind"] == "code" else cell["text"]
-                self._message(f"{label}\n{body}")
-        elif kind == "execution_started":
-            for execution in changes["executions"].values():
-                self._message(f"Running Cell {execution['cell_id']}")
+                self._message(body)
         elif kind in ("execution_output", "output_truncated", "execution_finished"):
             for key, execution in changes["executions"].items():
                 self._output(key, execution)
@@ -45,7 +33,7 @@ class PlainEventRenderer:
                         text += f" (exit {result['exit_code']})"
                     if result.get("reason"):
                         text += f": {result['reason']}"
-                    self._result(f"Cell {key}", text)
+                    self._result(text)
         elif kind == "patch_rejected":
             for turn in changes["turns"].values():
                 self._message(f"Retry: {turn['error']}")
@@ -54,7 +42,7 @@ class PlainEventRenderer:
             self._message(f"{terminal['result'].capitalize()}: {terminal['reason']}")
 
     def _output(self, key: str, execution: dict) -> None:
-        for name, label in (("output", "stdout"), ("stderr", "stderr")):
+        for name, label in (("output", ""), ("stderr", "stderr: ")):
             stream = (key, name)
             text = execution[name]
             previous = self._displayed.get(stream, 0)
@@ -66,7 +54,7 @@ class PlainEventRenderer:
             if visible:
                 if self._stream != stream:
                     self._close_line()
-                    print(f"  └ Cell {key} {label}: ", end="", flush=True)
+                    print(f"  └ {label}", end="", flush=True)
                     self._line_open = True
                     self._stream = stream
                 # Keep partial lines contiguous across committed snapshots; new lines
@@ -79,7 +67,7 @@ class PlainEventRenderer:
             if (
                 len(delta) > remaining or execution.get("truncated")
             ) and key not in self._truncated:
-                self._result(f"Cell {key}", "[output truncated]")
+                self._result("[output truncated]")
                 self._truncated.add(key)
 
     def _close_line(self) -> None:
@@ -98,9 +86,9 @@ class PlainEventRenderer:
             print(f"  {line}", flush=True)
         self._has_entries = True
 
-    def _result(self, label: str, text: str) -> None:
+    def _result(self, text: str) -> None:
         self._close_line()
         lines = text.splitlines() or [""]
-        print(f"  └ {label}: {lines[0]}", flush=True)
+        print(f"  └ {lines[0]}", flush=True)
         for line in lines[1:]:
             print(f"    {line}", flush=True)
