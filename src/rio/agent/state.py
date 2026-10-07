@@ -97,6 +97,14 @@ def validate_cell(cell: object) -> None:
         raise InvalidPatch(f"Unknown Cell fields: {sorted(set(cell) - allowed)}")
 
 
+def located(cells: list[dict], message: str, cell_id: object) -> str:
+    """Append where Cell id cell_id lives, so a retry can address it correctly."""
+    for position, cell in enumerate(cells):
+        if cell["id"] == cell_id:
+            return f"{message}. Cell id {cell_id} is at /cells/{position}"
+    return message
+
+
 def index_error(cells: list[dict], index: int) -> str:
     """Explain that /cells/N is an array position, and where Cell id N lives if it exists."""
     positions = f"0..{len(cells) - 1}" if cells else "none; append at /cells/-"
@@ -104,10 +112,17 @@ def index_error(cells: list[dict], index: int) -> str:
         f"Cell index {index} out of range: /cells/N is the array position, not the Cell id "
         f"(valid positions: {positions})"
     )
-    for position, cell in enumerate(cells):
-        if cell["id"] == index:
-            return f"{message}. Cell id {index} is at /cells/{position}"
-    return message
+    return located(cells, message, index)
+
+
+def stale_error(cells: list[dict], index: int, previous_id: object) -> str:
+    """Name the predecessor /cells/N requires, and where the given previous_id lives."""
+    old_id = cells[index]["id"]
+    message = (
+        f"Stale predecessor: /cells/{index} holds Cell id {old_id}, so its "
+        f"replacement needs previous_id: {old_id} (got {previous_id})"
+    )
+    return located(cells, message, previous_id)
 
 
 def admit(state: dict, patch: object, executions: dict, limit: int) -> tuple[dict, list[dict]]:
@@ -153,7 +168,7 @@ def admit(state: dict, patch: object, executions: dict, limit: int) -> tuple[dic
                 cell = operation.get("value")
                 validate_cell(cell)
                 if cell["previous_id"] != old["id"]:
-                    raise InvalidPatch("Stale predecessor")
+                    raise InvalidPatch(stale_error(candidate["cells"], index, cell["previous_id"]))
                 if executions.get(str(old["id"]), {}).get("phase") in ("queued", "started"):
                     raise InvalidPatch("Cannot replace a queued or running Cell")
                 new.append(cell)

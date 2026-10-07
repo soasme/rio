@@ -134,6 +134,22 @@ def test_out_of_range_index_points_to_cell_id_position(session):
         session.accept(turn["id"], patch(turn, {"op": "remove", "path": "/cells/0"}))
 
 
+def test_stale_predecessor_names_required_id_and_position(session):
+    accept(session, note(1), note(2))
+    turn = prepare(session)
+    with pytest.raises(
+        InvalidPatch, match=r"needs previous_id: 1 \(got 2\)\. Cell id 2 is at /cells/1"
+    ):
+        session.accept(
+            turn["id"],
+            patch(turn, {"op": "replace", "path": "/cells/0", "value": note(3, previous_id=2)}),
+        )
+    with pytest.raises(InvalidPatch, match=r"needs previous_id: 1 \(got None\)$"):
+        session.accept(
+            turn["id"], patch(turn, {"op": "replace", "path": "/cells/0", "value": note(3)})
+        )
+
+
 def test_deduplication_and_conflicting_turn(session):
     turn = prepare(session)
     operations = patch(turn, append(code(1)))
