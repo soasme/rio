@@ -1,6 +1,6 @@
 """A synchronous MCP client over stdio and streamable HTTP.
 
-Synchronous so notebook cells can call tools without `await`. The stdio
+Synchronous so Python scripts can call tools without `await`. The stdio
 transport reads the server's stdout on a thread; the HTTP transport reads
 each response (JSON or an SSE stream) inline. Server-to-client requests are
 answered: `ping`, and `roots/list` with the session's working directory.

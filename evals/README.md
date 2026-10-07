@@ -52,3 +52,52 @@ Trace inspection complements outcome scoring:
 [OpenAI, *Evaluate agent workflows*](https://developers.openai.com/api/docs/guides/agent-evals).
 For larger repository tasks, use issue-style fixtures and tests as in
 [SWE-bench](https://arxiv.org/abs/2310.06770), while reviewing grader quality.
+
+## Compare revisions on all four cases
+
+Run the baseline and candidate in separate Git worktrees with the same provider,
+model, timeout, and trial count. Keep the first summary outside those worktrees.
+For example, run this on the baseline revision:
+
+```sh
+uv run python -m evals.run --trials 3 --timeout 600 \
+  --provider PROVIDER --model MODEL --output-dir /tmp/rio-baseline
+```
+
+Then run this on the candidate revision:
+
+```sh
+uv run python -m evals.run --trials 3 --timeout 600 \
+  --provider PROVIDER --model MODEL --output-dir /tmp/rio-candidate \
+  --compare /tmp/rio-baseline/summary.json
+```
+
+Each trial gets a fresh workspace and hidden grading. `summary.json` records
+per-case completion rate, median time, median successful time, model rounds,
+and context bytes. `comparison.json` reports each case's pass-rate delta and
+successful latency ratio (below 1 means faster). Faster failures do not count
+as improvements. Summaries checkpoint after each trial.
+
+The manifest records model, provider, timeout, source and fixture hashes, Git
+revision, Python, and platform. Comparisons require matching settings, fixtures,
+cases, and trial counts. Editing source during a run invalidates the result.
+Token usage stays unknown when the provider does not report it. Context bytes
+measure serialized state, not tokens or the full prompt. SQLite commit and
+rebuild times are also recorded.
+
+Repeat trials on both revisions, alternate revision order across batches, and
+inspect failures before attributing differences to the change. Small samples
+are descriptive; they do not establish statistical significance. Historical
+results in `results/` keep their original revision and runtime labels.
+
+Measure local durability costs without model calls:
+
+```sh
+uv run python -m evals.durability --samples 20
+```
+
+This records commit percentiles, rebuild time, supervisor startup, a minimal uv
+script's duration, Inbox fold time, idle owner RSS, and recovery at the committed
+launch boundary. Actual process/child termination is covered by
+`tests/test_rio_agent.py`. Host/power failure is a separate deployment test;
+no process-kill result establishes a power-loss guarantee.

@@ -1,0 +1,370 @@
+{
+  "baseline": {
+    "timeout": 600,
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "revision": "c4a495fe9aeb6d5183e167cef205782bcfe48293",
+    "source_sha256": "3a390fef25ec504a1433ea7b26dcee9eaad02ed42b620c9df6ee1f0ac432ad81",
+    "fixtures_sha256": "7a8e8c281c79e5af1c624af84c9ec67dc4e765829267ed1b6095827351456ca9",
+    "python": "3.12.12",
+    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "runtime": "durable",
+    "passed": 4,
+    "total": 4,
+    "pass_rate": 1.0,
+    "per_case": {
+      "001-divide": {
+        "trials": 1,
+        "passed": 1,
+        "pass_rate": 1.0,
+        "median_seconds": 19.57,
+        "median_success_seconds": 19.57,
+        "median_model_rounds": 5,
+        "median_context_bytes": 11149
+      },
+      "002-slugify": {
+        "trials": 1,
+        "passed": 1,
+        "pass_rate": 1.0,
+        "median_seconds": 24.24,
+        "median_success_seconds": 24.24,
+        "median_model_rounds": 5,
+        "median_context_bytes": 11776
+      },
+      "003-flask-blueprint-name": {
+        "trials": 1,
+        "passed": 1,
+        "pass_rate": 1.0,
+        "median_seconds": 65.45,
+        "median_success_seconds": 65.45,
+        "median_model_rounds": 7,
+        "median_context_bytes": 58072
+      },
+      "004-pytest-caplog-level": {
+        "trials": 1,
+        "passed": 1,
+        "pass_rate": 1.0,
+        "median_seconds": 38.71,
+        "median_success_seconds": 38.71,
+        "median_model_rounds": 6,
+        "median_context_bytes": 44370
+      }
+    },
+    "results": [
+      {
+        "case": "001-divide",
+        "passed": true,
+        "agent_exit": 0,
+        "grader_exit": 0,
+        "seconds": 19.57,
+        "runtime": "durable",
+        "model_rounds": 5,
+        "executions": 4,
+        "execution_errors": 1,
+        "unknown_executions": 0,
+        "context_bytes": 11149,
+        "tokens": 12654,
+        "known_tokens": 12654,
+        "unknown_usage_attempts": 0,
+        "commit_p50_seconds": 0.00016120821237564087,
+        "rebuild_seconds": 0.00489912461489439,
+        "trial": 1
+      },
+      {
+        "case": "002-slugify",
+        "passed": true,
+        "agent_exit": 0,
+        "grader_exit": 0,
+        "seconds": 24.24,
+        "runtime": "durable",
+        "model_rounds": 5,
+        "executions": 4,
+        "execution_errors": 0,
+        "unknown_executions": 0,
+        "context_bytes": 11776,
+        "tokens": 13130,
+        "known_tokens": 13130,
+        "unknown_usage_attempts": 0,
+        "commit_p50_seconds": 0.00018954183906316757,
+        "rebuild_seconds": 0.0010002907365560532,
+        "trial": 1
+      },
+      {
+        "case": "003-flask-blueprint-name",
+        "passed": true,
+        "agent_exit": 0,
+        "grader_exit": 0,
+        "seconds": 65.45,
+        "runtime": "durable",
+        "model_rounds": 7,
+        "executions": 6,
+        "execution_errors": 1,
+        "unknown_executions": 0,
+        "context_bytes": 58072,
+        "tokens": 42781,
+        "known_tokens": 42781,
+        "unknown_usage_attempts": 0,
+        "commit_p50_seconds": 0.00020422879606485367,
+        "rebuild_seconds": 0.0009100418537855148,
+        "trial": 1
+      },
+      {
+        "case": "004-pytest-caplog-level",
+        "passed": true,
+        "agent_exit": 0,
+        "grader_exit": 0,
+        "seconds": 38.71,
+        "runtime": "durable",
+        "model_rounds": 6,
+        "executions": 5,
+        "execution_errors": 0,
+        "unknown_executions": 0,
+        "context_bytes": 44370,
+        "tokens": 26059,
+        "known_tokens": 26059,
+        "unknown_usage_attempts": 0,
+        "commit_p50_seconds": 0.00017091631889343262,
+        "rebuild_seconds": 0.0011293338611721992,
+        "trial": 1
+      }
+    ]
+  },
+  "candidate": {
+    "timeout": 600,
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "revision": "b56d21d7e46547c7ae2bcc2c05b99889b860cf0b",
+    "source_sha256": "6865b91d0141ee16bb31acc493de4d8007875a05f3acccd9aee0a9bb41d4c043",
+    "fixtures_sha256": "7a8e8c281c79e5af1c624af84c9ec67dc4e765829267ed1b6095827351456ca9",
+    "python": "3.12.12",
+    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "passed": 4,
+    "total": 4,
+    "pass_rate": 1.0,
+    "per_case": {
+      "001-divide": {
+        "trials": 1,
+        "passed": 1,
+        "pass_rate": 1.0,
+        "median_seconds": 16.0,
+        "median_success_seconds": 16.0,
+        "median_model_rounds": 5,
+        "median_context_bytes": 9282
+      },
+      "002-slugify": {
+        "trials": 1,
+        "passed": 1,
+        "pass_rate": 1.0,
+        "median_seconds": 10.7,
+        "median_success_seconds": 10.7,
+        "median_model_rounds": 3,
+        "median_context_bytes": 4544
+      },
+      "003-flask-blueprint-name": {
+        "trials": 1,
+        "passed": 1,
+        "pass_rate": 1.0,
+        "median_seconds": 91.89,
+        "median_success_seconds": 91.89,
+        "median_model_rounds": 13,
+        "median_context_bytes": 154851
+      },
+      "004-pytest-caplog-level": {
+        "trials": 1,
+        "passed": 1,
+        "pass_rate": 1.0,
+        "median_seconds": 44.59,
+        "median_success_seconds": 44.59,
+        "median_model_rounds": 7,
+        "median_context_bytes": 59375
+      }
+    },
+    "results": [
+      {
+        "case": "001-divide",
+        "passed": true,
+        "agent_exit": 0,
+        "grader_exit": 0,
+        "seconds": 16.0,
+        "model_rounds": 5,
+        "executions": 4,
+        "execution_errors": 1,
+        "unknown_executions": 0,
+        "context_bytes": 9282,
+        "tokens": 11645,
+        "known_tokens": 11645,
+        "unknown_usage_attempts": 0,
+        "commit_p50_seconds": 0.0001451876014471054,
+        "rebuild_seconds": 0.00550466775894165,
+        "trial": 1
+      },
+      {
+        "case": "002-slugify",
+        "passed": true,
+        "agent_exit": 0,
+        "grader_exit": 0,
+        "seconds": 10.7,
+        "model_rounds": 3,
+        "executions": 2,
+        "execution_errors": 0,
+        "unknown_executions": 0,
+        "context_bytes": 4544,
+        "tokens": 6918,
+        "known_tokens": 6918,
+        "unknown_usage_attempts": 0,
+        "commit_p50_seconds": 0.00013749999925494194,
+        "rebuild_seconds": 0.0009702928364276886,
+        "trial": 1
+      },
+      {
+        "case": "003-flask-blueprint-name",
+        "passed": true,
+        "agent_exit": 0,
+        "grader_exit": 0,
+        "seconds": 91.89,
+        "model_rounds": 13,
+        "executions": 12,
+        "execution_errors": 3,
+        "unknown_executions": 0,
+        "context_bytes": 154851,
+        "tokens": 77407,
+        "known_tokens": 77407,
+        "unknown_usage_attempts": 0,
+        "commit_p50_seconds": 0.00017579179257154465,
+        "rebuild_seconds": 0.000913458876311779,
+        "trial": 1
+      },
+      {
+        "case": "004-pytest-caplog-level",
+        "passed": true,
+        "agent_exit": 0,
+        "grader_exit": 0,
+        "seconds": 44.59,
+        "model_rounds": 7,
+        "executions": 6,
+        "execution_errors": 0,
+        "unknown_executions": 0,
+        "context_bytes": 59375,
+        "tokens": 32660,
+        "known_tokens": 32660,
+        "unknown_usage_attempts": 0,
+        "commit_p50_seconds": 0.00019920803606510162,
+        "rebuild_seconds": 0.0009542908519506454,
+        "trial": 1
+      }
+    ]
+  },
+  "comparison": {
+    "cases": {
+      "001-divide": {
+        "baseline": {
+          "trials": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "median_seconds": 19.57,
+          "median_success_seconds": 19.57,
+          "median_model_rounds": 5,
+          "median_context_bytes": 11149
+        },
+        "candidate": {
+          "trials": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "median_seconds": 16.0,
+          "median_success_seconds": 16.0,
+          "median_model_rounds": 5,
+          "median_context_bytes": 9282
+        },
+        "pass_rate_delta": 0.0,
+        "successful_latency_ratio": 0.8175779253960143,
+        "observed_improvement": true
+      },
+      "002-slugify": {
+        "baseline": {
+          "trials": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "median_seconds": 24.24,
+          "median_success_seconds": 24.24,
+          "median_model_rounds": 5,
+          "median_context_bytes": 11776
+        },
+        "candidate": {
+          "trials": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "median_seconds": 10.7,
+          "median_success_seconds": 10.7,
+          "median_model_rounds": 3,
+          "median_context_bytes": 4544
+        },
+        "pass_rate_delta": 0.0,
+        "successful_latency_ratio": 0.4414191419141914,
+        "observed_improvement": true
+      },
+      "003-flask-blueprint-name": {
+        "baseline": {
+          "trials": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "median_seconds": 65.45,
+          "median_success_seconds": 65.45,
+          "median_model_rounds": 7,
+          "median_context_bytes": 58072
+        },
+        "candidate": {
+          "trials": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "median_seconds": 91.89,
+          "median_success_seconds": 91.89,
+          "median_model_rounds": 13,
+          "median_context_bytes": 154851
+        },
+        "pass_rate_delta": 0.0,
+        "successful_latency_ratio": 1.4039724980901451,
+        "observed_improvement": false
+      },
+      "004-pytest-caplog-level": {
+        "baseline": {
+          "trials": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "median_seconds": 38.71,
+          "median_success_seconds": 38.71,
+          "median_model_rounds": 6,
+          "median_context_bytes": 44370
+        },
+        "candidate": {
+          "trials": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "median_seconds": 44.59,
+          "median_success_seconds": 44.59,
+          "median_model_rounds": 7,
+          "median_context_bytes": 59375
+        },
+        "pass_rate_delta": 0.0,
+        "successful_latency_ratio": 1.1518987341772153,
+        "observed_improvement": false
+      }
+    },
+    "note": "Observed differences are descriptive, not evidence of statistical significance. Repeat trials on both revisions; inspect failures and report regressions."
+  },
+  "durability": {
+    "samples": 20,
+    "commit_p50_seconds": 0.0001246035099029541,
+    "commit_p95_seconds": 0.00017375033348798752,
+    "rebuild_seconds": 0.013165333308279514,
+    "worker_startup_p50_seconds": 0.002303004264831543,
+    "uv_script_p50_seconds": 0.08115744590759277,
+    "inbox_fold_p50_seconds": 0.0008255420252680779,
+    "idle_owner_rss_bytes": 45006848,
+    "idle_cell_processes": 0,
+    "recovery_seconds": 0.01887504104524851,
+    "interrupted_cells": 1,
+    "unknown_executions": 1,
+    "automatic_reexecutions": 0,
+    "power_loss_tested": false
+  }
+}

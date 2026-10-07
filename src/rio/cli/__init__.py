@@ -135,12 +135,14 @@ def app(argv: Sequence[str] | None = None) -> None:
 
 def _run(args: argparse.Namespace) -> None:
     prompt = _resolve_task(args.task)
-    if not prompt:
+    if not prompt and not args.resume:
         args.parser.error("a task or Markdown task file is required")
     if args.no_color:
         os.environ["NO_COLOR"] = "1"
     try:
         level = normalize_thinking_level(args.thinking) if args.thinking else None
+        if os.name != "posix":
+            raise ValueError("Rio execution requires POSIX process supervision")
         succeeded, session_id = anyio.run(
             run_module.run_persistent_session,
             prompt,
@@ -156,10 +158,7 @@ def _run(args: argparse.Namespace) -> None:
     except ValueError as exc:
         args.parser.error(str(exc))
     if args.output == PrintOutputMode.human:
-        from rio.coding.rendering.ansi import dot
-
-        indicator = dot(success=succeeded)
-        print(f"\n{indicator} Session: {session_id}")
+        print(f"\nSession: {session_id}")
     if not succeeded:
         raise SystemExit(1)
 

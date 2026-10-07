@@ -1,8 +1,7 @@
 # Trust project resources
 
-Project resources can include instructions and extensions from the repository
-being worked on. Extensions execute Python, so Rio does not trust project
-resources automatically.
+Project provider extensions execute Python. Rio loads them only after project
+trust is approved. Explicit extension paths are treated as selected by the user.
 
 Approve them for a run when you have reviewed the project:
 

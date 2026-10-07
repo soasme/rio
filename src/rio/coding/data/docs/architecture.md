@@ -1,94 +1,102 @@
-# rio architecture
+# Architecture
 
-rio is a coding agent built on *Context Language Models* (arXiv:2609.37725):
-the model manages its own context, and the context is a runnable Jupyter
-notebook.
+Rio runs one coding task at a time. The model edits its own context as JSON.
+Rio saves each accepted change in SQLite and runs code in separate Python processes.
 
-## The three packages
+## Packages
 
-```text
-rio.ai      provider/model streaming layer
-rio.agent   CLM runtime: the notebook, patch checks, cell execution, the step loop
-rio.coding  CLI app, resources, skills, extensions, commands, session journal
+| Package | Job |
+| --- | --- |
+| `rio.ai` | Send requests to model providers and read their responses. |
+| `rio.agent` | Own state, check patches, run scripts, and recover sessions. |
+| `rio.coding` | Configure providers, credentials, extensions, and MCP clients. |
+| `rio.cli` | Start or resume a task and print committed results. |
+
+## One step
+
+```mermaid
+flowchart LR
+    S[Saved state] --> M[Model]
+    M -->|step patch| C[Check and commit]
+    C --> W[Run Python script]
+    W -->|commit output and result| I[Inbox]
+    I --> S
 ```
 
-- `rio.ai`: providers, wire-level message/tool types, and the provider-neutral
-  assistant stream event union. No knowledge of skills, notebooks, or sessions.
-- `rio.agent`: the portable CLM runtime -- `HarnessSpec`, `Harness`,
-  `run_context_loop`, `rio.agent.notebook`, and the step event stream. No
-  knowledge of the coding domain or any frontend.
-- `rio.coding`: the coding domain expressed as one skill (see
-  `rio.coding.coding_skill`), plus resource discovery, project trust, the
-  session journal, and frontends.
+State has a goal, a revision, cells, and runtime observations. A cell is a note
+or a complete Python script. The model calls one tool, `step`, with a JSON Patch.
+The patch must test the revision first. It can append, replace, or remove whole
+cells. A replacement gets a new ID and links to the old cell. Old versions stay
+in history. Removing a cell from context does not cancel its work.
 
-## The context is a notebook
+Each model round uses a saved, fixed state. New observations wait in the inbox.
+Accepting a patch also records which observations that round consumed. Retrying
+an accepted step returns the same receipt and does not launch the code again.
+A complete saved model response can be accepted after restart. Lost responses
+use bounded retries; missing token usage stays unknown.
 
-The context is an nbformat v4 notebook kept as JSON. Each step the model sees
-the whole notebook in one user message and replies with one `skill_step` call:
+## Running code
 
-- `patch`: an RFC 6902 JSON Patch against the notebook;
-- `reply` (optional): the answer to the user. Setting it ends the run, and the
-  runtime appends it as a markdown cell with `metadata.rio.role = "assistant"`.
+One owner runs scripts in order with `uv run --script`. Each script has PEP 723
+metadata and its own process. Files can pass data between scripts; variables do
+not carry over. For example:
 
-The runtime applies the patch and fills in the fields a new cell may omit
-(`id`, `metadata`, `outputs`, `execution_count`). It rejects the reply through
-the retry path when the patch fails, the result is not a valid notebook, cell
-ids repeat, or the notebook would grow past the limit. A patch that shrinks an
-oversized notebook is accepted.
+```python
+# /// script
+# dependencies = []
+# ///
+from pathlib import Path
+print(Path("README.md").read_text())
+```
 
-Code cells the patch added or whose source changed then run in order, in the
-session's working directory; the first one that fails stops the rest. All cells
-share one IPython kernel that lives for the session (`rio.agent.KernelExecutor`,
-built on nbclient), so variables build up across steps and no cell runs twice
-unless its source changes. A resume, rewind, or new session starts an empty
-kernel. Only the cells that ran get new outputs; every other cell keeps its own.
-Outputs lose terminal colors and binary data, and long text is cut.
+The owner commits launch permission and the supervisor's identity before allowing
+code to start. It commits output before printing it, normally every 100 ms.
+Output has a size limit and a visible truncation flag. An idle session has no
+script process.
 
-The notebook records the kernel. `metadata.rio.kernel` holds the current
-kernel's `id` and whether it is `running`. Each code cell that ran has
-`metadata.rio.kernel` set to the id of the kernel that ran it, and
-`metadata.rio.defines` listing the names it bound. The kernel records those
-names itself (`rio.agent.kernel_ext` compares the namespace before and after
-the cell), so names made by `exec` count and a function's locals do not.
+## Recovery
 
-A new kernel gets a new id, so after a resume, rewind, or new session every
-cell that ran before is stale: its variables, open files, and subprocesses are
-gone. Each request lists the stale cells. A cell may stay stale, but reading
-its variables is stopped twice:
+Sessions live at `~/.rio/sessions/SESSION_ID.sqlite3`. Resume with
+`rio run --resume SESSION_ID`. The goal, limits, model configuration, and recorded
+results stay the same. A finished run stays finished; use a new run for a new task.
 
-- Before running, a patch is rejected when a cell it runs reads a name that
-  only stale cells defined. Reads are found statically, after IPython turns
-  magics and `!cmd` into Python.
-- In the kernel, each such name is bound to a `StaleValue` placeholder. Almost
-  any use of it raises `StaleVariableError`, naming the cell to run again. This
-  catches the reads the static check misses: `globals()[...]`, `eval`, `exec`.
+SQLite uses WAL and `synchronous=FULL`. Events rebuild state without executing
+code or calling a model. A failed commit stops new work and publication. Reopen
+the session to check what committed; a missing receipt does not prove rollback.
 
-Removing a cell's stamp (`{"op": "remove", "path": "/cells/3/metadata/rio/kernel"}`)
-runs it again without editing it, so the model can re-run a stale cell before
-the cells that read its variables, in the same patch.
+Recovery checks worker identities and stops surviving local processes. A script
+that started without a recorded result becomes `UnknownExecution`. Rio never
+replays it automatically. Errors pause the queue until the model consumes their
+observations. Unknown results also need an explicit resolution with recorded
+evidence. The original unknown result stays in history.
 
-Cells are Python run by IPython: `!cmd` and `%%bash` run shell commands, plain
-Python reads and writes files, and the `%%edit PATH` cell magic
-(`rio.coding.edit_magic`) applies SEARCH/REPLACE blocks with the `edit` tool's
-rules. Markdown cells are notes. User tasks are markdown cells with
-`metadata.rio.role = "user"`.
+## Controls and limits
 
-Validity is the runtime's job; strategy is the model's. The runtime never
-summarizes or drops cells. Every step the model goes through every cell: it
-keeps it, replaces it with a markdown summary that names the cell's id, or
-removes it. A replaced or removed cell stays in the session journal, and
-`%cell ID` (`rio.coding.cell_magic`) prints its last source and outputs.
+Notes can request cancellation, resolve uncertainty, or conclude the task.
+Cancellation runs in the owner without waiting for a worker slot. Success requires
+no pending work, unread observations, or unresolved results, and passing any
+configured validators. Validators use the same process supervision.
 
-## Sessions journal the notebook
+`Session.create` accepts `Limits` and validator argument lists. These are outside
+model patch authority. Limits cover model rounds, tokens, script time, retries,
+context, output, pending work, inbox messages, and journal size. Cleanup and final
+records may exceed the journal admission limit.
 
-The notebook is never stored outside the session file. A `StateResetEntry`
-holds a whole notebook. Each committed step writes a `StepEntry` holding the
-JSON Patch from the previous notebook to the new one (the model's edits, the
-new outputs, and any user or reply cell), the cells that ran, and the reply.
-Resuming replays the patches on the active branch; `--resume` appends the new
-task as a user cell. Branching rebuilds the notebook at an earlier step and
-journals it as a reset.
+`Session.receive` saves an external observation before acknowledging it. Stable
+IDs make duplicate delivery harmless; conflicting IDs are rejected. The prefixes
+`execution:`, `control:`, `timer:`, and `idle:` are reserved for runtime records.
+Scripts can read committed history with `rio.agent.api.records(after=...)` and
+schedule a timer with `timer(request_id, deadline, payload)`. A timer uses an
+absolute Unix deadline and produces one event per request ID.
 
-`rio.coding.session_store` defines the entry types and the tree utilities
-(`notebook_at_entry`, `resume_notebook`, `latest_leaf_id`).
-`rio.coding.session_runner.SessionRunner` drives a run against that journal.
+## Boundaries
+
+Execution requires POSIX and local filesystem locks. Symbolic links share the
+owner lock; hard-linked databases are rejected. Rio stops if it cannot establish
+that a previous worker has stopped. The database records work; it does not restore
+project files or external services. Detached processes and remote effects need
+application-specific controls. Scripts are not sandboxed, and external effects
+are not guaranteed to happen exactly once.
+
+Tests cover process crashes, lost commit receipts, replay, and child cleanup.
+They do not prove power-loss durability. That needs testing on the target storage.

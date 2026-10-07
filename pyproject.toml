@@ -1,7 +1,7 @@
 [project]
 name = "rio"
 version = "0.7.1"
-description = "rio.ai: a ported multi-provider LLM streaming SDK. rio.agent: a Context Language Model (CLM) agent runtime (arXiv:2609.37725). rio.coding: a CLM coding agent."
+description = "A coding agent with durable SQLite state and a multi-provider LLM SDK."
 readme = "README.md"
 authors = [
     { name = "Ju Lin", email = "soasme@gmail.com" }
@@ -12,15 +12,11 @@ license-files = ["LICENSE", "NOTICE"]
 dependencies = [
     "anyio>=4.0",
     "httpx[socks]>=0.27",
-    "ipykernel>=7.4.0",
     "jsonpatch>=1.33",
-    "nbclient>=0.11.0",
-    "nbformat>=5.11.1",
     "packaging>=24.0",
     "pillow>=11.0",
+    "psutil>=7.0",
     "pydantic>=2.11",
-    "pygments>=2.18",
-    "pyte>=0.8.2",
 ]
 
 [project.scripts]
@@ -38,6 +34,7 @@ packages = ["src/rio"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-ra"
 asyncio_mode = "auto"
 

@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 from uuid import uuid4
 
-from rio.agent.events import StepEndEvent, StepStartEvent
 from rio.ai.tools import AgentTool, AgentToolResult
 from rio.ai.types import JSONValue
 
@@ -19,28 +18,34 @@ if TYPE_CHECKING:
     from rio.coding.extensions.runtime import ExtensionRuntime
     from rio.coding.local_backends import LocalBackend
 
-# Every string here is one step in the CLM step lifecycle or one session-level
-# event a coding session emits (see `rio.coding.events` and `rio.agent.events`).
-# There is no per-message streaming: a step's reply is not surfaced
-# incrementally to extensions.
+# Committed runtime records exposed to event observers.
 AGENT_EVENT_TYPES: frozenset[str] = frozenset(
     {
-        "run_start",
-        "run_end",
-        "agent_settled",
-        "step_start",
-        "step_end",
-        "reasoning",
-        "validation_error",
-        "patch",
-        "execution",
-        "queue_update",
-        "entry_appended",
-        "state_restored",
-        "session_info_changed",
-        "thinking_level_changed",
-        "auto_retry_start",
-        "auto_retry_end",
+        "session_created",
+        "turn_prepared",
+        "model_attempt",
+        "model_response",
+        "patch_rejected",
+        "patch_accepted",
+        "execution_started",
+        "execution_output",
+        "execution_finished",
+        "inbox_received",
+        "control_handled",
+        "timer_fired",
+        "validator_result",
+        "validator_started",
+        "validator_registered",
+        "validator_finished",
+        "validator_interrupted",
+        "worker_registered",
+        "worker_cleanup",
+        "timer_registered",
+        "output_truncated",
+        "invalid_idle",
+        "work_requested",
+        "durability_metrics",
+        "run_ended",
     }
 )
 AGENT_EVENT_WILDCARD = "agent_event"
@@ -876,10 +881,10 @@ class ExtensionContext:
         return self._runtime.session_view.is_running
 
     @property
-    def notebook(self) -> dict[str, JSONValue]:
-        """Return a copy of the notebook the model sees next."""
+    def state(self) -> dict[str, JSONValue]:
+        """Return a copy of the state the model sees next."""
         self._generation.assert_active()
-        return deepcopy(self._runtime.session_view.notebook)
+        return deepcopy(self._runtime.session_view.state)
 
     @property
     def has_ui(self) -> bool:
@@ -1147,8 +1152,6 @@ __all__ = [
     "SlotWidgetContent",
     "SlotWidgetFactory",
     "StderrUiBridge",
-    "StepEndEvent",
-    "StepStartEvent",
     "ToolCallHookEvent",
     "ToolCallHookResult",
     "ToolResultHookEvent",

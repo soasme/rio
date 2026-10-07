@@ -8,8 +8,6 @@ from pathlib import Path
 import pytest
 
 from rio.cli import app, build_parser
-from rio.coding.paths import RioPaths
-from rio.coding.session_manager import SessionManager
 
 run_module = importlib.import_module("rio.cli.run")
 
@@ -108,31 +106,3 @@ def test_unrelated_value_error_does_not_blame_cwd(
     stderr = capsys.readouterr().err
     assert "Unknown provider: bonsai2" in stderr
     assert "error: --cwd" not in stderr
-
-
-@pytest.mark.anyio
-async def test_resume_reuses_the_durable_session(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    sessions: list[object] = []
-
-    async def fake_run(
-        *args: object, storage: object = None, **kwargs: object
-    ) -> tuple[bool, str, str]:
-        sessions.append(storage)
-        return True, "provider", "model"
-
-    monkeypatch.setattr(run_module, "_run_configured_session", fake_run)
-    manager = SessionManager(RioPaths(home=tmp_path / ".rio", agents_home=tmp_path / ".agents"))
-    project = tmp_path / "project"
-    project.mkdir()
-
-    _, session_id = await run_module.run_persistent_session(
-        "first task", project, session_manager=manager
-    )
-    _, resumed_id = await run_module.run_persistent_session(
-        "next task", project, resume=session_id, session_manager=manager
-    )
-
-    assert resumed_id == session_id
-    assert sessions[0].path == sessions[1].path

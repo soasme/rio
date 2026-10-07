@@ -1,48 +1,58 @@
-# rio CLI
+# Command-line interface
 
-rio drives one `rio.coding.session.CodingSession` from a one-shot print-mode CLI. The CLI entry point is `rio.cli:app` (script name `rio`).
-
-## Commands
-
-```bash
-rio login anthropic --method api-key
-rio run --provider anthropic --model MODEL "Explain this project"
-rio run --resume SESSION_ID "Continue with the next task"
+```text
+rio login PROVIDER [--method METHOD]
+rio run [OPTIONS] TASK
+rio mcp add|remove|list|login|logout
 ```
 
-`rio login PROVIDER` saves credentials for a configured or built-in provider.
-Add an OpenAI-compatible provider directly to `~/.rio/providers.json`:
+## `rio login`
 
-```json
-{
-  "default_provider": "local",
-  "providers": [
-    {
-      "type": "openai-compatible",
-      "name": "local",
-      "base_url": "http://127.0.0.1:8080/v1",
-      "api": "openai-completions",
-      "api_key_env": "LOCAL_API_KEY",
-      "credential_name": null,
-      "models": ["qwen3-coder"],
-      "default_model": "qwen3-coder"
-    }
-  ]
-}
-```
+Saves credentials for a provider.
 
-Set `LOCAL_API_KEY` before running rio. Use `openai-responses` for providers
-that implement the Responses API.
-`rio run --thinking LEVEL` selects reasoning effort. `--approve` allows ambient
-project resources for the run; `--no-approve` disables them. Each `rio run`
-creates a durable session. Human output prints its id; pass it to `--resume`
-to rebuild its notebook and continue it. Use `--output json` for one JSON event per
-line; the default `human` format prints messages and the cells that ran.
+| Argument | Description |
+| --- | --- |
+| `PROVIDER` | Provider name. |
+| `--method METHOD` | Authentication method, if applicable. |
 
-## Thinking level
+## `rio run`
 
-`-t/--thinking LEVEL` sets the initial reasoning-effort level for a run (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; see `rio.coding.thinking`). An unsupported level for the selected model is an error listing the levels that model supports.
+Executes a task in a durable session. A sole Markdown file is read as task
+text; otherwise the positional arguments are joined into the task.
 
-## Safety boundary
+| Option | Description |
+| --- | --- |
+| `--provider NAME` | Provider to use. |
+| `-m`, `--model MODEL` | Model to use. |
+| `--cwd PATH` | Project directory. |
+| `-t`, `--thinking LEVEL` | Reasoning-effort level. |
+| `-e`, `--extension PATH` | Provider extension path. Repeatable. |
+| `-a`, `--approve` | Allow project provider extensions. |
+| `--no-approve` | Do not load project provider extensions. |
+| `-r`, `--resume SESSION_ID` | Resume a durable session. |
+| `--output human\|json` | Output format; defaults to `human`. |
 
-Project trust controls ambient project-resource loading; it is not a sandbox. See `security.md`.
+Omit TASK when resuming a SQLite Session. Resume keeps the original goal and model
+configuration; terminal runs remain terminal. Sessions use SQLite only.
+
+`human` prints a compact transcript and session ID. `json` emits one JSON
+event per line and is intended for programmatic consumers.
+
+## `rio mcp`
+
+Manages [MCP servers](https://github.com/soasme/rio/blob/main/docs/guides/mcp.md) without starting a session.
+
+| Command | Description |
+| --- | --- |
+| `rio mcp add NAME -- COMMAND [ARGS...]` | Add or replace a stdio server. |
+| `rio mcp add NAME --url URL` | Add or replace a streamable HTTP server. |
+| `rio mcp remove NAME` | Remove a server. |
+| `rio mcp list [--json]` | Connect to each server and show its tools. Exits 1 on any failure. |
+| `rio mcp login NAME [--timeout SECONDS]` | Sign in to an OAuth server in the browser. |
+| `rio mcp logout NAME` | Delete the server's stored OAuth credentials. |
+
+`add` and `remove` change `~/.rio/mcp.json`, or `.rio/mcp.json` with
+`-l`/`--local`. `add` also takes `--env KEY=VALUE` and `--cwd DIR` for stdio
+servers, `--header KEY=VALUE`, `--oauth-client-id`, `--oauth-client-secret`,
+`--oauth-callback-port`, and `--oauth-scope` for HTTP servers, and
+`--description TEXT`.

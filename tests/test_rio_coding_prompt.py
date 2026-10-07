@@ -510,7 +510,7 @@ def test_default_prompt_includes_guidelines_date_and_cwd(tmp_path: Path) -> None
     )
 
     assert "You are an expert coding assistant operating inside rio" in prompt
-    assert "Jupyter notebook" in prompt
+    assert "durable state" in prompt
     assert "Available tools:" not in prompt
     assert "- Inspect relevant files and project instructions before editing" in prompt
     assert "- Do not overwrite or discard unrelated user changes" in prompt

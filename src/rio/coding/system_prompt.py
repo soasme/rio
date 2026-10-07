@@ -1,8 +1,6 @@
 """Skill instruction assembly for rio coding skills.
 
-Produces the fixed instructions handed to `rio.agent.HarnessSpec.instructions`:
-guidelines, project context, and skills. The runtime appends the notebook
-protocol (see `rio.agent.prompt`).
+Formats guidelines, project context, and skills for callers that need them.
 """
 
 from __future__ import annotations
@@ -83,8 +81,8 @@ def build_skill_instructions(options: BuildSystemPromptOptions) -> str:
 
     prompt = (
         "You are an expert coding assistant operating inside rio, a coding agent whose "
-        "context is a Jupyter notebook it manages itself. You help users by reading files, "
-        "executing commands, editing code, and writing new files from notebook cells."
+        "context is durable state it manages itself. You help users by reading files, "
+        "executing commands, editing code, and writing new files from Python scripts."
         f"\n\nGuidelines:\n{format_guidelines(options.extra_guidelines)}"
         f"\n\n{EDIT_MAGIC_HELP}"
         f"\n\n{CELL_MAGIC_HELP}"

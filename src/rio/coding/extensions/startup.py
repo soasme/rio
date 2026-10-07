@@ -7,9 +7,11 @@ from rio.coding.credentials import FileCredentialStore, credentials_path
 from rio.coding.extensions.providers import DynamicProvider
 from rio.coding.extensions.runtime import ExtensionRuntime
 from rio.coding.paths import RioPaths
+from rio.coding.project_trust import ProjectTrustCoordinator, ProjectTrustStore, TrustOverride
 from rio.coding.provider_config import ProviderConfigError, load_provider_settings
 from rio.coding.provider_runtime import ClosableModelProvider, create_dynamic_model_provider
 from rio.coding.resources import RioResourcePaths
+from rio.coding.shell_config import load_shell_settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,12 +29,9 @@ async def resolve_dynamic_startup(
     cwd: Path,
     paths: RioPaths | None = None,
     extension_paths: tuple[Path, ...] = (),
+    trust_override: TrustOverride | None = None,
 ) -> DynamicStartup | None:
-    """Load trusted user/bundled extensions and select a cached provider row.
-
-    Project extensions are loaded by the session only after project trust is
-    resolved. A startup lookup never probes model servers or refreshes catalogs.
-    """
+    """Select a cached provider from user, explicit, and trusted project extensions."""
     paths = paths or RioPaths()
     credentials = FileCredentialStore(credentials_path(paths))
     runtime = ExtensionRuntime(
@@ -41,9 +40,15 @@ async def resolve_dynamic_startup(
         durable_providers=load_provider_settings(paths).providers,
     )
     try:
+        _, trust = await ProjectTrustCoordinator(ProjectTrustStore(paths)).resolve(
+            cwd,
+            override=trust_override,
+            default=load_shell_settings().default_project_trust,
+            persist=False,
+        )
         runtime.load(
             RioResourcePaths(root=paths.home, agents_root=paths.agents_home, cwd=cwd, paths=paths),
-            include_project_dir=False,
+            include_project_dir=trust.trusted,
             extra_paths=extension_paths,
         )
         effective = runtime.provider_registry.effective(provider_name)

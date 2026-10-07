@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import json
 import os
+import platform
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+import psutil
+
+from evals.metrics import aggregate, compare, trace_metrics
 
 CASES = Path(__file__).resolve().parent / "cases"
 
@@ -150,16 +158,27 @@ def run_case(
         if model:
             command.extend(("--model", model))
         start = time.monotonic()
-        try:
-            agent = subprocess.run(
-                command, capture_output=True, text=True, timeout=timeout, check=False, env=env
-            )
-            agent_exit: int | None = agent.returncode
-            agent_stdout, agent_stderr = agent.stdout, agent.stderr
-        except subprocess.TimeoutExpired as exc:
-            agent_exit = None
-            agent_stdout = _decode(exc.stdout)
-            agent_stderr = _decode(exc.stderr) + f"\nTimed out after {timeout}s"
+        with subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            start_new_session=True,
+        ) as agent:
+            try:
+                agent_stdout, agent_stderr = agent.communicate(timeout=timeout)
+                agent_exit: int | None = agent.returncode
+            except subprocess.TimeoutExpired:
+                children = psutil.Process(agent.pid).children(recursive=True)
+                for child in children:
+                    with contextlib.suppress(psutil.NoSuchProcess):
+                        child.kill()
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(agent.pid, signal.SIGKILL)
+                agent_stdout, agent_stderr = agent.communicate(timeout=10)
+                agent_stderr += f"\nTimed out after {timeout}s"
+                agent_exit = None
         duration = round(time.monotonic() - start, 2)
         output.mkdir(parents=True, exist_ok=True)
         (output / "agent.jsonl").write_text(agent_stdout, encoding="utf-8")
@@ -186,19 +205,23 @@ def run_case(
             "agent_exit": agent_exit,
             "grader_exit": grader.returncode,
             "seconds": duration,
+            **trace_metrics(agent_stdout),
         }
         (output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         return result
 
 
-def _decode(value: bytes | str | None) -> str:
-    if value is None:
-        return ""
-    return value.decode(errors="replace") if isinstance(value, bytes) else value
+def fingerprint(paths: list[Path]) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        digest.update(str(path.relative_to(CASES.parent.parent)).encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--compare", type=Path, help="Baseline summary.json to compare per case")
     parser.add_argument("--provider", help="Rio provider; defaults to saved selection")
     parser.add_argument("--model", help="Rio model; defaults to provider selection")
     parser.add_argument("--case", action="append", help="Case name; defaults to all cases")
@@ -216,38 +239,79 @@ def main() -> int:
     for name in names:
         if name not in cases:
             parser.error(f"unknown case: {name}")
+    if not args.provider or not args.model:
+        from rio.coding.provider_config import load_provider_settings, resolve_provider_selection
+
+        selection = resolve_provider_selection(
+            load_provider_settings(), provider_name=args.provider, model=args.model
+        )
+        args.provider, args.model = selection.provider.name, selection.model
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.cache_dir.mkdir(parents=True, exist_ok=True)
+    root = CASES.parent.parent
+    sources = list((root / "src").rglob("*.py")) + [root / "pyproject.toml"]
+    metadata = {
+        "timeout": args.timeout,
+        "provider": args.provider,
+        "model": args.model,
+        "revision": subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+        ).stdout.strip(),
+        "source_sha256": fingerprint(sources),
+        "fixtures_sha256": fingerprint(
+            [
+                p
+                for name in names
+                for p in (CASES / name).rglob("*")
+                if p.is_file() and "__pycache__" not in p.parts
+            ]
+        ),
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+    }
     results = []
-    for name in names:
-        for trial in range(1, args.trials + 1):
+    for trial in range(1, args.trials + 1):
+        for name in names:
             result = run_case(
                 CASES / name,
                 provider=args.provider,
                 model=args.model,
                 timeout=args.timeout,
-                output=args.output_dir / name / str(trial),
-                cache=args.cache_dir,
+                output=args.output_dir.resolve() / name / str(trial),
+                cache=args.cache_dir.resolve(),
             )
+            result["trial"] = trial
             results.append(result)
-            print(f"{name} trial {trial}: {'pass' if result['passed'] else 'fail'}", flush=True)
-    passed = sum(bool(result["passed"]) for result in results)
-    revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False
-    ).stdout.strip()
-    summary = {
-        "provider": args.provider,
-        "model": args.model,
-        "revision": revision,
-        "passed": passed,
-        "total": len(results),
-        "pass_rate": passed / len(results),
-    }
-    (args.output_dir / "summary.json").write_text(
-        json.dumps({**summary, "results": results}, indent=2) + "\n", encoding="utf-8"
-    )
-    print(f"{passed}/{len(results)} passed; details: {args.output_dir / 'summary.json'}")
-    return 0 if passed == len(results) else 1
+            passed = sum(bool(row["passed"]) for row in results)
+            summary = {
+                **metadata,
+                "passed": passed,
+                "total": len(results),
+                "pass_rate": passed / len(results),
+                "per_case": aggregate(results),
+                "results": results,
+            }
+            (args.output_dir / "summary.json").write_text(
+                json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+            )
+            print(
+                f"{name} trial {trial}: "
+                f"{'pass' if result['passed'] else 'fail'} ({result['seconds']}s)",
+                flush=True,
+            )
+    if fingerprint(sources) != metadata["source_sha256"]:
+        raise RuntimeError("Source changed during evaluation; rerun before comparing")
+    if args.compare:
+        baseline = json.loads(args.compare.read_text())
+        comparison = compare(baseline, summary)
+        (args.output_dir / "comparison.json").write_text(json.dumps(comparison, indent=2) + "\n")
+        for name, row in comparison["cases"].items():
+            print(
+                f"{name}: pass-rate delta {row['pass_rate_delta']:+.2f}; "
+                f"successful latency ratio {row['successful_latency_ratio']}"
+            )
+    print(f"{summary['passed']}/{summary['total']} passed")
+    return 0 if all(r["passed"] for r in results) else 1
 
 
 if __name__ == "__main__":

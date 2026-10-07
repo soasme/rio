@@ -1,15 +1,9 @@
 name = "rio_agent_verification"
 version = "0.1.0"
-defaultTargets = ["RioAgent", "RioCoding", "RioCodingLifecycle", "RioCodingMcp"]
+defaultTargets = ["RioAgent", "RioCodingMcp"]
 
 [[lean_lib]]
 name = "RioAgent"
-
-[[lean_lib]]
-name = "RioCoding"
-
-[[lean_lib]]
-name = "RioCodingLifecycle"
 
 [[lean_lib]]
 name = "RioCodingMcp"

@@ -10,8 +10,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from rio.agent.harness import HarnessCancellationToken as SimpleCancellationToken
 from rio.ai.env import DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS
+from rio.coding.cancellation import CancellationToken as SimpleCancellationToken
 from rio.coding.credentials import FileCredentialStore
 from rio.coding.extensions import ExtensionRuntime
 from rio.coding.extensions.builtins.llama_cpp import service as llama_service
@@ -747,7 +747,7 @@ async def test_credential_cleanup_failure_is_reported_and_reset_is_recoverable(
 async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from rio.coding.cli import run_configured_session
+    from rio.cli.run import run_persistent_session
 
     isolate_home(monkeypatch, tmp_path)
 
@@ -776,9 +776,29 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
                                             "id": "step-1",
                                             "type": "function",
                                             "function": {
-                                                "name": "skill_step",
+                                                "name": "step",
                                                 "arguments": json.dumps(
-                                                    {"patch": [], "reply": "hello"}
+                                                    {
+                                                        "patch": [
+                                                            {
+                                                                "op": "test",
+                                                                "path": "/revision",
+                                                                "value": 1,
+                                                            },
+                                                            {
+                                                                "op": "add",
+                                                                "path": "/cells/-",
+                                                                "value": {
+                                                                    "id": 1,
+                                                                    "kind": "note",
+                                                                    "text": "hello",
+                                                                    "previous_id": None,
+                                                                    "role": "conclusion",
+                                                                    "result": "success",
+                                                                },
+                                                            },
+                                                        ]
+                                                    }
                                                 ),
                                             },
                                         }
@@ -802,12 +822,12 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
     import rio.ai.openai_compatible as compatible
 
     monkeypatch.setattr(compatible, "create_async_client", fake_client)
-    ok = await run_configured_session(
+    ok, _ = await run_persistent_session(
         prompt="say hello",
         model="qwen-local",
         cwd=project,
         provider_name="llama.cpp",
-        trust_override="untrusted",
+        trust_override="decline",
     )
     assert ok is True
     assert "hello" in capsys.readouterr().out
@@ -1385,62 +1405,6 @@ def test_hugging_face_token_lookup_matches_standard_environment_paths(tmp_path: 
     token.parent.mkdir(parents=True)
     token.write_text(" xdg-token ", encoding="utf-8")
     assert discover_hf_token({"XDG_CACHE_HOME": str(xdg), "HOME": str(tmp_path)}) == "xdg-token"
-
-
-@pytest.mark.anyio
-async def test_llama_scoped_reference_persists_pair_and_stays_inert_when_unloaded(
-    tmp_path: Path,
-) -> None:
-    from dataclasses import replace
-
-    from rio.coding.provider_config import (
-        OpenAICompatibleProviderConfig,
-        ProviderSettings,
-        load_provider_settings,
-    )
-    from rio.coding.session import CodingSession, ModelChoice
-
-    paths = RioPaths(home=tmp_path / "rio", agents_home=tmp_path / "agents")
-    LlamaCppStateStore(paths=paths).save(_state())
-    runtime, _, _ = _runtime(tmp_path)
-    settings = ProviderSettings(
-        providers=(
-            OpenAICompatibleProviderConfig(
-                name="ordinary", models=("ordinary-model",), default_model="ordinary-model"
-            ),
-        )
-    )
-    session = object.__new__(CodingSession)
-    session._provider_settings = settings
-    session._provider_registry = runtime.provider_registry
-    session._resource_paths = RioResourcePaths(root=paths.home, paths=paths)
-    session._credential_store = FileCredentialStore(paths.home / "credentials.json")
-    session._sync_thinking_level_to_active_model = lambda: None  # type: ignore[method-assign]
-    choice = ModelChoice(provider_name="llama.cpp", model="qwen-local")
-
-    assert choice in session.available_model_choices
-    assert session.toggle_scoped_model(choice) == (choice,)
-    saved = load_provider_settings(paths)
-    assert saved.scoped_models[0].to_json() == {
-        "provider": "llama.cpp",
-        "model": "qwen-local",
-    }
-    payload = json.loads((paths.home / "providers.json").read_text(encoding="utf-8"))
-    assert "llama.cpp" not in payload["provider_preferences"]
-
-    effective = runtime.provider_registry.effective("llama.cpp")
-    assert effective is not None
-    dynamic = effective.definition
-    runtime.provider_registry.update(
-        effective.source_id,
-        replace(dynamic, models=(), default_model=None),  # type: ignore[arg-type]
-    )
-    assert choice not in session.available_model_choices
-    assert session.scoped_model_choices == (choice,)
-    assert session.unavailable_scoped_model_choices == (choice,)
-    assert session.toggle_scoped_model(choice) == ()
-    assert load_provider_settings(paths).scoped_models == ()
-    await runtime.aclose()
 
 
 def state_store_text(tmp_path: Path) -> str:

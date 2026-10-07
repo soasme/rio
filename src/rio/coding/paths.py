@@ -128,12 +128,6 @@ class RioPaths:
         slug = _slugify_path(resolved)
         return self.sessions_dir / f"{slug or 'project'}-{digest}"
 
-    def default_session_path(self, cwd: Path) -> Path:
-        """Return the default JSONL session path for a project cwd."""
-        path = self.project_session_dir(cwd) / "default.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
-
 
 def _slugify_path(path: Path, *, max_length: int = 72) -> str:
     parts = [part for part in path.parts if part not in (path.anchor, "")]

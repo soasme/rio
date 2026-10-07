@@ -1,21 +1,15 @@
 # Resume a session
 
-Each `rio run` creates a durable session. At the end of a human-readable run,
-Rio prints its ID:
+Each run prints a session ID. Resume it with:
 
-```text
-Session: SESSION_ID
+```sh
+rio run --resume SESSION_ID
 ```
 
-Continue the same work with that ID:
+The SQLite journal lives at `~/.rio/sessions/SESSION_ID.sqlite3`. Resume keeps the
+original goal, model, limits, cells, and results. Omit the task text. A finished
+run stays finished. Start a new run for another task or another attempt.
 
-```bash
-rio run --resume SESSION_ID "Now add regression tests."
-```
-
-The resumed run continues from the saved notebook, rebuilt from the session
-file: the new task is appended to it as a user cell. The resumed run uses the original working directory. You may provide
-`--provider` or `--model` to override the saved selection; otherwise Rio uses
-the session's saved provider and model.
-
-`--cwd` must match the original session directory when used with `--resume`.
+Interrupted scripts become `UnknownExecution` and are never replayed automatically.
+The model must inspect evidence and resolve them. Project files and external
+services are not restored. See [Architecture](../explanation/architecture.md).

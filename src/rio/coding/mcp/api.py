@@ -1,4 +1,4 @@
-"""The `mcp` object notebook cells call MCP servers through.
+"""The `mcp` object scripts call MCP servers through.
 
     mcp                                  # lists the servers
     mcp.github                           # lists the server's tools
@@ -6,13 +6,12 @@
     help(mcp.github.search_issues)       # its description and parameters
     mcp["my-server"].call("tool-name", {"arg": 1})
 
-Servers start connecting when the kernel starts; using one waits for its
-connection. They stay connected for the kernel's lifetime.
+Servers start connecting when the script starts; using one waits for its
+connection. They stay connected for the script's lifetime.
 """
 
 from __future__ import annotations
 
-import atexit
 import contextlib
 import inspect
 import json
@@ -263,9 +262,9 @@ class Mcp:
 
 
 def host_environ(environ: dict[str, str] | None = None) -> dict[str, str]:
-    """The kernel's environment without the session venv, for the servers it starts.
+    """The script's environment without the session venv, for the servers it starts.
 
-    The kernel runs in a private venv; a server command such as `python` or `uvx`
+    The script runs in a private venv; a server command such as `python` or `uvx`
     must resolve as it would in the user's shell.
     """
     env = dict(os.environ if environ is None else environ)
@@ -277,22 +276,3 @@ def host_environ(environ: dict[str, str] | None = None) -> dict[str, str]:
             entry for entry in env.get("PATH", "").split(os.pathsep) if entry != bin_dir
         )
     return env
-
-
-def install(ipython: Any, servers: dict[str, dict[str, Any]], cwd: str, store: str) -> None:
-    """Bind `mcp` (and `McpToolError`) in the kernel, hidden from the cells' defined names."""
-    mcp = Mcp(servers, Path(cwd), McpAuthStore(Path(store)), environ=host_environ())
-    atexit.register(mcp.close)
-    mcp.start()
-    ipython.push({"mcp": mcp, "McpToolError": McpToolError}, interactive=False)
-
-
-def startup_code(servers: dict[str, dict[str, Any]], cwd: Path, store: Path) -> str:
-    """Kernel startup code that installs `mcp`."""
-    return (
-        "import json as _rio_json\n"
-        "from rio.coding.mcp.kernel import install as _rio_mcp_install\n"
-        f"_rio_mcp_install(get_ipython(), _rio_json.loads({json.dumps(servers)!r}), "
-        f"{str(cwd)!r}, {str(store)!r})\n"
-        "del _rio_json, _rio_mcp_install"
-    )
