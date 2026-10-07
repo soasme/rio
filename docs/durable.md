@@ -81,13 +81,17 @@ processes too; an interrupted validator cannot silently turn into success.
 Library users can configure `Limits` and argv validators when creating a
 `rio.durable.Session`. Limits, validator commands, and the original goal are
 outside model patch authority. `Session.receive` commits external observations
-before acknowledgment and rejects conflicting IDs or Inbox overflow.
+before acknowledgment and rejects conflicting IDs or Inbox overflow. External
+message IDs cannot use the reserved `execution:`, `control:`, `timer:`, or `idle:`
+prefixes, so they cannot overwrite Harness observations.
 `Session.import_legacy(path)` archives a validated JSONL journal once as data;
 import never runs historical code. Use `records()` to retrieve that archive.
 
 ## Supported boundary and limits
 
 The initial owner requires POSIX process groups and local filesystem locking.
+The owner lock uses the canonical database path, including through symbolic links;
+hard-linked databases are rejected because SQLite WAL discovery depends on the path.
 A gated supervisor waits until its identity is committed before launching uv.
 Recovery checks process birth identity, stops surviving workers and descendants,
 and fails closed if termination cannot be established. Scripts that deliberately

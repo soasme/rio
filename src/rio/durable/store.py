@@ -32,18 +32,25 @@ class Store:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path.resolve()
-        self.lock = path.with_suffix(path.suffix + ".lock").open("a+b")
+        # Canonicalize the sidecar too: symlink aliases must share one owner lock.
+        # Locking SQLite's own inode conflicts with SQLite locks on macOS.
+        self.lock = self.path.with_suffix(self.path.suffix + ".lock").open("a+b")
         try:
             fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             self.lock.close()
             raise StorageFailure("Session already has an owner") from None
+        if self.path.exists() and self.path.stat().st_nlink != 1:
+            self.lock.close()
+            raise StorageFailure(
+                "Session owner cannot open a hard-linked database: WAL paths differ"
+            )
         self.failed = False
         self.commit_seconds: list[float] = []
         self.journal_bytes = 0
         started = time.monotonic()
         try:
-            self.db = sqlite3.connect(path, isolation_level=None)
+            self.db = sqlite3.connect(self.path, isolation_level=None)
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
             if self.db.execute("PRAGMA journal_mode").fetchone()[0] != "wal":

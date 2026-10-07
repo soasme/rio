@@ -271,6 +271,7 @@ async def test_resolution_requires_evidence_and_keeps_original_unknown(session):
     async with Owner(session):
         assert not session.unresolved()
     assert session.data["executions"]["1"] == original
+    assert prepare(session)["state"]["runtime"]["cells"]["1"]["resolved_by"] == 2
 
 
 async def test_success_rejected_for_new_input_and_failure_is_terminal(session):
@@ -588,3 +589,55 @@ def test_cli_defaults_to_durable_and_resume_needs_no_new_goal(monkeypatch):
     app(["run", "--resume", "abc", "--output", "json"])
     assert calls[0][0] == ""
     assert calls[0][7] == "abc"
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_database_alias_cannot_acquire_a_second_owner(session, tmp_path, alias_kind):
+    alias = tmp_path / "alias.sqlite3"
+    if alias_kind == "symlink":
+        alias.symlink_to(session.store.path)
+    else:
+        os.link(session.store.path, alias)
+    with pytest.raises(StorageFailure, match="owner"), Store(alias):
+        pass
+
+
+async def test_provider_name_does_not_make_missing_usage_known(session):
+    operations = [
+        {"op": "test", "path": "/revision", "value": 1},
+        append(note(1, role="conclusion", result="success")),
+    ]
+    events = response(operations)
+    events[0].message.api = "provider-without-usage"
+    assert await run(session, FakeProvider([events]), "fake")
+    assert session.meta["usage"]["unknown_usage"] == 1
+
+
+def test_terminal_run_cannot_prepare_an_unaccepted_request(session):
+    prepare(session)
+    session.end("failure", "stopped")
+    with pytest.raises(ValueError, match="Terminal"):
+        prepare(session)
+
+
+def test_legacy_cli_does_not_import_posix_runtime(monkeypatch):
+    import importlib
+
+    from rio.cli import app
+
+    legacy = importlib.import_module("rio.cli.run")
+
+    async def run_legacy(*args):
+        return True, "legacy"
+
+    monkeypatch.setattr(legacy, "run_persistent_session", run_legacy)
+    monkeypatch.setitem(sys.modules, "rio.cli.durable", None)
+    app(["run", "--runtime", "notebook", "goal", "--output", "json"])
+
+
+@pytest.mark.parametrize("prefix", ["execution", "control", "timer", "idle"])
+def test_external_ids_cannot_overwrite_harness_observations(session, prefix):
+    before = session.store.sequence
+    with pytest.raises(ValueError, match="reserved"):
+        session.receive(f"{prefix}:1", "external", {"fact": "new"})
+    assert session.store.sequence == before

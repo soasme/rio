@@ -13,7 +13,7 @@ from rio.ai.messages import AssistantMessage, UserMessage, raw_tool_arguments
 from rio.ai.provider import ModelProvider
 from rio.durable.owner import Owner
 from rio.durable.prompt import SCHEMA, STEP, SYSTEM
-from rio.durable.session import Session
+from rio.durable.session import Session, observation
 from rio.durable.state import InvalidPatch
 from rio.durable.store import encode
 
@@ -50,13 +50,26 @@ async def run(
                 if session.meta.get("idle", 0) >= session.limits.invalid_attempts:
                     await owner.fail("Repeated invalid idle decisions")
                     break
+                seq = session.store.sequence + 1
+                message_id = f"idle:{seq}"
                 session.store.commit(
-                    "invalid_idle", {"meta": {"idle": session.meta.get("idle", 0) + 1}}
-                )
-                session.receive(
-                    f"idle:{session.store.sequence}",
                     "invalid_idle",
-                    {"reason": "No work or wake-up source remains; conclude or request work"},
+                    {
+                        "meta": {"idle": session.meta.get("idle", 0) + 1},
+                        "inbox": {
+                            message_id: observation(
+                                message_id,
+                                "invalid_idle",
+                                {
+                                    "reason": (
+                                        "No work or wake-up source remains; "
+                                        "conclude or request work"
+                                    )
+                                },
+                                seq,
+                            )
+                        },
+                    },
                 )
             try:
                 turn = session.prepare_turn(SYSTEM, SCHEMA)
@@ -94,11 +107,17 @@ async def run(
                             request.cancel()
                             with contextlib.suppress(asyncio.CancelledError):
                                 await request
+                    usage = response.usage
+                    tokens = usage.total_tokens or (
+                        usage.input + usage.output + usage.cache_read + usage.cache_write
+                    )
+                    # Provider/API names do not establish that token usage was reported.
+                    # Missing and ambiguous zero usage remain unknown, never a free request.
                     session.response(
                         turn["id"],
                         response.model_dump(mode="json"),
-                        response.usage.total_tokens,
-                        known=response.api != "unknown",
+                        max(0, tokens),
+                        known=tokens > 0,
                     )
                 else:
                     response = AssistantMessage.model_validate(turn["response"])

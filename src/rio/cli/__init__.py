@@ -147,11 +147,16 @@ def _run(args: argparse.Namespace) -> None:
         os.environ["NO_COLOR"] = "1"
     try:
         level = normalize_thinking_level(args.thinking) if args.thinking else None
-        from rio.cli.durable import run_durable_session
+        if args.runtime == "durable":
+            if os.name != "posix":
+                raise ValueError(
+                    "Durable Sessions require POSIX; use --runtime notebook on this host"
+                )
+            from rio.cli.durable import run_durable_session
 
-        execute = (
-            run_durable_session if args.runtime == "durable" else run_module.run_persistent_session
-        )
+            execute = run_durable_session
+        else:
+            execute = run_module.run_persistent_session
         succeeded, session_id = anyio.run(
             execute,
             prompt,

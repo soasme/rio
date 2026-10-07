@@ -97,6 +97,14 @@ class Session:
         ]
 
     def receive(self, message_id: str, kind: str, payload: dict) -> None:
+        if (
+            not isinstance(message_id, str)
+            or not message_id
+            or message_id.startswith(("execution:", "control:", "timer:", "idle:"))
+        ):
+            raise ValueError(
+                "External message IDs must be nonempty and outside reserved namespaces"
+            )
         old = self.data["inbox"].get(message_id)
         if old:
             if old["kind"] != kind or old["payload"] != payload:
@@ -119,11 +127,11 @@ class Session:
         )
 
     def prepare_turn(self, system: str, tool_schema: dict) -> dict:
+        if self.meta["terminal"]:
+            raise ValueError("Terminal runs cannot resume")
         for turn in self.data["turns"].values():
             if turn["receipt"] is None:
                 return copy.deepcopy(turn)
-        if self.meta["terminal"]:
-            raise ValueError("Terminal runs cannot resume")
         if self.store.journal_bytes >= self.limits.storage_bytes:
             raise ValueError("Session storage budget exhausted")
         usage = self.meta["usage"]
@@ -141,7 +149,9 @@ class Session:
         per_output = min(
             self.limits.output_bytes, self.limits.context_bytes // 8 // max(1, len(outputs))
         )
-        for execution in outputs.values():
+        for key, execution in outputs.items():
+            if key in self.data["resolutions"]:
+                execution["resolved_by"] = self.data["resolutions"][key]
             for name in ("output", "stderr"):
                 raw = execution[name].encode()
                 if len(raw) > per_output:
