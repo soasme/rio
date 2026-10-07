@@ -18,6 +18,7 @@ from rio.coding.provider_config import (
 )
 from rio.coding.provider_runtime import create_model_provider
 from rio.coding.rendering import PrintOutputMode
+from rio.coding.rendering.steps import PlainEventRenderer
 
 
 async def run_persistent_session(
@@ -107,18 +108,10 @@ async def run_persistent_session(
             def publish(event):
                 if output_mode == PrintOutputMode.json:
                     print(json.dumps({"session_id": session_id, **event}), flush=True)
-                elif event["type"] == "execution_output":
-                    # Print only newly committed bytes from each bounded output snapshot.
-                    for key, execution in event["changes"]["executions"].items():
-                        for name in ("output", "stderr"):
-                            text = execution[name]
-                            previous = displayed.get((key, name), 0)
-                            print(text[previous:], end="", flush=True)
-                            displayed[key, name] = len(text)
-                elif event["type"] == "run_ended":
-                    print(event["changes"]["meta"]["terminal"]["reason"], flush=True)
+                else:
+                    renderer.render(event)
 
-            displayed = {}
+            renderer = PlainEventRenderer()
             succeeded = await run(session, provider, model, publish)
             if "metrics" not in store.data:
                 store.commit(

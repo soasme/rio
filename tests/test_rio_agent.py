@@ -623,8 +623,9 @@ def test_external_ids_cannot_overwrite_harness_observations(session, prefix):
     assert session.store.sequence == before
 
 
+@pytest.mark.parametrize("output_mode", ["human", "json"])
 async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, output_mode
 ):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
@@ -660,13 +661,21 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
     ok, session_id = await cli.run_persistent_session(
         "write a file",
         cwd=tmp_path,
-        output_mode=PrintOutputMode.json,
+        output_mode=PrintOutputMode(output_mode),
     )
     assert ok
     assert (tmp_path / "effect").read_text() == "once"
-    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert {event["session_id"] for event in events} == {session_id}
-    assert events[-1]["type"] == "durability_metrics"
+    transcript = capsys.readouterr().out
+    if output_mode == "json":
+        events = [json.loads(line) for line in transcript.splitlines()]
+        assert {event["session_id"] for event in events} == {session_id}
+        assert events[-1]["type"] == "durability_metrics"
+    else:
+        assert "• Cell 1 (code)\n  # /// script" in transcript
+        assert "  Path('effect').write_text('once')" in transcript
+        assert "• Running Cell 1\n  └ Cell 1: success (exit 0)" in transcript
+        assert "• Cell 2 (note), conclusion requested: success\n  done" in transcript
+        assert transcript.endswith("• Success: done\n")
     path = paths.sessions_dir / f"{session_id}.sqlite3"
     with Store(path) as store:
         assert Session(store).state["goal"] == "write a file"
@@ -675,8 +684,9 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
     assert await cli.run_persistent_session(
         "",
         resume=session_id,
-        output_mode=PrintOutputMode.json,
+        output_mode=PrintOutputMode(output_mode),
     ) == (True, session_id)
+    assert capsys.readouterr().out == transcript
     assert len(provider.calls) == 2
     assert (tmp_path / "effect").read_text() == "changed after completion"
     assert provider.aclose.await_count == 2

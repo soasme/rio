@@ -1,82 +1,77 @@
-# Coding TUI messages
+# Coding CLI messages
 
-The messages panel uses a bullet (`•`) for each new message or tool invocation,
-with a blank line between entries. Runtime step numbers remain in the state
-sidebar for debugging; step-start events do not create transcript entries.
-Tool invocations show `Running <command>` when a command argument is available,
-otherwise the tool name and arguments. Results follow with `└` and an indented
-body, retaining error colors and the tool name so interleaved steering messages
-do not obscure which tool produced the output. All content is literal text, including brackets.
+The human transcript uses a bullet (`•`) for each new entry, with a blank line
+between entries. Results follow with `└` and an indented body. Continuations align
+beneath the message or result. All content is literal text, including brackets.
+These presentation principles apply to the durable CLI as well as the earlier
+TUI. `--output json` continues to emit the committed event records unchanged.
 
-```text
-• Running gh run watch 34028991259 --exit-status --interval 10
-  └ bash: Refreshing run status every 10 seconds.
+## Durable cells
 
-• The tests passed.
-```
+Render accepted note text and complete Python source, including PEP 723 metadata,
+from `patch_accepted`. Each entry identifies the immutable Cell ID and kind.
+Replacements also name their predecessor. Show only the new versions in allocation
+order, not every cell in the State snapshot. Removing a cell from current context
+does not erase its transcript history. Rejected or uncommitted cells are not shown.
 
-`read`, `write`, and `edit` are special-cased: their arguments are not shown
-up front, and a successful call collapses to a single line instead of the
-`Running <args>` / `└ <result>` pair. A read shows the path and the 1-indexed
-line range it read, never the file content; a write shows only the path; an
-edit shows its unified diff instead of a "Successfully replaced N block(s)"
-message, since the diff already says what changed. Arguments and the raw
-result text are only printed when the call fails, so the path or edit that
-caused the failure is still there to read.
+An accepted code cell is queued work. A separate `Running Cell N` entry appears
+when execution authorization commits. Every output, stderr, and completion label
+names the exact Cell ID, so later notes or queued cells cannot obscure which cell
+produced a result. Output is visible as it commits, before execution finishes.
 
 ```text
-• read src/calc.py:1:40
+• Cell 1 (note)
+  Check the calculation.
 
-• edit src/calc.py
-  --- src/calc.py
-  +++ src/calc.py
-  @@ -10,3 +10,3 @@
-  -    return a - b
-  +    return a + b
+• Cell 2 (code)
+  # /// script
+  # dependencies = []
+  # ///
+  print(1 + 1)
 
-• read {"path":"missing.py"}
-  └ read: read failed: File not found: missing.py
+• Running Cell 2
+  └ Cell 2 stdout: 2
+  └ Cell 2: success (exit 0)
+
+• Cell 3 (note), conclusion requested: success
+  The calculation returned 2.
+
+• Success: The calculation returned 2.
 ```
 
-The separate status row below the history (never stored in `entries`):
+Control notes identify their role and target where applicable. A conclusion note
+is a request, not an accepted run ending. Only `run_ended` reports final success
+or failure. Patch rejection reports `Retry: <reason>`; model-round bookkeeping
+does not create transcript entries.
 
-```text
-• Working (2m 12s • escape to interrupt)
-  └ git status --short
-```
+## Output and replay
 
-The status row beneath the scrollable history updates once a second using a
-monotonic clock, with days, hours, minutes, and seconds for long runs. It starts
-when a prompt is submitted. While running, it shows the configured cancel key
-and the current action. When the worker finishes (including errors or cancellation),
-it freezes the elapsed duration and replaces the active status with:
+Execution snapshots contain cumulative output. Print only the newly committed
+suffix of each stdout/stderr stream. Partial lines remain contiguous across
+chunks. If another entry or stream interrupts a partial line, close it and label
+the resumed stream again. Completion always shows an outcome, including silent
+success, nonzero exit status, cancellation, and `UnknownExecution` with its reason.
 
-```text
-- Worked for 2m 21s --------------------------------
-```
+Limit displayed stdout and stderr together to 8,000 characters per execution,
+with one explicit `[output truncated]` notice. Also show the notice if durable
+storage truncated the output. This display limit does not change Session records.
+Cell source and note text retain their line breaks and indentation.
 
-The completed status uses a leading hyphen and trailing hyphens that fill the
-panel width, recalculated on resize. On very narrow panels the label wraps without
-horizontal scrolling. It has no interrupt hint or active command and remains visible
-until the next run replaces it with a fresh Working timer. Before the first run,
-the row is hidden. Timer ticks and resizing preserve the frozen duration. Updates
-replace the row instead of appending status messages to history.
+Resume replays the committed transcript in journal order, then displays new
+records. Rendering does not launch code or request the model. Repeated cumulative
+snapshots do not duplicate output. A terminal session displays its history and
+ending without running work again.
 
-Rio currently executes tools in the foreground and exposes no background-terminal
-registry, `/ps`, or `/stop`. The row therefore displays the active action without
-claiming a background-terminal count or offering those commands. If background
-execution is added, its registry should supply counts, commands, and lifecycle
-state to this same row.
+## CLI scope
 
-The transcript wraps to the panel's available width, including unbroken URLs and
-JSON. Continuations align beneath message text or tool output. Resizing reflows
-retained entries; ordinary appends render only the new entry. Eviction trims whole
-entries using their rendered line counts, with no independent line cap. Horizontal
-scrolling is disabled. Scrolling up preserves the reader's position as new entries arrive. The panel retains at most 1,000 entries;
-tool results retain the existing 8,000-character limit with an explicit truncation
-notice. No transcript-expansion shortcut is advertised because none exists yet.
-The state sidebar and extension main-view replacement keep their existing roles.
+The current CLI is an append-only plain-text stream; the terminal supplies wrapping
+and scrollback. It has no TUI history panel, state sidebar, active status row,
+resize reflow, or entry eviction. The earlier TUI timer and compact read/write/edit
+renderers do not apply: the durable runtime executes independent Python cells,
+not separately reported tool invocations. Failures use explicit text labels;
+plain output requires no ANSI colors or terminal controls.
 
-Tests cover event formatting, state retention, tool errors, wrapping after resize,
-literal text, elapsed time, active commands, and worker cleanup, alongside the
-existing interactive TUI tests.
+Tests cover committed cell visibility, immutable version IDs, literal multiline
+content, streamed output, interleaved notes, truncation, silent and failed
+executions, and replay in both human and JSON modes. Lean models the committed-cell
+projection and cumulative-output suffix rule separately from the Python tests.
