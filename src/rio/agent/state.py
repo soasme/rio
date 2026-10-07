@@ -71,6 +71,11 @@ def validate_cell(cell: object) -> None:
         if cell.get("runtime") != "python" or not isinstance(cell.get("source"), str):
             raise InvalidPatch("Code requires runtime: python and a source string")
         script_metadata(cell["source"])
+    elif cell.get("kind") == "cmd":
+        allowed = common | {"argv"}
+        argv = cell.get("argv")
+        if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+            raise InvalidPatch("Cmd requires a nonempty argv array of strings")
     elif cell.get("kind") == "note":
         allowed = common | {"text", "role", "target_cell_id", "evidence_refs", "result"}
         if not isinstance(cell.get("text"), str) or not cell["text"].strip():
@@ -87,7 +92,7 @@ def validate_cell(cell: object) -> None:
         if role == "conclusion" and cell.get("result") not in ("success", "failure"):
             raise InvalidPatch("Conclusion requires result: success or failure")
     else:
-        raise InvalidPatch("Cell kind must be note or code")
+        raise InvalidPatch("Cell kind must be note, code, or cmd")
     if set(cell) - allowed:
         raise InvalidPatch(f"Unknown Cell fields: {sorted(set(cell) - allowed)}")
 

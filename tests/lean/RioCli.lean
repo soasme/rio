@@ -21,6 +21,13 @@ def visibleCells : Event → List String
 theorem accepted_source_is_visible (id : Nat) (source : String) :
     visibleCells (.accepted [⟨id, source⟩]) = [source] := by rfl
 
+-- Command presentation joins quoted argv; quoting is supplied by Python shlex.
+-- This models visibility, not shell parsing or execution.
+theorem accepted_command_is_visible (id : Nat) (argv : List String)
+    (quote : String → String) :
+    visibleCells (.accepted [⟨id, String.intercalate " " (argv.map quote)⟩]) =
+      [String.intercalate " " (argv.map quote)] := by rfl
+
 theorem cell_ids_do_not_affect_content (first second : Nat) (body : String) :
     visibleCells (.accepted [⟨first, body⟩]) =
       visibleCells (.accepted [⟨second, body⟩]) := by rfl

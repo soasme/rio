@@ -41,6 +41,10 @@ def code(n, source="print('hello')", **extra):
     }
 
 
+def cmd(n, *argv, **extra):
+    return {"id": n, "previous_id": None, "kind": "cmd", "argv": list(argv), **extra}
+
+
 def prepare(session):
     return session.prepare_turn(SYSTEM, SCHEMA)
 
@@ -105,6 +109,9 @@ def test_atomic_admission_and_linear_history(session):
         {"op": "copy", "path": "/cells/-", "from": "/cells/0"},
         {"op": "add", "path": "/cells/0", "value": note(2)},
         {"op": "replace", "path": "/cells/0", "value": note(2, previous_id=77)},
+        append(cmd(2)),
+        append(cmd(2, "ls", 1)),
+        append(cmd(2, "ls", source="x")),
     ],
 )
 def test_restricted_patch(session, operation):
@@ -223,6 +230,16 @@ async def test_serial_uv_runs_and_independent_variables(session):
     assert (Path(session.meta["cwd"]) / "order").read_text() == "12"
     assert session.data["executions"]["2"]["output"] == "ok\n"
     assert all(e["result"]["type"] == "success" for e in session.data["executions"].values())
+
+
+async def test_cmd_runs_argv_without_shell(session):
+    accept(session, cmd(1, sys.executable, "-c", "import sys; print(sys.argv[1])", "$HOME"))
+    accept(session, cmd(2, "rio-missing-command"))
+    async with Owner(session) as owner:
+        await settle(owner)
+    assert session.data["executions"]["1"]["output"] == "$HOME\n"
+    assert session.data["executions"]["2"]["result"]["exit_code"] == 127
+    assert session.meta["pause"] == "execution:2"
 
 
 async def test_error_pauses_queue_then_cancel_before_dispatch(session):
@@ -634,9 +651,10 @@ def test_external_ids_cannot_overwrite_harness_observations(session, prefix):
     assert session.store.sequence == before
 
 
+@pytest.mark.parametrize("cell_kind", ["code", "cmd"])
 @pytest.mark.parametrize("output_mode", ["human", "json"])
 async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
-    tmp_path, monkeypatch, capsys, output_mode
+    tmp_path, monkeypatch, capsys, output_mode, cell_kind
 ):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
@@ -651,12 +669,14 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
     monkeypatch.setattr(cli, "load_provider_settings", lambda: None)
     monkeypatch.setattr(cli, "resolve_provider_selection", lambda *a, **kw: selection)
     monkeypatch.setattr(cli, "resolve_startup_thinking_level", lambda *a, **kw: None)
+    source = "from pathlib import Path\nPath('effect').write_text('once')"
+    work = code(1, source) if cell_kind == "code" else cmd(1, sys.executable, "-c", source)
     provider = FakeProvider(
         [
             response(
                 [
                     {"op": "test", "path": "/revision", "value": 1},
-                    append(code(1, "from pathlib import Path\nPath('effect').write_text('once')")),
+                    append(work),
                 ]
             ),
             response(
@@ -682,8 +702,12 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
         assert {event["session_id"] for event in events} == {session_id}
         assert events[-1]["type"] == "durability_metrics"
     else:
-        assert "• # /// script" in transcript
-        assert "  Path('effect').write_text('once')" in transcript
+        if cell_kind == "code":
+            assert "• # /// script" in transcript
+            assert "  Path('effect').write_text('once')" in transcript
+        else:
+            assert sys.executable in transcript
+            assert " -c " in transcript
         assert "  └ success (exit 0)" in transcript
         assert "• done" in transcript
         assert transcript.endswith("• Success: done\n")

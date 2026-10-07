@@ -8,12 +8,15 @@ TUI. `--output json` continues to emit the committed event records unchanged.
 
 ## Durable cells
 
-Render accepted note text and complete Python source, including PEP 723 metadata,
-from `patch_accepted`. Entries contain the code or note itself: no `Cell` label,
+Render accepted note text, command arguments, and complete Python source
+(including PEP 723 metadata) from `patch_accepted`. Entries contain the content itself: no `Cell` label,
 number, kind, predecessor, or control metadata. IDs remain internal to ordering
 and output tracking. Show only new versions in allocation order, not every cell
 in the State snapshot. Removing a cell from current context does not erase its
 transcript history. Rejected or uncommitted cells are not shown.
+
+Commands display their argv joined with shell quoting to preserve argument boundaries;
+this is presentation only, and execution still passes argv directly without a shell.
 
 Execution authorization does not add a separate entry. Output is visible as it
 commits, before execution finishes. Stdout follows `└` directly; stderr adds a
@@ -61,8 +64,8 @@ ending without running work again.
 The current CLI is an append-only plain-text stream; the terminal supplies wrapping
 and scrollback. It has no TUI history panel, state sidebar, active status row,
 resize reflow, or entry eviction. The earlier TUI timer and compact read/write/edit
-renderers do not apply: the durable runtime executes independent Python cells,
-not separately reported tool invocations. Failures use explicit text labels;
+renderers do not apply: the durable runtime executes independent Python scripts
+and commands, not separately reported tool invocations. Failures use explicit text labels;
 plain output requires no ANSI colors or terminal controls.
 
 Tests cover committed content visibility, hidden cell metadata, literal multiline

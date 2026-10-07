@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shlex
+
 _OUTPUT_CHARS = 8_000
 
 
@@ -21,7 +23,10 @@ class PlainEventRenderer:
         if kind == "patch_accepted":
             # Only new versions, in allocated ID order; State also contains old cells.
             for cell in sorted(changes["cells"].values(), key=lambda cell: cell["id"]):
-                body = cell["source"] if cell["kind"] == "code" else cell["text"]
+                if cell["kind"] == "cmd":
+                    body = shlex.join(cell["argv"])
+                else:
+                    body = cell["source"] if cell["kind"] == "code" else cell["text"]
                 self._message(body)
         elif kind in ("execution_output", "output_truncated", "execution_finished"):
             for key, execution in changes["executions"].items():

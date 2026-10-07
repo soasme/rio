@@ -109,3 +109,20 @@ def test_conclusion_request_does_not_claim_success_and_retries_are_visible(capsy
     )
     emit(renderer, "patch_rejected", turns={"t1": {"error": "Invalid patch"}})
     assert capsys.readouterr().out == ("• Done?\n\n• Retry: Invalid patch\n")
+
+
+def test_command_arguments_are_quoted_without_cell_metadata(capsys):
+    renderer = PlainEventRenderer()
+    emit(
+        renderer,
+        "patch_accepted",
+        cells={
+            "4": {
+                "id": 4,
+                "previous_id": None,
+                "kind": "cmd",
+                "argv": ["printf", "%s", "a b", "$HOME", "", "[red]"],
+            },
+        },
+    )
+    assert capsys.readouterr().out == "• printf %s 'a b' '$HOME' '' '[red]'\n"

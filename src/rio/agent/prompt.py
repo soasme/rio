@@ -18,16 +18,18 @@ A new Cell has previous_id:null. A replacement gets a NEW id and previous_id equ
 old Cell's id, at the same array position. Never replace a queued or started Cell.
 Notes: {"id":N,"previous_id":null,"kind":"note","text":"..."}.
 Code: {"id":N,"previous_id":null,"kind":"code","runtime":"python","source":"..."}.
-Every new code version runs ONCE, in accepted order, in a fresh Python process via uv run.
-Each script MUST include PEP 723 metadata, even when no dependencies are needed:
+Cmd: {"id":N,"previous_id":null,"kind":"cmd","argv":["pytest","-q"]}.
+Every new code or cmd version runs ONCE, in accepted order, in a fresh process.
+A cmd runs argv directly, without a shell; use ["sh","-c","..."] for pipes or globs.
+Code runs via uv run. Each script MUST include PEP 723 metadata, even with no dependencies:
 # /// script
 # dependencies = []
 # ///
 from pathlib import Path
 print(Path('README.md').read_text())
 No shared variables, kernel, magics, top-level return, or cell imports. Use normal Python,
-pathlib, subprocess, and ordinary files. Use subprocess.run([...], check=True) to run tests
-or shell tools. Check whether a workspace .venv/bin/python exists before using it for project tests.
+pathlib, subprocess, and ordinary files. Prefer cmd Cells to run tests or shell tools.
+Check whether a workspace .venv/bin/python exists before using it for project tests.
 Otherwise use PEP 723 dependencies for packages your script imports, or run a test
 command through uv run --with pytest python -m pytest. uv's script interpreter is
 separate from a project environment. When writing multiline files, prefer triple-quoted
