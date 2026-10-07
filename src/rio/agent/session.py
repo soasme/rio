@@ -34,6 +34,7 @@ class Session:
         limits: Limits | None = None,
         validators: tuple[tuple[str, ...], ...] = (),
         model_config: dict | None = None,
+        instructions: str = "",
     ) -> Session:
         if store.data:
             raise ValueError("Session already exists")
@@ -57,6 +58,7 @@ class Session:
                     "limits": asdict(limits),
                     "validators": [list(v) for v in validators],
                     "model_config": model_config or {},
+                    "instructions": instructions,
                     "terminal": None,
                     "pause": None,
                     "invalid": 0,
