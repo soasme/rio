@@ -49,6 +49,15 @@ theorem in_range_index_needs_no_hint (cells : List Cell) (n : Nat) (h : n < cell
 theorem id_used_as_index_points_to_position :
     indexHint [⟨2, none⟩] 2 = some 0 := by rfl
 
+/-- A replacement must name the Cell at its position as predecessor. -/
+def admitsReplacement (old next : Cell) : Bool := next.previous == some old.id
+
+theorem successor_is_admitted (old : Cell) (next : Nat) :
+    admitsReplacement old (successor old next) = true := by simp [admitsReplacement, successor]
+
+theorem null_predecessor_is_stale (old : Cell) (next : Nat) :
+    admitsReplacement old ⟨next, none⟩ = false := by simp [admitsReplacement]
+
 inductive Kind where
   | note | code | cmd
   deriving DecidableEq, Repr
