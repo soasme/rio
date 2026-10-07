@@ -72,7 +72,7 @@ async def run(
                     },
                 )
             try:
-                turn = session.prepare_turn(SYSTEM, SCHEMA)
+                turn = session.prepare_turn(SYSTEM + session.meta.get("instructions", ""), SCHEMA)
                 if turn["response"] is None:
                     while time.time() < turn["retry_at"]:
                         await owner.tick()

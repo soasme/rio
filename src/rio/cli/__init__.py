@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import sys
 from collections.abc import Sequence
@@ -36,6 +37,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("-m", "--model", help="Model name.")
     run_parser.add_argument("--cwd", type=Path, help="Working directory.")
     run_parser.add_argument("-t", "--thinking", help="Reasoning effort level.")
+    run_parser.add_argument(
+        "--agents-md",
+        type=Path,
+        metavar="PATH",
+        help="Project instructions file (default: AGENTS.md in the working directory).",
+    )
     run_parser.add_argument(
         "-e",
         "--extension",
@@ -144,7 +151,7 @@ def _run(args: argparse.Namespace) -> None:
         if os.name != "posix":
             raise ValueError("Rio execution requires POSIX process supervision")
         succeeded, session_id = anyio.run(
-            run_module.run_persistent_session,
+            functools.partial(run_module.run_persistent_session, agents_md=args.agents_md),
             prompt,
             args.cwd,
             args.provider,

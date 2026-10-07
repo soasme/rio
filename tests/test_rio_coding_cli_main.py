@@ -25,6 +25,7 @@ def test_thinking_flag_reaches_thinking_level_param(monkeypatch: pytest.MonkeyPa
         trust_override: object | None = None,
         resume: str | None = None,
         output_mode: object | None = None,
+        agents_md: Path | None = None,
     ) -> tuple[bool, str]:
         captured["thinking_level"] = thinking_level
         captured["extension_paths"] = extension_paths
@@ -46,6 +47,7 @@ def test_json_output_reaches_session_runner(monkeypatch: pytest.MonkeyPatch) -> 
 
     async def fake_run(*args: object, **kwargs: object) -> tuple[bool, str]:
         captured["output_mode"] = args[-1]
+        captured["agents_md"] = kwargs["agents_md"]
         return True, "session-id"
 
     monkeypatch.setattr(run_module, "run_persistent_session", fake_run)
@@ -53,6 +55,35 @@ def test_json_output_reaches_session_runner(monkeypatch: pytest.MonkeyPatch) -> 
     app(["run", "--output", "json", "do it"])
 
     assert captured["output_mode"] == "json"
+    assert captured["agents_md"] is None
+
+
+def test_agents_md_flag_reaches_session_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run(*args: object, **kwargs: object) -> tuple[bool, str]:
+        captured.update(kwargs)
+        return True, "session-id"
+
+    monkeypatch.setattr(run_module, "run_persistent_session", fake_run)
+
+    app(["run", "--agents-md", "rules.md", "do it"])
+
+    assert captured["agents_md"] == Path("rules.md")
+
+
+def test_load_agents_md_resolves_cwd_or_explicit_path(tmp_path: Path) -> None:
+    from rio.coding import load_agents_md
+
+    assert load_agents_md(tmp_path) is None
+    (tmp_path / "AGENTS.md").write_text("cwd rules")
+    assert load_agents_md(tmp_path).content == "cwd rules"
+    explicit = tmp_path / "rules.md"
+    explicit.write_text("explicit rules")
+    loaded = load_agents_md(tmp_path, explicit)
+    assert (loaded.path, loaded.content) == (str(explicit.resolve()), "explicit rules")
+    with pytest.raises(ValueError, match="Cannot read AGENTS.md"):
+        load_agents_md(tmp_path, tmp_path / "missing.md")
 
 
 def test_tools_flag_is_gone() -> None:
@@ -93,7 +124,7 @@ def test_unrelated_value_error_does_not_blame_cwd(
         trust_override: object | None = None,
         resume: str | None = None,
         output_mode: object | None = None,
-        exposed_tools: tuple[str, ...] = ("read", "write", "edit", "bash"),
+        agents_md: Path | None = None,
     ) -> tuple[bool, str]:
         raise ValueError("Unknown provider: bonsai2")
 

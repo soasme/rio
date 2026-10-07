@@ -342,6 +342,17 @@ async def test_public_loop_finishes_and_reopens_without_model_call(session):
     assert await run(session, FakeProvider([]), "fake")
 
 
+async def test_instructions_extend_system_prompt(tmp_path):
+    with Store(tmp_path / "session.sqlite3") as store:
+        session = Session.create(store, "goal", tmp_path, instructions="\n\nUse tabs.")
+        conclude = note(1, "done", role="conclusion", result="success")
+        provider = FakeProvider(
+            [response([{"op": "test", "path": "/revision", "value": 1}, append(conclude)])]
+        )
+        assert await run(session, provider, "fake")
+        assert provider.calls[0][1] == SYSTEM + "\n\nUse tabs."
+
+
 async def test_uv_timer_api_acknowledges_committed_registration(session):
     accept(session, code(1, "from rio.agent.api import timer\ntimer('wake:1', 0, {'done':True})"))
     async with Owner(session) as owner:
@@ -568,7 +579,7 @@ def test_cli_defaults_to_durable_and_resume_needs_no_new_goal(monkeypatch):
 
     calls = []
 
-    async def run_session(*args):
+    async def run_session(*args, **kwargs):
         calls.append(args)
         return True, "abc"
 

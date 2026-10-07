@@ -26,13 +26,14 @@ text; otherwise the positional arguments are joined into the task.
 | `-m`, `--model MODEL` | Model to use. |
 | `--cwd PATH` | Project directory. |
 | `-t`, `--thinking LEVEL` | Reasoning-effort level. |
+| `--agents-md PATH` | Project instructions file. Defaults to `AGENTS.md` in the working directory when present. |
 | `-e`, `--extension PATH` | Provider extension path. Repeatable. |
 | `-a`, `--approve` | Allow project provider extensions. |
 | `--no-approve` | Do not load project provider extensions. |
 | `-r`, `--resume SESSION_ID` | Resume a durable session. |
 | `--output human\|json` | Output format; defaults to `human`. |
 
-Omit TASK when resuming a SQLite Session. Resume keeps the original goal and model
+Omit TASK when resuming a SQLite Session. Resume keeps the original goal, project instructions, and model
 configuration; terminal runs remain terminal. Sessions use SQLite only.
 
 `human` prints a compact transcript and session ID. `json` emits one JSON
