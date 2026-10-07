@@ -1,3 +1,9 @@
+# 0.8.1
+
+* fix(cli): restore code, notes, and output in durable transcripts ([#127](https://github.com/soasme/rio/pull/127))
+* feat(agent): add cmd cell kind for direct argv execution ([#129](https://github.com/soasme/rio/pull/129))
+* feat(cli): load AGENTS.md into the system prompt ([#128](https://github.com/soasme/rio/pull/128))
+
 # 0.8.0
 
 * chore: update vendor bundled models catalog ([#126](https://github.com/soasme/rio/pull/126))

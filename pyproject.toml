@@ -1,6 +1,6 @@
 [project]
 name = "rio"
-version = "0.8.0"
+version = "0.8.1"
 description = "A coding agent with durable SQLite state and a multi-provider LLM SDK."
 readme = "README.md"
 authors = [
