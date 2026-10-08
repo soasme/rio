@@ -12,6 +12,7 @@ from pathlib import Path
 import anyio
 
 from rio.cli import run as run_module
+from rio.cli import status
 from rio.cli.login import login
 from rio.coding.rendering import PrintOutputMode
 from rio.coding.thinking import normalize_thinking_level
@@ -146,6 +147,7 @@ def _run(args: argparse.Namespace) -> None:
         args.parser.error("a task or Markdown task file is required")
     if args.no_color:
         os.environ["NO_COLOR"] = "1"
+    status.report("working")
     try:
         level = normalize_thinking_level(args.thinking) if args.thinking else None
         if os.name != "posix":
@@ -163,7 +165,15 @@ def _run(args: argparse.Namespace) -> None:
             PrintOutputMode(args.output),
         )
     except ValueError as exc:
+        status.report("error")
         args.parser.error(str(exc))
+    except KeyboardInterrupt:
+        status.report("idle")
+        raise
+    except BaseException:
+        status.report("error")
+        raise
+    status.report("done" if succeeded else "error")
     if args.output == PrintOutputMode.human:
         print(f"\nSession: {session_id}")
     if not succeeded:
