@@ -1,3 +1,10 @@
+# 0.8.2
+
+* feat(cli): report program status via OSC 7501 ([#133](https://github.com/soasme/rio/pull/133))
+* fix(agent): explain repeated cell operation rejections ([#132](https://github.com/soasme/rio/pull/132))
+* fix(agent): explain stale predecessor rejections ([#131](https://github.com/soasme/rio/pull/131))
+* fix(agent): explain out-of-range cell index rejections ([#130](https://github.com/soasme/rio/pull/130))
+
 # 0.8.1
 
 * fix(cli): restore code, notes, and output in durable transcripts ([#127](https://github.com/soasme/rio/pull/127))
