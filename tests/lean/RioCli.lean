@@ -52,4 +52,34 @@ theorem repeated_snapshot_prints_nothing (snapshot : List Char) :
     outputDelta snapshot.length snapshot = [] := by
   simp [outputDelta]
 
+-- OSC 7501 program status. The environment override wins over terminal detection.
+def statusEnabled (override : Option Bool) (terminal : Bool) : Bool :=
+  override.getD terminal
+
+theorem override_forces_status (on terminal : Bool) :
+    statusEnabled (some on) terminal = on := by rfl
+
+theorem detection_without_override (terminal : Bool) :
+    statusEnabled none terminal = terminal := by rfl
+
+inductive Outcome where
+  | succeeded
+  | failed
+  | interrupted
+  deriving DecidableEq, Repr
+
+-- A run reports `working`, then exactly one final state.
+def reports : Outcome → List String
+  | .succeeded => ["working", "done"]
+  | .failed => ["working", "error"]
+  | .interrupted => ["working", "idle"]
+
+theorem run_starts_working (o : Outcome) : (reports o).head? = some "working" := by
+  cases o <;> rfl
+
+theorem run_reports_two_states (o : Outcome) : (reports o).length = 2 := by
+  cases o <;> rfl
+
+theorem interrupt_is_not_failure : reports .interrupted ≠ reports .failed := by decide
+
 end RioCli

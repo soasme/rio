@@ -41,6 +41,12 @@ outcomes, and the session ID. Cell labels and numbers are not displayed. Resume 
 transcript before showing new progress. See the [message design](../design/coding-tui-messages.md).
 `json` emits one JSON event per line and is intended for programmatic consumers.
 
+`rio run` reports its status to the terminal with
+[OSC 7501](https://mitchellh.com/writing/program-status-osc7501) on stderr:
+`working` while it runs, then `done`, `error`, or `idle` on interrupt. It reports
+when stderr is a terminal and `TERM` is not `dumb`. Set `RIO_PROGRAM_STATUS=1` or
+`RIO_PROGRAM_STATUS=0` to force reporting on or off.
+
 ## `rio mcp`
 
 Manages [MCP servers](../guides/mcp.md) without starting a session.
