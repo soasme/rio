@@ -356,6 +356,8 @@ class Owner:
             "RIO_SESSION_URI": session.store.path.as_uri() + "?mode=ro",
             "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
         }
+        if session.limits.cell_memory_bytes:
+            env["RIO_CELL_MEMORY_BYTES"] = str(session.limits.cell_memory_bytes)
         try:
             if cell["kind"] == "cmd":
                 command = ["--command", *cell["argv"]]

@@ -34,8 +34,9 @@ async def run_persistent_session(
     resume: str | None = None,
     output_mode: PrintOutputMode = PrintOutputMode.human,
     agents_md: Path | None = None,
+    cell_memory_bytes: int | None = None,
 ) -> tuple[bool, str]:
-    from rio.agent import Session, Store
+    from rio.agent import Limits, Session, Store
     from rio.agent.runner import run
 
     root = RioPaths().sessions_dir
@@ -63,6 +64,8 @@ async def run_persistent_session(
                 raise ValueError("Resume preserves the configured model")
             if agents_md is not None:
                 raise ValueError("Resume preserves the project instructions")
+            if cell_memory_bytes is not None:
+                raise ValueError("Resume preserves the cell memory limit")
             provider_name, model = saved["provider"], saved["model"]
             thinking_level = saved.get("thinking")
         else:
@@ -112,6 +115,7 @@ async def run_persistent_session(
                         "thinking": thinking_level,
                     },
                     instructions=instructions,
+                    limits=Limits(cell_memory_bytes=cell_memory_bytes),
                 )
 
             def publish(event):

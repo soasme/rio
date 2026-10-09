@@ -142,4 +142,24 @@ def systemPrompt (protocol instructions : String) : String := protocol ++ instru
 theorem no_instructions_keeps_protocol (protocol : String) :
     systemPrompt protocol "" = protocol := by simp [systemPrompt]
 
+/-- The cell memory limit binds the spawned cell process, never its supervisor. -/
+def memoryLimit (isCell : Bool) (limit : Option Nat) : Option Nat :=
+  cond isCell limit none
+
+theorem supervisor_is_unlimited (limit : Option Nat) : memoryLimit false limit = none := rfl
+
+theorem cell_gets_configured_limit (limit : Option Nat) : memoryLimit true limit = limit := rfl
+
+/-- Resume keeps the saved limit; a new limit is rejected (none). -/
+def resumeMemoryLimit (saved requested : Option Nat) : Option (Option Nat) :=
+  match requested with
+  | none => some saved
+  | some _ => none
+
+theorem resume_keeps_saved_memory_limit (saved : Option Nat) :
+    resumeMemoryLimit saved none = some saved := rfl
+
+theorem resume_rejects_new_memory_limit (saved : Option Nat) (n : Nat) :
+    resumeMemoryLimit saved (some n) = none := rfl
+
 end RioAgent

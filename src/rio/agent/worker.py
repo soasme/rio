@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import resource
 import selectors
 import signal
 import subprocess
@@ -18,11 +19,22 @@ def main() -> None:
     if sys.stdin.readline() != "start\n":
         return
     command = sys.argv[3:] if sys.argv[2] == "--command" else ["uv", "run", "--script", sys.argv[2]]
+    memory = int(os.environ.pop("RIO_CELL_MEMORY_BYTES", 0))
+
+    def limit_memory() -> None:
+        # Applies to uv and everything it starts; the supervisor stays unlimited.
+        if memory:
+            resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
+
     try:
         child = subprocess.Popen(
-            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            preexec_fn=limit_memory,
         )
-    except OSError as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         print(json.dumps({"stderr": str(exc).encode().hex()}), flush=True)
         print(json.dumps({"exit": 127}), flush=True)
         sys.stdin.readline()

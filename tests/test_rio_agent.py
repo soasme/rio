@@ -288,6 +288,25 @@ async def test_cmd_runs_argv_without_shell(session):
     assert session.meta["pause"] == "execution:2"
 
 
+async def test_cell_memory_limit_applies_to_cells(tmp_path):
+    from dataclasses import replace
+
+    limits = replace(Limits(), cell_memory_bytes=1 << 30)
+    with Store(tmp_path / "memory.db") as store:
+        session = Session.create(store, "goal", tmp_path, limits=limits)
+        accept(
+            session,
+            code(1, "import os\nprint('RIO_CELL_MEMORY_BYTES' in os.environ)"),
+            cmd(2, sys.executable, "-c", "bytearray(2 << 30)"),
+        )
+        async with Owner(session) as owner:
+            await settle(owner)
+        executions = session.data["executions"]
+        assert executions["1"]["output"] == "False\n"
+        assert executions["2"]["result"]["type"] != "success"
+        assert "MemoryError" in executions["2"]["stderr"]
+
+
 async def test_error_pauses_queue_then_cancel_before_dispatch(session):
     accept(session, code(1, "raise RuntimeError('bad')"), code(2, "assert False"))
     async with Owner(session) as owner:
