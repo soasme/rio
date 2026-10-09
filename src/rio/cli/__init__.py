@@ -57,6 +57,12 @@ def build_parser() -> argparse.ArgumentParser:
     trust.add_argument("--no-approve", action="store_true", help="Do not trust project resources.")
     run_parser.add_argument("-r", "--resume", help="Session ID to resume.")
     run_parser.add_argument(
+        "--cell-memory",
+        type=_memory_size,
+        metavar="SIZE",
+        help="Address space limit per cell process, e.g. 512M or 2G (default: unlimited).",
+    )
+    run_parser.add_argument(
         "--output",
         choices=tuple(PrintOutputMode),
         default=PrintOutputMode.human,
@@ -141,6 +147,15 @@ def app(argv: Sequence[str] | None = None) -> None:
     args.handler(args)
 
 
+def _memory_size(value: str) -> int:
+    units = {"K": 2**10, "M": 2**20, "G": 2**30}
+    scale = units.get(value[-1:].upper(), 1)
+    number = value[:-1] if scale > 1 else value
+    if not number.isdigit() or int(number) == 0:
+        raise argparse.ArgumentTypeError(f"invalid size: {value!r}")
+    return int(number) * scale
+
+
 def _run(args: argparse.Namespace) -> None:
     prompt = _resolve_task(args.task)
     if not prompt and not args.resume:
@@ -153,7 +168,11 @@ def _run(args: argparse.Namespace) -> None:
         if os.name != "posix":
             raise ValueError("Rio execution requires POSIX process supervision")
         succeeded, session_id = anyio.run(
-            functools.partial(run_module.run_persistent_session, agents_md=args.agents_md),
+            functools.partial(
+                run_module.run_persistent_session,
+                agents_md=args.agents_md,
+                cell_memory_bytes=args.cell_memory,
+            ),
             prompt,
             args.cwd,
             args.provider,

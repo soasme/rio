@@ -26,6 +26,7 @@ def test_thinking_flag_reaches_thinking_level_param(monkeypatch: pytest.MonkeyPa
         resume: str | None = None,
         output_mode: object | None = None,
         agents_md: Path | None = None,
+        cell_memory_bytes: int | None = None,
     ) -> tuple[bool, str]:
         captured["thinking_level"] = thinking_level
         captured["extension_paths"] = extension_paths
@@ -70,6 +71,28 @@ def test_agents_md_flag_reaches_session_runner(monkeypatch: pytest.MonkeyPatch) 
     app(["run", "--agents-md", "rules.md", "do it"])
 
     assert captured["agents_md"] == Path("rules.md")
+
+
+def test_cell_memory_flag_reaches_session_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run(*args: object, **kwargs: object) -> tuple[bool, str]:
+        captured.update(kwargs)
+        return True, "session-id"
+
+    monkeypatch.setattr(run_module, "run_persistent_session", fake_run)
+
+    app(["run", "--cell-memory", "512M", "do it"])
+    assert captured["cell_memory_bytes"] == 512 * 2**20
+    app(["run", "do it"])
+    assert captured["cell_memory_bytes"] is None
+
+
+@pytest.mark.parametrize("value", ["0", "1.5G", "G", "-1M"])
+def test_cell_memory_rejects_invalid_sizes(value: str) -> None:
+    with pytest.raises(SystemExit) as error:
+        build_parser().parse_args(["run", "--cell-memory", value, "do it"])
+    assert error.value.code == 2
 
 
 def test_load_agents_md_resolves_cwd_or_explicit_path(tmp_path: Path) -> None:
@@ -125,6 +148,7 @@ def test_unrelated_value_error_does_not_blame_cwd(
         resume: str | None = None,
         output_mode: object | None = None,
         agents_md: Path | None = None,
+        cell_memory_bytes: int | None = None,
     ) -> tuple[bool, str]:
         raise ValueError("Unknown provider: bonsai2")
 

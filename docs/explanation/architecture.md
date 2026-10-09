@@ -81,7 +81,7 @@ no pending work, unread observations, or unresolved results, and passing any
 configured validators. Validators use the same process supervision.
 
 `Session.create` accepts `Limits` and validator argument lists. These are outside
-model patch authority. Limits cover model rounds, tokens, script time, retries,
+model patch authority. Limits cover model rounds, tokens, script time, cell memory, retries,
 context, output, pending work, inbox messages, and journal size. Cleanup and final
 records may exceed the journal admission limit.
 

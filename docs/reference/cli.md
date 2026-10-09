@@ -31,9 +31,10 @@ text; otherwise the positional arguments are joined into the task.
 | `-a`, `--approve` | Allow project provider extensions. |
 | `--no-approve` | Do not load project provider extensions. |
 | `-r`, `--resume SESSION_ID` | Resume a durable session. |
+| `--cell-memory SIZE` | Address space limit for each cell process, such as `512M` or `2G`. Applied with `RLIMIT_AS` before `uv` starts. Defaults to unlimited. |
 | `--output human\|json` | Output format; defaults to `human`. |
 
-Omit TASK when resuming a SQLite Session. Resume keeps the original goal, project instructions, and model
+Omit TASK when resuming a SQLite Session. Resume keeps the original goal, project instructions, cell memory limit, and model
 configuration; terminal runs remain terminal. Sessions use SQLite only.
 
 `human` prints accepted content (notes, commands, and Python source), execution output and
