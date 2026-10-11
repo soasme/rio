@@ -54,7 +54,7 @@ async def run(
                     or any(not t["fired"] for t in session.data["timers"].values())
                 )
                 if wakeup or session.limits.external_wakeup:
-                    await asyncio.sleep(0.05)
+                    await owner.wait()
                     continue
                 if session.meta.get("idle", 0) >= session.limits.invalid_attempts:
                     await owner.fail("Repeated invalid idle decisions")
@@ -84,9 +84,9 @@ async def run(
                 turn = session.prepare_turn(session.system, session.schema)
                 if turn["response"] is None:
                     while time.time() < turn["retry_at"]:
+                        await owner.wait(turn["retry_at"])
                         await owner.tick()
                         flush()
-                        await asyncio.sleep(min(0.1, max(0, turn["retry_at"] - time.time())))
                     turn = session.attempt(turn["id"])
                     messages = [UserMessage(content=encode(turn["state"]))]
                     if turn["error"]:
@@ -105,7 +105,7 @@ async def run(
                         while not request.done():
                             await owner.tick()
                             flush()
-                            await asyncio.wait({request}, timeout=0.05)
+                            await owner.wait(request=request)
                         try:
                             response = await request
                         except Exception as exc:

@@ -68,10 +68,10 @@ def accept(session, *cells):
 
 async def settle(owner):
     async with asyncio.timeout(15):
-        while owner.session.pending():
-            await owner.tick()
-            await asyncio.sleep(0.02)
         await owner.tick()
+        while owner.session.pending():
+            await owner.wait()
+            await owner.tick()
 
 
 def test_sqlite_full_wal_and_exclusive_owner(session):
@@ -521,6 +521,62 @@ async def test_uv_timer_api_acknowledges_committed_registration(session):
         await settle(owner)
     assert session.data["timers"]["wake:1"]["fired"]
     assert session.data["executions"]["1"]["result"]["type"] == "success"
+
+
+async def test_owner_wakes_on_commits_and_deadlines_without_polling(session):
+    import time
+
+    accept(session, cmd(sys.executable, "-c", "print('done')"))
+    async with Owner(session) as owner:
+        # Worker output, the result commit, and the task ending each wake the owner.
+        wakes = 0
+        async with asyncio.timeout(10):
+            await owner.tick()
+            while session.pending() or owner.task:
+                await owner.wait()
+                await owner.tick()
+                wakes += 1
+        assert session.data["executions"]["1"]["output"] == "done\n"
+        assert wakes < 10
+        # With nothing changing, a wait sleeps until the next timer deadline, then fires it.
+        session.register_timer("wake", time.time() + 0.3, {})
+        await owner.tick()
+        started = time.monotonic()
+        await owner.wait()
+        assert 0.25 < time.monotonic() - started < 1
+        await owner.tick()
+        assert session.data["timers"]["wake"]["fired"]
+        # Input committed while waiting wakes it at once.
+        waiting = asyncio.create_task(owner.wait(time.time() + 60))
+        await asyncio.sleep(0)
+        session.receive("external:1", "external", {})
+        async with asyncio.timeout(1):
+            await waiting
+
+
+async def test_loop_sleeps_until_timer_instead_of_polling(session, monkeypatch):
+    import time
+
+    turn = prepare(session)
+    session.accept(turn["id"], [])
+    session.register_timer("wake", time.time() + 0.3, {})
+    ticks = 0
+    tick = Owner.tick
+
+    async def counted(self):
+        nonlocal ticks
+        ticks += 1
+        await tick(self)
+
+    monkeypatch.setattr(Owner, "tick", counted)
+    provider = FakeProvider([response([add(note(role="conclusion", result="success"))])])
+    started = time.monotonic()
+    assert await run(session, provider, "fake")
+    assert time.monotonic() - started >= 0.25
+    # Polling every 50ms would tick about six times before the timer fires.
+    assert ticks <= 4
+    state = json.loads(provider.calls[0][2][0].content)
+    assert [m["id"] for m in state["runtime"]["inbox"]] == ["timer:wake"]
 
 
 def test_output_limit_is_explicit(session):
