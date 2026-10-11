@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import cache
 from typing import Literal
 
 from rio.ai.types import JSONValue
@@ -81,18 +80,10 @@ class ProviderCatalogEntry:
     auth_methods: tuple[AuthMethod, ...] = ("api_key",)
 
 
-@cache
-def _load_builtin_catalog() -> tuple[ProviderCatalogEntry, ...]:
-    # Imported lazily and computed on first access (rather than eagerly at
-    # module scope) because catalog_loader imports real classes from this
-    # module: an eager computation here would make the import order between
-    # provider_catalog and catalog_loader load-bearing.
-    from rio.coding.catalog_loader import builtin_catalog
-
-    return builtin_catalog()
-
-
 def __getattr__(name: str) -> tuple[ProviderCatalogEntry, ...]:
     if name == "BUILTIN_PROVIDER_CATALOG":
-        return _load_builtin_catalog()
+        # Lazy: catalog_loader imports the dataclasses defined in this module.
+        from rio.coding.catalog_loader import builtin_catalog
+
+        return builtin_catalog()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

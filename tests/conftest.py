@@ -5,7 +5,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from rio.coding import catalog_loader, models_dev, models_dev_store, provider_catalog
+from rio.coding import catalog_loader, models_dev, models_dev_store
 
 _REAL_BUNDLED_LOADER = models_dev.bundled_models_dev_catalog_document
 
@@ -13,7 +13,6 @@ _REAL_BUNDLED_LOADER = models_dev.bundled_models_dev_catalog_document
 def _clear_catalog_caches() -> None:
     catalog_loader.builtin_catalog.cache_clear()
     catalog_loader._builtin_raw_with_generated_models.cache_clear()
-    provider_catalog._load_builtin_catalog.cache_clear()
 
 
 @contextlib.contextmanager
