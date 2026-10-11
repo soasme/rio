@@ -9,8 +9,20 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
+from typing import cast
 
 from rio.agent.prompt import schema, system
+from rio.agent.shapes import (
+    Execution,
+    InboxMessage,
+    Meta,
+    Projection,
+    Receipt,
+    RunResult,
+    State,
+    Turn,
+    WorkerIdentity,
+)
 from rio.agent.state import NOTE, CellKind, InvalidPatch, Limits, admit
 from rio.agent.store import Store, encode
 
@@ -31,7 +43,7 @@ def by_name(kinds: Iterable[CellKind]) -> dict[str, CellKind]:
     return named
 
 
-def observation(message_id: str, kind: str, payload: dict, seq: int) -> dict:
+def observation(message_id: str, kind: str, payload: dict, seq: int) -> InboxMessage:
     return {"id": message_id, "kind": kind, "payload": payload, "seq": seq, "consumed": False}
 
 
@@ -65,7 +77,7 @@ class Session:
             raise ValueError("Session already exists")
         kinds = by_name(kinds)
         limits = limits or Limits()
-        state = {
+        state: State = {
             "schema": STATE_SCHEMA,
             "id": uuid.uuid4().hex,
             "revision": 0,
@@ -103,15 +115,15 @@ class Session:
         return cls(store, kinds.values())
 
     @property
-    def data(self) -> dict:
-        return self.store.data
+    def data(self) -> Projection:
+        return cast(Projection, self.store.data)
 
     @property
-    def meta(self) -> dict:
+    def meta(self) -> Meta:
         return self.data["meta"]
 
     @property
-    def state(self) -> dict:
+    def state(self) -> State:
         return copy.deepcopy(self.meta["state"])
 
     @property
@@ -122,7 +134,7 @@ class Session:
     def schema(self) -> dict:
         return schema(self.kinds.values())
 
-    def pending(self) -> list[dict]:
+    def pending(self) -> list[Execution]:
         return [e for e in self.data["executions"].values() if e["phase"] != "finished"]
 
     def unresolved(self) -> list[int]:
@@ -162,7 +174,7 @@ class Session:
             },
         )
 
-    def prepare_turn(self, system: str, tool_schema: dict) -> dict:
+    def prepare_turn(self, system: str, tool_schema: dict) -> Turn:
         if self.meta["terminal"]:
             raise ValueError("Terminal runs cannot resume")
         for turn in self.data["turns"].values():
@@ -203,7 +215,7 @@ class Session:
         if len(encode(state).encode()) > self.limits.context_bytes:
             raise ValueError("Runtime facts exceed reserved context")
         turn_id = uuid.uuid4().hex
-        turn = {
+        turn: Turn = {
             "id": turn_id,
             "state": state,
             "delivered": delivered,
@@ -225,7 +237,7 @@ class Session:
         )
         return copy.deepcopy(turn)
 
-    def attempt(self, turn_id: str) -> dict:
+    def attempt(self, turn_id: str) -> Turn:
         turn = self.data["turns"][turn_id]
         if turn["receipt"] or self.meta["terminal"]:
             raise ValueError("Turn already accepted or run ended")
@@ -285,7 +297,7 @@ class Session:
             },
         )
 
-    def accept(self, turn_id: str, ops: list) -> dict:
+    def accept(self, turn_id: str, ops: list) -> Receipt:
         turn = self.data["turns"][turn_id]
         if turn["receipt"] is not None:
             if turn["ops"] != ops:
@@ -333,7 +345,7 @@ class Session:
                             "validator_result",
                         ):
                             raise InvalidPatch("Evidence must reference a recorded observation")
-        receipt = {
+        receipt: Receipt = {
             "turn_id": turn_id,
             "revision": state["revision"],
             "cell_ids": [c["id"] for c in new],
@@ -375,7 +387,7 @@ class Session:
         )
         return receipt
 
-    def authorize(self, cell_id: int, worker: dict) -> None:
+    def authorize(self, cell_id: int, worker: WorkerIdentity) -> None:
         key = str(cell_id)
         execution = self.data["executions"][key]
         pending = self.pending()
@@ -491,7 +503,7 @@ class Session:
 
     def end(
         self,
-        result: str,
+        result: RunResult,
         reason: str,
         *,
         cleanup_error: str | None = None,

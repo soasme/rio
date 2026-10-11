@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from rio.agent.shapes import Cell, Execution, State
 from rio.agent.store import encode
 from rio.truncate import DEFAULT_MAX_OUTPUT_BYTES
 
@@ -106,16 +107,20 @@ def present(value: dict) -> dict:
 
 
 def admit(
-    state: dict, ops: object, executions: dict, limit: int, kinds: Mapping[str, CellKind]
-) -> tuple[dict, list[dict]]:
+    state: State,
+    ops: object,
+    executions: dict[str, Execution],
+    limit: int,
+    kinds: Mapping[str, CellKind],
+) -> tuple[State, list[Cell]]:
     """Apply id-addressed ops; the runtime assigns ids, lineage, and positions."""
     if not isinstance(ops, list):
         raise InvalidPatch(f"ops must be an array. {USAGE}")
     next_id = state["runtime"]["next_cell_id"]
     ids = [cell["id"] for cell in state["cells"]]
-    replaced: dict[int, dict] = {}
+    replaced: dict[int, Cell] = {}
     removed: set[int] = set()
-    new = []
+    new: list[Cell] = []
     for index, operation in enumerate(ops):
         operation = present(operation) if isinstance(operation, dict) else None
         if (
