@@ -4,6 +4,7 @@
 rio login PROVIDER [--method METHOD]
 rio run [OPTIONS] TASK
 rio mcp add|remove|list|login|logout
+rio version
 ```
 
 ## `rio login`
@@ -19,7 +20,7 @@ Saves credentials for a provider.
 
 Executes a task in a durable session. A sole Markdown file is read as task
 text; otherwise the positional arguments are joined into the task.
-Providers come from the configured catalog. The run command does not load extensions.
+Providers come from the configured catalog; each run selects one provider and model.
 
 | Option | Description |
 | --- | --- |
@@ -27,14 +28,27 @@ Providers come from the configured catalog. The run command does not load extens
 | `-m`, `--model MODEL` | Model to use. |
 | `--cwd PATH` | Project directory. |
 | `-t`, `--thinking LEVEL` | Reasoning-effort level. |
+| `--agents-md PATH` | Project instructions file. Defaults to `AGENTS.md` in the working directory when present. |
 | `-r`, `--resume SESSION_ID` | Resume a durable session. |
 | `--output human\|json` | Output format; defaults to `human`. |
+| `--no-color` | Disable ANSI color output. |
 
-Omit TASK when resuming a SQLite Session. Resume keeps the original goal and model
-configuration; terminal runs remain terminal. Sessions use SQLite only.
+Omit TASK when resuming. Resume keeps the original goal, project instructions,
+and model configuration. An unfinished session needs its configured provider and
+project directory. A completed session cleans up recorded workers and replays its
+journal without provider setup or the original directory. Cleanup failures stop
+replay. See [sessions](https://github.com/soasme/rio/blob/main/docs/guides/sessions.md).
 
-`human` prints a compact transcript and session ID. `json` emits one JSON
-event per line and is intended for programmatic consumers.
+`human` prints accepted content (notes, commands, and Python source), execution output and
+outcomes, and the session ID. Cell labels and numbers are not displayed. Resume replays the committed
+transcript before showing new progress. See the [message design](https://github.com/soasme/rio/blob/main/docs/design/coding-tui-messages.md).
+`json` emits one JSON event per line and is intended for programmatic consumers.
+
+`rio run` reports its status to the terminal with
+[OSC 7501](https://mitchellh.com/writing/program-status-osc7501) on stderr:
+`working` while it runs, then `done`, `error`, or `idle` on interrupt. It reports
+when stderr is a terminal and `TERM` is not `dumb`. Set `RIO_PROGRAM_STATUS=1` or
+`RIO_PROGRAM_STATUS=0` to force reporting on or off.
 
 ## `rio mcp`
 
@@ -54,3 +68,7 @@ Manages [MCP servers](https://github.com/soasme/rio/blob/main/docs/guides/mcp.md
 servers, `--header KEY=VALUE`, `--oauth-client-id`, `--oauth-client-secret`,
 `--oauth-callback-port`, and `--oauth-scope` for HTTP servers, and
 `--description TEXT`.
+
+## `rio version`
+
+Prints the installed version.

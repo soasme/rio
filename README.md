@@ -21,7 +21,7 @@ Login to your preferred providers:
 * `rio login codex`
 * ...
 
-Run a adhoc task:
+Run an ad hoc task:
 ```
 rio run "Fix gh issue 123."
 ```
@@ -73,9 +73,9 @@ cd tests/lean && lake build
 
 See [the Lean behavior models](tests/lean/README.md) for their scope and limits.
 
-* `rio.ai` streams model responses from multiple providers.
-* `rio.agent` owns SQLite state, immutable cells, notes, workers, and recovery. Callers add
-  runnable Cell kinds.
-* `rio.coding` supplies code and cmd Cells, provider configuration, credentials, and MCP
-  clients.
-* `rio.cli` runs coding tasks.
+* [rio.ai](src/rio/ai/README.md) streams model responses from multiple providers.
+* [rio.agent](src/rio/agent/README.md) owns SQLite state, immutable cells, notes,
+  workers, and recovery. Callers add runnable cell kinds.
+* [rio.coding](src/rio/coding/README.md) supplies code and cmd cells, provider
+  configuration, credentials, and MCP clients.
+* [rio.cli](src/rio/cli/README.md) runs coding tasks.
