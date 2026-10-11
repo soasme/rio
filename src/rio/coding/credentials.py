@@ -61,6 +61,12 @@ type StoredCredential = str | ApiKeyCredential | OAuthCredential
 type StoredCredentialKind = Literal["api_key", "oauth"]
 
 
+class CredentialReader(Protocol):
+    """Read-only credential lookup used to resolve provider auth."""
+
+    def get(self, name: str) -> str | None: ...
+
+
 class CredentialStore(Protocol):
     """Mutable credential-store operations used by setup integrations."""
 

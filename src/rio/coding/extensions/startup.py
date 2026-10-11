@@ -3,13 +3,14 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from rio.ai.provider import ClosableModelProvider
 from rio.coding.credentials import FileCredentialStore, credentials_path
 from rio.coding.extensions.providers import DynamicProvider
 from rio.coding.extensions.runtime import ExtensionRuntime
 from rio.coding.paths import RioPaths
 from rio.coding.project_trust import ProjectTrustCoordinator, ProjectTrustStore, TrustOverride
 from rio.coding.provider_config import ProviderConfigError, load_provider_settings
-from rio.coding.provider_runtime import ClosableModelProvider, create_dynamic_model_provider
+from rio.coding.provider_runtime import create_dynamic_model_provider
 from rio.coding.resources import RioResourcePaths
 from rio.coding.shell_config import load_shell_settings
 

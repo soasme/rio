@@ -16,8 +16,9 @@ from rio.ai.env import (
     DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS,
     DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS,
 )
-from rio.ai.provider import CancellationToken, ModelProvider
+from rio.ai.provider import CancellationToken, ClosableModelProvider
 from rio.ai.types import JSONPrimitive, JSONValue
+from rio.coding.credentials import CredentialReader
 from rio.coding.provider_catalog import ModelInput, ProviderApi
 from rio.coding.thinking import ThinkingLevel
 
@@ -50,12 +51,6 @@ class ProviderAuthError(RuntimeError):
 
 class _MissingRequiredApiKeyError(ProviderAuthError):
     """Host-authored missing-key guidance safe to preserve at runtime boundaries."""
-
-
-class CredentialReader(Protocol):
-    """Read-only credential lookup used by dynamic auth strategies."""
-
-    def get(self, name: str) -> str | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,12 +291,6 @@ class ProviderRuntimeContext:
 
     provider_id: str
     auth: ResolvedProviderAuth = field(repr=False)
-
-
-class ClosableModelProvider(ModelProvider, Protocol):
-    """Runtime provider returned by a dynamic provider factory."""
-
-    async def aclose(self) -> None: ...
 
 
 RuntimeFactory = Callable[

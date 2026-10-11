@@ -15,8 +15,8 @@ from typing import Literal
 from uuid import uuid4
 
 from rio.coding.cancellation import CancellationToken
+from rio.coding.credentials import CredentialReader
 from rio.coding.extensions.providers import (
-    CredentialReader,
     DynamicProvider,
     ProviderModelSnapshot,
     ProviderRefreshContext,
@@ -175,7 +175,7 @@ class DynamicProviderRegistry:
     def register(self, source_id: str, provider: DynamicProvider) -> ProviderLayerToken:
         """Atomically register or replace one source's complete provider layer."""
         self._assert_active()
-        normalized_source = _source_id(source_id)
+        normalized_source = validate_source_id(source_id)
         # Provider construction has already performed complete validation. Do
         # not mutate current state before this point.
         token = ProviderLayerToken(
@@ -200,7 +200,7 @@ class DynamicProviderRegistry:
 
     def unregister(self, provider_id: str, source_id: str) -> bool:
         """Remove one source layer while preserving all other definitions."""
-        normalized_source = _source_id(source_id)
+        normalized_source = validate_source_id(source_id)
         layers = self._layers.get(provider_id)
         if not layers:
             return False
@@ -225,7 +225,7 @@ class DynamicProviderRegistry:
         replacing a source layer and retains its cancellation semantics.
         """
         self._assert_active()
-        normalized_source = _source_id(source_id)
+        normalized_source = validate_source_id(source_id)
         layers = self._layers.get(provider.id)
         if not layers:
             return False
@@ -241,7 +241,7 @@ class DynamicProviderRegistry:
 
     def unregister_source(self, source_id: str) -> None:
         """Remove every layer and cancel every task owned by one source."""
-        normalized_source = _source_id(source_id)
+        normalized_source = validate_source_id(source_id)
         for provider_id in tuple(self._layers):
             self.unregister(provider_id, normalized_source)
 
@@ -641,10 +641,10 @@ def _consume_task_result(task: asyncio.Task[ProviderModelSnapshot]) -> None:
         task.exception()
 
 
-def _source_id(value: str) -> str:
+def validate_source_id(value: str) -> str:
+    """Validate an extension source id shared by provider and backend layers."""
     if not isinstance(value, str) or not value.strip():
-        raise ValueError("Provider source id must be a non-empty string")
-    normalized = value.strip()
-    if normalized != value:
-        raise ValueError("Provider source id must not have surrounding whitespace")
-    return normalized
+        raise ValueError("Source id must be a non-empty string")
+    if value != value.strip():
+        raise ValueError("Source id must not have surrounding whitespace")
+    return value

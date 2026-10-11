@@ -9,8 +9,7 @@ from json import JSONDecodeError, dumps, loads
 from os import environ
 from pathlib import Path
 from shutil import copy2
-from tempfile import NamedTemporaryFile
-from typing import Any, Protocol, cast
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 from rio.ai.env import (
@@ -28,9 +27,9 @@ from rio.ai.env import (
 )
 from rio.ai.openai_codex import DEFAULT_OPENAI_CODEX_BASE_URL
 from rio.coding.catalog_loader import builtin_catalog, effective_catalog, save_user_catalog_entries
-from rio.coding.credentials import FileCredentialStore, credentials_path
+from rio.coding.credentials import CredentialReader, FileCredentialStore, credentials_path
 from rio.coding.oauth_registry import get_oauth_provider
-from rio.coding.paths import RioPaths
+from rio.coding.paths import RioPaths, atomic_write_text
 from rio.coding.provider_catalog import (
     ModelCatalogMetadata,
     ModelCostTier,
@@ -56,12 +55,6 @@ PROVIDER_SETTINGS_SCHEMA_VERSION = 2
 
 class ProviderConfigError(ValueError):
     """Raised when rio provider configuration is invalid."""
-
-
-class CredentialReader(Protocol):
-    """Credential lookup used while building runtime provider config."""
-
-    def get(self, name: str) -> str | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -616,7 +609,7 @@ def _write_provider_settings(
     path.parent.mkdir(parents=True, exist_ok=True)
     if backup:
         _backup_provider_settings(path, strict=False)
-    _atomic_write_text(path, dumps(settings.to_json(), indent=2, sort_keys=True) + "\n")
+    atomic_write_text(path, dumps(settings.to_json(), indent=2, sort_keys=True) + "\n")
 
 
 def _effective_provider_configs(paths: RioPaths | None = None) -> tuple[ProviderConfig, ...]:
@@ -828,29 +821,6 @@ def _merge_provider_model_metadata(
 def _unique_strings(values: tuple[str, ...]) -> tuple[str, ...]:
     """Return values with duplicates removed while preserving order."""
     return tuple(dict.fromkeys(values))
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    """Write text through a sibling temp file and atomically replace the target."""
-    temp_path: Path | None = None
-    try:
-        with NamedTemporaryFile(
-            "w",
-            dir=path.parent,
-            encoding="utf-8",
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temp_file:
-            temp_path = Path(temp_file.name)
-            temp_file.write(text)
-            temp_file.flush()
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            with suppress(OSError):
-                temp_path.unlink()
-        raise
 
 
 def _provider_preference_to_json(provider: ProviderConfig) -> dict[str, Any]:

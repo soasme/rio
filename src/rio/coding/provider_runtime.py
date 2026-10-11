@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import replace
 from inspect import isawaitable
 from os import environ
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 from weakref import WeakKeyDictionary
 
 from rio.ai.anthropic import AnthropicProvider
@@ -21,8 +21,8 @@ from rio.ai.openai_codex import (
     OpenAICodexProvider,
 )
 from rio.ai.openai_compatible import OpenAICompatibleProvider
-from rio.ai.provider import ModelProvider
-from rio.coding.credentials import FileCredentialStore, OAuthCredential
+from rio.ai.provider import ClosableModelProvider
+from rio.coding.credentials import CredentialReader, FileCredentialStore, OAuthCredential
 from rio.coding.oauth import (
     account_id_from_access_token,
     oauth_credential_is_expired,
@@ -50,19 +50,10 @@ from rio.coding.thinking import ThinkingLevel, normalize_thinking_level, reasoni
 
 if TYPE_CHECKING:
     from rio.coding.extensions.providers import (
-        CredentialReader,
         DynamicProvider,
         ProviderModel,
         ResolvedProviderAuth,
     )
-
-
-class ClosableModelProvider(ModelProvider, Protocol):
-    """Runtime provider object rio owns and can close."""
-
-    async def aclose(self) -> None:
-        """Close any provider-owned resources."""
-        ...
 
 
 async def create_dynamic_model_provider(

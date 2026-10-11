@@ -35,3 +35,11 @@ class ModelProvider(Protocol):
         affinity. Unsupported providers ignore it.
         """
         ...
+
+
+class ClosableModelProvider(ModelProvider, Protocol):
+    """Model provider that owns resources released by ``aclose``."""
+
+    async def aclose(self) -> None:
+        """Close any provider-owned resources."""
+        ...

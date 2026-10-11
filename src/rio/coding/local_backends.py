@@ -20,6 +20,7 @@ from rio.coding.cancellation import CancellationToken
 from rio.coding.extensions.provider_registry import (
     DynamicProviderRegistry,
     ProviderLayerToken,
+    validate_source_id,
 )
 
 LOCAL_OPERATION_CANCELLATION_TIMEOUT_SECONDS = 0.25
@@ -574,7 +575,7 @@ class LocalBackendRegistry:
     def register(self, source_id: str, backend: LocalBackend) -> LocalBackendLayerToken:
         """Register a backend only against its exact source provider layer."""
         self._assert_active()
-        source = _source_id(source_id)
+        source = validate_source_id(source_id)
         provider_layer = self._providers.layer_token(backend.provider_id, source)
         if provider_layer is None:
             raise LocalBackendError(
@@ -600,7 +601,7 @@ class LocalBackendRegistry:
 
     def unregister(self, backend_id: str, source_id: str) -> bool:
         """Remove one exact source layer and preserve preceding layers."""
-        source = _source_id(source_id)
+        source = validate_source_id(source_id)
         current = self._layers.get(backend_id, [])
         removed = [item for item in current if item[0].source_id == source]
         if not removed:
@@ -615,7 +616,7 @@ class LocalBackendRegistry:
         return True
 
     def unregister_source(self, source_id: str) -> None:
-        source = _source_id(source_id)
+        source = validate_source_id(source_id)
         for backend_id in tuple(self._layers):
             self.unregister(backend_id, source)
 
@@ -1242,13 +1243,6 @@ def _safe_operation_result(
             for item in result.search_results
         ),
     )
-
-
-def _source_id(value: str) -> str:
-    _non_empty(value, "Local backend source id")
-    if value != value.strip():
-        raise LocalBackendError("Local backend source id must not have surrounding whitespace")
-    return value
 
 
 def _non_empty(value: str, label: str) -> None:
