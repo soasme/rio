@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from json import JSONDecodeError, dumps, loads
+from json import dumps, loads
 from platform import machine, release, system
 from typing import Any
 
 import httpx
 
+from rio.ai._parsing import int_or_zero, loads_object, tool_arguments
 from rio.ai._provider_events import (
     ProviderErrorEvent,
     ProviderEvent,
@@ -46,11 +47,16 @@ from rio.ai.messages import (
     Usage,
     UserMessage,
     assistant_content,
-    malformed_tool_arguments,
 )
 from rio.ai.openai_cache import openai_prompt_cache_key
 from rio.ai.provider import CancellationToken
-from rio.ai.retry import provider_retry_event, retry_delay_seconds, wait_for_retry
+from rio.ai.retry import (
+    RetryableFailure,
+    RetryAttempt,
+    check_response_status,
+    is_transient_status,
+    stream_with_retries,
+)
 from rio.ai.stream import canonicalize_provider_stream
 from rio.ai.tools import AgentTool, ToolCall
 from rio.ai.types import JSONValue
@@ -157,10 +163,7 @@ class OpenAICodexProvider:
             )
             url = _resolve_codex_url(self._config.base_url)
 
-            attempt = 0
-            while True:
-                emitted_content = False
-                emitted_thinking = False
+            async def stream_attempt(attempt: RetryAttempt) -> AsyncIterator[ProviderEvent]:
                 try:
                     credentials = await self._config.credential_resolver()
                     headers = _build_codex_headers(
@@ -176,113 +179,62 @@ class OpenAICodexProvider:
                         json=payload,
                         headers=headers,
                     ) as response:
-                        if response.status_code >= 400:
-                            body = await response.aread()
-                            body_text = body.decode(errors="replace")
-                            if self._should_retry(
-                                attempt,
-                                status_code=response.status_code,
-                                body=body_text,
-                            ):
-                                delay = retry_delay_seconds(
-                                    attempt,
-                                    max_delay_seconds=self._config.max_retry_delay_seconds,
-                                )
-                                yield provider_retry_event(
-                                    attempt=attempt,
-                                    max_retries=self._config.max_retries,
-                                    delay_seconds=delay,
-                                    reason=f"HTTP {response.status_code}",
-                                    data={
-                                        "status_code": response.status_code,
-                                        "body": body_text,
-                                    },
-                                )
-                                attempt += 1
-                                if not await wait_for_retry(delay, signal=signal):
-                                    return
-                                continue
-                            yield ProviderErrorEvent(
+                        error = await check_response_status(
+                            response,
+                            lambda body: ProviderErrorEvent(
                                 message=provider_http_error_message(
                                     provider_name=self._config.provider_name,
                                     status_code=response.status_code,
-                                    body=body_text,
+                                    body=body,
                                     model=model,
                                 ),
                                 data={
                                     "status_code": response.status_code,
-                                    "body": body_text,
-                                    "attempts": attempt + 1,
+                                    "body": body,
+                                    "attempts": attempt.number + 1,
                                 },
-                            )
+                            ),
+                            is_retryable=_is_retryable_status,
+                        )
+                        if error is not None:
+                            yield error
                             return
 
                         yield ProviderResponseStartEvent(model=model)
-                        stream_error: dict[str, JSONValue] | None = None
+                        # Thinking alone still allows a network retry, not a stream-error retry.
+                        emitted_thinking = False
                         async for event in _codex_provider_events(response, signal=signal):
-                            if isinstance(
-                                event,
-                                ProviderTextDeltaEvent | ProviderToolCallEvent,
-                            ):
-                                emitted_content = True
+                            if isinstance(event, ProviderTextDeltaEvent | ProviderToolCallEvent):
+                                attempt.emitted_content = True
                             elif isinstance(event, ProviderThinkingDeltaEvent):
                                 emitted_thinking = True
                             if (
                                 isinstance(event, ProviderErrorEvent)
-                                and not emitted_content
                                 and not emitted_thinking
-                                and self._should_retry(attempt)
                                 and _retryable_stream_error_event(event)
                             ):
-                                stream_error = _stream_error_event_data(event)
-                                break
+                                raw = _stream_error_event_data(event) or {}
+                                code, _message = _stream_error_details(raw)
+                                raise RetryableFailure(
+                                    f"stream error ({code or 'unknown'})",
+                                    event,
+                                    data={"event": raw},
+                                )
                             yield event
-                        if stream_error is None:
-                            return
-                        code, _message = _stream_error_details(stream_error)
-                        delay = retry_delay_seconds(
-                            attempt,
-                            max_delay_seconds=self._config.max_retry_delay_seconds,
-                        )
-                        yield provider_retry_event(
-                            attempt=attempt,
-                            max_retries=self._config.max_retries,
-                            delay_seconds=delay,
-                            reason=f"stream error ({code or 'unknown'})",
-                            data={"event": stream_error},
-                        )
-                        attempt += 1
-                        if not await wait_for_retry(delay, signal=signal):
-                            return
-                        continue
-                except httpx.HTTPError as exc:
-                    if not emitted_content and self._should_retry(attempt):
-                        delay = retry_delay_seconds(
-                            attempt,
-                            max_delay_seconds=self._config.max_retry_delay_seconds,
-                        )
-                        yield provider_retry_event(
-                            attempt=attempt,
-                            max_retries=self._config.max_retries,
-                            delay_seconds=delay,
-                            reason="network error",
-                            data={
-                                "error": str(exc),
-                                "error_type": type(exc).__name__,
-                            },
-                        )
-                        attempt += 1
-                        if not await wait_for_retry(delay, signal=signal):
-                            return
-                        continue
-                    yield ProviderErrorEvent(
-                        message=str(exc),
-                        data={"attempts": attempt + 1},
-                    )
-                    return
+                except (httpx.HTTPError, RetryableFailure):
+                    raise
                 except Exception as exc:  # noqa: BLE001 - provider errors are surfaced as events
-                    yield ProviderErrorEvent(message=str(exc), data={"attempts": attempt + 1})
-                    return
+                    yield ProviderErrorEvent(
+                        message=str(exc), data={"attempts": attempt.number + 1}
+                    )
+
+            async for event in stream_with_retries(
+                stream_attempt,
+                max_retries=self._config.max_retries,
+                max_retry_delay_seconds=self._config.max_retry_delay_seconds,
+                signal=signal,
+            ):
+                yield event
 
         return iterator()
 
@@ -290,17 +242,6 @@ class OpenAICodexProvider:
         if self._client is None:
             self._client = create_async_client(timeout=self._config.timeout_seconds)
         return self._client
-
-    def _should_retry(
-        self,
-        attempt: int,
-        *,
-        status_code: int | None = None,
-        body: str = "",
-    ) -> bool:
-        if attempt >= self._config.max_retries:
-            return False
-        return status_code is None or _is_retryable_status(status_code, body)
 
 
 class _ToolCallBuilder:
@@ -332,15 +273,11 @@ class _ToolCallBuilder:
 
     def build(self) -> ToolCall:
         """Build a complete Rio tool call."""
-        arguments_text = "".join(self.arguments_parts)
-        arguments = _loads_object(arguments_text) if arguments_text else {}
-        if arguments is None:
-            arguments = malformed_tool_arguments(arguments_text)
         item_id = self.item_id or f"fc_{self.call_id}"
         return ToolCall(
             id=f"{self.call_id}|{item_id}",
             name=self.name,
-            arguments=arguments,
+            arguments=tool_arguments("".join(self.arguments_parts)),
         )
 
 
@@ -686,7 +623,7 @@ async def _iter_sse_objects(response: httpx.Response) -> AsyncIterator[dict[str,
             if data_lines:
                 data = "\n".join(data_lines).strip()
                 data_lines = []
-                parsed = _loads_object(data)
+                parsed = loads_object(data)
                 if parsed is not None:
                     yield parsed
             continue
@@ -698,7 +635,7 @@ async def _iter_sse_objects(response: httpx.Response) -> AsyncIterator[dict[str,
         data_lines.append(value)
 
     if data_lines:
-        parsed = _loads_object("\n".join(data_lines).strip())
+        parsed = loads_object("\n".join(data_lines).strip())
         if parsed is not None:
             yield parsed
 
@@ -835,10 +772,6 @@ def _finish_reason_from_response(event: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _int_or_zero(value: object) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
-
-
 def _usage_from_response(event: Mapping[str, Any]) -> Usage | None:
     """Parse billed usage from a Responses ``response.completed``-style event.
 
@@ -853,12 +786,10 @@ def _usage_from_response(event: Mapping[str, Any]) -> Usage | None:
         return None
     input_details = raw.get("input_tokens_details")
     cache_read = (
-        _int_or_zero(input_details.get("cached_tokens"))
-        if isinstance(input_details, Mapping)
-        else 0
+        int_or_zero(input_details.get("cached_tokens")) if isinstance(input_details, Mapping) else 0
     )
     cache_write = (
-        _int_or_zero(input_details.get("cache_write_tokens"))
+        int_or_zero(input_details.get("cache_write_tokens"))
         if isinstance(input_details, Mapping)
         else 0
     )
@@ -866,17 +797,17 @@ def _usage_from_response(event: Mapping[str, Any]) -> Usage | None:
     # Leave reasoning None (not 0) when the provider reports no breakdown,
     # honoring the "None = not reported" contract on Usage.
     reasoning = (
-        _int_or_zero(output_details.get("reasoning_tokens"))
+        int_or_zero(output_details.get("reasoning_tokens"))
         if isinstance(output_details, Mapping)
         else None
     )
     return Usage(
-        input=max(0, _int_or_zero(raw.get("input_tokens")) - cache_read - cache_write),
-        output=_int_or_zero(raw.get("output_tokens")),
+        input=max(0, int_or_zero(raw.get("input_tokens")) - cache_read - cache_write),
+        output=int_or_zero(raw.get("output_tokens")),
         cache_read=cache_read,
         cache_write=cache_write,
         reasoning=reasoning,
-        total_tokens=_int_or_zero(raw.get("total_tokens")),
+        total_tokens=int_or_zero(raw.get("total_tokens")),
     )
 
 
@@ -1008,20 +939,10 @@ def _split_tool_call_id(value: str) -> tuple[str, str | None]:
     return call_id, item_id or None
 
 
-def _loads_object(value: str) -> dict[str, JSONValue] | None:
-    try:
-        loaded = loads(value)
-    except JSONDecodeError:
-        return None
-    if isinstance(loaded, dict):
-        return loaded
-    return None
-
-
 def _is_retryable_status(status_code: int, body: str) -> bool:
     if status_code == 429 and _is_terminal_rate_limit(body):
         return False
-    return status_code in {408, 409, 425, 429} or status_code >= 500
+    return is_transient_status(status_code)
 
 
 def _is_terminal_rate_limit(body: str) -> bool:

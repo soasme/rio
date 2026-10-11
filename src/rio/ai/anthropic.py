@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
-from json import loads
-from typing import Any, cast
+from typing import cast
 
 import httpx
 
+from rio.ai._parsing import int_or_none, loads_object, parse_sse_line, tool_arguments
 from rio.ai._provider_events import (
     ProviderErrorEvent,
     ProviderEvent,
@@ -47,11 +47,15 @@ from rio.ai.messages import (
     Usage,
     UserMessage,
     assistant_content,
-    malformed_tool_arguments,
     message_to_user,
 )
 from rio.ai.provider import CancellationToken
-from rio.ai.retry import provider_retry_event, retry_delay_seconds, wait_for_retry
+from rio.ai.retry import (
+    RetryableFailure,
+    RetryAttempt,
+    check_response_status,
+    stream_with_retries,
+)
 from rio.ai.stream import canonicalize_provider_stream
 from rio.ai.tool_call_ids import portable_tool_call_id
 from rio.ai.tools import AgentTool, ToolCall
@@ -170,208 +174,138 @@ class AnthropicProvider:
                 headers["x-api-key"] = api_key
             url = f"{base_url.rstrip('/')}/messages"
 
-            attempt = 0
-            while True:
-                emitted_content = False
-                try:
-                    async with client.stream(
-                        "POST", url, json=payload, headers=headers
-                    ) as response:
-                        if response.status_code >= 400:
-                            body = await response.aread()
-                            body_text = body.decode(errors="replace")
-                            if self._should_retry(attempt, status_code=response.status_code):
-                                delay = retry_delay_seconds(
-                                    attempt,
-                                    max_delay_seconds=self._config.max_retry_delay_seconds,
-                                )
-                                yield provider_retry_event(
-                                    attempt=attempt,
-                                    max_retries=self._config.max_retries,
-                                    delay_seconds=delay,
-                                    reason=f"HTTP {response.status_code}",
-                                    data={
-                                        "status_code": response.status_code,
-                                        "body": body_text,
-                                    },
-                                )
-                                attempt += 1
-                                if not await wait_for_retry(delay, signal=signal):
-                                    return
-                                continue
-                            yield ProviderErrorEvent(
-                                message=provider_http_error_message(
-                                    provider_name=self._config.provider_name,
-                                    status_code=response.status_code,
-                                    body=body_text,
-                                    model=model,
-                                ),
-                                data={
-                                    "status_code": response.status_code,
-                                    "body": body_text,
-                                    "attempts": attempt + 1,
-                                },
-                            )
-                            return
-
-                        yield ProviderResponseStartEvent(model=model)
-                        stream_error: dict[str, JSONValue] | None = None
-                        content_parts: list[str] = []
-                        thinking_parts: list[str] = []
-                        thinking_signature: str | None = None
-                        tool_builders: dict[int, _AnthropicToolBuilder] = {}
-                        finish_reason: str | None = None
-                        usage: Usage | None = None
-
-                        async for line in response.aiter_lines():
-                            if signal is not None and signal.is_cancelled():
-                                return
-
-                            event = _parse_sse_line(line)
-                            if event is None:
-                                continue
-                            chunk = _loads_object(event)
-                            if chunk is None:
-                                yield ProviderErrorEvent(
-                                    message="Provider returned invalid JSON chunk"
-                                )
-                                return
-
-                            event_type = chunk.get("type")
-                            if event_type == "message_start":
-                                message = chunk.get("message")
-                                if isinstance(message, Mapping):
-                                    usage = _usage_from_message_start(message.get("usage"))
-                            elif event_type == "content_block_start":
-                                block = chunk.get("content_block")
-                                if isinstance(block, Mapping) and block.get("type") == "tool_use":
-                                    index = int(chunk.get("index", 0))
-                                    builder = tool_builders.setdefault(
-                                        index, _AnthropicToolBuilder()
-                                    )
-                                    builder.id = _string_or_empty(block.get("id"))
-                                    builder.name = _string_or_empty(block.get("name"))
-                                    emitted_content = True
-                            elif event_type == "content_block_delta":
-                                delta = chunk.get("delta")
-                                if not isinstance(delta, Mapping):
-                                    continue
-                                delta_type = delta.get("type")
-                                if delta_type == "text_delta":
-                                    text = _string_or_empty(delta.get("text"))
-                                    if text:
-                                        emitted_content = True
-                                        content_parts.append(text)
-                                        yield ProviderTextDeltaEvent(delta=text)
-                                elif delta_type == "thinking_delta":
-                                    thinking = _string_or_empty(delta.get("thinking"))
-                                    if thinking:
-                                        emitted_content = True
-                                        thinking_parts.append(thinking)
-                                        yield ProviderThinkingDeltaEvent(delta=thinking)
-                                elif delta_type == "signature_delta":
-                                    signature = _string_or_empty(delta.get("signature"))
-                                    if signature:
-                                        thinking_signature = (
-                                            f"{thinking_signature or ''}{signature}"
-                                        )
-                                elif delta_type == "input_json_delta":
-                                    index = int(chunk.get("index", 0))
-                                    builder = tool_builders.setdefault(
-                                        index, _AnthropicToolBuilder()
-                                    )
-                                    builder.arguments_parts.append(
-                                        _string_or_empty(delta.get("partial_json"))
-                                    )
-                                    emitted_content = True
-                            elif event_type == "message_delta":
-                                delta = chunk.get("delta")
-                                if isinstance(delta, Mapping):
-                                    finish_reason = (
-                                        _string_or_empty(delta.get("stop_reason")) or finish_reason
-                                    )
-                                usage = _apply_message_delta_usage(usage, chunk.get("usage"))
-                            elif event_type == "error":
-                                error_type, message = _anthropic_stream_error_details(chunk)
-                                if (
-                                    not emitted_content
-                                    and self._should_retry(attempt)
-                                    and _retryable_anthropic_stream_error(error_type)
-                                ):
-                                    stream_error = chunk
-                                    break
-                                yield ProviderErrorEvent(
-                                    message=message,
-                                    data={"event": chunk, "attempts": attempt + 1},
-                                )
-                                return
-
-                        if stream_error is not None:
-                            error_type, _message = _anthropic_stream_error_details(stream_error)
-                            delay = retry_delay_seconds(
-                                attempt,
-                                max_delay_seconds=self._config.max_retry_delay_seconds,
-                            )
-                            yield provider_retry_event(
-                                attempt=attempt,
-                                max_retries=self._config.max_retries,
-                                delay_seconds=delay,
-                                reason=f"stream error ({error_type or 'unknown'})",
-                                data={"event": stream_error},
-                            )
-                            attempt += 1
-                            if not await wait_for_retry(delay, signal=signal):
-                                return
-                            continue
-
-                        tool_calls = [
-                            builder.build(index) for index, builder in sorted(tool_builders.items())
-                        ]
-                        for tool_call in tool_calls:
-                            yield ProviderToolCallEvent(tool_call=tool_call)
-
-                        content = assistant_content("".join(content_parts), tool_calls)
-                        if thinking_parts:
-                            content.insert(
-                                0,
-                                ThinkingContent(
-                                    thinking="".join(thinking_parts),
-                                    thinking_signature=thinking_signature,
-                                ),
-                            )
-                        yield ProviderResponseEndEvent(
-                            message=AssistantMessage(
-                                content=content,
-                                usage=usage or Usage(),
+            async def stream_attempt(attempt: RetryAttempt) -> AsyncIterator[ProviderEvent]:
+                async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    error = await check_response_status(
+                        response,
+                        lambda body: ProviderErrorEvent(
+                            message=provider_http_error_message(
+                                provider_name=self._config.provider_name,
+                                status_code=response.status_code,
+                                body=body,
+                                model=model,
                             ),
-                            finish_reason=finish_reason,
-                        )
-                        return
-                except httpx.HTTPError as exc:
-                    if not emitted_content and self._should_retry(attempt):
-                        delay = retry_delay_seconds(
-                            attempt,
-                            max_delay_seconds=self._config.max_retry_delay_seconds,
-                        )
-                        yield provider_retry_event(
-                            attempt=attempt,
-                            max_retries=self._config.max_retries,
-                            delay_seconds=delay,
-                            reason="network error",
                             data={
-                                "error": str(exc),
-                                "error_type": type(exc).__name__,
+                                "status_code": response.status_code,
+                                "body": body,
+                                "attempts": attempt.number + 1,
                             },
-                        )
-                        attempt += 1
-                        if not await wait_for_retry(delay, signal=signal):
-                            return
-                        continue
-                    yield ProviderErrorEvent(
-                        message=str(exc),
-                        data={"attempts": attempt + 1},
+                        ),
                     )
-                    return
+                    if error is not None:
+                        yield error
+                        return
+
+                    yield ProviderResponseStartEvent(model=model)
+                    content_parts: list[str] = []
+                    thinking_parts: list[str] = []
+                    thinking_signature: str | None = None
+                    tool_builders: dict[int, _AnthropicToolBuilder] = {}
+                    finish_reason: str | None = None
+                    usage: Usage | None = None
+
+                    async for line in response.aiter_lines():
+                        if signal is not None and signal.is_cancelled():
+                            return
+
+                        event = parse_sse_line(line)
+                        if event is None:
+                            continue
+                        chunk = loads_object(event)
+                        if chunk is None:
+                            yield ProviderErrorEvent(message="Provider returned invalid JSON chunk")
+                            return
+
+                        event_type = chunk.get("type")
+                        if event_type == "message_start":
+                            message = chunk.get("message")
+                            if isinstance(message, Mapping):
+                                usage = _usage_from_message_start(message.get("usage"))
+                        elif event_type == "content_block_start":
+                            block = chunk.get("content_block")
+                            if isinstance(block, Mapping) and block.get("type") == "tool_use":
+                                index = int(chunk.get("index", 0))
+                                builder = tool_builders.setdefault(index, _AnthropicToolBuilder())
+                                builder.id = _string_or_empty(block.get("id"))
+                                builder.name = _string_or_empty(block.get("name"))
+                                attempt.emitted_content = True
+                        elif event_type == "content_block_delta":
+                            delta = chunk.get("delta")
+                            if not isinstance(delta, Mapping):
+                                continue
+                            delta_type = delta.get("type")
+                            if delta_type == "text_delta":
+                                text = _string_or_empty(delta.get("text"))
+                                if text:
+                                    attempt.emitted_content = True
+                                    content_parts.append(text)
+                                    yield ProviderTextDeltaEvent(delta=text)
+                            elif delta_type == "thinking_delta":
+                                thinking = _string_or_empty(delta.get("thinking"))
+                                if thinking:
+                                    attempt.emitted_content = True
+                                    thinking_parts.append(thinking)
+                                    yield ProviderThinkingDeltaEvent(delta=thinking)
+                            elif delta_type == "signature_delta":
+                                signature = _string_or_empty(delta.get("signature"))
+                                if signature:
+                                    thinking_signature = f"{thinking_signature or ''}{signature}"
+                            elif delta_type == "input_json_delta":
+                                index = int(chunk.get("index", 0))
+                                builder = tool_builders.setdefault(index, _AnthropicToolBuilder())
+                                builder.arguments_parts.append(
+                                    _string_or_empty(delta.get("partial_json"))
+                                )
+                                attempt.emitted_content = True
+                        elif event_type == "message_delta":
+                            delta = chunk.get("delta")
+                            if isinstance(delta, Mapping):
+                                finish_reason = (
+                                    _string_or_empty(delta.get("stop_reason")) or finish_reason
+                                )
+                            usage = _apply_message_delta_usage(usage, chunk.get("usage"))
+                        elif event_type == "error":
+                            error_type, message = _anthropic_stream_error_details(chunk)
+                            stream_error = ProviderErrorEvent(
+                                message=message,
+                                data={"event": chunk, "attempts": attempt.number + 1},
+                            )
+                            if _retryable_anthropic_stream_error(error_type):
+                                raise RetryableFailure(
+                                    f"stream error ({error_type or 'unknown'})",
+                                    stream_error,
+                                    data={"event": chunk},
+                                )
+                            yield stream_error
+                            return
+
+                    tool_calls = [
+                        builder.build(index) for index, builder in sorted(tool_builders.items())
+                    ]
+                    for tool_call in tool_calls:
+                        yield ProviderToolCallEvent(tool_call=tool_call)
+
+                    content = assistant_content("".join(content_parts), tool_calls)
+                    if thinking_parts:
+                        content.insert(
+                            0,
+                            ThinkingContent(
+                                thinking="".join(thinking_parts),
+                                thinking_signature=thinking_signature,
+                            ),
+                        )
+                    yield ProviderResponseEndEvent(
+                        message=AssistantMessage(content=content, usage=usage or Usage()),
+                        finish_reason=finish_reason,
+                    )
+
+            async for event in stream_with_retries(
+                stream_attempt,
+                max_retries=self._config.max_retries,
+                max_retry_delay_seconds=self._config.max_retry_delay_seconds,
+                signal=signal,
+            ):
+                yield event
 
         return iterator()
 
@@ -379,11 +313,6 @@ class AnthropicProvider:
         if self._client is None:
             self._client = create_async_client(timeout=self._config.timeout_seconds)
         return self._client
-
-    def _should_retry(self, attempt: int, *, status_code: int | None = None) -> bool:
-        if attempt >= self._config.max_retries:
-            return False
-        return status_code is None or status_code in {408, 409, 425, 429} or status_code >= 500
 
 
 _TRANSIENT_ANTHROPIC_STREAM_ERROR_TYPES = frozenset(
@@ -417,14 +346,10 @@ class _AnthropicToolBuilder:
         self.arguments_parts: list[str] = []
 
     def build(self, index: int) -> ToolCall:
-        arguments_text = "".join(self.arguments_parts)
-        arguments = _loads_object(arguments_text) if arguments_text else {}
-        if arguments is None:
-            arguments = malformed_tool_arguments(arguments_text)
         return ToolCall(
             id=self.id or f"tool-call-{index}",
             name=self.name,
-            arguments=arguments,
+            arguments=tool_arguments("".join(self.arguments_parts)),
         )
 
 
@@ -760,26 +685,8 @@ def _anthropic_tool(
     return payload
 
 
-def _parse_sse_line(line: str) -> str | None:
-    if not line.startswith("data:"):
-        return None
-    return line.removeprefix("data:").strip()
-
-
-def _loads_object(text: str) -> dict[str, Any] | None:
-    try:
-        value = loads(text)
-    except ValueError:
-        return None
-    return value if isinstance(value, dict) else None
-
-
 def _string_or_empty(value: object) -> str:
     return value if isinstance(value, str) else ""
-
-
-def _int_or_none(value: object) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _usage_from_message_start(raw: object) -> Usage:
@@ -791,15 +698,15 @@ def _usage_from_message_start(raw: object) -> Usage:
     data = raw if isinstance(raw, Mapping) else {}
     cache_creation = data.get("cache_creation")
     cache_write_1h = (
-        _int_or_none(cache_creation.get("ephemeral_1h_input_tokens"))
+        int_or_none(cache_creation.get("ephemeral_1h_input_tokens"))
         if isinstance(cache_creation, Mapping)
         else None
     )
     usage = Usage(
-        input=_int_or_none(data.get("input_tokens")) or 0,
-        output=_int_or_none(data.get("output_tokens")) or 0,
-        cache_read=_int_or_none(data.get("cache_read_input_tokens")) or 0,
-        cache_write=_int_or_none(data.get("cache_creation_input_tokens")) or 0,
+        input=int_or_none(data.get("input_tokens")) or 0,
+        output=int_or_none(data.get("output_tokens")) or 0,
+        cache_read=int_or_none(data.get("cache_read_input_tokens")) or 0,
+        cache_write=int_or_none(data.get("cache_creation_input_tokens")) or 0,
         cache_write_1h=cache_write_1h,
     )
     usage.total_tokens = usage.input + usage.output + usage.cache_read + usage.cache_write
@@ -815,17 +722,17 @@ def _apply_message_delta_usage(usage: Usage | None, raw: object) -> Usage | None
     if not isinstance(raw, Mapping):
         return usage
     usage = usage or Usage()
-    if (value := _int_or_none(raw.get("input_tokens"))) is not None:
+    if (value := int_or_none(raw.get("input_tokens"))) is not None:
         usage.input = value
-    if (value := _int_or_none(raw.get("output_tokens"))) is not None:
+    if (value := int_or_none(raw.get("output_tokens"))) is not None:
         usage.output = value
-    if (value := _int_or_none(raw.get("cache_read_input_tokens"))) is not None:
+    if (value := int_or_none(raw.get("cache_read_input_tokens"))) is not None:
         usage.cache_read = value
-    if (value := _int_or_none(raw.get("cache_creation_input_tokens"))) is not None:
+    if (value := int_or_none(raw.get("cache_creation_input_tokens"))) is not None:
         usage.cache_write = value
     details = raw.get("output_tokens_details")
     if isinstance(details, Mapping):
-        thinking = _int_or_none(details.get("thinking_tokens"))
+        thinking = int_or_none(details.get("thinking_tokens"))
         if thinking is not None:
             usage.reasoning = thinking
     usage.total_tokens = usage.input + usage.output + usage.cache_read + usage.cache_write
