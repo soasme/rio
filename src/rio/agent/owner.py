@@ -93,6 +93,8 @@ class Owner:
         self.server: asyncio.Server | None = None
         self.temporary: tempfile.TemporaryDirectory | None = None
         self.socket_path = ""
+        # Set by every commit and by the worker task ending; cleared at the start of tick().
+        self.changed = asyncio.Event()
 
     async def __aenter__(self):
         if os.name != "posix":
@@ -101,6 +103,7 @@ class Owner:
         missing = {c["kind"] for c in cells} - {"note", *self.session.kinds}
         if missing:
             raise ValueError(f"Open this Session with its Cell kinds: {', '.join(sorted(missing))}")
+        self.session.store.on_commit = self.changed.set
         await self.recover()
         self.temporary = tempfile.TemporaryDirectory(prefix="rio-owner-")
         self.socket_path = str(Path(self.temporary.name) / "timer.sock")
@@ -111,6 +114,7 @@ class Owner:
         try:
             await self.stop_active()
         finally:
+            self.session.store.on_commit = None
             if self.server:
                 self.server.close()
                 await self.server.wait_closed()
@@ -333,7 +337,30 @@ class Owner:
         )
         return result
 
+    async def wait(self, until: float = math.inf, request: asyncio.Task | None = None) -> None:
+        """Wait for a commit, the worker task ending, the next timer or `until`, or `request`.
+
+        Wake sources: worker output and results, timer registrations and inbox input all
+        commit; timer deadlines and retry backoff are deadlines; the model call is `request`.
+        """
+        timers = (t["deadline"] for t in self.session.data["timers"].values() if not t["fired"])
+        deadline = min([until, *timers])
+        timeout = None if deadline == math.inf else max(0, deadline - time.time())
+        changed = asyncio.create_task(self.changed.wait())
+        try:
+            await asyncio.wait(
+                {changed, *([request] if request else [])},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            changed.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await changed
+
     async def tick(self) -> None:
+        # Anything that changes after this point wakes the next wait().
+        self.changed.clear()
         if self.task and self.task.done():
             await self.task
             self.task = self.process = self.identity = self.active_id = None
@@ -350,6 +377,7 @@ class Owner:
             self.identity = {"token": uuid.uuid4().hex}
             self.session.authorize(cell_id, self.identity)
             self.task = asyncio.create_task(self._execute(cell_id))
+            self.task.add_done_callback(lambda _: self.changed.set())
 
     async def _execute(self, cell_id: int) -> None:
         session = self.session

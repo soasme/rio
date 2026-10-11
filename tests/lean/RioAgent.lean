@@ -184,6 +184,26 @@ def fireTimer (fired expired : Bool) : Bool × Nat :=
 theorem expired_timer_is_not_redelivered : fireTimer (fireTimer false true).1 true = (true, 0) := by
   rfl
 
+/-- The run loop sleeps until its nearest deadline: the retry time or an unfired timer.
+   Commits and the model reply wake it earlier. -/
+def wakeAt (retry : Nat) : List Nat → Nat
+  | [] => retry
+  | t :: ts => min t (wakeAt retry ts)
+
+theorem wake_not_after_retry (retry : Nat) (timers : List Nat) : wakeAt retry timers ≤ retry := by
+  induction timers with
+  | nil => simp [wakeAt]
+  | cons t ts ih => exact Nat.le_trans (Nat.min_le_right _ _) ih
+
+theorem wake_not_after_timer (retry t : Nat) (timers : List Nat) (h : t ∈ timers) :
+    wakeAt retry timers ≤ t := by
+  induction timers with
+  | nil => cases h
+  | cons u us ih =>
+    cases h with
+    | head => exact Nat.min_le_left _ _
+    | tail _ h => exact Nat.le_trans (Nat.min_le_right _ _) (ih h)
+
 /-- Long output keeps its tail; the full output stays in a file. -/
 def keepTail (limit : Nat) (output : List α) : List α := output.drop (output.length - limit)
 

@@ -7,6 +7,7 @@ import fcntl
 import json
 import sqlite3
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -46,6 +47,8 @@ class Store:
                 "Session owner cannot open a hard-linked database: WAL paths differ"
             )
         self.failed = False
+        # Called after each durable commit, so an owner can wake on changes.
+        self.on_commit: Callable[[], None] | None = None
         self.commit_seconds: list[float] = []
         self.journal_bytes = 0
         started = time.monotonic()
@@ -98,6 +101,8 @@ class Store:
         self.commit_seconds.append(time.monotonic() - started)
         self.journal_bytes += len(raw.encode())
         self.sequence, self.data = seq, candidate
+        if self.on_commit:
+            self.on_commit()
         return seq
 
     def events(self, after: int = 0) -> list[dict]:
