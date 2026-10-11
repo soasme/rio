@@ -65,29 +65,6 @@ class ClosableModelProvider(ModelProvider, Protocol):
         ...
 
 
-class DeferredModelProvider:
-    """Construct a provider on its first request, allowing login before use.
-
-    Failed construction is not cached: a later request can use credentials
-    saved since the previous attempt. The factory should read current settings.
-    """
-
-    def __init__(self, factory: Callable[[], ClosableModelProvider]) -> None:
-        self._factory = factory
-        self._provider: ClosableModelProvider | None = None
-
-    async def stream_response(self, **kwargs):
-        if self._provider is None:
-            self._provider = self._factory()
-        async for event in self._provider.stream_response(**kwargs):
-            yield event
-
-    async def aclose(self) -> None:
-        if self._provider is not None:
-            provider, self._provider = self._provider, None
-            await provider.aclose()
-
-
 async def create_dynamic_model_provider(
     provider: DynamicProvider,
     *,

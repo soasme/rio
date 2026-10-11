@@ -12,7 +12,6 @@ from importlib.resources import files
 from pathlib import Path
 from typing import get_args
 
-import httpx
 import pytest
 
 import rio.coding.models_dev_store as store
@@ -27,18 +26,12 @@ from rio.coding.catalog_loader import (
     user_catalog_path,
 )
 from rio.coding.models_dev import (
-    MODELS_DEV_URL,
-    NVIDIA_MODELS_URL,
     bundled_models_dev_catalog_overlay,
     models_dev_catalog_document,
     models_dev_catalog_overlay,
     thinking_level_map_from_reasoning_options,
 )
-from rio.coding.models_dev_store import (
-    ModelsDevRefreshError,
-    cached_models_dev_catalog_document,
-    refresh_models_dev_catalog,
-)
+from rio.coding.models_dev_store import cached_models_dev_catalog_document
 from rio.coding.paths import RioPaths
 from rio.coding.provider_catalog import (
     BUILTIN_PROVIDER_CATALOG,
@@ -46,8 +39,6 @@ from rio.coding.provider_catalog import (
     ModelCostTier,
     ModelInput,
     ProviderApi,
-    builtin_provider_entry,
-    model_cost_for_input_tokens,
 )
 from rio.coding.provider_config import (
     ProviderSettings,
@@ -244,38 +235,18 @@ def test_missing_bundled_catalog_falls_back_silently(
 # ---------------------------------------------------------------------------
 
 
-def _source() -> dict[str, object]:
-    source = _fixture()
-    source["nvidia"] = {"id": "nvidia", "models": {}}
-    return source
-
-
-def _client(source: dict[str, object]) -> httpx.AsyncClient:
-    def handler(request: httpx.Request) -> httpx.Response:
-        if str(request.url) == MODELS_DEV_URL:
-            return httpx.Response(200, json=source, headers={"etag": '"fixture"'})
-        if str(request.url) == NVIDIA_MODELS_URL:
-            return httpx.Response(200, json={"data": []})
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
-
-
-async def test_refresh_persists_catalog_and_effective_catalog_uses_newer_cache(
+def test_effective_catalog_uses_newer_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths = RioPaths(home=tmp_path / ".rio")
-    async with _client(_source()) as client:
-        result = await refresh_models_dev_catalog(
-            paths=paths,
-            force=True,
-            client=client,
-            now=1000.0,
-        )
-
-    assert result.refreshed
-    assert result.model_count > 0
-    assert result.cache_path.exists()
+    document = models_dev_catalog_document(
+        _fixture(), builtin_source_catalog(), generated_at=1_000_000
+    )
+    paths.models_store_path.parent.mkdir(parents=True)
+    paths.models_store_path.write_text(
+        json.dumps({"schema_version": 1, "checked_at": 1000.0, "catalog": document}),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(
         store,
         "bundled_models_dev_catalog_document",
@@ -290,84 +261,13 @@ async def test_refresh_persists_catalog_and_effective_catalog_uses_newer_cache(
     assert "example/new-tool-model" in huggingface.models
 
 
-async def test_refresh_revalidates_with_etag_and_preserves_cached_body(tmp_path: Path) -> None:
-    paths = RioPaths(home=tmp_path / ".rio")
-    async with _client(_source()) as client:
-        await refresh_models_dev_catalog(paths=paths, force=True, client=client, now=1000.0)
-    result_path = paths.home / "models-store.json"
-    before_catalog = json.loads(result_path.read_text(encoding="utf-8"))["catalog"]
-
-    def not_modified(request: httpx.Request) -> httpx.Response:
-        assert request.headers["if-none-match"] == '"fixture"'
-        return httpx.Response(304)
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(not_modified)) as client:
-        result = await refresh_models_dev_catalog(
-            paths=paths,
-            force=True,
-            client=client,
-            now=2000.0,
-        )
-
-    after = json.loads(result_path.read_text(encoding="utf-8"))
-    assert result.not_modified
-    assert after["checked_at"] == 2000.0
-    assert after["catalog"] == before_catalog
-
-
-async def test_offline_mode_uses_bundled_catalog_without_network(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bundled_models_dev_catalog: None
-) -> None:
-    monkeypatch.setenv("RIO_OFFLINE", "1")
-
-    def no_network(_request: httpx.Request) -> httpx.Response:
-        raise AssertionError("offline mode should avoid network")
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(no_network)) as client:
-        result = await refresh_models_dev_catalog(
-            paths=RioPaths(home=tmp_path / ".rio"),
-            force=True,
-            client=client,
-        )
-
-    assert not result.refreshed
-    assert result.model_count > 0
-
-
-async def test_fresh_cache_skips_network_and_failed_force_preserves_it(tmp_path: Path) -> None:
-    paths = RioPaths(home=tmp_path / ".rio")
-    async with _client(_source()) as client:
-        first = await refresh_models_dev_catalog(paths=paths, force=True, client=client, now=1000.0)
-    cached_text = first.cache_path.read_text(encoding="utf-8")
-
-    def no_network(_request: httpx.Request) -> httpx.Response:
-        raise AssertionError("fresh cache should avoid network")
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(no_network)) as client:
-        skipped = await refresh_models_dev_catalog(
-            paths=paths,
-            client=client,
-            now=1001.0,
-        )
-    assert not skipped.refreshed
-
-    def failure(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(503)
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(failure)) as client:
-        with pytest.raises(ModelsDevRefreshError, match="503"):
-            await refresh_models_dev_catalog(
-                paths=paths,
-                force=True,
-                client=client,
-                now=2000.0,
-            )
-    assert first.cache_path.read_text(encoding="utf-8") == cached_text
-
-
 # ---------------------------------------------------------------------------
 # provider_catalog / catalog_loader
 # ---------------------------------------------------------------------------
+
+
+def builtin_provider_entry(name: str):
+    return next((entry for entry in builtin_catalog() if entry.name == name), None)
 
 
 def test_bundled_models_dev_catalog_matches_schema(bundled_models_dev_catalog: None) -> None:
@@ -784,18 +684,10 @@ def test_builtin_minimax_m3_has_tiered_pricing() -> None:
         metadata = entry.model_metadata["MiniMax-M3"]
         assert metadata.input == ("text", "image")
         assert metadata.cost == base_cost
-        assert model_cost_for_input_tokens(metadata, 512_000) == base_cost
-        assert model_cost_for_input_tokens(metadata, 512_001) == long_context_cost
-
-
-@pytest.mark.parametrize("input_tokens", [-1, True])
-def test_model_cost_for_input_tokens_rejects_invalid_count(input_tokens: int) -> None:
-    entry = builtin_provider_entry("minimax")
-    assert entry is not None
-    metadata = entry.model_metadata["MiniMax-M3"]
-
-    with pytest.raises(ValueError, match="non-negative integer"):
-        model_cost_for_input_tokens(metadata, input_tokens)
+        assert metadata.cost_tiers[0].max_input_tokens == 512_000
+        assert metadata.cost_tiers[0].cost == base_cost
+        assert metadata.cost_tiers[1].max_input_tokens is None
+        assert metadata.cost_tiers[1].cost == long_context_cost
 
 
 def test_builtin_catalog_entries_are_internally_consistent() -> None:
@@ -942,7 +834,7 @@ cost_tiers = [
     )
     entry = next(e for e in effective_catalog(paths) if e.name == "minimax")
     metadata = entry.model_metadata["MiniMax-M3"]
-    assert model_cost_for_input_tokens(metadata, 400_000) == {
+    assert metadata.cost_tiers[0].cost == {
         "input": 0.2,
         "output": 1.0,
         "cacheRead": 0.04,
@@ -954,14 +846,11 @@ cost_tiers = [
         "cacheRead": 0.1,
         "cacheWrite": 0,
     }
-    assert model_cost_for_input_tokens(metadata, 400_001) == long_context_cost
+    assert metadata.cost_tiers[1].cost == long_context_cost
 
     save_user_catalog_entries([entry], paths)
     reloaded = next(e for e in effective_catalog(paths) if e.name == "minimax")
-    assert (
-        model_cost_for_input_tokens(reloaded.model_metadata["MiniMax-M3"], 400_001)
-        == long_context_cost
-    )
+    assert reloaded.model_metadata["MiniMax-M3"].cost_tiers[1].cost == long_context_cost
 
 
 def test_user_catalog_cost_tier_accepts_one_hour_cache_write_rate(tmp_path: Path) -> None:
@@ -980,7 +869,7 @@ cost_tiers = [
     )
     entry = next(e for e in effective_catalog(paths) if e.name == "minimax")
     metadata = entry.model_metadata["MiniMax-M3"]
-    assert model_cost_for_input_tokens(metadata, 400_001) == {
+    assert metadata.cost_tiers[1].cost == {
         "input": 0.5,
         "output": 2.0,
         "cacheRead": 0.1,
@@ -988,7 +877,7 @@ cost_tiers = [
         "cacheWrite1h": 1.0,
     }
     # Tiers without the key omit it, so billing can fall back to cacheWrite.
-    assert model_cost_for_input_tokens(metadata, 400_000) == {
+    assert metadata.cost_tiers[0].cost == {
         "input": 0.2,
         "output": 1.0,
         "cacheRead": 0.04,

@@ -20,16 +20,6 @@ THINKING_LEVELS: tuple[ThinkingLevel, ...] = (
 )
 DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium"
 
-THINKING_LEVEL_DESCRIPTIONS: dict[ThinkingLevel, str] = {
-    "off": "No reasoning",
-    "minimal": "Very brief reasoning",
-    "low": "Light reasoning",
-    "medium": "Moderate reasoning",
-    "high": "Deep reasoning",
-    "xhigh": "Very deep reasoning",
-    "max": "Maximum reasoning",
-}
-
 
 def normalize_thinking_level(value: str | None) -> ThinkingLevel:
     """Return a valid rio thinking level or raise a user-facing error."""
@@ -75,19 +65,3 @@ def anthropic_thinking_budget_for_level(level: str | None) -> int | None:
         "xhigh": 16384,
         "max": 32768,
     }[normalized]
-
-
-def next_thinking_level(
-    current: str | None,
-    *,
-    available: tuple[ThinkingLevel, ...] = THINKING_LEVELS,
-) -> ThinkingLevel:
-    """Return the next thinking level in a stable cycle."""
-    if not available:
-        return DEFAULT_THINKING_LEVEL
-    try:
-        normalized_current = normalize_thinking_level(current)
-        index = available.index(normalized_current)
-    except ValueError:
-        return available[0]
-    return available[(index + 1) % len(available)]

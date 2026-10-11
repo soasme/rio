@@ -17,13 +17,10 @@ from pathlib import Path
 from typing import IO, Literal
 
 from rio.coding.paths import RioPaths
-from rio.coding.prompt_templates import is_prompt_template_candidate
-from rio.coding.skills import is_skill_candidate
 
 TrustDefault = Literal["ask", "always", "never"]
 TrustDecision = Literal["trusted", "untrusted"]
 TrustOverride = Literal["approve", "decline"]
-TrustScope = Literal["exact", "parent", "run"]
 TrustSource = Literal["override", "empty", "extension", "saved", "default", "ui"]
 TrustChoice = Literal["trust-exact", "trust-parent", "trust-run", "decline-exact", "decline-run"]
 
@@ -37,6 +34,7 @@ _RESOURCE_CATEGORIES = (
     "system-prompts",
     "themes",
 )
+_RESERVED_TEMPLATE_NAMES = frozenset({"prompts", "skills", "tools", "reload"})
 
 
 class ProjectTrustError(RuntimeError):
@@ -170,6 +168,14 @@ def canonicalize_project_path(path: Path, *, base: Path | None = None) -> Canoni
     return CanonicalProjectPath(resolved)
 
 
+def _is_skill_candidate(path: Path) -> bool:
+    return path.name == "SKILL.md" and (path.is_file() or path.is_symlink())
+
+
+def _is_prompt_template_candidate(path: Path) -> bool:
+    return path.suffix.lower() == ".md" and path.stem.casefold() not in _RESERVED_TEMPLATE_NAMES
+
+
 class ProtectedResourceDetector:
     """Detect protected candidates using names and file metadata only."""
 
@@ -187,14 +193,14 @@ class ProtectedResourceDetector:
                 "skills",
                 root / namespace / "skills",
                 "*/SKILL.md",
-                predicate=is_skill_candidate,
+                predicate=_is_skill_candidate,
             )
             self._glob(
                 found,
                 "prompts",
                 root / namespace / "prompts",
                 "*.md",
-                predicate=is_prompt_template_candidate,
+                predicate=_is_prompt_template_candidate,
             )
         self._glob(found, "themes", root / ".rio" / "themes", "*.json")
         self._file(found, "system-prompts", root / ".rio" / "SYSTEM.md")
@@ -646,23 +652,6 @@ class ProjectTrustCoordinator:
                     "trusted" if result.trusted else "untrusted",
                 )
         self._cache[cwd.value] = result
-
-
-def format_trust_diagnostic(
-    summary: ProtectedResourceSummary, resolution: ProjectTrustResolution
-) -> str:
-    """Return one bounded, content-free decision diagnostic."""
-    categories = (
-        ", ".join(f"{category}={summary.counts[category]}" for category in summary.categories)
-        or "none"
-    )
-    scope = f" via {resolution.saved_path.value}" if resolution.saved_path is not None else ""
-    outcome = "trusted" if resolution.trusted else "untrusted"
-    return (
-        f"Project inputs for {summary.cwd.value}: {outcome} "
-        f"(source={resolution.source}{scope}; {categories}). "
-        "Project trust is an input-loading guard, not a sandbox."
-    )
 
 
 def _lock(handle: IO[bytes]) -> None:

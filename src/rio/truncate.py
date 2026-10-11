@@ -46,68 +46,6 @@ def format_size(bytes_count: int) -> str:
     return f"{bytes_count / (1024 * 1024):.1f}MB"
 
 
-def truncate_head(
-    content: str,
-    *,
-    max_lines: int = DEFAULT_MAX_OUTPUT_LINES,
-    max_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
-) -> TruncationResult:
-    lines = _split_lines_for_counting(content)
-    total_lines = len(lines)
-    total_bytes = len(content.encode())
-    if total_lines <= max_lines and total_bytes <= max_bytes:
-        return _truncation_result(
-            content,
-            False,
-            None,
-            total_lines,
-            total_bytes,
-            total_lines,
-            total_bytes,
-            max_lines=max_lines,
-            max_bytes=max_bytes,
-        )
-
-    first_line_bytes = len(lines[0].encode()) if lines else 0
-    if first_line_bytes > max_bytes:
-        return _truncation_result(
-            "",
-            True,
-            "bytes",
-            total_lines,
-            total_bytes,
-            0,
-            0,
-            first_line=True,
-            max_lines=max_lines,
-            max_bytes=max_bytes,
-        )
-
-    output_lines: list[str] = []
-    output_bytes = 0
-    truncated_by = "lines"
-    for index, line in enumerate(lines[:max_lines]):
-        line_bytes = len(line.encode()) + (1 if index > 0 else 0)
-        if output_bytes + line_bytes > max_bytes:
-            truncated_by = "bytes"
-            break
-        output_lines.append(line)
-        output_bytes += line_bytes
-
-    output = "\n".join(output_lines)
-    return _truncation_result(
-        output,
-        True,
-        truncated_by,
-        total_lines,
-        total_bytes,
-        len(output_lines),
-        len(output.encode()),
-        max_lines=max_lines,
-        max_bytes=max_bytes,
-    )
-
-
 def truncate_tail(
     content: str,
     *,

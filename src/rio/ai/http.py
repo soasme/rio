@@ -67,15 +67,3 @@ def create_async_client(**kwargs: Any) -> httpx.AsyncClient:
 
     with normalized_proxy_environment():
         return httpx.AsyncClient(**kwargs)
-
-
-def get_json(url: str, *, timeout: float, follow_redirects: bool = False) -> dict[str, object]:
-    """Fetch a JSON object with Rio's proxy normalization applied."""
-
-    with normalized_proxy_environment():
-        response = httpx.get(url, timeout=timeout, follow_redirects=follow_redirects)
-    response.raise_for_status()
-    data = response.json()
-    if not isinstance(data, dict):
-        raise ValueError("HTTP response must be a JSON object")
-    return data

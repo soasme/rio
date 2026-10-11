@@ -46,7 +46,7 @@ from rio.coding.oauth_github_copilot import (
     normalize_github_domain,
     refresh_github_copilot_token,
 )
-from rio.coding.oauth_registry import get_oauth_provider, oauth_provider_ids
+from rio.coding.oauth_registry import get_oauth_provider
 from rio.coding.oauth_types import (
     OAuthDeviceCodeInfo,
     OAuthLoginCallbacks,
@@ -488,7 +488,8 @@ async def test_device_poll_slow_down_and_cancel() -> None:
 
 
 def test_builtin_oauth_registry_matches_supported_subscription_providers() -> None:
-    assert oauth_provider_ids() == {"anthropic", "github-copilot", "openai-codex"}
+    for provider_id in ("anthropic", "github-copilot", "openai-codex"):
+        assert get_oauth_provider(provider_id) is not None
     anthropic = get_oauth_provider("anthropic")
     assert anthropic is not None
     assert anthropic.name == "Anthropic (Claude Pro/Max)"

@@ -24,7 +24,6 @@ from rio.coding.oauth_types import (
 
 GITHUB_COPILOT_OAUTH_PROVIDER = "github-copilot"
 GITHUB_COPILOT_CLIENT_ID = "Iv1.b507a08c87ecfe98"
-GITHUB_COPILOT_API_VERSION = "2026-06-01"
 GITHUB_COPILOT_TOKEN_SKEW_MS = 5 * 60 * 1000
 GITHUB_COPILOT_HEADERS = {
     "User-Agent": "GitHubCopilotChat/0.35.0",

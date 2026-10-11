@@ -1,7 +1,6 @@
 """Tests for dynamic extension provider contracts and registry lifecycle."""
 
 import asyncio
-import json
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -11,7 +10,6 @@ import httpx
 import pytest
 
 from rio.ai import OpenAICompatibleProvider, UserMessage
-from rio.coding.diagnostics import AgentCallDiagnosticContext, AgentCallDiagnosticLogger
 from rio.coding.extensions import (
     DynamicProvider,
     DynamicProviderError,
@@ -273,8 +271,7 @@ async def test_adversarial_custom_auth_is_absent_from_reprs_and_diagnostics() ->
 
 
 @pytest.mark.parametrize("error_type", [RuntimeError, ProviderAuthError])
-async def test_runtime_creation_sanitizes_custom_auth_exceptions_and_diagnostics(
-    tmp_path: Path,
+async def test_runtime_creation_sanitizes_custom_auth_exceptions(
     error_type: type[BaseException],
 ) -> None:
     secret = "runtime-auth-super-secret"
@@ -297,23 +294,8 @@ async def test_runtime_creation_sanitizes_custom_auth_exceptions_and_diagnostics
         )
 
     error = exc_info.value
-    logger = AgentCallDiagnosticLogger(tmp_path / "diagnostics.jsonl")
-    logger.log_exception(
-        context=AgentCallDiagnosticContext(
-            provider_name="local",
-            model="model",
-            cwd=tmp_path,
-            session_id=None,
-            run_id="run-1",
-        ),
-        phase="runtime-creation",
-        exc=error,
-    )
-    diagnostic = json.loads(logger.path.read_text(encoding="utf-8"))
-
     assert secret not in str(error)
     assert secret not in repr(error)
-    assert secret not in repr(diagnostic)
 
 
 async def test_runtime_creation_preserves_required_auth_guidance() -> None:
@@ -1225,7 +1207,6 @@ async def test_setup_failure_removes_provider_layers(tmp_path: Path) -> None:
     paths = RioResourcePaths(
         root=tmp_path / "rio",
         cwd=tmp_path / "project",
-        agents_root=tmp_path / "agents",
     )
     extension = tmp_path / "broken_provider.py"
     extension.write_text(
@@ -1257,7 +1238,6 @@ async def test_same_name_extension_paths_shadow_and_restore_exact_provider_layer
     paths = RioResourcePaths(
         root=tmp_path / "rio",
         cwd=tmp_path / "project",
-        agents_root=tmp_path / "agents",
     )
     first_path = tmp_path / "first" / "shared.py"
     second_path = tmp_path / "second" / "shared.py"
@@ -1292,7 +1272,6 @@ async def test_same_name_failed_setup_preserves_first_exact_provider_layer(
     paths = RioResourcePaths(
         root=tmp_path / "rio",
         cwd=tmp_path / "project",
-        agents_root=tmp_path / "agents",
     )
     first_path = tmp_path / "first" / "shared.py"
     second_path = tmp_path / "second" / "shared.py"
@@ -1324,7 +1303,6 @@ async def test_reloading_same_exact_extension_source_keeps_first_registration(
     paths = RioResourcePaths(
         root=tmp_path / "rio",
         cwd=tmp_path / "project",
-        agents_root=tmp_path / "agents",
     )
     extension_path = tmp_path / "shared.py"
     extension_path.write_text(_provider_extension_body("first"), encoding="utf-8")
@@ -1356,7 +1334,6 @@ async def test_extension_api_registers_provider_and_reload_retires_generation(
     paths = RioResourcePaths(
         root=tmp_path / "rio",
         cwd=tmp_path / "project",
-        agents_root=tmp_path / "agents",
     )
     extension = tmp_path / "dynamic_provider.py"
     extension.write_text(

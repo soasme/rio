@@ -55,18 +55,9 @@ async def login_provider(name, *, method=None, callbacks=None, api_key=None):
     else:
         secret = api_key
         if secret is None:
-            secret = await anyio.to_thread.run_sync(
-                lambda: getpass(f"API key for {name}: ")
-            )
+            secret = await anyio.to_thread.run_sync(lambda: getpass(f"API key for {name}: "))
         if not secret.strip():
             raise ValueError("API key cannot be empty")
         store.set_api_key(key, secret)
     upsert_saved_provider(replace(provider, credential_name=key), set_default=True)
     return f"Logged in to {name}."
-
-
-def logout_provider(name):
-    """Remove only this provider's stored credentials."""
-    provider = _provider(name)
-    FileCredentialStore().delete(provider.credential_name or provider.name)
-    return f"Logged out of {name}."

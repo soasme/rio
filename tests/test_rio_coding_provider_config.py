@@ -6,17 +6,6 @@ to `rio` throughout (module paths, `TauPaths` -> `RioPaths`, `.tau` -> `.rio`,
 env var prefixes). Provider ids, model ids, base URLs, and thinking-mode values
 are kept exactly as tau has them since rio's bundled catalog.toml is an
 unmodified copy of tau's.
-
-test_cross_provider_history.py from tau is deliberately NOT ported here: it
-tests translating a message transcript between provider wire formats, which is
-entirely rio.ai's concern (already ported) and has nothing to do with
-provider_config/provider_runtime. rio.coding also has no transcript to
-translate in the first place -- a provider swap only carries the
-provider-neutral context (see `CodingSession.set_provider`
-in rio/coding/session.py). The replacement here,
-`test_switching_provider_and_model_preserves_configuration_and_credentials`,
-asserts that swapping the active provider/model leaves every other provider's
-settings and stored credentials untouched and still resolvable.
 """
 
 from __future__ import annotations
@@ -29,16 +18,11 @@ from typing import cast
 
 import pytest
 
+import rio.coding.oauth_registry as oauth_registry
 import rio.coding.provider_config as provider_config
 from rio.ai import AnthropicProvider, OpenAICodexProvider, OpenAICompatibleProvider
 from rio.coding.credentials import FileCredentialStore, OAuthCredential
-from rio.coding.oauth_registry import (
-    get_oauth_provider,
-    oauth_provider_ids,
-    register_oauth_provider,
-    reset_oauth_providers,
-    unregister_oauth_provider,
-)
+from rio.coding.oauth_registry import get_oauth_provider
 from rio.coding.oauth_types import OAuthLoginCallbacks, OAuthProvider, OAuthRuntimeAuth
 from rio.coding.paths import RioPaths
 from rio.coding.provider_catalog import ModelCostTier
@@ -61,14 +45,10 @@ from rio.coding.provider_config import (
     provider_model_supports_images,
     provider_settings_from_json,
     provider_thinking_levels,
-    provider_thinking_unavailable_reason,
     resolve_provider_selection,
     resolve_startup_thinking_level,
-    save_default_provider_model,
     save_provider_settings,
-    set_default_provider_model,
-    set_provider_thinking_level,
-    upsert_openai_compatible_provider,
+    upsert_provider,
 )
 from rio.coding.provider_runtime import (
     OAuthRuntimeCredentialResolver,
@@ -225,12 +205,7 @@ def test_builtin_openai_declares_model_scoped_thinking_capabilities() -> None:
         "xhigh",
     )
     assert provider_default_thinking_level(openai, model="gpt-5.5") == "medium"
-    assert provider_thinking_unavailable_reason(openai, model="gpt-5.5") is None
     assert provider_thinking_levels(openai, model="gpt-4.1") == ()
-    assert (
-        provider_thinking_unavailable_reason(openai, model="gpt-4.1")
-        == "openai:gpt-4.1 is not a reasoning model"
-    )
     assert provider_thinking_levels(openrouter, model="openai/gpt-5.5") == (
         "off",
         "minimal",
@@ -239,17 +214,12 @@ def test_builtin_openai_declares_model_scoped_thinking_capabilities() -> None:
         "high",
         "xhigh",
     )
-    assert provider_thinking_unavailable_reason(openrouter, model="openai/gpt-5.5") is None
     assert provider_thinking_levels(openrouter, model="anthropic/claude-sonnet-4.6") == (
         "off",
         "minimal",
         "low",
         "medium",
         "high",
-    )
-    assert (
-        provider_thinking_unavailable_reason(openrouter, model="anthropic/claude-sonnet-4.6")
-        is None
     )
     assert provider_thinking_levels(huggingface, model="MiniMaxAI/MiniMax-M2.7") == (
         "off",
@@ -258,7 +228,6 @@ def test_builtin_openai_declares_model_scoped_thinking_capabilities() -> None:
         "medium",
         "high",
     )
-    assert provider_thinking_unavailable_reason(huggingface, model="MiniMaxAI/MiniMax-M2.7") is None
     assert provider_thinking_levels(codex, model="gpt-5.5") == (
         "off",
         "minimal",
@@ -267,14 +236,12 @@ def test_builtin_openai_declares_model_scoped_thinking_capabilities() -> None:
         "high",
         "xhigh",
     )
-    assert provider_thinking_unavailable_reason(codex, model="gpt-5.5") is None
     assert provider_thinking_levels(anthropic, model="claude-sonnet-4-6") == (
         "off",
         "low",
         "medium",
         "high",
     )
-    assert provider_thinking_unavailable_reason(anthropic, model="claude-sonnet-4-6") is None
     assert provider_thinking_levels(anthropic, model="claude-haiku-4-5") == (
         "off",
         "minimal",
@@ -752,7 +719,7 @@ def test_provider_settings_parses_scoped_models() -> None:
     )
 
 
-def test_upsert_openai_compatible_provider_replaces_and_sets_default() -> None:
+def test_upsert_provider_replaces_and_sets_default() -> None:
     settings = ProviderSettings(
         scoped_models=(ScopedModelConfig(provider="openai", model="gpt-5.5"),)
     )
@@ -764,8 +731,8 @@ def test_upsert_openai_compatible_provider_replaces_and_sets_default() -> None:
         default_model="qwen",
     )
 
-    updated = upsert_openai_compatible_provider(settings, provider, set_default=True)
-    replaced = upsert_openai_compatible_provider(
+    updated = upsert_provider(settings, provider, set_default=True)
+    replaced = upsert_provider(
         updated,
         OpenAICompatibleProviderConfig(
             name="local",
@@ -969,27 +936,6 @@ def test_resolve_provider_selection_rejects_model_not_declared_for_provider() ->
         match="Model is not configured for provider local: llama",
     ):
         resolve_provider_selection(settings, model="llama")
-
-
-def test_set_default_provider_model_rejects_model_not_declared_for_provider() -> None:
-    settings = ProviderSettings(
-        default_provider="local",
-        providers=(
-            OpenAICompatibleProviderConfig(
-                name="local",
-                base_url="http://localhost:11434/v1",
-                api_key_env="LOCAL_API_KEY",
-                models=("qwen",),
-                default_model="qwen",
-            ),
-        ),
-    )
-
-    with pytest.raises(
-        ProviderConfigError,
-        match="Model is not configured for provider local: llama",
-    ):
-        set_default_provider_model(settings, provider_name="local", model="llama")
 
 
 # ---------------------------------------------------------------------------
@@ -1535,31 +1481,6 @@ def test_provider_settings_from_json_loads_custom_thinking_capabilities() -> Non
     assert provider_default_thinking_level(provider, model="reasoner") == "low"
     assert provider.thinking_defaults == {"reasoner": "high"}
     assert provider.to_json()["thinking_parameter"] == "reasoning_effort"
-
-
-def test_set_provider_thinking_level_updates_preference() -> None:
-    provider = OpenAICompatibleProviderConfig(
-        name="local",
-        models=("reasoner",),
-        default_model="reasoner",
-        thinking_levels=("low", "high"),
-        thinking_models=("reasoner",),
-        thinking_default="low",
-        thinking_parameter="reasoning_effort",
-    )
-    settings = ProviderSettings(default_provider="local", providers=(provider,))
-
-    updated = set_provider_thinking_level(
-        settings,
-        provider_name="local",
-        model="reasoner",
-        thinking_level="high",
-    )
-
-    assert updated.get_provider("local").thinking_defaults == {"reasoner": "high"}
-    assert updated.to_json()["provider_preferences"]["local"]["thinking_defaults"] == {
-        "reasoner": "high"
-    }
 
 
 def test_provider_settings_from_json_loads_openai_codex_provider() -> None:
@@ -2387,7 +2308,9 @@ async def test_openai_codex_credential_resolver_refreshes_expired_credentials(
 # ---------------------------------------------------------------------------
 
 
-async def test_runtime_oauth_resolver_refreshes_and_persists_atomically(tmp_path: Path) -> None:
+async def test_runtime_oauth_resolver_refreshes_and_persists_atomically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     class FakeOAuthProvider:
         id = "github-copilot"
         name = "Fake GitHub Copilot"
@@ -2416,13 +2339,10 @@ async def test_runtime_oauth_resolver_refreshes_and_persists_atomically(tmp_path
         OAuthCredential(access="old", refresh="github", expires=1),
     )
     provider = provider_config_from_catalog_entry("github-copilot")
-    fake = cast(OAuthProvider, FakeOAuthProvider())
-    register_oauth_provider(fake)
-    try:
-        auth = await OAuthRuntimeCredentialResolver(provider, credential_store=store)()
-    finally:
-        unregister_oauth_provider("github-copilot")
-        reset_oauth_providers()
+    monkeypatch.setitem(
+        oauth_registry._registry, "github-copilot", cast(OAuthProvider, FakeOAuthProvider())
+    )
+    auth = await OAuthRuntimeCredentialResolver(provider, credential_store=store)()
 
     assert auth.api_key == "new-access"
     assert auth.base_url == "https://api.business.githubcopilot.com"
@@ -2432,7 +2352,9 @@ async def test_runtime_oauth_resolver_refreshes_and_persists_atomically(tmp_path
     assert not list(tmp_path.glob(".credentials.json.*"))
 
 
-async def test_runtime_oauth_resolver_spends_a_refresh_token_once(tmp_path: Path) -> None:
+async def test_runtime_oauth_resolver_spends_a_refresh_token_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Concurrent calls must not both spend the same rotating refresh token."""
     refreshes: list[str] = []
 
@@ -2469,12 +2391,10 @@ async def test_runtime_oauth_resolver_spends_a_refresh_token_once(tmp_path: Path
     )
     provider = provider_config_from_catalog_entry("github-copilot")
     resolver = OAuthRuntimeCredentialResolver(provider, credential_store=store)
-    register_oauth_provider(cast(OAuthProvider, RotatingOAuthProvider()))
-    try:
-        results = await asyncio.gather(resolver(), resolver(), resolver())
-    finally:
-        unregister_oauth_provider("github-copilot")
-        reset_oauth_providers()
+    monkeypatch.setitem(
+        oauth_registry._registry, "github-copilot", cast(OAuthProvider, RotatingOAuthProvider())
+    )
+    results = await asyncio.gather(resolver(), resolver(), resolver())
 
     assert refreshes == ["refresh-1"]
     assert [auth.api_key for auth in results] == ["access-2"] * 3
@@ -2515,76 +2435,6 @@ def test_refresh_locks_are_not_shared_between_event_loops() -> None:
 
 
 def test_builtin_oauth_registry_matches_supported_subscription_providers() -> None:
-    assert oauth_provider_ids() == {"anthropic", "github-copilot", "openai-codex"}
     anthropic = get_oauth_provider("anthropic")
     assert anthropic is not None
     assert anthropic.name == "Anthropic (Claude Pro/Max)"
-
-
-# ---------------------------------------------------------------------------
-# Provider/model switch preserves configuration and credentials
-#
-# Replaces tau's test_cross_provider_history.py, which tested translating a
-# message transcript between provider wire formats (an rio.ai concern with no
-# rio.coding transcript to translate -- see module docstring above).
-# ---------------------------------------------------------------------------
-
-
-def test_switching_provider_and_model_preserves_configuration_and_credentials(
-    tmp_path: Path,
-) -> None:
-    paths = RioPaths(home=tmp_path / ".rio")
-    credentials = FileCredentialStore(tmp_path / ".rio" / "credentials.json")
-    credentials.set_api_key("openai", "sk-openai-test")
-    credentials.set_oauth(
-        "anthropic",
-        OAuthCredential(access="anthropic-access", refresh="anthropic-refresh", expires=1),
-    )
-
-    settings = load_provider_settings(paths)
-    settings = save_default_provider_model(
-        provider_name="openai",
-        model="gpt-5.4",
-        paths=paths,
-        fallback_settings=settings,
-    )
-
-    # Switch the active provider/model to anthropic.
-    switched = save_default_provider_model(
-        provider_name="anthropic",
-        model="claude-sonnet-4-6",
-        paths=paths,
-    )
-
-    assert switched.default_provider == "anthropic"
-    assert switched.get_provider("anthropic").default_model == "claude-sonnet-4-6"
-
-    # The provider we switched away from keeps its own configuration exactly
-    # as it was -- switching carries no transcript, so there is nothing to
-    # translate or lose for either provider.
-    openai_after_switch = switched.get_provider("openai")
-    assert openai_after_switch.default_model == "gpt-5.4"
-
-    # Credentials for both providers -- including the one no longer active --
-    # remain intact and independently resolvable.
-    openai_config = openai_compatible_config_from_provider(
-        openai_after_switch,
-        credential_reader=credentials,
-    )
-    assert openai_config.api_key == "sk-openai-test"
-
-    anthropic_provider = switched.get_provider("anthropic")
-    assert isinstance(anthropic_provider, AnthropicProviderConfig)
-    anthropic_credential = credentials.get_oauth("anthropic")
-    assert anthropic_credential is not None
-    assert anthropic_credential.access == "anthropic-access"
-
-    # Switching back and forth again is idempotent for the untouched provider.
-    switched_back = save_default_provider_model(
-        provider_name="openai",
-        model="gpt-5.4",
-        paths=paths,
-    )
-    assert switched_back.default_provider == "openai"
-    assert switched_back.get_provider("anthropic").default_model == "claude-sonnet-4-6"
-    assert credentials.get_oauth("anthropic") == anthropic_credential

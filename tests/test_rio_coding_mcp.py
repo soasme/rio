@@ -40,7 +40,7 @@ STDIO = {"command": sys.executable, "args": [str(FAKE_SERVER)]}
 
 @pytest.fixture
 def paths(tmp_path) -> RioPaths:
-    return RioPaths(home=tmp_path / "home" / ".rio", agents_home=tmp_path / "home" / ".agents")
+    return RioPaths(home=tmp_path / "home" / ".rio")
 
 
 @pytest.fixture

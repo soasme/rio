@@ -20,7 +20,6 @@ from rio.ai.env import (
     AnthropicConfig,
     OpenAICompatibleConfig,
     RuntimeProviderAuth,
-    openai_compatible_config_from_env,
 )
 from rio.ai.events import (
     AssistantDoneEvent,
@@ -61,7 +60,6 @@ from rio.ai.messages import (
     raw_tool_arguments,
 )
 from rio.ai.mistral import MistralConversationsProvider
-from rio.ai.model_limits import ModelLimitsProvider, RuntimeModelLimits
 from rio.ai.openai_codex import (
     DEFAULT_OPENAI_CODEX_BASE_URL,
     OpenAICodexConfig,
