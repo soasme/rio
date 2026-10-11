@@ -72,8 +72,6 @@ An update replaces a full Cell object at the same array position. It receives th
 
 The predecessor link records history only. It does not grant access to another Cell's code or memory. The first version has linear histories, without branches or merges. Results refer to the exact Cell that ran and never transfer to its successor.
 
-The Harness knows one Cell kind, the note, which never runs. A caller adds runnable kinds with `CellKind`, giving each a name, fields, a prompt, a validator, and the argv for one run. `rio.coding.cells` supplies `code` and `cmd`. The Owner refuses a Session whose recorded Cells use an unregistered kind.
-
 Every new code version requests one run, even if its source is unchanged or only its metadata changes. To run the same code again, create a successor. There is no `request` counter, `enabled` flag, executable-content comparison, or `value` Cell kind. Use notes for commentary and draft code; structured data belongs in output or ordinary files.
 
 ### Editing context and controlling work
