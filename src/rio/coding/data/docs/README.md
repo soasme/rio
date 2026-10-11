@@ -4,7 +4,6 @@ rio is a coding agent that manages its own context. Use these installed referenc
 a user asks how to configure, extend, or contribute to rio.
 
 - [Extensions](extensions.md): Python modules that register custom tools, commands, and hooks.
-- [Skills](skills.md): install reusable task knowledge and prompt templates.
 - [Models](models.md): configure providers and models.
 - [Local inference](local-inference.md): run rio against a local OpenAI-compatible server.
 - [CLI](cli.md): command-line entry points.

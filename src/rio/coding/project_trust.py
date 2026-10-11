@@ -28,13 +28,10 @@ _RESOURCE_CATEGORIES = (
     "context",
     "extensions",
     "mcp",
-    "prompts",
     "settings",
-    "skills",
     "system-prompts",
     "themes",
 )
-_RESERVED_TEMPLATE_NAMES = frozenset({"prompts", "skills", "tools", "reload"})
 
 
 class ProjectTrustError(RuntimeError):
@@ -168,14 +165,6 @@ def canonicalize_project_path(path: Path, *, base: Path | None = None) -> Canoni
     return CanonicalProjectPath(resolved)
 
 
-def _is_skill_candidate(path: Path) -> bool:
-    return path.name == "SKILL.md" and (path.is_file() or path.is_symlink())
-
-
-def _is_prompt_template_candidate(path: Path) -> bool:
-    return path.suffix.lower() == ".md" and path.stem.casefold() not in _RESERVED_TEMPLATE_NAMES
-
-
 class ProtectedResourceDetector:
     """Detect protected candidates using names and file metadata only."""
 
@@ -187,21 +176,6 @@ class ProtectedResourceDetector:
         found: dict[str, list[Path]] = {category: [] for category in _RESOURCE_CATEGORIES}
         # Project settings are not supported by a rio loader, so they cannot
         # trigger trust until that loader exists.
-        for namespace in (".rio", ".agents"):
-            self._glob(
-                found,
-                "skills",
-                root / namespace / "skills",
-                "*/SKILL.md",
-                predicate=_is_skill_candidate,
-            )
-            self._glob(
-                found,
-                "prompts",
-                root / namespace / "prompts",
-                "*.md",
-                predicate=_is_prompt_template_candidate,
-            )
         self._glob(found, "themes", root / ".rio" / "themes", "*.json")
         self._file(found, "system-prompts", root / ".rio" / "SYSTEM.md")
         self._file(found, "system-prompts", root / ".rio" / "APPEND_SYSTEM.md")
@@ -238,8 +212,6 @@ class ProtectedResourceDetector:
         category: str,
         directory: Path,
         pattern: str,
-        *,
-        predicate: Callable[[Path], bool] | None = None,
     ) -> None:
         try:
             entries = tuple(directory.glob(pattern)) if directory.is_dir() else ()
@@ -247,11 +219,7 @@ class ProtectedResourceDetector:
             # An unreadable protected directory is itself a meaningful trigger.
             found[category].append(directory)
             return
-        found[category].extend(
-            path
-            for path in entries
-            if self._is_candidate(path) and (predicate is None or predicate(path))
-        )
+        found[category].extend(path for path in entries if self._is_candidate(path))
 
     def _context(self, found: dict[str, list[Path]], cwd: Path) -> None:
         # Match current rio discovery: nearest project marker through cwd, then

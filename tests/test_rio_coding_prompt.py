@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from rio.coding.project_trust import CanonicalProjectPath, ProtectedResourceDetector
 from rio.coding.system_prompt import ProjectContextFile, format_project_context
 from rio.coding.thinking import (
     DEFAULT_THINKING_LEVEL,
@@ -57,21 +54,3 @@ def test_format_project_context_escapes_path() -> None:
     assert '<project_instructions path="a&amp;b/AGENTS.md">' in text
     assert "rules" in text
     assert format_project_context(()) == ""
-
-
-# --- project_trust.py -------------------------------------------------------
-
-
-def test_detector_counts_skill_and_prompt_candidates(tmp_path: Path) -> None:
-    skill = tmp_path / ".rio" / "skills" / "review" / "SKILL.md"
-    skill.parent.mkdir(parents=True)
-    skill.write_text("skill")
-    prompts = tmp_path / ".agents" / "prompts"
-    prompts.mkdir(parents=True)
-    (prompts / "fix.md").write_text("fix")
-    (prompts / "skills.md").write_text("reserved")
-    (prompts / "notes.txt").write_text("ignored")
-
-    summary = ProtectedResourceDetector().detect(CanonicalProjectPath(tmp_path))
-
-    assert summary.counts == {"prompts": 1, "skills": 1}
