@@ -1,3 +1,22 @@
+# 0.9.0
+
+* refactor!: split run loop, record metrics at run end, define providers only in catalog ([#150](https://github.com/soasme/rio/pull/150))
+* refactor(coding)!: remove unused MCP integration ([#149](https://github.com/soasme/rio/pull/149))
+* docs: describe current runtime and package boundaries ([#148](https://github.com/soasme/rio/pull/148))
+* fix(cli)!: complete one-shot cleanup and terminal replay ([#147](https://github.com/soasme/rio/pull/147))
+* refactor(coding)!: remove extensions and local backend management ([#146](https://github.com/soasme/rio/pull/146))
+* refactor(cli)!: resolve run providers only from the catalog ([#145](https://github.com/soasme/rio/pull/145))
+* fix(agent): centralize event writes in Session ([#144](https://github.com/soasme/rio/pull/144))
+* refactor(agent): type session state shapes ([#143](https://github.com/soasme/rio/pull/143))
+* refactor(agent): wait on events instead of polling in run loop ([#142](https://github.com/soasme/rio/pull/142))
+* feat(agent)!: address cells by id in step ([#141](https://github.com/soasme/rio/pull/141))
+* refactor(coding): define provider helpers once and collapse merge logic ([#140](https://github.com/soasme/rio/pull/140))
+* refactor(ai): share provider retry loop and honor Retry-After ([#139](https://github.com/soasme/rio/pull/139))
+* refactor: remove legacy coding-agent code ([#138](https://github.com/soasme/rio/pull/138))
+* refactor(agent): move code and cmd cells into rio.coding ([#137](https://github.com/soasme/rio/pull/137))
+* fix(agent): wake the model once after queued work drains ([#136](https://github.com/soasme/rio/pull/136))
+* fix(agent): keep the tail of long cell output and save the full output ([#135](https://github.com/soasme/rio/pull/135))
+
 # 0.8.2
 
 * feat(cli): report program status via OSC 7501 ([#133](https://github.com/soasme/rio/pull/133))
