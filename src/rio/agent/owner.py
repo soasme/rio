@@ -20,6 +20,7 @@ import psutil
 from rio.agent import worker
 from rio.agent.session import Session
 from rio.agent.store import StorageFailure
+from rio.truncate import tail_notice, truncate_tail
 
 
 class RecoveryFailure(RuntimeError):
@@ -393,45 +394,64 @@ class Owner:
                 for name in ("stdout", "stderr")
             }
             buffers = {"stdout": "", "stderr": ""}
-            discarded = False
-            deadline = time.monotonic() + session.limits.flush_seconds
-            exit_code = None
-            async with asyncio.timeout(session.limits.execution_seconds):
-                line_task = asyncio.create_task(process.stdout.readline())
-                try:
-                    while True:
-                        done, _ = await asyncio.wait(
-                            {line_task}, timeout=max(0, deadline - time.monotonic())
+            with contextlib.ExitStack() as stack:
+                files = {
+                    name: stack.enter_context(
+                        tempfile.NamedTemporaryFile(
+                            "w", encoding="utf-8", prefix="rio-output-", suffix=".log", delete=False
                         )
-                        if done:
-                            line = line_task.result()
-                            if not line:
-                                break
-                            message = json.loads(line)
-                            if "exit" in message:
-                                exit_code = message["exit"]
-                                break
-                            for name in buffers:
-                                if name in message:
-                                    text = decoders[name].decode(bytes.fromhex(message[name]))
-                                    combined = buffers[name] + text
-                                    discarded |= len(combined) > session.limits.output_bytes
-                                    buffers[name] = combined[: session.limits.output_bytes]
-                            line_task = asyncio.create_task(process.stdout.readline())
-                        if time.monotonic() >= deadline:
-                            session.output(cell_id, buffers["stdout"], buffers["stderr"])
-                            buffers = {"stdout": "", "stderr": ""}
-                            deadline = time.monotonic() + session.limits.flush_seconds
-                finally:
-                    line_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await line_task
+                    )
+                    for name in buffers
+                }
+                deadline = time.monotonic() + session.limits.flush_seconds
+                exit_code = None
+                async with asyncio.timeout(session.limits.execution_seconds):
+                    line_task = asyncio.create_task(process.stdout.readline())
+                    try:
+                        while True:
+                            done, _ = await asyncio.wait(
+                                {line_task}, timeout=max(0, deadline - time.monotonic())
+                            )
+                            if done:
+                                line = line_task.result()
+                                if not line:
+                                    break
+                                message = json.loads(line)
+                                if "exit" in message:
+                                    exit_code = message["exit"]
+                                    break
+                                for name in buffers:
+                                    if name in message:
+                                        text = decoders[name].decode(bytes.fromhex(message[name]))
+                                        files[name].write(text)
+                                        combined = buffers[name] + text
+                                        buffers[name] = combined[: session.limits.output_bytes]
+                                line_task = asyncio.create_task(process.stdout.readline())
+                            if time.monotonic() >= deadline:
+                                session.output(cell_id, buffers["stdout"], buffers["stderr"])
+                                buffers = {"stdout": "", "stderr": ""}
+                                deadline = time.monotonic() + session.limits.flush_seconds
+                    finally:
+                        line_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await line_task
             session.output(cell_id, buffers["stdout"], buffers["stderr"])
-            if discarded:
+            # Keep the tail, and point to the full output on disk.
+            truncated = {}
+            for name, key in (("stdout", "output"), ("stderr", "stderr")):
+                path = Path(files[name].name)
+                truncation = truncate_tail(
+                    path.read_text(encoding="utf-8"), max_bytes=session.limits.output_bytes
+                )
+                if truncation.truncated:
+                    truncated[key] = truncation.content + tail_notice(truncation, str(path))
+                else:
+                    path.unlink()
+            if truncated:
                 execution = session.data["executions"][str(cell_id)]
                 session.store.commit(
                     "output_truncated",
-                    {"executions": {str(cell_id): {**execution, "truncated": True}}},
+                    {"executions": {str(cell_id): {**execution, **truncated, "truncated": True}}},
                 )
             # Stop descendants before reporting completion, even when the script left them behind.
             await asyncio.to_thread(stop_worker, self.identity)

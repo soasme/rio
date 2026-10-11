@@ -126,6 +126,17 @@ def fireTimer (fired expired : Bool) : Bool × Nat :=
 theorem expired_timer_is_not_redelivered : fireTimer (fireTimer false true).1 true = (true, 0) := by
   rfl
 
+/-- Long output keeps its tail; the full output stays in a file. -/
+def keepTail (limit : Nat) (output : List α) : List α := output.drop (output.length - limit)
+
+theorem kept_tail_ends_output (limit : Nat) (output : List α) :
+    output.take (output.length - limit) ++ keepTail limit output = output :=
+  List.take_append_drop _ _
+
+theorem short_output_is_whole (limit : Nat) (output : List α) (h : output.length ≤ limit) :
+    keepTail limit output = output := by
+  simp [keepTail, Nat.sub_eq_zero_of_le h]
+
 /-- An explicit --agents-md path wins; otherwise the working directory's AGENTS.md. -/
 def resolveAgentsMd (explicit cwdFile : Option String) : Option String :=
   explicit <|> cwdFile
