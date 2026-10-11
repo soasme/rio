@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Literal, NotRequired, TypedDict
 
-# Runnable kinds are caller-provided (state.CellKind.name); only notes are built in.
-KindName = Literal["note"] | str
 NoteRole = Literal["cancel", "resolution", "conclusion"]
 RunResult = Literal["success", "failure"]
 Phase = Literal["queued", "started", "finished"]
@@ -35,6 +33,7 @@ EventKind = Literal[
     "validator_interrupted",
     "validator_result",
     "run_ended",
+    "durability_metrics",
 ]
 
 
@@ -42,7 +41,7 @@ class Cell(TypedDict):
     # Note keys below; other kinds carry the fields of their CellKind instead.
     id: int
     previous_id: int | None
-    kind: KindName
+    kind: str  # Caller-provided CellKind.name, or the built-in "note".
     text: NotRequired[str]
     role: NotRequired[NoteRole]
     target_cell_id: NotRequired[int]
@@ -168,6 +167,7 @@ class Meta(TypedDict):
     state: State
     cwd: str
     limits: dict  # asdict(Limits)
+    external_wakeup: NotRequired[bool]
     validators: list[list[str]]
     model_config: dict
     instructions: str
@@ -203,6 +203,7 @@ class Projection(TypedDict):
     timers: dict[str, Timer]
     resolutions: dict[str, int]  # target Cell id -> resolution note id
     validator_results: dict[str, ValidatorRecord]  # keyed by validator index
+    metrics: NotRequired[dict[str, float | int]]
     validation_workers: NotRequired[dict[str, ValidationWorker]]  # first validator run adds it
 
 

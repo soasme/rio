@@ -28,11 +28,10 @@ class Limits:
     inbox_messages: int = 256
     storage_bytes: int = 256_000_000
     flush_seconds: float = 0.1
-    external_wakeup: bool = False
 
     def __post_init__(self):
         for name, value in asdict(self).items():
-            if name != "external_wakeup" and value <= 0:
+            if value <= 0:
                 raise ValueError(f"{name} must be positive")
         if self.context_bytes < 4096 or self.output_bytes > self.context_bytes // 4:
             raise ValueError("Reserve context for observations: output <= context / 4")

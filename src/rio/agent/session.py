@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+import statistics
 import time
 import uuid
 from collections.abc import Iterable
@@ -21,6 +22,7 @@ from rio.agent.shapes import (
     RunResult,
     State,
     Turn,
+    ValidatorResult,
     WorkerIdentity,
 )
 from rio.agent.state import NOTE, CellKind, InvalidPatch, Limits, admit
@@ -57,7 +59,11 @@ class Session:
                 f"Session uses {self.meta['state']['schema']}, but this Rio needs "
                 f"{STATE_SCHEMA}; start a new session"
             )
-        self.limits = Limits(**self.meta["limits"])
+        limits = dict(self.meta["limits"])
+        # Older journals stored this policy alongside numeric budgets.
+        legacy_wakeup = limits.pop("external_wakeup", False)
+        self.external_wakeup = self.meta.get("external_wakeup", legacy_wakeup)
+        self.limits = Limits(**limits)
         self.kinds = by_name(kinds)
 
     @classmethod
@@ -72,6 +78,7 @@ class Session:
         validators: tuple[tuple[str, ...], ...] = (),
         model_config: dict | None = None,
         instructions: str = "",
+        external_wakeup: bool = False,
     ) -> Session:
         if store.data:
             raise ValueError("Session already exists")
@@ -94,6 +101,7 @@ class Session:
                     "state": state,
                     "cwd": str(cwd.resolve()),
                     "limits": asdict(limits),
+                    "external_wakeup": external_wakeup,
                     "validators": [list(v) for v in validators],
                     "model_config": model_config or {},
                     "instructions": instructions,
@@ -188,10 +196,11 @@ class Session:
         state = self.state
         state["revision"] += 1
         selected = {str(c["id"]) for c in state["cells"]}
+        unresolved = set(self.unresolved())
         state["runtime"]["cells"] = {
             key: {k: v for k, v in execution.items() if k != "worker"}
             for key, execution in self.data["executions"].items()
-            if key in selected or execution["phase"] != "finished" or int(key) in self.unresolved()
+            if key in selected or execution["phase"] != "finished" or int(key) in unresolved
         }
         for key, execution in state["runtime"]["cells"].items():
             if key in self.data["resolutions"]:
@@ -201,18 +210,18 @@ class Session:
         delivered = []
         state["runtime"]["inbox"] = []
         state["runtime"]["usage"] = dict(usage)
+        context_bytes = len(encode(state).encode())
         for message in self.data["inbox"].values():
             if message["consumed"]:
                 continue
             compact = {k: v for k, v in message.items() if k != "consumed"}
-            if (
-                len(encode(state).encode()) + len(encode(compact).encode())
-                > self.limits.context_bytes
-            ):
+            message_bytes = len(encode(compact).encode()) + bool(delivered)
+            if context_bytes + message_bytes > self.limits.context_bytes:
                 break
             state["runtime"]["inbox"].append(compact)
             delivered.append(message["id"])
-        if len(encode(state).encode()) > self.limits.context_bytes:
+            context_bytes += message_bytes
+        if context_bytes > self.limits.context_bytes:
             raise ValueError("Runtime facts exceed reserved context")
         turn_id = uuid.uuid4().hex
         turn: Turn = {
@@ -336,10 +345,7 @@ class Session:
                             seq = int(ref.rsplit(":", 1)[1])
                         except ValueError:
                             raise InvalidPatch("Invalid evidence reference") from None
-                        row = self.store.db.execute(
-                            "SELECT kind FROM events WHERE seq = ?", (seq,)
-                        ).fetchone()
-                        if row is None or row[0] not in (
+                        if self.store.event_kind(seq) not in (
                             "execution_finished",
                             "inbox_received",
                             "validator_result",
@@ -386,6 +392,105 @@ class Session:
             identity=f"patch:{turn_id}",
         )
         return receipt
+
+    def invalid_idle(self) -> None:
+        seq = self.store.sequence + 1
+        message_id = f"idle:{seq}"
+        self.store.commit(
+            "invalid_idle",
+            {
+                "meta": {"idle": self.meta.get("idle", 0) + 1},
+                "inbox": {
+                    message_id: observation(
+                        message_id,
+                        "invalid_idle",
+                        {"reason": "No work or wake-up source remains; conclude or request work"},
+                        seq,
+                    )
+                },
+            },
+        )
+
+    def request_work(self) -> None:
+        if self.pending():
+            self.store.commit("work_requested", {"meta": {"idle": 0}})
+
+    def record_durability_metrics(self) -> int | None:
+        if "metrics" in self.data:
+            return None
+        return self.store.commit(
+            "durability_metrics",
+            {
+                "metrics": {
+                    "commit_p50_seconds": statistics.median(self.store.commit_seconds)
+                    if self.store.commit_seconds
+                    else 0,
+                    "commit_max_seconds": max(self.store.commit_seconds, default=0),
+                    "rebuild_seconds": self.store.rebuild_seconds,
+                    "journal_bytes": self.store.journal_bytes,
+                }
+            },
+        )
+
+    def register_worker(self, cell_id: int, worker: WorkerIdentity) -> None:
+        key = str(cell_id)
+        self.store.commit(
+            "worker_registered",
+            {"executions": {key: {**self.data["executions"][key], "worker": worker}}},
+        )
+
+    def worker_stopped(self, cell_id: int) -> None:
+        key = str(cell_id)
+        self.store.commit(
+            "worker_cleanup",
+            {"executions": {key: {**self.data["executions"][key], "worker_stopped": True}}},
+        )
+
+    def truncate_output(self, cell_id: int, output: dict[str, str]) -> None:
+        key = str(cell_id)
+        self.store.commit(
+            "output_truncated",
+            {"executions": {key: {**self.data["executions"][key], **output, "truncated": True}}},
+        )
+
+    def start_validator(self, key: str, worker: WorkerIdentity) -> None:
+        self.store.commit(
+            "validator_started", {"validation_workers": {key: {"worker": worker, "result": None}}}
+        )
+
+    def register_validator(self, key: str, worker: WorkerIdentity) -> None:
+        record = self.data["validation_workers"][key]
+        self.store.commit(
+            "validator_registered", {"validation_workers": {key: {**record, "worker": worker}}}
+        )
+
+    def finish_validator(self, key: str, result: ValidatorResult) -> None:
+        record = self.data["validation_workers"][key]
+        self.store.commit(
+            "validator_finished", {"validation_workers": {key: {**record, "result": result}}}
+        )
+
+    def interrupt_validator(self, key: str) -> None:
+        record = self.data["validation_workers"][key]
+        self.store.commit(
+            "validator_interrupted",
+            {
+                "validation_workers": {
+                    key: {
+                        **record,
+                        "result": {"exit": None, "output": "Unknown validator execution"},
+                    }
+                }
+            },
+        )
+
+    def record_validator_result(
+        self, index: int, command: list[str], result: ValidatorResult
+    ) -> None:
+        self.store.commit(
+            "validator_result",
+            {"validator_results": {str(index): {"command": command, **result}}},
+        )
 
     def authorize(self, cell_id: int, worker: WorkerIdentity) -> None:
         key = str(cell_id)

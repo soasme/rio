@@ -107,6 +107,12 @@ class Store:
             self.on_commit()
         return seq
 
+    def event_kind(self, seq: int) -> EventKind | None:
+        if self.failed:
+            raise StorageFailure("Cannot read from an uncertain connection")
+        row = self.db.execute("SELECT kind FROM events WHERE seq = ?", (seq,)).fetchone()
+        return row[0] if row else None
+
     def events(self, after: int = 0) -> list[JournalEvent]:
         if self.failed:
             raise StorageFailure("Cannot publish from an uncertain connection")

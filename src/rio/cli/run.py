@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import statistics
 import uuid
 from pathlib import Path
 
@@ -126,19 +125,9 @@ async def run_persistent_session(
 
             renderer = PlainEventRenderer()
             succeeded = await run(session, provider, model, publish)
-            if "metrics" not in store.data:
-                store.commit(
-                    "durability_metrics",
-                    {
-                        "metrics": {
-                            "commit_p50_seconds": statistics.median(store.commit_seconds),
-                            "commit_max_seconds": max(store.commit_seconds),
-                            "rebuild_seconds": store.rebuild_seconds,
-                            "journal_bytes": store.journal_bytes,
-                        }
-                    },
-                )
-                publish(store.events(store.sequence - 1)[0])
+            metrics = session.record_durability_metrics()
+            if metrics is not None:
+                publish(store.events(metrics - 1)[0])
             return succeeded, session_id
         finally:
             await provider.aclose()
