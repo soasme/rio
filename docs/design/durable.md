@@ -7,7 +7,7 @@ This document defines the agreed next Rio core. It describes intended behavior, 
 
 ## 1. Core contract
 
-Rio uses one SKILL.state. The whole State is model context. Each round, the LLM calls one tool, `step`, with a list of ops on Cells. The Harness commits the step, evaluates State, runs accepted code Cells, and records output. The LLM manages its context by adding, replacing, summarizing, and removing Cells.
+Rio's state is model context. Each round, the LLM calls one tool, `step`, with a list of ops on Cells. The Harness commits the step, evaluates State, runs accepted code Cells, and records output. The LLM manages its context by adding, replacing, summarizing, and removing Cells.
 
 Cells are immutable and independent. Each new code or cmd Cell version requests one finite execution. Notes do not execute code. A Session can last for months without retaining a worker between events.
 
