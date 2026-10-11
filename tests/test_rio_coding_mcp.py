@@ -153,6 +153,28 @@ class TestConfig:
         assert "mcp" in summary.categories
 
 
+async def test_saved_mcp_trust_survives_extension_removal(paths, repo):
+    from rio.coding.project_trust import (
+        ProjectTrustCoordinator,
+        ProjectTrustStore,
+        canonicalize_project_path,
+    )
+
+    extension = repo / ".rio" / "extensions" / "unused.py"
+    extension.parent.mkdir(parents=True)
+    extension.write_text("raise RuntimeError('must not be imported')")
+    write(paths.project_mcp_config_path(repo), {"a": STDIO})
+    canonical = canonicalize_project_path(repo)
+    store = ProjectTrustStore(paths)
+    for decision, expected in [(None, False), ("trusted", True), ("untrusted", False)]:
+        if decision is not None:
+            store.set(canonical, decision)
+        summary, result = await ProjectTrustCoordinator(store).resolve(repo, persist=False)
+        assert "mcp" in summary.categories
+        assert "extensions" not in summary.categories
+        assert result.trusted is expected
+
+
 # -- stdio client and the `mcp` object -------------------------------------------------
 
 

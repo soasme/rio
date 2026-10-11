@@ -10,7 +10,7 @@ import json
 import os
 import sys
 import tempfile
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,12 +21,11 @@ from rio.coding.paths import RioPaths
 TrustDefault = Literal["ask", "always", "never"]
 TrustDecision = Literal["trusted", "untrusted"]
 TrustOverride = Literal["approve", "decline"]
-TrustSource = Literal["override", "empty", "extension", "saved", "default", "ui"]
+TrustSource = Literal["override", "empty", "saved", "default", "ui"]
 TrustChoice = Literal["trust-exact", "trust-parent", "trust-run", "decline-exact", "decline-run"]
 
 _RESOURCE_CATEGORIES = (
     "context",
-    "extensions",
     "mcp",
     "settings",
     "system-prompts",
@@ -97,28 +96,7 @@ class ProjectTrustResolution:
     needs_persistence: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class ExtensionTrustResult:
-    """Result returned by an eligible pre-trust extension."""
-
-    decision: Literal["approve", "decline", "defer"] = "defer"
-    remember: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class ProjectTrustEvent:
-    """Content-free payload sent to eligible pre-trust extensions."""
-
-    cwd: Path
-    mode: Literal["interactive", "headless"]
-    has_ui: bool
-    categories: tuple[str, ...]
-    counts: Mapping[str, int]
-    type: Literal["project_trust"] = "project_trust"
-
-
 TrustPrompt = Callable[[ProjectTrustRequest], Awaitable[TrustChoice | None]]
-ExtensionDecider = Callable[[ProjectTrustEvent], Awaitable[ExtensionTrustResult | None]]
 
 
 def _darwin_filesystem_path(path: Path) -> Path:
@@ -181,7 +159,6 @@ class ProtectedResourceDetector:
         self._file(found, "system-prompts", root / ".rio" / "APPEND_SYSTEM.md")
         self._file(found, "mcp", root / ".rio" / "mcp.json")
         self._context(found, root)
-        self._extensions(found, root / ".rio" / "extensions")
         counts = {
             category: len(found[category]) for category in _RESOURCE_CATEGORIES if found[category]
         }
@@ -241,21 +218,6 @@ class ProtectedResourceDetector:
             self._file(found, "context", current / "AGENTS.md")
         self._file(found, "context", cwd / ".rio" / "AGENTS.md")
         self._file(found, "context", cwd / ".agents" / "AGENTS.md")
-
-    def _extensions(self, found: dict[str, list[Path]], directory: Path) -> None:
-        try:
-            entries = tuple(directory.iterdir()) if directory.is_dir() else ()
-        except OSError:
-            found["extensions"].append(directory)
-            return
-        for path in entries:
-            if path.name.startswith((".", "_")):
-                continue
-            if path.suffix == ".py" and self._is_candidate(path):
-                found["extensions"].append(path)
-            elif path.is_dir():
-                for candidate in (path / "extension.py", path / "pyproject.toml"):
-                    self._file(found, "extensions", candidate)
 
 
 class ProjectTrustStore:
@@ -475,7 +437,6 @@ class ProjectTrustCoordinator:
         default: TrustDefault = "ask",
         interactive: bool = False,
         prompt: TrustPrompt | None = None,
-        extension_deciders: Sequence[ExtensionDecider] = (),
         refresh: bool = False,
         cache_result: bool = True,
         persist: bool = True,
@@ -503,44 +464,6 @@ class ProjectTrustCoordinator:
             return summary, finish(result)
         if not summary.categories:
             result = ProjectTrustResolution(trusted=True, source="empty", had_candidates=False)
-            return summary, finish(result)
-
-        event = ProjectTrustEvent(
-            cwd=canonical.value,
-            mode="interactive" if interactive else "headless",
-            has_ui=interactive and prompt is not None,
-            categories=summary.categories,
-            counts=summary.counts,
-        )
-        for decide in extension_deciders:
-            try:
-                extension_result = await decide(event)
-            except Exception as exc:  # noqa: BLE001 - extensions safely defer on errors
-                diagnostics.append(f"project_trust extension failed: {type(exc).__name__}: {exc}")
-                continue
-            if extension_result is None or extension_result.decision == "defer":
-                continue
-            trusted = extension_result.decision == "approve"
-            saved_path: CanonicalProjectPath | None = None
-            needs_persistence = False
-            if extension_result.remember:
-                saved_path = canonical
-                if persist:
-                    try:
-                        self.store.set(canonical, "trusted" if trusted else "untrusted")
-                    except ProjectTrustError as exc:
-                        diagnostics.append(str(exc))
-                        trusted = False
-                        saved_path = None
-                else:
-                    needs_persistence = True
-            result = ProjectTrustResolution(
-                trusted=trusted,
-                source="extension",
-                saved_path=saved_path,
-                diagnostics=tuple(diagnostics),
-                needs_persistence=needs_persistence,
-            )
             return summary, finish(result)
 
         inherited: SavedTrustEntry | None = None

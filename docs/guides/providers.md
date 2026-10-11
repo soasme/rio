@@ -28,6 +28,9 @@ Unknown providers and invalid models are configuration errors; they do not load
 Python extensions or trigger project trust checks. Configure custom endpoints in
 `~/.rio/catalog.toml`, including [local servers](local-llama-server.md).
 
+Saved `scoped_models` entries from older versions are ignored and omitted when
+provider preferences are saved. Each run selects one provider and model.
+
 ## Catalog keys
 
 A catalog has `schema_version = 1` and one or more `[[providers]]` tables.

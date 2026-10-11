@@ -1,1 +1,1 @@
-"""Provider configuration, credentials, extensions, and MCP clients."""
+"""Provider configuration, credentials, and MCP clients."""
