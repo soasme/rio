@@ -34,7 +34,6 @@ from rio.coding.provider_config import (
     ProviderConfigError,
     ProviderModelMetadata,
     ProviderSettings,
-    ScopedModelConfig,
     anthropic_config_from_provider,
     load_provider_settings,
     openai_compatible_config_from_provider,
@@ -77,7 +76,6 @@ def test_stale_preferences_cannot_restore_removed_codex_alias(tmp_path: Path) ->
                         "thinking_defaults": {"gpt-5.6": "low"},
                     }
                 },
-                "scoped_models": [],
             }
         )
     )
@@ -106,7 +104,6 @@ def test_load_provider_settings_accepts_huggingface_inference_provider_preferenc
                         "inference_providers": {"zai-org/GLM-5.2": "deepinfra"},
                     }
                 },
-                "scoped_models": [],
             }
         )
     )
@@ -307,7 +304,7 @@ docs_url = "http://localhost:11434/v1"
     assert provider.default_model == "qwen"
     assert provider.headers == {"X-Test": "yes"}
     assert provider.timeout_seconds == 12.0
-    assert settings.scoped_models == (ScopedModelConfig(provider="local", model="qwen"),)
+    assert "scoped_models" not in settings.to_json()
 
 
 def test_provider_settings_ignore_unknown_fields(tmp_path: Path) -> None:
@@ -401,10 +398,6 @@ docs_url = "https://example.test/legacy-llama-cpp"
     assert isinstance(dashed.provider, OpenAICompatibleProviderConfig)
     assert dashed.provider.name == "llama-cpp"
     assert dashed.provider.base_url == "http://127.0.0.1:8081/v1"
-    assert ScopedModelConfig(provider="llama.cpp", model="model:Q4_K_M").to_json() == {
-        "provider": "llama.cpp",
-        "model": "model:Q4_K_M",
-    }
 
 
 def test_save_provider_settings_writes_backup_when_replacing(tmp_path: Path) -> None:
@@ -468,7 +461,6 @@ def test_save_and_load_provider_settings_round_trip(
                 max_retry_delay_seconds=0.5,
             ),
         ),
-        scoped_models=(ScopedModelConfig(provider="local", model="llama"),),
     )
 
     path = save_provider_settings(settings, paths)
@@ -517,7 +509,6 @@ def test_legacy_provider_model_cost_tiers_round_trip() -> None:
                 },
             }
         ],
-        "scoped_models": [],
     }
 
     settings = provider_settings_from_json(raw)
@@ -562,7 +553,6 @@ def test_legacy_provider_cost_tier_accepts_one_hour_cache_write_rate() -> None:
                 },
             }
         ],
-        "scoped_models": [],
     }
 
     settings = provider_settings_from_json(raw)
@@ -689,7 +679,15 @@ def test_runtime_metadata_rejects_invalid_cost_tier_values() -> None:
         )
 
 
-def test_provider_settings_parses_scoped_models() -> None:
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        [{"provider": "missing", "model": "retired"}],
+        None,
+        "obsolete",
+    ],
+)
+def test_provider_settings_ignores_legacy_scoped_models(scopes) -> None:
     settings = provider_settings_from_json(
         {
             "default_provider": "local",
@@ -704,25 +702,18 @@ def test_provider_settings_parses_scoped_models() -> None:
                     "context_windows": {"qwen": 64000},
                 }
             ],
-            "scoped_models": [
-                {"provider": "local", "model": "qwen"},
-                {"provider": "local", "model": "qwen"},
-                {"provider": "local", "model": "llama"},
-            ],
+            "scoped_models": scopes,
         }
     )
 
     assert settings.get_provider("local").context_windows == {"qwen": 64000}
-    assert settings.scoped_models == (
-        ScopedModelConfig(provider="local", model="qwen"),
-        ScopedModelConfig(provider="local", model="llama"),
-    )
+    assert "scoped_models" not in settings.to_json()
+    selection = resolve_provider_selection(settings)
+    assert (selection.provider.name, selection.model) == ("local", "qwen")
 
 
 def test_upsert_provider_replaces_and_sets_default() -> None:
-    settings = ProviderSettings(
-        scoped_models=(ScopedModelConfig(provider="openai", model="gpt-5.5"),)
-    )
+    settings = ProviderSettings()
     provider = OpenAICompatibleProviderConfig(
         name="local",
         base_url="http://localhost:11434/v1",
@@ -749,7 +740,6 @@ def test_upsert_provider_replaces_and_sets_default() -> None:
         [provider.name for provider in settings.providers] + ["local"]
     )
     assert replaced.get_provider("local").default_model == "llama"
-    assert replaced.scoped_models == settings.scoped_models
 
 
 # ---------------------------------------------------------------------------
@@ -1188,7 +1178,6 @@ def test_stale_saved_glm_thinking_default_is_ignored(tmp_path: Path) -> None:
                         "thinking_defaults": {"zai-org/GLM-5.2": "medium"},
                     }
                 },
-                "scoped_models": [],
             }
         ),
         encoding="utf-8",

@@ -241,18 +241,6 @@ type ProviderConfig = (
 
 
 @dataclass(frozen=True, slots=True)
-class ScopedModelConfig:
-    """A provider/model pair enabled for quick model cycling."""
-
-    provider: str
-    model: str
-
-    def to_json(self) -> dict[str, str]:
-        """Serialize this scoped model reference."""
-        return {"provider": self.provider, "model": self.model}
-
-
-@dataclass(frozen=True, slots=True)
 class ProviderSettings:
     """rio provider settings loaded from rio home."""
 
@@ -260,7 +248,6 @@ class ProviderSettings:
     providers: tuple[ProviderConfig, ...] = field(
         default_factory=lambda: builtin_provider_configs()
     )
-    scoped_models: tuple[ScopedModelConfig, ...] = ()
 
     def get_provider(self, name: str | None = None) -> ProviderConfig:
         """Return a configured provider by name."""
@@ -278,7 +265,6 @@ class ProviderSettings:
             "provider_preferences": {
                 provider.name: _provider_preference_to_json(provider) for provider in self.providers
             },
-            "scoped_models": [model.to_json() for model in self.scoped_models],
         }
 
 
@@ -452,7 +438,6 @@ def upsert_provider(
     updated = ProviderSettings(
         default_provider=default_provider,
         providers=providers,
-        scoped_models=settings.scoped_models,
     )
     updated.get_provider(default_provider)
     return updated
@@ -478,7 +463,6 @@ def _with_catalog_providers(
     return ProviderSettings(
         default_provider=default_provider,
         providers=providers,
-        scoped_models=settings.scoped_models,
     )
 
 
@@ -744,7 +728,6 @@ def provider_settings_from_json(
             f"Unsupported provider settings schema_version: {schema_version!r}"
         )
     default_provider = _string(data.get("default_provider"), "default_provider")
-    scoped_models = _scoped_models_from_json(data.get("scoped_models"))
     if "provider_preferences" in data:
         providers = _providers_with_preferences(
             data.get("provider_preferences"),
@@ -753,7 +736,6 @@ def provider_settings_from_json(
         return ProviderSettings(
             default_provider=default_provider,
             providers=providers,
-            scoped_models=scoped_models,
         )
 
     providers_data = data.get("providers")
@@ -768,7 +750,6 @@ def provider_settings_from_json(
     return ProviderSettings(
         default_provider=default_provider,
         providers=providers,
-        scoped_models=scoped_models,
     )
 
 
@@ -940,25 +921,6 @@ def _raw_thinking_defaults_dict(value: object, field_name: str) -> dict[str, Thi
             raise ProviderConfigError(f"Provider field must be a thinking mode: {field_name}")
         defaults[model] = thinking_level
     return defaults
-
-
-def _scoped_models_from_json(value: object) -> tuple[ScopedModelConfig, ...]:
-    if value is None:
-        return ()
-    if not isinstance(value, list):
-        raise ProviderConfigError("Provider settings field must be a list: scoped_models")
-    scoped: list[ScopedModelConfig] = []
-    seen: set[tuple[str, str]] = set()
-    for item in value:
-        if not isinstance(item, dict):
-            raise ProviderConfigError("Provider scoped_models entries must be objects")
-        provider = _string(item.get("provider"), "scoped_models.provider")
-        model = _string(item.get("model"), "scoped_models.model")
-        key = (provider, model)
-        if key not in seen:
-            scoped.append(ScopedModelConfig(provider=provider, model=model))
-            seen.add(key)
-    return tuple(scoped)
 
 
 def resolve_provider_selection(

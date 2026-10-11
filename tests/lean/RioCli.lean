@@ -101,4 +101,21 @@ theorem invalid_model_does_not_choose_another_provider (name model : String) :
     resolveProvider [(name, [])] name model = .error "unknown model" := by
   simp [resolveProvider]
 
+/-- Old model-cycling preferences are discarded while loading provider settings. -/
+structure LegacyPreferences where
+  defaultProvider : String
+  defaultModel : String
+  scopedModels : List (String × String)
+
+def loadPreferences (saved : LegacyPreferences) : String × String :=
+  (saved.defaultProvider, saved.defaultModel)
+
+theorem legacy_scopes_do_not_change_selection (saved : LegacyPreferences)
+    (scopes : List (String × String)) :
+    loadPreferences { saved with scopedModels := scopes } = loadPreferences saved := rfl
+
+theorem migration_preserves_defaults (provider model : String)
+    (scopes : List (String × String)) :
+    loadPreferences ⟨provider, model, scopes⟩ = (provider, model) := rfl
+
 end RioCli

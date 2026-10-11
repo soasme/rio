@@ -1,9 +1,19 @@
 # Local inference
 
-rio does not (yet) include a built-in, hidden `llama.cpp` local-backend integration -- there is no `local_backends.py`, no `/local` command, and no dynamic per-session provider registry in `rio.coding`. If your checkout adds one later, document its endpoint precedence, credential handling, and safety boundary here, following the pattern in `security.md`.
+Run a local OpenAI-compatible server before starting Rio, then add its base URL
+and model ID to `~/.rio/catalog.toml`:
 
-## Using a local server today
+```toml
+schema_version = 1
 
-Any local server that speaks the OpenAI-compatible API (llama.cpp's `llama-server`, for example) can be configured like any other OpenAI-compatible provider: add an entry to `~/.rio/catalog.toml` with its base URL and the exact model ID it reports, and select it with `--provider <name> --model <id>`. rio does not scan ports, processes, or the local network to find it, and it does not install, start, or stop the server -- see `security.md` for the general boundary this falls under.
+[[providers]]
+name = "local-llama"
+base_url = "http://127.0.0.1:8080/v1"
+models = ["MODEL_ID"]
+```
 
-See `models.md` for how the provider catalog is structured and overridden.
+Select it with `rio run --provider local-llama --model MODEL_ID "TASK"`.
+Rio sends requests to the configured endpoint. Server installation, model
+downloads, discovery, and process management belong to the server's own tools.
+
+See [Models](models.md) for catalog configuration.

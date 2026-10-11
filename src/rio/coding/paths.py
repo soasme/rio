@@ -29,16 +29,6 @@ class RioPaths:
         return self.home / "models-store.json"
 
     @property
-    def extension_state_dir(self) -> Path:
-        """Return the user-level state directory owned by built-in extensions."""
-        return self.home / "state" / "extensions"
-
-    @property
-    def llama_cpp_state_path(self) -> Path:
-        """Return the safe built-in llama.cpp integration state path."""
-        return self.extension_state_dir / "llama.cpp.json"
-
-    @property
     def mcp_config_path(self) -> Path:
         """Return the user-level MCP server configuration."""
         return self.home / "mcp.json"
