@@ -32,8 +32,7 @@ def trace_metrics(trace: str) -> dict:
                 unknowns += result == "UnknownExecution"
         if "usage" in changes.get("meta", {}):
             usage = changes["meta"]["usage"]
-        if kind == "durability_metrics":
-            durability.update(changes.get("metrics", {}))
+        durability.update(changes.get("metrics", {}))
     return {
         "model_rounds": rounds,
         "executions": executions,

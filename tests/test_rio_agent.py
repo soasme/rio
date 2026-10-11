@@ -906,7 +906,8 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
     if output_mode == "json":
         events = [json.loads(line) for line in transcript.splitlines()]
         assert {event["session_id"] for event in events} == {session_id}
-        assert events[-1]["type"] == "durability_metrics"
+        assert events[-1]["type"] == "run_ended"
+        assert events[-1]["changes"]["metrics"]["journal_bytes"] > 0
     else:
         if cell_kind == "code":
             assert "• # /// script" in transcript
@@ -1023,20 +1024,18 @@ def test_context_budget_counts_utf8_and_inbox_commas(session, spare):
         assert prepare(session)["delivered"] == ["second"]
 
 
-def test_metrics_are_recorded_once_even_when_first_written_after_reopen(tmp_path):
-    path = tmp_path / "metrics.db"
-    with Store(path) as store:
-        Session.create(store, "goal", tmp_path)
-    with Store(path) as store:
-        session = Session(store)
-        seq = session.record_durability_metrics()
-        assert store.event_kind(seq) == "durability_metrics"
-        assert session.data["metrics"]["commit_p50_seconds"] == 0
-        assert session.data["metrics"]["commit_max_seconds"] == 0
-    with Store(path) as store:
-        session = Session(store)
-        assert session.record_durability_metrics() is None
-        assert store.sequence == seq
+def test_run_end_records_metrics_once(session):
+    session.end("success", "done")
+    seq = session.store.sequence
+    assert session.store.event_kind(seq) == "run_ended"
+    assert set(session.data["metrics"]) == {
+        "commit_p50_seconds",
+        "commit_max_seconds",
+        "rebuild_seconds",
+        "journal_bytes",
+    }
+    session.end("failure", "again")
+    assert session.store.sequence == seq
 
 
 @pytest.mark.parametrize("ref", ["session:event:99999", "session:event:1"])
@@ -1098,7 +1097,7 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
     if output_mode == "json":
         events = [json.loads(line) for line in transcript.splitlines()]
         assert any(e["type"] == "worker_cleanup" for e in events)
-        assert events[-1]["type"] == "durability_metrics"
+        assert "durability_metrics" not in {e["type"] for e in events}
     else:
         assert "done" in transcript
     with Store(path) as store:
@@ -1124,6 +1123,17 @@ async def test_terminal_replay_propagates_cleanup_failure(session, monkeypatch):
         await replay(session, published.append)
     assert not published
     assert not session.data["executions"]["1"]["worker_stopped"]
+
+
+async def test_replay_without_workers_writes_nothing(session):
+    from rio.agent.runner import replay
+
+    session.end("success", "done")
+    seq = session.store.sequence
+    published = []
+    assert await replay(session, published.append)
+    assert session.store.sequence == seq
+    assert published[-1]["type"] == "run_ended"
 
 
 async def test_replay_rejects_active_session(session):

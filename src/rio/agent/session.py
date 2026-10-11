@@ -415,23 +415,6 @@ class Session:
         if self.pending():
             self.store.commit("work_requested", {"meta": {"idle": 0}})
 
-    def record_durability_metrics(self) -> int | None:
-        if "metrics" in self.data:
-            return None
-        return self.store.commit(
-            "durability_metrics",
-            {
-                "metrics": {
-                    "commit_p50_seconds": statistics.median(self.store.commit_seconds)
-                    if self.store.commit_seconds
-                    else 0,
-                    "commit_max_seconds": max(self.store.commit_seconds, default=0),
-                    "rebuild_seconds": self.store.rebuild_seconds,
-                    "journal_bytes": self.store.journal_bytes,
-                }
-            },
-        )
-
     def register_worker(self, cell_id: int, worker: WorkerIdentity) -> None:
         key = str(cell_id)
         self.store.commit(
@@ -624,7 +607,13 @@ class Session:
                     "uncertainty": self.unresolved(),
                     "cleanup_error": cleanup_error,
                 }
-            }
+            },
+            "metrics": {
+                "commit_p50_seconds": statistics.median(self.store.commit_seconds or [0]),
+                "commit_max_seconds": max(self.store.commit_seconds, default=0),
+                "rebuild_seconds": self.store.rebuild_seconds,
+                "journal_bytes": self.store.journal_bytes,
+            },
         }
         if note_id is not None:
             changes["controls"] = {
