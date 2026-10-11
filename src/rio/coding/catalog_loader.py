@@ -590,11 +590,13 @@ def _raw_provider_from_entry(entry: ProviderCatalogEntry) -> dict[str, Any]:
         "display_name": entry.display_name,
         "kind": entry.kind,
         "base_url": entry.base_url,
-        "api_key_env": entry.api_key_env,
         "models": list(entry.models),
         "default_model": entry.default_model,
-        "docs_url": entry.docs_url,
     }
+    if entry.api_key_env:
+        raw["api_key_env"] = entry.api_key_env
+    if entry.docs_url:
+        raw["docs_url"] = entry.docs_url
     if entry.api is not None:
         raw["api"] = entry.api
     if entry.credential_name is not None:

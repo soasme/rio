@@ -32,7 +32,7 @@ async def run_persistent_session(
     agents_md: Path | None = None,
 ) -> tuple[bool, str]:
     from rio.agent import Session, Store
-    from rio.agent.runner import run
+    from rio.agent.runner import replay, run
 
     root = RioPaths().sessions_dir
     if resume is not None and (
@@ -43,6 +43,14 @@ async def run_persistent_session(
     path = root / f"{session_id}.sqlite3"
     if resume and not path.is_file():
         raise ValueError(f"No Session found with id '{resume}'")
+    renderer = PlainEventRenderer()
+
+    def publish(event):
+        if output_mode == PrintOutputMode.json:
+            print(json.dumps({"session_id": session_id, **event}), flush=True)
+        else:
+            renderer.render(event)
+
     with Store(path) as store:
         if store.data:
             session = Session(store, cells.KINDS)
@@ -64,6 +72,12 @@ async def run_persistent_session(
         else:
             session = None
             cwd = (cwd or Path.cwd()).resolve()
+        if session is not None and session.meta["terminal"]:
+            succeeded = await replay(session, publish)
+            metrics = session.record_durability_metrics()
+            if metrics is not None:
+                publish(store.events(metrics - 1)[0])
+            return succeeded, session_id
         if not cwd.is_dir():
             raise ValueError(f"Working directory does not exist: {cwd}")
         if session is None:
@@ -95,14 +109,6 @@ async def run_persistent_session(
                     },
                     instructions=instructions,
                 )
-
-            renderer = PlainEventRenderer()
-
-            def publish(event):
-                if output_mode == PrintOutputMode.json:
-                    print(json.dumps({"session_id": session_id, **event}), flush=True)
-                else:
-                    renderer.render(event)
 
             succeeded = await run(session, provider, model, publish)
             metrics = session.record_durability_metrics()

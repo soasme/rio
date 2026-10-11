@@ -32,7 +32,6 @@ from rio.coding.oauth_registry import get_oauth_provider
 from rio.coding.paths import RioPaths, atomic_write_text
 from rio.coding.provider_catalog import (
     ModelCatalogMetadata,
-    ModelCostTier,
     ProviderApi,
     ProviderCatalogEntry,
     ProviderKind,
@@ -61,14 +60,10 @@ class ProviderConfigError(ValueError):
 class ProviderModelMetadata:
     """Runtime metadata for one configured model."""
 
-    name: str | None = None
     api: ProviderApi | None = None
     base_url: str | None = None
     reasoning: bool | None = None
     input: tuple[str, ...] = ()
-    cost: dict[str, float] = field(default_factory=dict)
-    cost_tiers: tuple[ModelCostTier, ...] = ()
-    context_window: int | None = None
     max_tokens: int | None = None
     headers: dict[str, str] = field(default_factory=dict)
     compat: dict[str, Any] = field(default_factory=dict)
@@ -77,24 +72,10 @@ class ProviderModelMetadata:
     def to_json(self) -> dict[str, Any]:
         """Serialize this model metadata to JSON-compatible data."""
         return {
-            "name": self.name,
             "api": self.api,
             "base_url": self.base_url,
             "reasoning": self.reasoning,
             "input": list(self.input),
-            "cost": dict(self.cost),
-            "cost_tiers": [
-                {
-                    **(
-                        {"max_input_tokens": tier.max_input_tokens}
-                        if tier.max_input_tokens is not None
-                        else {}
-                    ),
-                    **tier.cost,
-                }
-                for tier in self.cost_tiers
-            ],
-            "context_window": self.context_window,
             "max_tokens": self.max_tokens,
             "headers": dict(self.headers),
             "compat": dict(self.compat),
@@ -115,7 +96,6 @@ class _ProviderConfigBase:
             max_retries=provider.max_retries,
             max_retry_delay_seconds=provider.max_retry_delay_seconds,
         )
-        _validate_context_windows(provider.context_windows)
         _validate_model_metadata(provider.models, provider.model_metadata)
         compat = getattr(provider, "compat", None)
         if compat is not None:
@@ -161,7 +141,6 @@ class OpenAICompatibleProviderConfig(_ProviderConfigBase):
     credential_name: str | None = None
     models: tuple[str, ...] = (DEFAULT_MODEL,)
     default_model: str = DEFAULT_MODEL
-    context_windows: dict[str, int] = field(default_factory=dict)
     headers: dict[str, str] = field(default_factory=dict)
     compat: dict[str, Any] = field(default_factory=dict)
     model_metadata: dict[str, ProviderModelMetadata] = field(default_factory=dict)
@@ -189,7 +168,6 @@ class AnthropicProviderConfig(_ProviderConfigBase):
     credential_name: str | None = "anthropic"
     models: tuple[str, ...] = ("claude-sonnet-4-6",)
     default_model: str = "claude-sonnet-4-6"
-    context_windows: dict[str, int] = field(default_factory=dict)
     headers: dict[str, str] = field(default_factory=dict)
     compat: dict[str, Any] = field(default_factory=dict)
     model_metadata: dict[str, ProviderModelMetadata] = field(default_factory=dict)
@@ -222,7 +200,6 @@ class OpenAICodexProviderConfig(_ProviderConfigBase):
         "gpt-5.2",
     )
     default_model: str = "gpt-5.5"
-    context_windows: dict[str, int] = field(default_factory=dict)
     headers: dict[str, str] = field(default_factory=dict)
     model_metadata: dict[str, ProviderModelMetadata] = field(default_factory=dict)
     timeout_seconds: float = DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS
@@ -302,7 +279,6 @@ def provider_config_from_entry(entry: ProviderCatalogEntry) -> ProviderConfig:
         credential_name=entry.credential_name,
         models=entry.models,
         default_model=entry.default_model,
-        context_windows=dict(entry.context_windows or {}),
         headers=dict(entry.headers),
         model_metadata=_provider_model_metadata_from_catalog(entry.model_metadata),
         thinking_levels=entry.thinking_levels,
@@ -345,14 +321,10 @@ def _provider_model_metadata_from_catalog(
 ) -> dict[str, ProviderModelMetadata]:
     return {
         model: ProviderModelMetadata(
-            name=metadata.name,
             api=metadata.api,
             base_url=metadata.base_url,
             reasoning=metadata.reasoning,
             input=tuple(metadata.input),
-            cost=dict(metadata.cost or {}),
-            cost_tiers=metadata.cost_tiers,
-            context_window=metadata.context_window,
             max_tokens=metadata.max_tokens,
             headers=dict(metadata.headers),
             compat=dict(metadata.compat),
@@ -544,7 +516,6 @@ def _merge_provider_config(existing: ProviderConfig, incoming: ProviderConfig) -
         "timeout_seconds": existing.timeout_seconds,
         "max_retries": existing.max_retries,
         "max_retry_delay_seconds": existing.max_retry_delay_seconds,
-        "context_windows": {**incoming.context_windows, **existing.context_windows},
         "thinking_levels": thinking.thinking_levels,
         "thinking_models": thinking.thinking_models,
         "thinking_default": thinking.thinking_default,
@@ -570,14 +541,10 @@ def _merge_provider_model_metadata(
         base = merged[model]
         merged[model] = replace(
             base,
-            name=metadata.name or base.name,
             api=metadata.api or base.api,
             base_url=metadata.base_url or base.base_url,
             reasoning=metadata.reasoning if metadata.reasoning is not None else base.reasoning,
             input=metadata.input or base.input,
-            cost={**base.cost, **metadata.cost},
-            cost_tiers=metadata.cost_tiers or base.cost_tiers,
-            context_window=metadata.context_window or base.context_window,
             max_tokens=metadata.max_tokens or base.max_tokens,
             headers={**base.headers, **metadata.headers},
             compat={**base.compat, **metadata.compat},
@@ -639,13 +606,11 @@ def _provider_definition_differs_from_catalog(
         return True
     if getattr(provider, "api", None) != entry.api and entry.api is not None:
         return True
-    if provider.context_windows != dict(entry.context_windows or {}):
-        return True
     if provider.headers != dict(entry.headers):
         return True
     if getattr(provider, "compat", {}) != dict(entry.compat):
         return True
-    if _catalog_model_metadata_from_provider(provider) != entry.model_metadata:
+    if provider.model_metadata != _provider_model_metadata_from_catalog(entry.model_metadata):
         return True
     if provider.thinking_levels != entry.thinking_levels:
         return True
@@ -662,6 +627,7 @@ def _catalog_entry_from_provider(
     existing: ProviderCatalogEntry | None = None,
 ) -> ProviderCatalogEntry:
     """Create catalog metadata from a runtime provider config."""
+    windows = (existing.context_windows or {}) if existing else {}
     return ProviderCatalogEntry(
         name=provider.name,
         display_name=existing.display_name if existing is not None else provider.name,
@@ -677,10 +643,13 @@ def _catalog_entry_from_provider(
             else provider.default_model
         ),
         docs_url=existing.docs_url if existing is not None else provider.base_url,
-        context_windows=dict(provider.context_windows) or None,
+        auth_methods=existing.auth_methods if existing else ("api_key",),
+        removed_models=existing.removed_models if existing else (),
+        context_windows={model: size for model, size in windows.items() if model in provider.models}
+        or None,
         headers=dict(provider.headers),
         compat=dict(getattr(provider, "compat", {})),
-        model_metadata=_catalog_model_metadata_from_provider(provider),
+        model_metadata=_catalog_model_metadata_from_provider(provider, existing=existing),
         thinking_levels=provider.thinking_levels,
         thinking_models=provider.thinking_models,
         thinking_default=provider.thinking_default,
@@ -690,18 +659,23 @@ def _catalog_entry_from_provider(
 
 def _catalog_model_metadata_from_provider(
     provider: ProviderConfig,
+    *,
+    existing: ProviderCatalogEntry | None = None,
 ) -> dict[str, ModelCatalogMetadata]:
-    metadata_by_model = getattr(provider, "model_metadata", {})
+    metadata_by_model = dict(provider.model_metadata)
+    if existing:
+        for model in existing.model_metadata:
+            if model in provider.models:
+                metadata_by_model.setdefault(model, ProviderModelMetadata())
     return {
-        model: ModelCatalogMetadata(
-            name=metadata.name,
+        model: replace(
+            existing.model_metadata.get(model, ModelCatalogMetadata())
+            if existing
+            else ModelCatalogMetadata(),
             api=metadata.api,
             base_url=metadata.base_url,
             reasoning=metadata.reasoning,
             input=tuple(item for item in metadata.input if item in {"text", "image"}),
-            cost=dict(metadata.cost) or None,
-            cost_tiers=metadata.cost_tiers,
-            context_window=metadata.context_window,
             max_tokens=metadata.max_tokens,
             headers=dict(metadata.headers),
             compat=dict(metadata.compat),
@@ -1474,9 +1448,6 @@ def _provider_from_json(data: object) -> ProviderConfig:
     )
     models = _string_tuple(data.get("models"), f"providers[{name}].models")
     default_model = _string(data.get("default_model"), f"providers[{name}].default_model")
-    context_windows = _context_window_dict(
-        data.get("context_windows", {}), f"providers[{name}].context_windows"
-    )
     headers = _string_dict(data.get("headers", {}), f"providers[{name}].headers")
     compat = _json_dict(data.get("compat", {}), f"providers[{name}].compat")
     model_metadata = _model_metadata_dict(
@@ -1528,7 +1499,6 @@ def _provider_from_json(data: object) -> ProviderConfig:
         credential_name=credential_name,
         models=models,
         default_model=default_model,
-        context_windows=context_windows,
         headers=headers,
         model_metadata=model_metadata,
         timeout_seconds=timeout_seconds,
@@ -1580,18 +1550,6 @@ def _validate_provider_numbers(
         raise ProviderConfigError("Provider max_retry_delay_seconds must be 0 or greater")
 
 
-def _validate_context_windows(context_windows: dict[str, int]) -> None:
-    for model, context_window in context_windows.items():
-        if not isinstance(model, str) or not model.strip():
-            raise ProviderConfigError("Provider context_windows keys must be non-empty strings")
-        if (
-            not isinstance(context_window, int)
-            or isinstance(context_window, bool)
-            or context_window <= 0
-        ):
-            raise ProviderConfigError("Provider context_windows values must be positive integers")
-
-
 def _validate_model_metadata(
     models: tuple[str, ...],
     model_metadata: dict[str, ProviderModelMetadata],
@@ -1600,15 +1558,10 @@ def _validate_model_metadata(
     for model, metadata in model_metadata.items():
         if model not in model_names:
             raise ProviderConfigError(f"Provider model_metadata key is not in models: {model}")
-        if metadata.context_window is not None and metadata.context_window <= 0:
-            raise ProviderConfigError("Provider model_metadata context_window must be positive")
         if metadata.max_tokens is not None and metadata.max_tokens <= 0:
             raise ProviderConfigError("Provider model_metadata max_tokens must be positive")
         if any(item not in {"text", "image"} for item in metadata.input):
             raise ProviderConfigError("Provider model_metadata input must contain text or image")
-        if any(value < 0 for value in metadata.cost.values()):
-            raise ProviderConfigError("Provider model_metadata cost values must be non-negative")
-        _validate_runtime_cost_tiers(metadata.cost_tiers)
         _validate_json_object(metadata.compat, "Provider model_metadata compat")
         _validate_string_dict(metadata.headers, "Provider model_metadata headers")
         for level, value in metadata.thinking_level_map.items():
@@ -1617,26 +1570,6 @@ def _validate_model_metadata(
                 raise ProviderConfigError(
                     "Provider model_metadata thinking_level_map values must be strings or null"
                 )
-
-
-def _validate_runtime_cost_tiers(tiers: tuple[ModelCostTier, ...]) -> None:
-    if tiers and tiers[-1].max_input_tokens is not None:
-        raise ProviderConfigError(
-            "Provider model_metadata final cost tier must omit max_input_tokens"
-        )
-    previous_limit = 0
-    for tier in tiers:
-        if any(value < 0 for value in tier.cost.values()):
-            raise ProviderConfigError(
-                "Provider model_metadata cost tier values must be non-negative"
-            )
-        if tier.max_input_tokens is None:
-            continue
-        if tier.max_input_tokens <= previous_limit:
-            raise ProviderConfigError(
-                "Provider model_metadata cost tier limits must be strictly increasing"
-            )
-        previous_limit = tier.max_input_tokens
 
 
 def _validate_string_dict(value: dict[str, str], field_name: str) -> None:
@@ -1889,16 +1822,10 @@ def _model_metadata_dict(
                 f"Provider model_metadata entries must be objects: {field_name}"
             )
         items[model] = ProviderModelMetadata(
-            name=_optional_string(item.get("name"), f"{field_name}.{model}.name"),
             api=_optional_provider_api(item.get("api"), f"{field_name}.{model}.api"),
             base_url=_optional_string(item.get("base_url"), f"{field_name}.{model}.base_url"),
             reasoning=_optional_bool(item.get("reasoning"), f"{field_name}.{model}.reasoning"),
             input=_optional_string_tuple(item.get("input"), f"{field_name}.{model}.input"),
-            cost=_float_dict(item.get("cost", {}), f"{field_name}.{model}.cost"),
-            cost_tiers=_cost_tiers(item.get("cost_tiers", []), f"{field_name}.{model}.cost_tiers"),
-            context_window=_optional_positive_int(
-                item.get("context_window"), f"{field_name}.{model}.context_window"
-            ),
             max_tokens=_optional_positive_int(
                 item.get("max_tokens"), f"{field_name}.{model}.max_tokens"
             ),
@@ -1910,45 +1837,6 @@ def _model_metadata_dict(
             ),
         )
     return items
-
-
-def _cost_tiers(value: object, field_name: str) -> tuple[ModelCostTier, ...]:
-    if not isinstance(value, list):
-        raise ProviderConfigError(f"Provider field must be an array: {field_name}")
-    tiers: list[ModelCostTier] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, dict):
-            raise ProviderConfigError(f"Provider cost tiers must be objects: {field_name}")
-        tier_field = f"{field_name}.{index}"
-        allowed = {
-            "max_input_tokens",
-            "input",
-            "output",
-            "cacheRead",
-            "cacheWrite",
-            "cacheWrite1h",
-        }
-        if set(item) - allowed:
-            raise ProviderConfigError(f"Provider cost tier has unknown fields: {tier_field}")
-        cost = {
-            key: _non_negative_float(item.get(key), f"{tier_field}.{key}")
-            for key in ("input", "output", "cacheRead", "cacheWrite")
-        }
-        if item.get("cacheWrite1h") is not None:
-            cost["cacheWrite1h"] = _non_negative_float(
-                item.get("cacheWrite1h"), f"{tier_field}.cacheWrite1h"
-            )
-        tiers.append(
-            ModelCostTier(
-                max_input_tokens=_optional_positive_int(
-                    item.get("max_input_tokens"), f"{tier_field}.max_input_tokens"
-                ),
-                cost=cost,
-            )
-        )
-    result = tuple(tiers)
-    _validate_runtime_cost_tiers(result)
-    return result
 
 
 def _thinking_level_map_dict(
@@ -1970,19 +1858,6 @@ def _thinking_level_map_dict(
     return items
 
 
-def _float_dict(value: object, field_name: str) -> dict[str, float]:
-    if not isinstance(value, dict):
-        raise ProviderConfigError(f"Provider field must be a number object: {field_name}")
-    items: dict[str, float] = {}
-    for key, item in value.items():
-        if not isinstance(key, str) or not key.strip():
-            raise ProviderConfigError(f"Provider field must be a number object: {field_name}")
-        if not isinstance(item, int | float) or isinstance(item, bool) or item < 0:
-            raise ProviderConfigError(f"Provider field values must be non-negative: {field_name}")
-        items[key.strip()] = float(item)
-    return items
-
-
 def _optional_bool(value: object, field_name: str) -> bool | None:
     if value is None:
         return None
@@ -1997,21 +1872,6 @@ def _optional_positive_int(value: object, field_name: str) -> int | None:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ProviderConfigError(f"Provider field must be a positive integer: {field_name}")
     return value
-
-
-def _context_window_dict(value: object, field_name: str) -> dict[str, int]:
-    if not isinstance(value, dict):
-        raise ProviderConfigError(f"Provider field must be an integer object: {field_name}")
-    items: dict[str, int] = {}
-    for key, item in value.items():
-        if not isinstance(key, str) or not key.strip():
-            raise ProviderConfigError(f"Provider field must be an integer object: {field_name}")
-        if not isinstance(item, int) or isinstance(item, bool) or item <= 0:
-            raise ProviderConfigError(
-                f"Provider field values must be positive integers: {field_name}"
-            )
-        items[key.strip()] = item
-    return items
 
 
 def _positive_float(value: object, field_name: str) -> float:

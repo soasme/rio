@@ -10,8 +10,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import anyio
-
 from rio.coding.mcp import ServerStatus, probe, probe_all
 from rio.coding.mcp.config import (
     McpConfig,
@@ -25,6 +23,7 @@ from rio.coding.mcp.config import (
 )
 from rio.coding.mcp.oauth import McpAuthStore, McpOAuthError, auth_store_path, sign_in
 from rio.coding.paths import RioPaths
+from rio.coding.project_trust import is_project_trusted
 
 
 class McpCommandError(ValueError):
@@ -112,23 +111,8 @@ def remove(name: str, *, local: bool, cwd: Path, paths: RioPaths | None = None) 
     return f'Removed {"project" if local else "global"} MCP server "{name}" from {path}.'
 
 
-def project_trusted(cwd: Path, paths: RioPaths | None = None) -> bool:
-    """Whether saved policy permits project MCP configuration, without asking."""
-    from rio.coding.project_trust import ProjectTrustCoordinator, ProjectTrustStore
-    from rio.coding.shell_config import load_shell_settings
-
-    async def resolve() -> bool:
-        coordinator = ProjectTrustCoordinator(ProjectTrustStore(paths))
-        _, result = await coordinator.resolve(
-            cwd, default=load_shell_settings().default_project_trust, persist=False
-        )
-        return result.trusted
-
-    return anyio.run(resolve)
-
-
 def _load(cwd: Path, paths: RioPaths | None) -> McpConfig:
-    return load_mcp_config(cwd, project_trusted=project_trusted(cwd, paths), paths=paths)
+    return load_mcp_config(cwd, project_trusted=is_project_trusted(cwd, paths), paths=paths)
 
 
 def _untrusted_note(config: McpConfig) -> str | None:

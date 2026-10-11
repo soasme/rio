@@ -931,7 +931,7 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
     assert capsys.readouterr().out == transcript
     assert len(provider.calls) == 2
     assert (tmp_path / "effect").read_text() == "changed after completion"
-    assert provider.aclose.await_count == 2
+    assert provider.aclose.await_count == 1
 
 
 def test_idle_decision_and_budget_survive_reopen(session):
@@ -1051,3 +1051,83 @@ def test_resolution_rejects_missing_events_and_non_observations(session, ref):
             turn["id"], [add(note(role="resolution", target_cell_id=1, evidence_refs=[ref]))]
         )
     assert session.store.sequence == before
+
+
+@pytest.mark.parametrize("result", ["success", "failure"])
+@pytest.mark.parametrize("output_mode", ["human", "json"])
+async def test_terminal_cli_resume_needs_no_provider_or_project(
+    tmp_path, monkeypatch, capsys, result, output_mode
+):
+    from rio.agent import owner as owner_module
+    from rio.cli import run as cli
+    from rio.coding.paths import RioPaths
+    from rio.coding.rendering import PrintOutputMode
+
+    paths = RioPaths(home=tmp_path / "home")
+    monkeypatch.setattr(cli, "RioPaths", lambda: paths)
+
+    def unavailable(*args, **kwargs):
+        raise AssertionError("terminal replay must not configure a provider")
+
+    monkeypatch.setattr(cli, "load_provider_settings", unavailable)
+    monkeypatch.setattr(cli, "create_model_provider", unavailable)
+    project = tmp_path / "project"
+    project.mkdir()
+    session_id = "a" * 32
+    path = paths.sessions_dir / f"{session_id}.sqlite3"
+    with Store(path) as store:
+        session = Session.create(
+            store,
+            "goal",
+            project,
+            kinds=KINDS,
+            model_config={"provider": "removed", "model": "retired"},
+        )
+        accept(session, code())
+        session.authorize(1, {"token": "leftover"})
+        session.finish(1, {"type": "success"})
+        session.end(result, "done")
+    project.rmdir()
+    stopped = []
+    monkeypatch.setattr(owner_module, "stop_worker", lambda identity: stopped.append(identity))
+    assert await cli.run_persistent_session(
+        "", resume=session_id, output_mode=PrintOutputMode(output_mode)
+    ) == (result == "success", session_id)
+    assert stopped == [{"token": "leftover"}]
+    transcript = capsys.readouterr().out
+    if output_mode == "json":
+        events = [json.loads(line) for line in transcript.splitlines()]
+        assert any(e["type"] == "worker_cleanup" for e in events)
+        assert events[-1]["type"] == "durability_metrics"
+    else:
+        assert "done" in transcript
+    with Store(path) as store:
+        assert store.data["executions"]["1"]["worker_stopped"]
+        assert store.data["meta"]["terminal"]["result"] == result
+
+
+async def test_terminal_replay_propagates_cleanup_failure(session, monkeypatch):
+    from rio.agent import owner as owner_module
+    from rio.agent.runner import replay
+
+    accept(session, code())
+    session.authorize(1, {"token": "leftover"})
+    session.finish(1, {"type": "success"})
+    session.end("success", "done")
+
+    def fail(identity):
+        raise RecoveryFailure("cannot stop worker")
+
+    monkeypatch.setattr(owner_module, "stop_worker", fail)
+    published = []
+    with pytest.raises(RecoveryFailure, match="cannot stop"):
+        await replay(session, published.append)
+    assert not published
+    assert not session.data["executions"]["1"]["worker_stopped"]
+
+
+async def test_replay_rejects_active_session(session):
+    from rio.agent.runner import replay
+
+    with pytest.raises(ValueError, match="terminal"):
+        await replay(session)

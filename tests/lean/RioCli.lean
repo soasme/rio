@@ -118,4 +118,17 @@ theorem migration_preserves_defaults (provider model : String)
     (scopes : List (String × String)) :
     loadPreferences ⟨provider, model, scopes⟩ = (provider, model) := rfl
 
+/-- A terminal resume recovers and replays; only an active run needs a provider. -/
+def needsProvider (terminal : Bool) : Bool := !terminal
+
+def canReplay (terminal cleanupSucceeded : Bool) : Bool := terminal && cleanupSucceeded
+
+theorem terminal_replay_needs_no_provider : needsProvider true = false := rfl
+
+theorem cleanup_failure_blocks_replay (terminal : Bool) :
+    canReplay terminal false = false := by simp [canReplay]
+
+theorem active_run_cannot_replay (cleanup : Bool) :
+    canReplay false cleanup = false := rfl
+
 end RioCli

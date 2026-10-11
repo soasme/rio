@@ -1,4 +1,4 @@
-"""Project-input trust policy, detection, persistence, and coordination.
+"""Saved project trust policy for MCP configuration.
 
 Project trust controls ambient project resources. It is deliberately not a
 filesystem, process, network, tool, model, or prompt-injection sandbox.
@@ -10,7 +10,7 @@ import json
 import os
 import sys
 import tempfile
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,19 +18,7 @@ from typing import IO, Literal
 
 from rio.coding.paths import RioPaths
 
-TrustDefault = Literal["ask", "always", "never"]
 TrustDecision = Literal["trusted", "untrusted"]
-TrustOverride = Literal["approve", "decline"]
-TrustSource = Literal["override", "empty", "saved", "default", "ui"]
-TrustChoice = Literal["trust-exact", "trust-parent", "trust-run", "decline-exact", "decline-run"]
-
-_RESOURCE_CATEGORIES = (
-    "context",
-    "mcp",
-    "settings",
-    "system-prompts",
-    "themes",
-)
 
 
 class ProjectTrustError(RuntimeError):
@@ -45,58 +33,11 @@ class CanonicalProjectPath:
 
 
 @dataclass(frozen=True, slots=True)
-class ProtectedResourceSummary:
-    """Bounded metadata-only summary of protected project inputs."""
-
-    cwd: CanonicalProjectPath
-    categories: tuple[str, ...]
-    counts: Mapping[str, int]
-    sample_paths: tuple[Path, ...] = ()
-
-    @property
-    def total(self) -> int:
-        return sum(self.counts.values())
-
-
-@dataclass(frozen=True, slots=True)
 class SavedTrustEntry:
     """A validated saved exact or inherited decision."""
 
     path: CanonicalProjectPath
     decision: TrustDecision
-
-
-@dataclass(frozen=True, slots=True)
-class ProjectTrustRequest:
-    """Frontend-neutral request for an interactive trust decision."""
-
-    cwd: CanonicalProjectPath
-    resources: ProtectedResourceSummary
-    inherited_entry: SavedTrustEntry | None
-    choices: tuple[TrustChoice, ...] = (
-        "trust-exact",
-        "trust-parent",
-        "trust-run",
-        "decline-exact",
-        "decline-run",
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class ProjectTrustResolution:
-    """Completed decision for one canonical cwd."""
-
-    trusted: bool
-    source: TrustSource
-    saved_path: CanonicalProjectPath | None = None
-    diagnostics: tuple[str, ...] = ()
-    had_candidates: bool = True
-    cancelled: bool = False
-    # True when staged preparation deferred the durable trust-store write.
-    needs_persistence: bool = False
-
-
-TrustPrompt = Callable[[ProjectTrustRequest], Awaitable[TrustChoice | None]]
 
 
 def _darwin_filesystem_path(path: Path) -> Path:
@@ -143,83 +84,6 @@ def canonicalize_project_path(path: Path, *, base: Path | None = None) -> Canoni
     return CanonicalProjectPath(resolved)
 
 
-class ProtectedResourceDetector:
-    """Detect protected candidates using names and file metadata only."""
-
-    def __init__(self, *, max_sample_paths: int = 12) -> None:
-        self.max_sample_paths = max_sample_paths
-
-    def detect(self, cwd: CanonicalProjectPath) -> ProtectedResourceSummary:
-        root = cwd.value
-        found: dict[str, list[Path]] = {category: [] for category in _RESOURCE_CATEGORIES}
-        # Project settings are not supported by a rio loader, so they cannot
-        # trigger trust until that loader exists.
-        self._glob(found, "themes", root / ".rio" / "themes", "*.json")
-        self._file(found, "system-prompts", root / ".rio" / "SYSTEM.md")
-        self._file(found, "system-prompts", root / ".rio" / "APPEND_SYSTEM.md")
-        self._file(found, "mcp", root / ".rio" / "mcp.json")
-        self._context(found, root)
-        counts = {
-            category: len(found[category]) for category in _RESOURCE_CATEGORIES if found[category]
-        }
-        samples = tuple(path for category in _RESOURCE_CATEGORIES for path in found[category])[
-            : self.max_sample_paths
-        ]
-        return ProtectedResourceSummary(
-            cwd=cwd,
-            categories=tuple(counts),
-            counts=counts,
-            sample_paths=samples,
-        )
-
-    @staticmethod
-    def _is_candidate(path: Path) -> bool:
-        try:
-            return path.is_file() or path.is_symlink()
-        except OSError:
-            return True
-
-    def _file(self, found: dict[str, list[Path]], category: str, path: Path) -> None:
-        if self._is_candidate(path):
-            found[category].append(path)
-
-    def _glob(
-        self,
-        found: dict[str, list[Path]],
-        category: str,
-        directory: Path,
-        pattern: str,
-    ) -> None:
-        try:
-            entries = tuple(directory.glob(pattern)) if directory.is_dir() else ()
-        except OSError:
-            # An unreadable protected directory is itself a meaningful trigger.
-            found[category].append(directory)
-            return
-        found[category].extend(path for path in entries if self._is_candidate(path))
-
-    def _context(self, found: dict[str, list[Path]], cwd: Path) -> None:
-        # Match current rio discovery: nearest project marker through cwd, then
-        # cwd-local namespace context files.
-        markers = (".git", "pyproject.toml", "uv.lock", "setup.py", "package.json")
-        project_root = cwd
-        for candidate in (cwd, *cwd.parents):
-            if any((candidate / marker).exists() for marker in markers):
-                project_root = candidate
-                break
-        try:
-            relative = cwd.relative_to(project_root)
-        except ValueError:
-            relative = Path()
-        current = project_root
-        self._file(found, "context", current / "AGENTS.md")
-        for part in relative.parts:
-            current /= part
-            self._file(found, "context", current / "AGENTS.md")
-        self._file(found, "context", cwd / ".rio" / "AGENTS.md")
-        self._file(found, "context", cwd / ".agents" / "AGENTS.md")
-
-
 class ProjectTrustStore:
     """Versioned, locked, atomically replaced trust decision store."""
 
@@ -249,15 +113,6 @@ class ProjectTrustStore:
             decisions = self._read_unlocked()
             decisions[path.value] = decision
             self._write_unlocked(decisions)
-
-    def trust_parent(self, cwd: CanonicalProjectPath) -> CanonicalProjectPath:
-        parent = CanonicalProjectPath(cwd.value.parent)
-        with self._locked():
-            decisions = self._read_unlocked()
-            decisions.pop(cwd.value, None)
-            decisions[parent.value] = "trusted"
-            self._write_unlocked(decisions)
-        return parent
 
     def remove(self, path: CanonicalProjectPath) -> None:
         with self._locked():
@@ -312,7 +167,7 @@ class ProjectTrustStore:
                 raise ProjectTrustError(f"Malformed decision in project trust store {self.path}")
             raw_path = raw["path"]
             decision = raw["decision"]
-            if not isinstance(raw_path, str) or decision not in {"trusted", "untrusted"}:
+            if not isinstance(raw_path, str) or decision not in ("trusted", "untrusted"):
                 raise ProjectTrustError(f"Malformed decision in project trust store {self.path}")
             candidate = Path(raw_path)
             if not candidate.is_absolute() or Path(os.path.normpath(raw_path)) != candidate:
@@ -419,130 +274,25 @@ class ProjectTrustStore:
         return None
 
 
-class ProjectTrustCoordinator:
-    """Resolve and cache trust outcomes per canonical cwd for one invocation."""
-
-    def __init__(
-        self, store: ProjectTrustStore, detector: ProtectedResourceDetector | None = None
-    ) -> None:
-        self.store = store
-        self.detector = detector or ProtectedResourceDetector()
-        self._cache: dict[Path, ProjectTrustResolution] = {}
-
-    async def resolve(
-        self,
-        cwd: Path,
-        *,
-        override: TrustOverride | None = None,
-        default: TrustDefault = "ask",
-        interactive: bool = False,
-        prompt: TrustPrompt | None = None,
-        refresh: bool = False,
-        cache_result: bool = True,
-        persist: bool = True,
-    ) -> tuple[ProtectedResourceSummary, ProjectTrustResolution]:
+def is_project_trusted(cwd: Path, paths: RioPaths | None = None) -> bool:
+    """Read the nearest saved MCP decision, otherwise the default. Errors deny trust."""
+    paths = paths or RioPaths()
+    try:
         canonical = canonicalize_project_path(cwd, base=Path.cwd())
-        summary = self.detector.detect(canonical)
-
-        def finish(result: ProjectTrustResolution) -> ProjectTrustResolution:
-            if cache_result:
-                self._cache[canonical.value] = result
-            return result
-
-        cached = self._cache.get(canonical.value)
-        if cached is not None and cached.had_candidates:
-            return summary, cached
-        if cached is not None and not refresh and not summary.categories:
-            return summary, cached
-        diagnostics: list[str] = []
-        if override is not None:
-            result = ProjectTrustResolution(
-                trusted=override == "approve",
-                source="override",
-                had_candidates=bool(summary.categories),
-            )
-            return summary, finish(result)
-        if not summary.categories:
-            result = ProjectTrustResolution(trusted=True, source="empty", had_candidates=False)
-            return summary, finish(result)
-
-        inherited: SavedTrustEntry | None = None
-        store_failed = False
-        try:
-            inherited = self.store.nearest(canonical)
-        except ProjectTrustError as exc:
-            store_failed = True
-            diagnostics.append(str(exc))
-        if inherited is not None:
-            result = ProjectTrustResolution(
-                trusted=inherited.decision == "trusted",
-                source="saved",
-                saved_path=inherited.path,
-                diagnostics=tuple(diagnostics),
-            )
-            return summary, finish(result)
-        if default != "ask":
-            result = ProjectTrustResolution(
-                trusted=default == "always" and not store_failed,
-                source="default",
-                diagnostics=tuple(diagnostics),
-            )
-            return summary, finish(result)
-        if not interactive or prompt is None:
-            result = ProjectTrustResolution(
-                trusted=False, source="default", diagnostics=tuple(diagnostics)
-            )
-            return summary, finish(result)
-
-        choice = await prompt(ProjectTrustRequest(canonical, summary, inherited))
-        trusted = choice in {"trust-exact", "trust-parent", "trust-run"}
-        saved_path = None
-        needs_persistence = False
-        try:
-            if choice == "trust-exact":
-                saved_path = canonical
-                if persist:
-                    self.store.set(canonical, "trusted")
-                else:
-                    needs_persistence = True
-            elif choice == "trust-parent":
-                saved_path = CanonicalProjectPath(canonical.value.parent)
-                if persist:
-                    saved_path = self.store.trust_parent(canonical)
-                else:
-                    needs_persistence = True
-            elif choice == "decline-exact":
-                saved_path = canonical
-                if persist:
-                    self.store.set(canonical, "untrusted")
-                else:
-                    needs_persistence = True
-        except ProjectTrustError as exc:
-            diagnostics.append(str(exc))
-            trusted = False
-            saved_path = None
-        result = ProjectTrustResolution(
-            trusted=trusted,
-            source="ui",
-            saved_path=saved_path,
-            diagnostics=tuple(diagnostics),
-            cancelled=choice is None,
-            needs_persistence=needs_persistence,
-        )
-        return summary, finish(result)
-
-    def commit(self, cwd: CanonicalProjectPath, result: ProjectTrustResolution) -> None:
-        """Publish a staged resolution after its candidate is adopted."""
-        if result.needs_persistence and result.saved_path is not None:
-            # A store failure cannot undo an already adopted run.  The write is
-            # intentionally fail-closed: the next process asks again rather
-            # than accidentally treating an uncommitted grant as durable.
-            with suppress(ProjectTrustError):
-                self.store.set(
-                    result.saved_path,
-                    "trusted" if result.trusted else "untrusted",
-                )
-        self._cache[cwd.value] = result
+        saved = ProjectTrustStore(paths).nearest(canonical)
+        if saved is not None:
+            return saved.decision == "trusted"
+        settings_path = paths.home / "settings.json"
+        if not settings_path.exists():
+            return False
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        if not isinstance(settings, dict):
+            return False
+        # 'ask' is retained for old settings; one-shot commands do not prompt.
+        default = settings.get("defaultProjectTrust", "ask")
+        return isinstance(default, str) and default == "always"
+    except (ProjectTrustError, OSError, ValueError):
+        return False
 
 
 def _lock(handle: IO[bytes]) -> None:

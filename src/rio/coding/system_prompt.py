@@ -1,4 +1,4 @@
-"""Prompt text shared by the CLI, extensions, and MCP clients."""
+"""Prompt text shared by the CLI and MCP clients."""
 
 from __future__ import annotations
 
