@@ -5,11 +5,9 @@ from __future__ import annotations
 import json
 import tomllib
 from collections.abc import Iterable, Mapping
-from contextlib import suppress
 from functools import cache
 from importlib.resources import files
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -23,7 +21,7 @@ from pydantic import (
 )
 
 from rio.ai.types import JSONValue
-from rio.coding.paths import RioPaths
+from rio.coding.paths import RioPaths, atomic_write_text
 from rio.coding.provider_catalog import (
     AuthMethod,
     ModelCatalogMetadata,
@@ -188,7 +186,7 @@ def save_user_catalog_entries(
         "providers": providers,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write_text(path, _catalog_to_toml(updated))
+    atomic_write_text(path, _catalog_to_toml(updated))
     return path
 
 
@@ -741,25 +739,3 @@ def _toml_value(value: object) -> str:
             + " }"
         )
     raise TypeError(f"Unsupported TOML value: {value!r}")
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    temp_path: Path | None = None
-    try:
-        with NamedTemporaryFile(
-            "w",
-            dir=path.parent,
-            encoding="utf-8",
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temp_file:
-            temp_path = Path(temp_file.name)
-            temp_file.write(text)
-            temp_file.flush()
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            with suppress(OSError):
-                temp_path.unlink()
-        raise

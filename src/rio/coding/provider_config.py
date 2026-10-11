@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import re
 from contextlib import suppress
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from json import JSONDecodeError, dumps, loads
 from os import environ
 from pathlib import Path
 from shutil import copy2
-from tempfile import NamedTemporaryFile
-from typing import Any, Protocol, cast
+from typing import Any, ClassVar, cast
 from urllib.parse import urlsplit
 
 from rio.ai.env import (
@@ -28,9 +27,9 @@ from rio.ai.env import (
 )
 from rio.ai.openai_codex import DEFAULT_OPENAI_CODEX_BASE_URL
 from rio.coding.catalog_loader import builtin_catalog, effective_catalog, save_user_catalog_entries
-from rio.coding.credentials import FileCredentialStore, credentials_path
+from rio.coding.credentials import CredentialReader, FileCredentialStore, credentials_path
 from rio.coding.oauth_registry import get_oauth_provider
-from rio.coding.paths import RioPaths
+from rio.coding.paths import RioPaths, atomic_write_text
 from rio.coding.provider_catalog import (
     ModelCatalogMetadata,
     ModelCostTier,
@@ -56,12 +55,6 @@ PROVIDER_SETTINGS_SCHEMA_VERSION = 2
 
 class ProviderConfigError(ValueError):
     """Raised when rio provider configuration is invalid."""
-
-
-class CredentialReader(Protocol):
-    """Credential lookup used while building runtime provider config."""
-
-    def get(self, name: str) -> str | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,9 +102,57 @@ class ProviderModelMetadata:
         }
 
 
+class _ProviderConfigBase:
+    """Validation and serialization shared by every durable provider config."""
+
+    __slots__ = ()
+    json_type: ClassVar[str]
+
+    def __post_init__(self) -> None:
+        provider = cast(ProviderConfig, self)
+        _validate_provider_numbers(
+            timeout_seconds=provider.timeout_seconds,
+            max_retries=provider.max_retries,
+            max_retry_delay_seconds=provider.max_retry_delay_seconds,
+        )
+        _validate_context_windows(provider.context_windows)
+        _validate_model_metadata(provider.models, provider.model_metadata)
+        compat = getattr(provider, "compat", None)
+        if compat is not None:
+            _validate_json_object(compat, "Provider compat")
+        _validate_thinking_config(
+            thinking_levels=provider.thinking_levels,
+            thinking_models=provider.thinking_models,
+            thinking_default=provider.thinking_default,
+            thinking_parameter=provider.thinking_parameter,
+        )
+        _validate_thinking_defaults(provider.thinking_defaults)
+        inference_providers = getattr(provider, "inference_providers", None)
+        if inference_providers is not None:
+            _validate_inference_providers(provider.name, provider.models, inference_providers)
+
+    def to_json(self) -> dict[str, Any]:
+        """Serialize this provider config to JSON-compatible data."""
+        data: dict[str, Any] = {}
+        for item in fields(cast(Any, self)):
+            value = getattr(self, item.name)
+            if item.name == "model_metadata":
+                value = {model: metadata.to_json() for model, metadata in value.items()}
+            elif isinstance(value, tuple):
+                value = list(value)
+            elif isinstance(value, dict):
+                value = dict(value)
+            data[item.name] = value
+            if item.name == "name":
+                data["type"] = self.json_type
+        return data
+
+
 @dataclass(frozen=True, slots=True)
-class OpenAICompatibleProviderConfig:
+class OpenAICompatibleProviderConfig(_ProviderConfigBase):
     """Durable settings for one OpenAI-compatible provider."""
+
+    json_type: ClassVar[str] = "openai-compatible"
 
     name: str
     base_url: str = DEFAULT_OPENAI_COMPATIBLE_BASE_URL
@@ -134,58 +175,12 @@ class OpenAICompatibleProviderConfig:
     thinking_defaults: dict[str, ThinkingLevel] = field(default_factory=dict)
     inference_providers: dict[str, str] = field(default_factory=dict)
 
-    def __post_init__(self) -> None:
-        _validate_provider_numbers(
-            timeout_seconds=self.timeout_seconds,
-            max_retries=self.max_retries,
-            max_retry_delay_seconds=self.max_retry_delay_seconds,
-        )
-        _validate_context_windows(self.context_windows)
-        _validate_model_metadata(self.models, self.model_metadata)
-        _validate_json_object(self.compat, "Provider compat")
-        _validate_thinking_config(
-            thinking_levels=self.thinking_levels,
-            thinking_models=self.thinking_models,
-            thinking_default=self.thinking_default,
-            thinking_parameter=self.thinking_parameter,
-        )
-        _validate_thinking_defaults(self.thinking_defaults)
-        _validate_inference_providers(self.name, self.models, self.inference_providers)
-
-    def to_json(self) -> dict[str, Any]:
-        """Serialize this provider config to JSON-compatible data."""
-        return {
-            "name": self.name,
-            "type": "openai-compatible",
-            "base_url": self.base_url,
-            "api": self.api,
-            "api_key_env": self.api_key_env,
-            "credential_name": self.credential_name,
-            "models": list(self.models),
-            "default_model": self.default_model,
-            "context_windows": dict(self.context_windows),
-            "headers": dict(self.headers),
-            "compat": dict(self.compat),
-            "model_metadata": {
-                model: metadata.to_json() for model, metadata in self.model_metadata.items()
-            },
-            "timeout_seconds": self.timeout_seconds,
-            "max_retries": self.max_retries,
-            "max_retry_delay_seconds": self.max_retry_delay_seconds,
-            "thinking_levels": (
-                list(self.thinking_levels) if self.thinking_levels is not None else None
-            ),
-            "thinking_models": list(self.thinking_models),
-            "thinking_default": self.thinking_default,
-            "thinking_parameter": self.thinking_parameter,
-            "thinking_defaults": dict(self.thinking_defaults),
-            "inference_providers": dict(self.inference_providers),
-        }
-
 
 @dataclass(frozen=True, slots=True)
-class AnthropicProviderConfig:
+class AnthropicProviderConfig(_ProviderConfigBase):
     """Durable settings for Anthropic's Messages API."""
+
+    json_type: ClassVar[str] = "anthropic"
 
     name: str = "anthropic"
     base_url: str = DEFAULT_ANTHROPIC_BASE_URL
@@ -207,56 +202,12 @@ class AnthropicProviderConfig:
     thinking_parameter: ThinkingParameter | None = None
     thinking_defaults: dict[str, ThinkingLevel] = field(default_factory=dict)
 
-    def __post_init__(self) -> None:
-        _validate_provider_numbers(
-            timeout_seconds=self.timeout_seconds,
-            max_retries=self.max_retries,
-            max_retry_delay_seconds=self.max_retry_delay_seconds,
-        )
-        _validate_context_windows(self.context_windows)
-        _validate_model_metadata(self.models, self.model_metadata)
-        _validate_json_object(self.compat, "Provider compat")
-        _validate_thinking_config(
-            thinking_levels=self.thinking_levels,
-            thinking_models=self.thinking_models,
-            thinking_default=self.thinking_default,
-            thinking_parameter=self.thinking_parameter,
-        )
-        _validate_thinking_defaults(self.thinking_defaults)
-
-    def to_json(self) -> dict[str, Any]:
-        """Serialize this provider config to JSON-compatible data."""
-        return {
-            "name": self.name,
-            "type": "anthropic",
-            "base_url": self.base_url,
-            "api": self.api,
-            "api_key_env": self.api_key_env,
-            "credential_name": self.credential_name,
-            "models": list(self.models),
-            "default_model": self.default_model,
-            "context_windows": dict(self.context_windows),
-            "headers": dict(self.headers),
-            "compat": dict(self.compat),
-            "model_metadata": {
-                model: metadata.to_json() for model, metadata in self.model_metadata.items()
-            },
-            "timeout_seconds": self.timeout_seconds,
-            "max_retries": self.max_retries,
-            "max_retry_delay_seconds": self.max_retry_delay_seconds,
-            "thinking_levels": (
-                list(self.thinking_levels) if self.thinking_levels is not None else None
-            ),
-            "thinking_models": list(self.thinking_models),
-            "thinking_default": self.thinking_default,
-            "thinking_parameter": self.thinking_parameter,
-            "thinking_defaults": dict(self.thinking_defaults),
-        }
-
 
 @dataclass(frozen=True, slots=True)
-class OpenAICodexProviderConfig:
+class OpenAICodexProviderConfig(_ProviderConfigBase):
     """Durable settings for OpenAI Codex subscription OAuth."""
+
+    json_type: ClassVar[str] = "openai-codex"
 
     name: str = "openai-codex"
     base_url: str = DEFAULT_OPENAI_CODEX_BASE_URL
@@ -282,49 +233,6 @@ class OpenAICodexProviderConfig:
     thinking_default: ThinkingLevel | None = None
     thinking_parameter: ThinkingParameter | None = None
     thinking_defaults: dict[str, ThinkingLevel] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        _validate_provider_numbers(
-            timeout_seconds=self.timeout_seconds,
-            max_retries=self.max_retries,
-            max_retry_delay_seconds=self.max_retry_delay_seconds,
-        )
-        _validate_context_windows(self.context_windows)
-        _validate_model_metadata(self.models, self.model_metadata)
-        _validate_thinking_config(
-            thinking_levels=self.thinking_levels,
-            thinking_models=self.thinking_models,
-            thinking_default=self.thinking_default,
-            thinking_parameter=self.thinking_parameter,
-        )
-        _validate_thinking_defaults(self.thinking_defaults)
-
-    def to_json(self) -> dict[str, Any]:
-        """Serialize this provider config to JSON-compatible data."""
-        return {
-            "name": self.name,
-            "type": "openai-codex",
-            "base_url": self.base_url,
-            "api_key_env": self.api_key_env,
-            "credential_name": self.credential_name,
-            "models": list(self.models),
-            "default_model": self.default_model,
-            "context_windows": dict(self.context_windows),
-            "headers": dict(self.headers),
-            "model_metadata": {
-                model: metadata.to_json() for model, metadata in self.model_metadata.items()
-            },
-            "timeout_seconds": self.timeout_seconds,
-            "max_retries": self.max_retries,
-            "max_retry_delay_seconds": self.max_retry_delay_seconds,
-            "thinking_levels": (
-                list(self.thinking_levels) if self.thinking_levels is not None else None
-            ),
-            "thinking_models": list(self.thinking_models),
-            "thinking_default": self.thinking_default,
-            "thinking_parameter": self.thinking_parameter,
-            "thinking_defaults": dict(self.thinking_defaults),
-        }
 
 
 type ProviderConfig = (
@@ -384,7 +292,7 @@ class ProviderSelection:
 
 def builtin_provider_configs() -> tuple[ProviderConfig, ...]:
     """Return rio's built-in provider configs."""
-    return tuple(provider_config_from_catalog_entry(entry.name) for entry in builtin_catalog())
+    return tuple(provider_config_from_entry(entry) for entry in builtin_catalog())
 
 
 def provider_config_from_catalog_entry(name: str) -> ProviderConfig:
@@ -397,62 +305,41 @@ def provider_config_from_catalog_entry(name: str) -> ProviderConfig:
 
 def provider_config_from_entry(entry: ProviderCatalogEntry) -> ProviderConfig:
     """Create a durable provider config from a catalog entry."""
-    context_windows = dict(entry.context_windows or {})
-    model_metadata = _provider_model_metadata_from_catalog(entry.model_metadata)
-    if entry.kind == "anthropic":
-        return AnthropicProviderConfig(
-            name=entry.name,
-            base_url=entry.base_url,
-            api=_default_api_for_kind(entry.kind),
-            api_key_env=entry.api_key_env,
-            credential_name=entry.credential_name,
-            models=entry.models,
-            default_model=entry.default_model,
-            context_windows=context_windows,
-            headers=dict(entry.headers),
-            compat=dict(entry.compat),
-            model_metadata=model_metadata,
-            thinking_levels=entry.thinking_levels,
-            thinking_models=entry.thinking_models,
-            thinking_default=entry.thinking_default,
-            thinking_parameter=entry.thinking_parameter,
-            thinking_defaults={},
-        )
-    if entry.kind == "openai-codex":
-        return OpenAICodexProviderConfig(
-            name=entry.name,
-            base_url=entry.base_url,
-            api_key_env=entry.api_key_env,
-            credential_name=entry.credential_name,
-            models=entry.models,
-            default_model=entry.default_model,
-            context_windows=context_windows,
-            headers=dict(entry.headers),
-            model_metadata=model_metadata,
-            thinking_levels=entry.thinking_levels,
-            thinking_models=entry.thinking_models,
-            thinking_default=entry.thinking_default,
-            thinking_parameter=entry.thinking_parameter,
-            thinking_defaults={},
-        )
-    return OpenAICompatibleProviderConfig(
+    return _new_provider_config(
+        entry.kind,
+        # Catalog anthropic entries always speak the Messages API.
+        api=None if entry.kind == "anthropic" else entry.api,
+        compat=dict(entry.compat),
         name=entry.name,
         base_url=entry.base_url,
-        api=entry.api or _default_api_for_kind(entry.kind),
         api_key_env=entry.api_key_env,
         credential_name=entry.credential_name,
         models=entry.models,
         default_model=entry.default_model,
-        context_windows=context_windows,
+        context_windows=dict(entry.context_windows or {}),
         headers=dict(entry.headers),
-        compat=dict(entry.compat),
-        model_metadata=model_metadata,
+        model_metadata=_provider_model_metadata_from_catalog(entry.model_metadata),
         thinking_levels=entry.thinking_levels,
         thinking_models=entry.thinking_models,
         thinking_default=entry.thinking_default,
         thinking_parameter=entry.thinking_parameter,
-        thinking_defaults={},
     )
+
+
+def _new_provider_config(
+    kind: str,
+    *,
+    api: ProviderApi | None,
+    compat: dict[str, Any],
+    **values: Any,
+) -> ProviderConfig:
+    """Build the config class for ``kind``; Codex has no api or compat fields."""
+    if kind == "openai-codex":
+        return OpenAICodexProviderConfig(**values)
+    api = api or _default_api_for_kind(kind)
+    if kind == "anthropic":
+        return AnthropicProviderConfig(api=api, compat=compat, **values)
+    return OpenAICompatibleProviderConfig(api=api, compat=compat, **values)
 
 
 def _default_api_for_kind(kind: str) -> ProviderApi:
@@ -507,7 +394,7 @@ def load_provider_settings(paths: RioPaths | None = None) -> ProviderSettings:
     if not isinstance(raw, dict):
         raise ProviderConfigError("Provider settings must be a JSON object")
     settings = provider_settings_from_json(raw, paths=resolved_paths)
-    return _with_builtin_catalog_models(settings, paths=resolved_paths)
+    return _with_catalog_providers(settings, paths=resolved_paths)
 
 
 def save_provider_settings(settings: ProviderSettings, paths: RioPaths | None = None) -> Path:
@@ -571,12 +458,12 @@ def upsert_provider(
     return updated
 
 
-def _with_builtin_catalog_models(
+def _with_catalog_providers(
     settings: ProviderSettings,
     *,
     paths: RioPaths | None = None,
 ) -> ProviderSettings:
-    """Return settings with the current provider catalog merged in."""
+    """Merge effective catalog definitions into settings and add missing catalog providers."""
     catalog_configs = {config.name: config for config in _effective_provider_configs(paths)}
     providers = tuple(
         _merge_provider_config(provider, catalog_configs[provider.name])
@@ -616,7 +503,7 @@ def _write_provider_settings(
     path.parent.mkdir(parents=True, exist_ok=True)
     if backup:
         _backup_provider_settings(path, strict=False)
-    _atomic_write_text(path, dumps(settings.to_json(), indent=2, sort_keys=True) + "\n")
+    atomic_write_text(path, dumps(settings.to_json(), indent=2, sort_keys=True) + "\n")
 
 
 def _effective_provider_configs(paths: RioPaths | None = None) -> tuple[ProviderConfig, ...]:
@@ -647,154 +534,44 @@ def _append_catalog_providers(
 
 
 def _merge_provider_config(existing: ProviderConfig, incoming: ProviderConfig) -> ProviderConfig:
-    """Merge a replacement provider config without losing local customizations."""
+    """Merge a replacement provider config without losing local customizations.
+
+    ``incoming`` supplies the definition; ``existing`` keeps the user's runtime
+    preferences, extra headers/compat/metadata, and (as one group) thinking setup.
+    Codex keeps the incoming model list; other kinds union both lists.
+    """
     if type(existing) is not type(incoming):
         return incoming
-
-    if isinstance(existing, OpenAICodexProviderConfig) and isinstance(
-        incoming, OpenAICodexProviderConfig
-    ):
-        return replace(
-            incoming,
-            default_model=(
-                existing.default_model
-                if existing.default_model in incoming.models
-                else incoming.default_model
-            ),
-            headers={**incoming.headers, **existing.headers},
-            timeout_seconds=existing.timeout_seconds,
-            max_retries=existing.max_retries,
-            max_retry_delay_seconds=existing.max_retry_delay_seconds,
-            context_windows={**incoming.context_windows, **existing.context_windows},
-            model_metadata=_merge_provider_model_metadata(
-                incoming.model_metadata,
-                existing.model_metadata,
-            ),
-            thinking_levels=(
-                existing.thinking_levels
-                if existing.thinking_levels is not None
-                else incoming.thinking_levels
-            ),
-            thinking_models=(
-                existing.thinking_models
-                if existing.thinking_levels is not None
-                else incoming.thinking_models
-            ),
-            thinking_default=(
-                existing.thinking_default
-                if existing.thinking_levels is not None
-                else incoming.thinking_default
-            ),
-            thinking_parameter=(
-                existing.thinking_parameter
-                if existing.thinking_levels is not None
-                else incoming.thinking_parameter
-            ),
-            thinking_defaults=existing.thinking_defaults,
-        )
-
-    if isinstance(existing, OpenAICompatibleProviderConfig) and isinstance(
-        incoming, OpenAICompatibleProviderConfig
-    ):
-        return _merge_openai_compatible_provider(existing, incoming)
-
-    if isinstance(existing, AnthropicProviderConfig) and isinstance(
-        incoming, AnthropicProviderConfig
-    ):
-        return _merge_anthropic_provider(existing, incoming)
-
-    return incoming
-
-
-def _merge_openai_compatible_provider(
-    existing: OpenAICompatibleProviderConfig,
-    incoming: OpenAICompatibleProviderConfig,
-) -> OpenAICompatibleProviderConfig:
-    models = _unique_strings((*incoming.models, *existing.models))
-    return replace(
-        incoming,
-        models=models,
-        default_model=(
+    if isinstance(incoming, OpenAICodexProviderConfig):
+        models = incoming.models
+    else:
+        models = _unique_strings((*incoming.models, *existing.models))
+    thinking = existing if existing.thinking_levels is not None else incoming
+    changes: dict[str, Any] = {
+        "models": models,
+        "default_model": (
             existing.default_model if existing.default_model in models else incoming.default_model
         ),
-        headers={**incoming.headers, **existing.headers},
-        compat={**incoming.compat, **existing.compat},
-        model_metadata=_merge_provider_model_metadata(
+        "headers": {**incoming.headers, **existing.headers},
+        "model_metadata": _merge_provider_model_metadata(
             incoming.model_metadata,
             existing.model_metadata,
         ),
-        timeout_seconds=existing.timeout_seconds,
-        max_retries=existing.max_retries,
-        max_retry_delay_seconds=existing.max_retry_delay_seconds,
-        context_windows={**incoming.context_windows, **existing.context_windows},
-        thinking_levels=(
-            existing.thinking_levels
-            if existing.thinking_levels is not None
-            else incoming.thinking_levels
-        ),
-        thinking_models=(
-            existing.thinking_models
-            if existing.thinking_levels is not None
-            else incoming.thinking_models
-        ),
-        thinking_default=(
-            existing.thinking_default
-            if existing.thinking_levels is not None
-            else incoming.thinking_default
-        ),
-        thinking_parameter=(
-            existing.thinking_parameter
-            if existing.thinking_levels is not None
-            else incoming.thinking_parameter
-        ),
-        thinking_defaults=existing.thinking_defaults,
-        inference_providers=existing.inference_providers,
-    )
-
-
-def _merge_anthropic_provider(
-    existing: AnthropicProviderConfig,
-    incoming: AnthropicProviderConfig,
-) -> AnthropicProviderConfig:
-    models = _unique_strings((*incoming.models, *existing.models))
-    return replace(
-        incoming,
-        models=models,
-        default_model=(
-            existing.default_model if existing.default_model in models else incoming.default_model
-        ),
-        headers={**incoming.headers, **existing.headers},
-        compat={**incoming.compat, **existing.compat},
-        model_metadata=_merge_provider_model_metadata(
-            incoming.model_metadata,
-            existing.model_metadata,
-        ),
-        timeout_seconds=existing.timeout_seconds,
-        max_retries=existing.max_retries,
-        max_retry_delay_seconds=existing.max_retry_delay_seconds,
-        context_windows={**incoming.context_windows, **existing.context_windows},
-        thinking_levels=(
-            existing.thinking_levels
-            if existing.thinking_levels is not None
-            else incoming.thinking_levels
-        ),
-        thinking_models=(
-            existing.thinking_models
-            if existing.thinking_levels is not None
-            else incoming.thinking_models
-        ),
-        thinking_default=(
-            existing.thinking_default
-            if existing.thinking_levels is not None
-            else incoming.thinking_default
-        ),
-        thinking_parameter=(
-            existing.thinking_parameter
-            if existing.thinking_levels is not None
-            else incoming.thinking_parameter
-        ),
-        thinking_defaults=existing.thinking_defaults,
-    )
+        "timeout_seconds": existing.timeout_seconds,
+        "max_retries": existing.max_retries,
+        "max_retry_delay_seconds": existing.max_retry_delay_seconds,
+        "context_windows": {**incoming.context_windows, **existing.context_windows},
+        "thinking_levels": thinking.thinking_levels,
+        "thinking_models": thinking.thinking_models,
+        "thinking_default": thinking.thinking_default,
+        "thinking_parameter": thinking.thinking_parameter,
+        "thinking_defaults": existing.thinking_defaults,
+    }
+    if not isinstance(incoming, OpenAICodexProviderConfig):
+        changes["compat"] = {**incoming.compat, **cast(Any, existing).compat}
+    if isinstance(existing, OpenAICompatibleProviderConfig):
+        changes["inference_providers"] = existing.inference_providers
+    return replace(incoming, **changes)
 
 
 def _merge_provider_model_metadata(
@@ -828,29 +605,6 @@ def _merge_provider_model_metadata(
 def _unique_strings(values: tuple[str, ...]) -> tuple[str, ...]:
     """Return values with duplicates removed while preserving order."""
     return tuple(dict.fromkeys(values))
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    """Write text through a sibling temp file and atomically replace the target."""
-    temp_path: Path | None = None
-    try:
-        with NamedTemporaryFile(
-            "w",
-            dir=path.parent,
-            encoding="utf-8",
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temp_file:
-            temp_path = Path(temp_file.name)
-            temp_file.write(text)
-            temp_file.flush()
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            with suppress(OSError):
-                temp_path.unlink()
-        raise
 
 
 def _provider_preference_to_json(provider: ProviderConfig) -> dict[str, Any]:
@@ -1800,60 +1554,20 @@ def _provider_from_json(data: object) -> ProviderConfig:
     )
     if default_model not in models:
         models = (*models, default_model)
-    if provider_type == "anthropic":
-        return AnthropicProviderConfig(
-            name=name,
-            base_url=base_url,
-            api=api or "anthropic-messages",
-            api_key_env=api_key_env,
-            credential_name=credential_name,
-            models=models,
-            default_model=default_model,
-            context_windows=context_windows,
-            headers=headers,
-            compat=compat,
-            model_metadata=model_metadata,
-            timeout_seconds=timeout_seconds,
-            max_retries=max_retries,
-            max_retry_delay_seconds=max_retry_delay_seconds,
-            thinking_levels=thinking_levels,
-            thinking_models=thinking_models,
-            thinking_default=thinking_default,
-            thinking_parameter=thinking_parameter,
-            thinking_defaults=thinking_defaults,
-        )
     if provider_type == "openai-codex":
         _reject_codex_legacy_compat(compat)
-        return OpenAICodexProviderConfig(
-            name=name,
-            base_url=base_url,
-            api_key_env=api_key_env,
-            credential_name=credential_name,
-            models=models,
-            default_model=default_model,
-            context_windows=context_windows,
-            headers=headers,
-            model_metadata=model_metadata,
-            timeout_seconds=timeout_seconds,
-            max_retries=max_retries,
-            max_retry_delay_seconds=max_retry_delay_seconds,
-            thinking_levels=thinking_levels,
-            thinking_models=thinking_models,
-            thinking_default=thinking_default,
-            thinking_parameter=thinking_parameter,
-            thinking_defaults=thinking_defaults,
-        )
-    return OpenAICompatibleProviderConfig(
+    return _new_provider_config(
+        provider_type,
+        api=api,
+        compat=compat,
         name=name,
         base_url=base_url,
-        api=api or _default_api_for_kind(provider_type),
         api_key_env=api_key_env,
         credential_name=credential_name,
         models=models,
         default_model=default_model,
         context_windows=context_windows,
         headers=headers,
-        compat=compat,
         model_metadata=model_metadata,
         timeout_seconds=timeout_seconds,
         max_retries=max_retries,
