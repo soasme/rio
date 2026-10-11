@@ -26,7 +26,9 @@ built-in catalog; the user catalog is applied last and can add or override its
 entries. `rio run` uses only this catalog and saved provider preferences.
 Unknown providers and invalid models are configuration errors. Configure custom
 endpoints in `~/.rio/catalog.toml`, including [local servers](local-inference.md).
-Each run selects one provider and model.
+Each run selects one provider and model. `~/.rio/providers.json` holds saved
+preferences only, such as the default provider and model; it cannot define
+providers.
 
 Runtime provider objects carry request settings only. Cost rates, tiers, display
 names, and context-window sizes stay in the catalog; saving runtime preferences
