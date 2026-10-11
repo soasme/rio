@@ -1,19 +1,15 @@
 # Trust project resources
 
-Project provider extensions execute Python. Rio loads them only after project
-trust is approved. Explicit extension paths are treated as selected by the user.
+`rio run` reads project instructions from `AGENTS.md` or `--agents-md`. It does
+not load project provider extensions or resolve project trust.
 
-Approve them for a run when you have reviewed the project:
+MCP management commands check project trust before loading `.rio/mcp.json`,
+which can start processes. They use saved decisions in `~/.rio/trust.json` and
+`defaultProjectTrust` in `~/.rio/settings.json`. The default `ask` policy declines
+project resources without an interactive prompt. User-level `~/.rio/mcp.json`
+does not require project trust.
 
-```bash
-rio run --approve "Follow the project's contribution guide and fix issue 42."
-```
+The Python MCP client takes an explicit `project_trusted` argument when loading
+configuration. See [Use MCP servers](mcp.md).
 
-Disable them explicitly when needed:
-
-```bash
-rio run --no-approve "Explain this codebase."
-```
-
-Project trust is a resource-loading decision, not a sandbox. Review and run
-untrusted code using appropriate isolation.
+Trust controls resource loading; it does not sandbox scripts or network access.

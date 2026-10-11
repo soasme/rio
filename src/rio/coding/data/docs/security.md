@@ -1,9 +1,7 @@
 # Project trust and security
 
-Project provider extensions require trust before the CLI imports them.
-Explicit approve/decline flags apply to one run. Saved decisions use
-`~/.rio/trust.json`; headless `ask` declines protected project inputs.
-User and explicitly selected extensions execute with the user's privileges.
+`rio run` selects configured providers without importing extensions or checking
+project trust. Python extension loading is available only to custom library hosts.
 
 MCP management also checks trust before loading project server configuration.
 The standalone MCP client takes an explicit `project_trusted` choice when

@@ -736,7 +736,7 @@ async def test_credential_cleanup_failure_is_reported_and_reset_is_recoverable(
 
 
 @pytest.mark.anyio
-async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
+async def test_run_uses_catalog_for_local_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from rio.cli.run import run_persistent_session
@@ -744,7 +744,14 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
     isolate_home(monkeypatch, tmp_path)
 
     paths = RioPaths(home=tmp_path / ".rio")
-    LlamaCppStateStore(paths=paths).save(_state())
+    paths.home.mkdir(parents=True, exist_ok=True)
+    (paths.home / "catalog.toml").write_text(
+        "schema_version = 1\n"
+        "[[providers]]\n"
+        'name = "local-llama"\n'
+        'base_url = "http://127.0.0.1:8080/v1"\n'
+        'models = ["qwen-local"]\n'
+    )
     project = tmp_path / "project"
     project.mkdir()
     requests: list[httpx.Request] = []
@@ -802,7 +809,6 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
     def fake_client(*, timeout: float) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout)
 
-    monkeypatch.setattr(llama_service, "create_async_client", fake_client)
     import rio.ai.openai_compatible as compatible
 
     monkeypatch.setattr(compatible, "create_async_client", fake_client)
@@ -810,8 +816,7 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
         prompt="say hello",
         model="qwen-local",
         cwd=project,
-        provider_name="llama.cpp",
-        trust_override="decline",
+        provider_name="local-llama",
     )
     assert ok is True
     assert "hello" in capsys.readouterr().out

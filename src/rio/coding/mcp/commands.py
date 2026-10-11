@@ -113,7 +113,7 @@ def remove(name: str, *, local: bool, cwd: Path, paths: RioPaths | None = None) 
 
 
 def project_trusted(cwd: Path, paths: RioPaths | None = None) -> bool:
-    """Whether `rio run` would trust the project, without asking."""
+    """Whether saved policy permits project MCP configuration, without asking."""
     from rio.coding.project_trust import ProjectTrustCoordinator, ProjectTrustStore
     from rio.coding.shell_config import load_shell_settings
 
@@ -136,7 +136,7 @@ def _untrusted_note(config: McpConfig) -> str | None:
         return None
     return (
         f"{config.ignored_project_file} is ignored because the project is not trusted. "
-        "Run `rio run --approve` in the project to trust it."
+        "Configure reviewed servers in ~/.rio/mcp.json to use them without project trust."
     )
 
 

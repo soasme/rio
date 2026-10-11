@@ -8,11 +8,8 @@ from pathlib import Path
 
 from rio.coding import cells
 from rio.coding.context import load_agents_md
-from rio.coding.extensions.startup import resolve_dynamic_startup
 from rio.coding.paths import RioPaths
-from rio.coding.project_trust import TrustOverride
 from rio.coding.provider_config import (
-    ProviderConfigError,
     load_provider_settings,
     resolve_provider_selection,
     resolve_startup_thinking_level,
@@ -25,12 +22,11 @@ from rio.coding.system_prompt import format_project_context
 
 async def run_persistent_session(
     prompt: str,
+    *,
     cwd: Path | None = None,
     provider_name: str | None = None,
     model: str | None = None,
     thinking_level: str | None = None,
-    extension_paths: tuple[Path, ...] = (),
-    trust_override: TrustOverride | None = None,
     resume: str | None = None,
     output_mode: PrintOutputMode = PrintOutputMode.human,
     agents_md: Path | None = None,
@@ -75,33 +71,16 @@ async def run_persistent_session(
             instructions = cells.INSTRUCTIONS + format_project_context(
                 (context,) if context else ()
             )
-        dynamic = None
-        try:
-            selection = resolve_provider_selection(
-                load_provider_settings(), provider_name=provider_name, model=model
-            )
-        except ProviderConfigError:
-            if provider_name is None:
-                raise
-            dynamic = await resolve_dynamic_startup(
-                provider_name=provider_name,
-                model=model,
-                cwd=cwd,
-                extension_paths=extension_paths,
-                trust_override=trust_override,
-            )
-            if dynamic is None:
-                raise
-            provider = dynamic.provider
-            provider_name, model = dynamic.provider_name, dynamic.model
-        else:
-            provider_name, model = selection.provider.name, selection.model
-            thinking_level = resolve_startup_thinking_level(
-                selection.provider, selection.model, cli_override=thinking_level
-            )
-            provider = create_model_provider(
-                selection.provider, model=model, thinking_level=thinking_level
-            )
+        selection = resolve_provider_selection(
+            load_provider_settings(), provider_name=provider_name, model=model
+        )
+        provider_name, model = selection.provider.name, selection.model
+        thinking_level = resolve_startup_thinking_level(
+            selection.provider, selection.model, cli_override=thinking_level
+        )
+        provider = create_model_provider(
+            selection.provider, model=model, thinking_level=thinking_level
+        )
         try:
             if session is None:
                 session = Session.create(
@@ -117,13 +96,14 @@ async def run_persistent_session(
                     instructions=instructions,
                 )
 
+            renderer = PlainEventRenderer()
+
             def publish(event):
                 if output_mode == PrintOutputMode.json:
                     print(json.dumps({"session_id": session_id, **event}), flush=True)
                 else:
                     renderer.render(event)
 
-            renderer = PlainEventRenderer()
             succeeded = await run(session, provider, model, publish)
             metrics = session.record_durability_metrics()
             if metrics is not None:
@@ -131,5 +111,3 @@ async def run_persistent_session(
             return succeeded, session_id
         finally:
             await provider.aclose()
-            if dynamic:
-                await dynamic.runtime.aclose()
