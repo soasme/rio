@@ -91,7 +91,20 @@ def test_help_lists_commands(capsys: pytest.CaptureFixture[str]) -> None:
         app(["--help"])
 
     assert error.value.code == 0
-    assert "commands:" in capsys.readouterr().out
+    help_text = capsys.readouterr().out
+    assert "commands:" in help_text
+    for command in ("run", "login", "version"):
+        assert command in help_text
+    assert "mcp" not in help_text.lower()
+
+
+@pytest.mark.parametrize("command", ["add", "remove", "list", "login", "logout"])
+def test_mcp_commands_are_rejected(command: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as error:
+        app(["mcp", command])
+
+    assert error.value.code == 2
+    assert "invalid choice: 'mcp'" in capsys.readouterr().err
 
 
 def test_version_prints_installed_version(

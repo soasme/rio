@@ -3,7 +3,6 @@
 ```text
 rio login PROVIDER [--method METHOD]
 rio run [OPTIONS] TASK
-rio mcp add|remove|list|login|logout
 rio version
 ```
 
@@ -49,25 +48,6 @@ transcript before showing new progress. See the [message design](https://github.
 `working` while it runs, then `done`, `error`, or `idle` on interrupt. It reports
 when stderr is a terminal and `TERM` is not `dumb`. Set `RIO_PROGRAM_STATUS=1` or
 `RIO_PROGRAM_STATUS=0` to force reporting on or off.
-
-## `rio mcp`
-
-Manages [MCP servers](https://github.com/soasme/rio/blob/main/docs/guides/mcp.md) without starting a session.
-
-| Command | Description |
-| --- | --- |
-| `rio mcp add NAME -- COMMAND [ARGS...]` | Add or replace a stdio server. |
-| `rio mcp add NAME --url URL` | Add or replace a streamable HTTP server. |
-| `rio mcp remove NAME` | Remove a server. |
-| `rio mcp list [--json]` | Connect to each server and show its tools. Exits 1 on any failure. |
-| `rio mcp login NAME [--timeout SECONDS]` | Sign in to an OAuth server in the browser. |
-| `rio mcp logout NAME` | Delete the server's stored OAuth credentials. |
-
-`add` and `remove` change `~/.rio/mcp.json`, or `.rio/mcp.json` with
-`-l`/`--local`. `add` also takes `--env KEY=VALUE` and `--cwd DIR` for stdio
-servers, `--header KEY=VALUE`, `--oauth-client-id`, `--oauth-client-secret`,
-`--oauth-callback-port`, and `--oauth-scope` for HTTP servers, and
-`--description TEXT`.
 
 ## `rio version`
 

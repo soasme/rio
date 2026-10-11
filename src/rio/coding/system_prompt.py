@@ -1,4 +1,4 @@
-"""Prompt text shared by the CLI and MCP clients."""
+"""Project instruction formatting for coding sessions."""
 
 from __future__ import annotations
 
@@ -13,14 +13,6 @@ class ProjectContextFile:
 
     path: str
     content: str
-
-
-@dataclass(frozen=True, slots=True)
-class PromptSection:
-    """A free-form, optionally titled prompt section."""
-
-    title: str | None
-    body: str
 
 
 def format_project_context(context_files: Sequence[ProjectContextFile]) -> str:

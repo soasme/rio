@@ -7,7 +7,6 @@ provider configuration, coding cells and the durable session runtime.
 rio login anthropic
 rio run --provider anthropic "Fix the failing tests."
 rio run --resume SESSION_ID
-rio mcp list
 rio version
 ```
 
