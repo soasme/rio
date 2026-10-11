@@ -77,5 +77,5 @@ See [the Lean behavior models](tests/lean/README.md) for their scope and limits.
 * [rio.agent](src/rio/agent/README.md) owns SQLite state, immutable cells, notes,
   workers, and recovery. Callers add runnable cell kinds.
 * [rio.coding](src/rio/coding/README.md) supplies code and cmd cells, provider
-  configuration, credentials, and MCP clients.
+  configuration and credentials.
 * [rio.cli](src/rio/cli/README.md) runs coding tasks.

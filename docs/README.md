@@ -13,8 +13,6 @@ resume its durable session when needed.
 - [Use Rio as a library](guides/library-usage.md)
 - [Use a local llama-server model](guides/local-llama-server.md)
 - [Resume a session](guides/sessions.md)
-- [Trust project MCP configuration](guides/project-trust.md)
-- [Use MCP servers](guides/mcp.md)
 
 ## Reference
 

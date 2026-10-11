@@ -27,16 +27,10 @@ process supervision, journaling and recovery. See the
 | [provider_runtime.py](provider_runtime.py) | Construct `rio.ai` providers with request settings and authentication. |
 | [credentials.py](credentials.py), [oauth_registry.py](oauth_registry.py) | Store credentials and select login flows. |
 | [context.py](context.py), [system_prompt.py](system_prompt.py) | Load and format project instructions. |
-| [mcp/](mcp/) | Configure, authenticate and call MCP servers. |
-| [project_trust.py](project_trust.py) | Read saved policy for project MCP configuration. |
 | [rendering/](rendering/) | Render committed events as a human transcript. |
 
 Runtime provider objects carry request settings. Names, costs, tiers and context
 window sizes remain in the catalog, available through `effective_catalog()`.
-MCP scripts explicitly load configuration and create a client; the CLI does not
-preload one into cells.
 
-See [providers](../../../docs/guides/providers.md),
-[project trust](../../../docs/guides/project-trust.md) and
-[MCP](../../../docs/guides/mcp.md) for setup. The [bundled references](data/docs/README.md)
+See [providers](../../../docs/guides/providers.md) for setup. The [bundled references](data/docs/README.md)
 are also available in installed packages.

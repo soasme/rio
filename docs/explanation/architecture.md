@@ -9,7 +9,7 @@ Rio saves each accepted change in SQLite and runs code in separate Python proces
 | --- | --- |
 | `rio.ai` | Send requests to model providers and read their responses. |
 | `rio.agent` | Own state, check steps, run cells, and recover sessions. |
-| `rio.coding` | Define code and cmd cells; configure providers, credentials, and MCP clients. |
+| `rio.coding` | Define code and cmd cells; configure providers and credentials. |
 | `rio.cli` | Start or resume a task and print committed results. |
 
 ## One step
