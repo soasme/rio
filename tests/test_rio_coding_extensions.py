@@ -11,8 +11,8 @@ from rio.coding.resources import RioResourcePaths
 async def test_extension_observers_and_retirement(tmp_path):
     extension = tmp_path / "observer.py"
     extension.write_text(
-        'def setup(api):\n'
-        '    def observe(event, ctx):\n'
+        "def setup(api):\n"
+        "    def observe(event, ctx):\n"
         '        event["changes"]["injected"] = True\n'
         '        ctx.state["cells"].append({"id": 99})\n'
         '    api.on("turn_prepared", observe)\n'
