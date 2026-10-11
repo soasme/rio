@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import httpx
 
 from rio.ai._provider_events import (
@@ -12,7 +14,7 @@ from rio.ai._provider_events import (
 from rio.ai.env import OpenAICompatibleConfig
 from rio.ai.messages import UserMessage
 from rio.ai.openai_compatible import OpenAICompatibleProvider
-from rio.ai.retry import RetryableFailure, RetryAttempt, stream_with_retries
+from rio.ai.retry import RetryableFailure, RetryAttempt, parse_retry_after, stream_with_retries
 
 
 class _CancelAfter:
@@ -182,3 +184,41 @@ async def test_adapter_reports_terminal_http_status_without_retry():
             data={"status_code": 400, "body": '{"error":{"message":"bad"}}', "attempts": 1},
         )
     ]
+
+
+def test_parse_retry_after_accepts_seconds_and_http_dates():
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    assert parse_retry_after("7") == 7.0
+    assert parse_retry_after(" 0 ") == 0.0
+    assert parse_retry_after("Thu, 01 Jan 2026 12:00:30 GMT", now=now) == 30.0
+    assert parse_retry_after("Thu, 01 Jan 2026 11:59:00 GMT", now=now) == 0.0
+    assert parse_retry_after(None) is None
+    assert parse_retry_after("soon") is None
+    assert parse_retry_after("-5") is None
+
+
+async def test_adapter_honors_retry_after_clamped_to_max_delay():
+    events = await _stream_openai(
+        [
+            _sse_response(429, "slow", headers={"retry-after": "0"}),
+            _sse_response(503, "busy", headers={"retry-after": "120"}),
+            _sse_response(200, _CHAT_OK),
+        ],
+        max_delay=0.05,
+    )
+
+    assert [event.delay_seconds for event in events[:2]] == [0.0, 0.05]
+    assert events[2].type == "response_start"
+
+
+async def test_adapter_falls_back_to_exponential_delay_without_retry_after():
+    events = await _stream_openai(
+        [
+            _sse_response(503, "busy", headers={"retry-after": "later"}),
+            _sse_response(200, _CHAT_OK),
+        ],
+        max_delay=0.01,
+    )
+
+    assert events[0].delay_seconds == 0.01

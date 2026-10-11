@@ -6,6 +6,8 @@ from asyncio import sleep
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -39,11 +41,13 @@ class RetryableFailure(Exception):
         error: ProviderErrorEvent,
         *,
         data: dict[str, JSONValue] | None = None,
+        retry_after_seconds: float | None = None,
     ) -> None:
         super().__init__(reason)
         self.reason = reason
         self.error = error
         self.data = data
+        self.retry_after_seconds = retry_after_seconds
 
 
 async def stream_with_retries(
@@ -61,6 +65,7 @@ async def stream_with_retries(
     """
     attempt = RetryAttempt()
     while True:
+        retry_after: float | None = None
         try:
             async with aclosing(stream_attempt(attempt)) as events:
                 async for event in events:
@@ -72,6 +77,7 @@ async def stream_with_retries(
                 return
             reason = failure.reason
             data = failure.data
+            retry_after = failure.retry_after_seconds
         except httpx.HTTPError as exc:
             if attempt.emitted_content or attempt.number >= max_retries:
                 yield ProviderErrorEvent(message=str(exc), data={"attempts": attempt.number + 1})
@@ -80,6 +86,8 @@ async def stream_with_retries(
             data = {"error": str(exc), "error_type": type(exc).__name__}
 
         delay = retry_delay_seconds(attempt.number, max_delay_seconds=max_retry_delay_seconds)
+        if retry_after is not None:
+            delay = max(0.0, min(retry_after, max_retry_delay_seconds))
         yield provider_retry_event(
             attempt=attempt.number,
             max_retries=max_retries,
@@ -100,7 +108,7 @@ async def check_response_status(
 ) -> ProviderErrorEvent | None:
     """Return ``None`` for a successful response, else handle its HTTP error.
 
-    Raises ``RetryableFailure`` for a transient status.
+    Raises ``RetryableFailure`` for a transient status, honoring ``Retry-After``.
     Otherwise returns the terminal event ``error`` builds from the response body.
     ``is_retryable(status_code, body)`` overrides the default transient statuses.
     """
@@ -117,6 +125,7 @@ async def check_response_status(
             f"HTTP {status_code}",
             event,
             data={"status_code": status_code, "body": body},
+            retry_after_seconds=parse_retry_after(response.headers.get("retry-after")),
         )
     return event
 
@@ -124,6 +133,25 @@ async def check_response_status(
 def is_transient_status(status_code: int) -> bool:
     """Return whether an HTTP status is worth retrying."""
     return status_code in {408, 409, 425, 429} or status_code >= 500
+
+
+def parse_retry_after(value: str | None, *, now: datetime | None = None) -> float | None:
+    """Return the delay a ``Retry-After`` header asks for, in seconds.
+
+    Accepts delay-seconds or an HTTP-date. Returns ``None`` when absent or invalid.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return max(0.0, (when - (now or datetime.now(UTC))).total_seconds())
 
 
 def retry_delay_seconds(attempt: int, *, max_delay_seconds: float) -> float:
