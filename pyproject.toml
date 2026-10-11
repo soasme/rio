@@ -12,7 +12,6 @@ license-files = ["LICENSE", "NOTICE"]
 dependencies = [
     "anyio>=4.0",
     "httpx[socks]>=0.27",
-    "jsonpatch>=1.33",
     "packaging>=24.0",
     "pillow>=11.0",
     "psutil>=7.0",

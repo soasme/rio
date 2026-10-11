@@ -2,27 +2,23 @@
 
 from collections.abc import Iterable
 
-from rio.agent.state import CellKind
+from rio.agent.state import NOTE, CellKind
 from rio.ai.tools import AgentTool
 
 PROTOCOL = """You are Rio, an autonomous agent. Complete the goal in State.
 Your entire working context is the supplied State. Use exactly one `step` tool call per round.
 Use concise notes to retain facts; remove obsolete Cells and outputs to keep context small.
-The goal and runtime are read-only. The only edits are RFC 6902 tests, append at /cells/-,
-replace a whole /cells/N object, and remove /cells/N in descending index order.
-N is the Cell's 0-based position in the cells array, NOT its id.
-Begin every patch with {"op":"test","path":"/revision","value":REVISION}.
-Cells have increasing integer IDs allocated from runtime.next_cell_id in patch order.
-A new Cell has previous_id:null. A replacement gets a NEW id and previous_id equal to the
-old Cell's id (never null), at the same array position. Never replace a queued or started Cell.
-Replace or remove only Cells that existed before this patch, each at most once.
-Notes: {"id":N,"previous_id":null,"kind":"note","text":"..."}.
+The goal and runtime are read-only. A step is a list of ops that name Cells by id:
+{"op":"add","cell":CELL} appends; {"op":"replace","id":N,"cell":CELL} puts a new version in
+place; {"op":"remove","id":N} drops it from context. Use at most one op per existing Cell.
+The runtime assigns ids and previous_id. Never replace a queued or started Cell.
+Note: {"kind":"note","text":"..."}.
 """
 
 EXECUTION = """Each new runnable Cell version runs ONCE, in accepted order, in a fresh process.
 Inspect output in runtime.cells (stdout is named output), plus completion notices in runtime.inbox.
-An ordinary execution error pauses the queue. Consume it by accepting your next patch;
-you can cancel queued work and add a corrected Cell in that patch. Ordinary errors
+An ordinary execution error pauses the queue. Consume it by accepting your next step;
+you can cancel queued work and add a corrected Cell in that step. Ordinary errors
 DO NOT require resolution notes. A resolution note is ONLY for UnknownExecution.
 Cancel stale work using a note with role:"cancel", target_cell_id:N, and text explaining why.
 Removing a Cell only removes context; it never cancels accepted work or erases history.
@@ -36,10 +32,10 @@ the process. records(after=0) retrieves journal events as data.
 Files and package caches are not durable State.
 """
 
-CONCLUSION = """To finish, append a note with role:"conclusion", result:"success" or "failure",
+CONCLUSION = """To finish, add a note with role:"conclusion", result:"success" or "failure",
 and text explaining the result. Ordinary text does not end the run. Success requires no outstanding
 work or unresolved uncertainty, consumed observations, and passing configured validators.
-If no work, timer or external wake-up remains, conclude; an idle patch is invalid.
+If no work, timer or external wake-up remains, conclude; an idle step is invalid.
 """
 
 
@@ -50,25 +46,37 @@ def system(kinds: Iterable[CellKind]) -> str:
     return PROTOCOL + execution + CONCLUSION
 
 
-SCHEMA = {
-    "type": "object",
-    "properties": {
-        "patch": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "op": {"type": "string", "enum": ["test", "add", "replace", "remove"]},
-                    "path": {"type": "string"},
-                    "value": {},
-                },
-                "required": ["op", "path"],
-            },
-        }
-    },
-    "required": ["patch"],
-    "additionalProperties": False,
-}
+def schema(kinds: Iterable[CellKind]) -> dict:
+    """The step tool schema; Cells may use note fields and the fields of the given kinds."""
+    kinds = list(kinds)
+    fields = dict(NOTE)
+    for kind in kinds:
+        fields.update(kind.fields)
+    cell = {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": ["note", *(kind.name for kind in kinds)]},
+            **fields,
+        },
+        "required": ["kind"],
+        "additionalProperties": False,
+    }
+    op = {
+        "type": "object",
+        "properties": {
+            "op": {"type": "string", "enum": ["add", "replace", "remove"]},
+            "id": {"type": "integer"},
+            "cell": cell,
+        },
+        "required": ["op"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {"ops": {"type": "array", "items": op}},
+        "required": ["ops"],
+        "additionalProperties": False,
+    }
 
 
 async def _unavailable(*args, **kwargs):
@@ -78,7 +86,7 @@ async def _unavailable(*args, **kwargs):
 STEP = AgentTool(
     name="step",
     label="Step",
-    description="Commit a State patch and request Cell runs.",
-    parameters=SCHEMA,
+    description="Add, replace, or remove State Cells by id and request Cell runs.",
+    parameters=schema(()),
     execute_fn=_unavailable,
 )

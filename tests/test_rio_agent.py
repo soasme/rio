@@ -13,7 +13,7 @@ import pytest
 
 from rio.agent import CellKind, InvalidPatch, Limits, Session, StorageFailure, Store
 from rio.agent.owner import Owner, RecoveryFailure, stop_worker
-from rio.agent.prompt import CONCLUSION, PROTOCOL, SCHEMA
+from rio.agent.prompt import CONCLUSION, PROTOCOL
 from rio.agent.runner import run
 from rio.agent.store import reduce_event
 from rio.ai import FakeProvider
@@ -28,14 +28,12 @@ def session(tmp_path):
         yield Session.create(store, "fix the code", tmp_path, kinds=KINDS)
 
 
-def note(n, text="remember", **extra):
-    return {"id": n, "previous_id": None, "kind": "note", "text": text, **extra}
+def note(text="remember", **extra):
+    return {"kind": "note", "text": text, **extra}
 
 
-def code(n, source="print('hello')", **extra):
+def code(source="print('hello')", **extra):
     return {
-        "id": n,
-        "previous_id": None,
         "kind": "code",
         "runtime": "python",
         "source": "# /// script\n# dependencies = []\n# ///\n" + source + "\n",
@@ -43,25 +41,29 @@ def code(n, source="print('hello')", **extra):
     }
 
 
-def cmd(n, *argv, **extra):
-    return {"id": n, "previous_id": None, "kind": "cmd", "argv": list(argv), **extra}
+def cmd(*argv, **extra):
+    return {"kind": "cmd", "argv": list(argv), **extra}
 
 
 def prepare(session):
-    return session.prepare_turn(session.system, SCHEMA)
+    return session.prepare_turn(session.system, session.schema)
 
 
-def patch(turn, *operations):
-    return [{"op": "test", "path": "/revision", "value": turn["state"]["revision"]}, *operations]
+def add(cell):
+    return {"op": "add", "cell": cell}
 
 
-def append(cell):
-    return {"op": "add", "path": "/cells/-", "value": cell}
+def replace_cell(cell_id, cell):
+    return {"op": "replace", "id": cell_id, "cell": cell}
+
+
+def remove(cell_id):
+    return {"op": "remove", "id": cell_id}
 
 
 def accept(session, *cells):
     turn = prepare(session)
-    return session.accept(turn["id"], patch(turn, *(append(c) for c in cells)))
+    return session.accept(turn["id"], [add(c) for c in cells])
 
 
 async def settle(owner):
@@ -80,143 +82,156 @@ def test_sqlite_full_wal_and_exclusive_owner(session):
 
 
 def test_atomic_admission_and_linear_history(session):
-    accept(session, note(1), note(2))
+    accept(session, note("a"), note("b"))
     turn = prepare(session)
-    session.accept(
-        turn["id"],
-        patch(turn, {"op": "replace", "path": "/cells/0", "value": note(3, "new", previous_id=1)}),
-    )
+    session.accept(turn["id"], [replace_cell(1, note("new"))])
     assert [c["id"] for c in session.state["cells"]] == [3, 2]
-    assert session.data["cells"]["1"] == note(1)
-    before = copy.deepcopy(session.data)
+    assert session.state["cells"][0] == {"id": 3, "previous_id": 1, **note("new")}
+    assert session.data["cells"]["1"] == {"id": 1, "previous_id": None, **note("a")}
     turn = prepare(session)
     before = copy.deepcopy(session.data)
     with pytest.raises(InvalidPatch):
-        session.accept(
-            turn["id"],
-            patch(
-                turn, append(note(4)), {"op": "replace", "path": "/cells/0/text", "value": "bad"}
-            ),
-        )
+        session.accept(turn["id"], [add(note()), replace_cell(3, {"kind": "note", "text": 1})])
     assert session.data == before
+
+
+def test_runtime_assigns_ids_positions_and_order_free_removal(session):
+    accept(session, note("a"), note("b"), note("c"), note("d"))
+    turn = prepare(session)
+    session.accept(
+        turn["id"],
+        [remove(1), add(note("e")), replace_cell(3, note("c2")), remove(4), add(note("f"))],
+    )
+    cells = session.state["cells"]
+    assert [(c["id"], c["previous_id"], c["text"]) for c in cells] == [
+        (2, None, "b"),
+        (6, 3, "c2"),
+        (5, None, "e"),
+        (7, None, "f"),
+    ]
+    assert session.state["runtime"]["next_cell_id"] == 8
 
 
 @pytest.mark.parametrize(
     "operation",
     [
         {"op": "replace", "path": "/goal", "value": "weakened"},
-        {"op": "replace", "path": "/runtime", "value": {}},
-        {"op": "replace", "path": "/revision", "value": 99},
-        {"op": "move", "path": "/cells/1", "from": "/cells/0"},
-        {"op": "copy", "path": "/cells/-", "from": "/cells/0"},
-        {"op": "add", "path": "/cells/0", "value": note(2)},
-        {"op": "replace", "path": "/cells/0", "value": note(2, previous_id=77)},
-        append(cmd(2)),
-        append(cmd(2, "ls", 1)),
-        append(cmd(2, "ls", source="x")),
+        {"op": "move", "id": 1},
+        {"op": ["add"], "cell": note()},
+        {"op": "add", "id": 1, "cell": note()},
+        {"op": "remove", "id": 1, "cell": note()},
+        {"op": "replace", "cell": note()},
+        {"op": "replace", "id": True, "cell": note()},
+        add({"id": 5, "previous_id": None, **note()}),
+        add(cmd()),
+        add(cmd("ls", 1)),
+        add(cmd("ls", source="x")),
+        "add",
     ],
 )
-def test_restricted_patch(session, operation):
-    accept(session, note(1))
+def test_restricted_ops(session, operation):
+    accept(session, note())
     turn = prepare(session)
     with pytest.raises(InvalidPatch):
-        session.accept(turn["id"], patch(turn, operation))
+        session.accept(turn["id"], [operation])
 
 
-def test_out_of_range_index_points_to_cell_id_position(session):
-    accept(session, note(1), note(2))
+def test_null_fields_from_strict_providers_are_omitted(session):
+    from rio.ai.constrained_sampling import make_strict_json_schema
+
+    strict = make_strict_json_schema(session.schema)["properties"]["ops"]["items"]
+    assert strict["required"] == ["op", "id", "cell"]
+    assert strict["properties"]["cell"]["anyOf"][0]["properties"]["kind"]["enum"] == [
+        "note",
+        "code",
+        "cmd",
+    ]
     turn = prepare(session)
-    session.accept(turn["id"], patch(turn, {"op": "remove", "path": "/cells/0"}))
-    turn = prepare(session)
-    with pytest.raises(InvalidPatch, match=r"not the Cell id .*0\.\.0.*id 2 is at /cells/0"):
-        session.accept(turn["id"], patch(turn, {"op": "remove", "path": "/cells/2"}))
-    session.accept(turn["id"], patch(turn, {"op": "remove", "path": "/cells/0"}))
-    turn = prepare(session)
-    with pytest.raises(InvalidPatch, match="append at /cells/-"):
-        session.accept(turn["id"], patch(turn, {"op": "remove", "path": "/cells/0"}))
+    session.accept(turn["id"], [{"op": "add", "id": None, "cell": note(role=None)}])
+    assert session.state["cells"] == [{"id": 1, "previous_id": None, **note()}]
 
 
-def test_stale_predecessor_names_required_id_and_position(session):
-    accept(session, note(1), note(2))
+def test_unknown_id_names_current_ids(session):
+    accept(session, note(), note())
     turn = prepare(session)
-    with pytest.raises(
-        InvalidPatch, match=r"needs previous_id: 1 \(got 2\)\. Cell id 2 is at /cells/1"
-    ):
-        session.accept(
-            turn["id"],
-            patch(turn, {"op": "replace", "path": "/cells/0", "value": note(3, previous_id=2)}),
-        )
-    with pytest.raises(InvalidPatch, match=r"\(got None\)\. To add a new Cell instead, append"):
-        session.accept(
-            turn["id"], patch(turn, {"op": "replace", "path": "/cells/0", "value": note(3)})
-        )
+    session.accept(turn["id"], [remove(1)])
+    turn = prepare(session)
+    with pytest.raises(InvalidPatch, match=r"Cell 1 is not in cells \(ids: \[2\]\)"):
+        session.accept(turn["id"], [remove(1)])
+    with pytest.raises(InvalidPatch, match=r"Cell 3 is not in cells .*new Cells get ids"):
+        session.accept(turn["id"], [add(note()), replace_cell(3, note())])
 
 
-def test_second_operation_on_a_cell_names_the_cell(session):
-    accept(session, note(1), note(2))
+def test_second_op_on_a_cell_names_the_cell(session):
+    accept(session, note(), note())
     turn = prepare(session)
-    replace = {"op": "replace", "path": "/cells/0", "value": note(3, previous_id=1)}
-    with pytest.raises(InvalidPatch, match="id 3, added earlier in this patch"):
-        session.accept(
-            turn["id"],
-            patch(
-                turn,
-                replace,
-                {"op": "replace", "path": "/cells/0", "value": note(4, previous_id=3)},
-            ),
-        )
-    with pytest.raises(InvalidPatch, match="id 3, added earlier in this patch"):
-        session.accept(turn["id"], patch(turn, replace, {"op": "remove", "path": "/cells/0"}))
+    with pytest.raises(InvalidPatch, match=r"ops\[1\]: Cell 1 already has an op"):
+        session.accept(turn["id"], [replace_cell(1, note()), replace_cell(1, note())])
+    with pytest.raises(InvalidPatch, match=r"ops\[1\]: Cell 1 already has an op"):
+        session.accept(turn["id"], [remove(1), remove(1)])
+
+
+def test_stale_turn_is_rejected(session):
+    turn = prepare(session)
+    state = session.meta["state"]
+    session.store.commit("test_drift", {"meta": {"state": {**state, "revision": 99}}})
+    with pytest.raises(InvalidPatch, match="Stale turn"):
+        session.accept(turn["id"], [add(note())])
+    assert not session.data["cells"]
+
+
+def test_old_protocol_session_is_rejected(tmp_path):
+    path = tmp_path / "old.sqlite3"
+    with Store(path) as store:
+        session = Session.create(store, "goal", tmp_path)
+        state = {**session.meta["state"], "schema": "rio.state/1"}
+        store.commit("test_downgrade", {"meta": {"state": state}})
+    with Store(path) as store, pytest.raises(ValueError, match="rio.state/1.*new session"):
+        Session(store)
 
 
 def test_deduplication_and_conflicting_turn(session):
     turn = prepare(session)
-    operations = patch(turn, append(code(1)))
+    operations = [add(code())]
     receipt = session.accept(turn["id"], operations)
     seq = session.store.sequence
     assert session.accept(turn["id"], operations) == receipt
     assert session.store.sequence == seq
     assert len(session.data["executions"]) == 1
     with pytest.raises(InvalidPatch, match="Conflicting"):
-        session.accept(turn["id"], patch(turn))
+        session.accept(turn["id"], [])
 
 
 def test_busy_replace_rejected_removal_keeps_work(session):
-    accept(session, code(1))
+    accept(session, code())
     turn = prepare(session)
-    with pytest.raises(InvalidPatch, match="queued"):
-        session.accept(
-            turn["id"],
-            patch(turn, {"op": "replace", "path": "/cells/0", "value": code(2, previous_id=1)}),
-        )
-    session.accept(turn["id"], patch(turn, {"op": "remove", "path": "/cells/0"}))
+    with pytest.raises(InvalidPatch, match="Cell 1 is queued or running.*cancel"):
+        session.accept(turn["id"], [replace_cell(1, code())])
+    session.accept(turn["id"], [remove(1)])
     assert not session.state["cells"]
     assert session.pending()[0]["cell_id"] == 1
     assert "1" in prepare(session)["state"]["runtime"]["cells"]
 
 
 def test_unchanged_successor_requests_new_execution(session):
-    accept(session, code(1))
+    accept(session, code())
     session.finish(1, {"type": "success"})
     turn = prepare(session)
-    session.accept(
-        turn["id"],
-        patch(turn, {"op": "replace", "path": "/cells/0", "value": code(2, previous_id=1)}),
-    )
+    session.accept(turn["id"], [replace_cell(1, code())])
     assert session.data["executions"]["2"]["phase"] == "queued"
     assert "result" not in session.data["executions"]["2"]
 
 
 def test_fixed_snapshot_and_unrelated_response_cannot_clear_pause(session):
-    accept(session, code(1), code(2))
+    accept(session, code(), code())
     turn = prepare(session)
     session.finish(1, {"type": "error"})
     assert prepare(session) == turn
-    session.accept(turn["id"], patch(turn))
+    session.accept(turn["id"], [])
     assert session.meta["pause"] == "execution:1"
     turn = prepare(session)
     assert turn["delivered"] == ["execution:1"]
-    session.accept(turn["id"], patch(turn))
+    session.accept(turn["id"], [])
     assert session.meta["pause"] is None
 
 
@@ -227,14 +242,14 @@ def test_inbox_deduplication_and_acknowledgment(session):
         session.receive("external:1", "external", {"fact": 2})
     turn = prepare(session)
     with pytest.raises(InvalidPatch):
-        session.accept(turn["id"], [])
+        session.accept(turn["id"], [remove(1)])
     assert not session.data["inbox"]["external:1"]["consumed"]
-    session.accept(turn["id"], patch(turn))
+    session.accept(turn["id"], [])
     assert session.data["inbox"]["external:1"]["consumed"]
 
 
 def test_rebuild_is_pure_and_preserves_usage(session, monkeypatch):
-    accept(session, code(1))
+    accept(session, code())
     session.finish(1, {"type": "UnknownExecution", "worker_stopped": True})
     turn = prepare(session)
     session.attempt(turn["id"])
@@ -266,9 +281,8 @@ def test_timer_generation_fires_once_after_restart(tmp_path):
 async def test_serial_uv_runs_and_independent_variables(session):
     accept(
         session,
-        code(1, "from pathlib import Path\nx = 7\nPath('order').write_text('1')"),
+        code("from pathlib import Path\nx = 7\nPath('order').write_text('1')"),
         code(
-            2,
             "from pathlib import Path\nassert 'x' not in globals()\n"
             "p=Path('order')\np.write_text(p.read_text()+'2')\nprint('ok')",
         ),
@@ -281,8 +295,8 @@ async def test_serial_uv_runs_and_independent_variables(session):
 
 
 async def test_cmd_runs_argv_without_shell(session):
-    accept(session, cmd(1, sys.executable, "-c", "import sys; print(sys.argv[1])", "$HOME"))
-    accept(session, cmd(2, "rio-missing-command"))
+    accept(session, cmd(sys.executable, "-c", "import sys; print(sys.argv[1])", "$HOME"))
+    accept(session, cmd("rio-missing-command"))
     async with Owner(session) as owner:
         await settle(owner)
     assert session.data["executions"]["1"]["output"] == "$HOME\n"
@@ -291,21 +305,21 @@ async def test_cmd_runs_argv_without_shell(session):
 
 
 async def test_error_pauses_queue_then_cancel_before_dispatch(session):
-    accept(session, code(1, "raise RuntimeError('bad')"), code(2, "assert False"))
+    accept(session, code("raise RuntimeError('bad')"), code("assert False"))
     async with Owner(session) as owner:
         async with asyncio.timeout(15):
             while session.meta["pause"] is None:
                 await owner.tick()
                 await asyncio.sleep(0.02)
         assert session.data["executions"]["2"]["phase"] == "queued"
-        accept(session, note(3, role="cancel", target_cell_id=2))
+        accept(session, note(role="cancel", target_cell_id=2))
         await owner.tick()
     assert session.data["executions"]["2"]["result"]["type"] == "cancelled"
     assert "worker" not in session.data["executions"]["2"]
 
 
 async def test_started_recovery_never_reexecutes(session):
-    accept(session, code(1, "from pathlib import Path\nPath('effect').touch()"))
+    accept(session, code("from pathlib import Path\nPath('effect').touch()"))
     session.authorize(1, {"token": "not-a-real-worker"})
     async with Owner(session):
         assert session.data["executions"]["1"]["result"]["type"] == "UnknownExecution"
@@ -318,20 +332,20 @@ async def test_started_recovery_never_reexecutes(session):
 
 
 async def test_resolution_requires_evidence_and_keeps_original_unknown(session):
-    accept(session, code(1))
+    accept(session, code())
     session.finish(1, {"type": "UnknownExecution"})
     original = copy.deepcopy(session.data["executions"]["1"])
     turn = prepare(session)
     with pytest.raises(InvalidPatch):
         session.accept(
             turn["id"],
-            patch(turn, append(note(2, role="resolution", target_cell_id=1, evidence_refs=[]))),
+            [add(note(role="resolution", target_cell_id=1, evidence_refs=[]))],
         )
     session.receive("inspection", "external", {"file_hash": "verified"})
     ref = f"session:event:{session.store.sequence}"
     session.accept(
         turn["id"],
-        patch(turn, append(note(2, role="resolution", target_cell_id=1, evidence_refs=[ref]))),
+        [add(note(role="resolution", target_cell_id=1, evidence_refs=[ref]))],
     )
     async with Owner(session):
         assert not session.unresolved()
@@ -342,10 +356,10 @@ async def test_resolution_requires_evidence_and_keeps_original_unknown(session):
 async def test_success_rejected_for_new_input_and_failure_is_terminal(session):
     turn = prepare(session)
     session.receive("arrived", "external", {"updated": True})
-    session.accept(turn["id"], patch(turn, append(note(1, role="conclusion", result="success"))))
+    session.accept(turn["id"], [add(note(role="conclusion", result="success"))])
     async with Owner(session) as owner:
         assert not session.meta["terminal"]
-        accept(session, note(2, role="conclusion", result="failure"))
+        accept(session, note(role="conclusion", result="failure"))
         await owner.controls()
     assert session.meta["terminal"]["result"] == "failure"
     seq = session.store.sequence
@@ -358,7 +372,6 @@ async def test_cancel_running_worker_and_children(session):
     accept(
         session,
         code(
-            1,
             "import subprocess,time\nfrom pathlib import Path\n"
             "p=subprocess.Popen(['sleep','60'])\nPath('child').write_text(str(p.pid))\ntime.sleep(60)",
         ),
@@ -370,7 +383,7 @@ async def test_cancel_running_worker_and_children(session):
             while not path.exists():
                 await asyncio.sleep(0.02)
         child_pid = int(path.read_text())
-        accept(session, note(2, role="cancel", target_cell_id=1))
+        accept(session, note(role="cancel", target_cell_id=1))
         await owner.controls()
     import psutil
 
@@ -383,7 +396,7 @@ async def test_cancel_running_worker_and_children(session):
 
 def response(operations):
     message = AssistantMessage(
-        content=[ToolCall(id="call", name="step", arguments={"patch": operations})]
+        content=[ToolCall(id="call", name="step", arguments={"ops": operations})]
     )
     return [AssistantDoneEvent(reason="toolUse", message=message)]
 
@@ -391,11 +404,10 @@ def response(operations):
 async def test_public_loop_finishes_and_reopens_without_model_call(session):
     provider = FakeProvider(
         [
-            response([{"op": "test", "path": "/revision", "value": 1}, append(code(1))]),
+            response([add(code())]),
             response(
                 [
-                    {"op": "test", "path": "/revision", "value": 3},
-                    append(note(2, "completed", role="conclusion", result="success")),
+                    add(note("completed", role="conclusion", result="success")),
                 ]
             ),
         ]
@@ -412,15 +424,13 @@ async def test_successful_completions_wake_the_model_once_after_the_queue_drains
         [
             response(
                 [
-                    {"op": "test", "path": "/revision", "value": 1},
-                    append(cmd(1, sys.executable, "-c", "print(1)")),
-                    append(cmd(2, sys.executable, "-c", "print(2)")),
+                    add(cmd(sys.executable, "-c", "print(1)")),
+                    add(cmd(sys.executable, "-c", "print(2)")),
                 ]
             ),
             response(
                 [
-                    {"op": "test", "path": "/revision", "value": 3},
-                    append(note(3, "completed", role="conclusion", result="success")),
+                    add(note("completed", role="conclusion", result="success")),
                 ]
             ),
         ]
@@ -433,10 +443,8 @@ async def test_successful_completions_wake_the_model_once_after_the_queue_drains
 async def test_instructions_extend_system_prompt(tmp_path):
     with Store(tmp_path / "session.sqlite3") as store:
         session = Session.create(store, "goal", tmp_path, instructions="\n\nUse tabs.")
-        conclude = note(1, "done", role="conclusion", result="success")
-        provider = FakeProvider(
-            [response([{"op": "test", "path": "/revision", "value": 1}, append(conclude)])]
-        )
+        conclude = note("done", role="conclusion", result="success")
+        provider = FakeProvider([response([add(conclude)])])
         assert await run(session, provider, "fake")
         # A note-only agent never hears about execution.
         assert provider.calls[0][1] == PROTOCOL + CONCLUSION + "\n\nUse tabs."
@@ -446,10 +454,10 @@ def test_note_only_agent_rejects_runnable_cells(tmp_path):
     with Store(tmp_path / "s.db") as store:
         session = Session.create(store, "goal", tmp_path)
         with pytest.raises(InvalidPatch, match="Cell kind must be one of: note$"):
-            accept(session, code(1))
+            accept(session, code())
         with pytest.raises(InvalidPatch, match="Cell kind must be"):
-            accept(session, {**note(1), "kind": ["note"]})
-        assert accept(session, note(1))["cell_ids"] == [1]
+            accept(session, {**note(), "kind": ["note"]})
+        assert accept(session, note())["cell_ids"] == [1]
 
 
 def test_note_is_not_an_extension_kind(tmp_path):
@@ -459,10 +467,19 @@ def test_note_is_not_an_extension_kind(tmp_path):
         assert not store.data
 
 
+@pytest.mark.parametrize("fields", [{"text": {"type": "integer"}}, {"id": {"type": "integer"}}])
+def test_kind_fields_share_one_cell_schema(tmp_path, fields):
+    with Store(tmp_path / "s.db") as store, pytest.raises(ValueError, match="redefines field"):
+        Session.create(store, "goal", tmp_path, kinds=[replace(KINDS[0], fields=fields)])
+    with Store(tmp_path / "n.db") as store:
+        cell = Session.create(store, "goal", tmp_path).schema["properties"]["ops"]["items"]
+        assert cell["properties"]["cell"]["properties"]["kind"]["enum"] == ["note"]
+
+
 async def test_owner_requires_the_recorded_cell_kinds(tmp_path):
     path = tmp_path / "s.db"
     with Store(path) as store:
-        accept(Session.create(store, "goal", tmp_path, kinds=KINDS), code(1))
+        accept(Session.create(store, "goal", tmp_path, kinds=KINDS), code())
     with Store(path) as store:
         assert Session(store).state["goal"] == "goal"
         with pytest.raises(ValueError, match="Cell kinds: code"):
@@ -477,8 +494,8 @@ async def test_caller_extends_agent_with_a_cell_kind(tmp_path):
 
     echo = CellKind(
         name="echo",
-        fields=frozenset({"text"}),
-        prompt='Echo: {"id":N,"previous_id":null,"kind":"echo","text":"..."}.\n',
+        fields={"text": {"type": "string"}},
+        prompt='Echo: {"kind":"echo","text":"..."}.\n',
         validate=validate,
         command=lambda cell, scratch: [
             sys.executable,
@@ -491,15 +508,15 @@ async def test_caller_extends_agent_with_a_cell_kind(tmp_path):
         session = Session.create(store, "goal", tmp_path, kinds=[echo])
         assert echo.prompt in session.system
         with pytest.raises(InvalidPatch, match="Echo requires text"):
-            accept(session, {"id": 1, "previous_id": None, "kind": "echo"})
-        accept(session, {"id": 1, "previous_id": None, "kind": "echo", "text": "hi"})
+            accept(session, {"kind": "echo"})
+        accept(session, {"kind": "echo", "text": "hi"})
         async with Owner(session) as owner:
             await settle(owner)
         assert session.data["executions"]["1"]["output"] == "hi\n"
 
 
 async def test_uv_timer_api_acknowledges_committed_registration(session):
-    accept(session, code(1, "from rio.agent.api import timer\ntimer('wake:1', 0, {'done':True})"))
+    accept(session, code("from rio.agent.api import timer\ntimer('wake:1', 0, {'done':True})"))
     async with Owner(session) as owner:
         await settle(owner)
     assert session.data["timers"]["wake:1"]["fired"]
@@ -507,7 +524,7 @@ async def test_uv_timer_api_acknowledges_committed_registration(session):
 
 
 def test_output_limit_is_explicit(session):
-    accept(session, code(1))
+    accept(session, code())
     session.authorize(1, {"token": "none"})
     session.output(1, "x" * (session.limits.output_bytes + 1))
     execution = session.data["executions"]["1"]
@@ -517,7 +534,7 @@ def test_output_limit_is_explicit(session):
 
 async def test_truncated_output_keeps_tail_and_full_output_file(session):
     source = "print('\\n'.join(map(str, range(3000))))"
-    accept(session, cmd(1, "python3", "-c", source), cmd(2, "true"))
+    accept(session, cmd("python3", "-c", source), cmd("true"))
     async with Owner(session) as owner:
         await settle(owner)
     execution = session.data["executions"]["1"]
@@ -534,7 +551,7 @@ async def test_required_validator_blocks_success(tmp_path):
         session = Session.create(
             store, "goal", tmp_path, validators=((sys.executable, "-c", "raise SystemExit(1)"),)
         )
-        accept(session, note(1, role="conclusion", result="success"))
+        accept(session, note(role="conclusion", result="success"))
         async with Owner(session):
             assert session.meta["terminal"] is None
             assert session.data["validator_results"]["0"]["exit"] == 1
@@ -566,13 +583,13 @@ def test_commit_uncertainty_reopens_committed_identity(tmp_path):
 
         store.db = UncertainCommit()
         with pytest.raises(StorageFailure):
-            session.accept(turn["id"], patch(turn, append(code(1))))
+            session.accept(turn["id"], [add(code())])
         assert store.failed and store.data == {}
         with pytest.raises(StorageFailure):
             store.events()
     with Store(path) as store:
         session = Session(store, KINDS)
-        receipt = session.accept(turn["id"], patch(turn, append(code(1))))
+        receipt = session.accept(turn["id"], [add(code())])
         assert receipt["cell_ids"] == [1]
         assert len(session.data["executions"]) == 1
 
@@ -588,16 +605,13 @@ import asyncio, sys
 from pathlib import Path
 from rio.agent import Session, Store
 from rio.agent.owner import Owner
-from rio.agent.prompt import SCHEMA
 from rio.coding.cells import KINDS
 async def main():
     root=Path(sys.argv[1]); boundary=sys.argv[2]
     with Store(root/'crash.db') as store:
         s=Session.create(store, 'one effect', root, kinds=KINDS)
-        t=s.prepare_turn(s.system, SCHEMA)
-        s.accept(t['id'], [{'op':'test','path':'/revision','value':1},
-            {'op':'add','path':'/cells/-','value':{'id':1,'previous_id':None,
-             'kind':'code','runtime':'python','source':
+        t=s.prepare_turn(s.system, s.schema)
+        s.accept(t['id'], [{'op':'add','cell':{'kind':'code','runtime':'python','source':
              "# /// script\\n# dependencies = []\\n# ///\\n"
              "from pathlib import Path\\nimport time\\n"
              "p=Path('effects'); p.write_text(p.read_text()+'x' if p.exists() else 'x')\\n"
@@ -648,8 +662,8 @@ async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch
         session = Session.create(store, "goal", tmp_path, limits=replace(Limits(), rounds=2))
         provider = FakeProvider(
             [
-                response([{"op": "test", "path": "/revision", "value": 1}]),
-                response([{"op": "test", "path": "/revision", "value": 3}]),
+                response([]),
+                response([]),
             ]
         )
         assert not await run(session, provider, "fake")
@@ -661,7 +675,7 @@ async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch
 
 
 def test_context_keeps_each_output_whole(session):
-    accept(session, code(1), code(2))
+    accept(session, code(), code())
     for i in (1, 2):
         session.authorize(i, {"token": "none"})
         session.output(i, "x" * session.limits.output_bytes)
@@ -669,13 +683,13 @@ def test_context_keeps_each_output_whole(session):
     turn = prepare(session)
     for key in ("1", "2"):
         assert turn["state"]["runtime"]["cells"][key]["output"] == "x" * session.limits.output_bytes
-    session.accept(turn["id"], patch(turn))
+    session.accept(turn["id"], [])
 
 
 async def test_saved_complete_response_is_accepted_without_another_provider_call(session):
     turn = prepare(session)
     session.attempt(turn["id"])
-    operations = patch(turn, append(note(1, role="conclusion", result="success")))
+    operations = [add(note(role="conclusion", result="success"))]
     message = response(operations)[0].message
     session.response(turn["id"], message.model_dump(mode="json"), 12)
     provider = FakeProvider([])
@@ -696,7 +710,7 @@ async def test_lost_and_partial_model_responses_are_bounded(session, monkeypatch
 
 
 def test_success_receipt_and_ending_share_a_transaction(session):
-    accept(session, note(1, role="conclusion", result="success"))
+    accept(session, note(role="conclusion", result="success"))
     session.end("success", "done", note_id="1")
     ending = session.store.events()[-1]
     assert ending["changes"]["meta"]["terminal"]["result"] == "success"
@@ -707,7 +721,6 @@ async def test_uncertain_output_commit_stops_worker_before_more_effects(session,
     accept(
         session,
         code(
-            1,
             "import time\nfrom pathlib import Path\n"
             "print('before', flush=True)\ntime.sleep(5)\n"
             "Path('late-effect').touch()",
@@ -759,8 +772,7 @@ def test_database_alias_cannot_acquire_a_second_owner(session, tmp_path, alias_k
 
 async def test_provider_name_does_not_make_missing_usage_known(session):
     operations = [
-        {"op": "test", "path": "/revision", "value": 1},
-        append(note(1, role="conclusion", result="success")),
+        add(note(role="conclusion", result="success")),
     ]
     events = response(operations)
     events[0].message.api = "provider-without-usage"
@@ -810,19 +822,17 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
     monkeypatch.setattr(cli, "resolve_provider_selection", lambda *a, **kw: selection)
     monkeypatch.setattr(cli, "resolve_startup_thinking_level", lambda *a, **kw: None)
     source = "from pathlib import Path\nPath('effect').write_text('once')"
-    work = code(1, source) if cell_kind == "code" else cmd(1, sys.executable, "-c", source)
+    work = code(source) if cell_kind == "code" else cmd(sys.executable, "-c", source)
     provider = FakeProvider(
         [
             response(
                 [
-                    {"op": "test", "path": "/revision", "value": 1},
-                    append(work),
+                    add(work),
                 ]
             ),
             response(
                 [
-                    {"op": "test", "path": "/revision", "value": 3},
-                    append(note(2, "done", role="conclusion", result="success")),
+                    add(note("done", role="conclusion", result="success")),
                 ]
             ),
         ]

@@ -16,20 +16,16 @@ async def main() -> None:
                 id="example-step",
                 name="step",
                 arguments={
-                    "patch": [
-                        {"op": "test", "path": "/revision", "value": 1},
+                    "ops": [
                         {
                             "op": "add",
-                            "path": "/cells/-",
-                            "value": {
-                                "id": 1,
+                            "cell": {
                                 "kind": "note",
                                 "role": "conclusion",
                                 "text": "Hello from Rio.",
-                                "previous_id": None,
                                 "result": "success",
                             },
-                        },
+                        }
                     ]
                 },
             )

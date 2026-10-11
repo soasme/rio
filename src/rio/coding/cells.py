@@ -54,8 +54,8 @@ def _validate_cmd(cell: dict) -> None:
 
 CODE = CellKind(
     name="code",
-    fields=frozenset({"runtime", "source"}),
-    prompt="""Code: {"id":N,"previous_id":null,"kind":"code","runtime":"python","source":"..."}.
+    fields={"runtime": {"type": "string", "enum": ["python"]}, "source": {"type": "string"}},
+    prompt="""Code: {"kind":"code","runtime":"python","source":"..."}.
 Code runs via uv run. Each script MUST include PEP 723 metadata, even with no dependencies:
 # /// script
 # dependencies = []
@@ -76,8 +76,8 @@ Python strings so newline escaping does not break the script.
 
 CMD = CellKind(
     name="cmd",
-    fields=frozenset({"argv"}),
-    prompt="""Cmd: {"id":N,"previous_id":null,"kind":"cmd","argv":["pytest","-q"]}.
+    fields={"argv": {"type": "array", "items": {"type": "string"}}},
+    prompt="""Cmd: {"kind":"cmd","argv":["pytest","-q"]}.
 A cmd runs argv directly, without a shell; use ["sh","-c","..."] for pipes or globs.
 Prefer cmd Cells to run tests or shell tools.
 """,
