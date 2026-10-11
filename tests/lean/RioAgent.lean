@@ -28,41 +28,57 @@ structure Cell where
 
 def successor (old : Cell) (next : Nat) : Cell := ⟨next, some old.id⟩
 
-def replaceHead (cells : List Cell) (next : Nat) : List Cell :=
-  match cells with
+/-- A step op names Cells by id; the runtime assigns ids, lineage, and positions. -/
+inductive Op where
+  | add | replace (id : Nat) | remove (id : Nat)
+  deriving DecidableEq, Repr
+
+def Op.target : Op → Option Nat
+  | .add => none
+  | .replace id | .remove id => some id
+
+/-- Each add or replace takes the next id, in op order. -/
+def allocate (next : Nat) : List Op → List Nat
   | [] => []
-  | head :: tail => successor head next :: tail
+  | .remove _ :: ops => allocate next ops
+  | _ :: ops => next :: allocate (next + 1) ops
 
-theorem replacement_preserves_position (a b : Cell) (next : Nat) :
-    replaceHead [a,b] next = [⟨next, some a.id⟩, b] := by rfl
+theorem ids_follow_op_order :
+    allocate 5 [.remove 1, .add, .replace 3, .add] = [5, 6, 7] := rfl
 
-/-- /cells/N addresses a position; a rejected id-as-index names the id's position. -/
-def positionOf (cells : List Cell) (id : Nat) : Option Nat :=
-  cells.findIdx? (·.id == id)
+/-- A replacement keeps its position and points to the old id. -/
+def replaceId (cells : List Cell) (id next : Nat) : List Cell :=
+  cells.map fun c => if c.id == id then successor c next else c
 
-def indexHint (cells : List Cell) (n : Nat) : Option Nat :=
-  if n < cells.length then none else positionOf cells n
+theorem replacement_preserves_position :
+    replaceId [⟨1, none⟩, ⟨2, none⟩] 1 5 = [⟨5, some 1⟩, ⟨2, none⟩] := rfl
 
-theorem in_range_index_needs_no_hint (cells : List Cell) (n : Nat) (h : n < cells.length) :
-    indexHint cells n = none := by simp [indexHint, h]
+/-- Removal is by id, so op order does not matter. -/
+def removeIds (cells : List Cell) (ids : List Nat) : List Cell :=
+  cells.filter fun c => c.id ∉ ids
 
-theorem id_used_as_index_points_to_position :
-    indexHint [⟨2, none⟩] 2 = some 0 := by rfl
+theorem removal_order_is_irrelevant (cells : List Cell) (a b : List Nat) :
+    removeIds cells (a ++ b) = removeIds cells (b ++ a) := by
+  simp [removeIds, or_comm]
 
-/-- A replacement must name the Cell at its position as predecessor. -/
-def admitsReplacement (old next : Cell) : Bool := next.previous == some old.id
+/-- Ops may target only Cells that existed before the step, each at most once. -/
+def admissible (existing : List Nat) (ops : List Op) : Bool :=
+  let targets := ops.filterMap Op.target
+  targets.Nodup && targets.all (· ∈ existing)
 
-theorem successor_is_admitted (old : Cell) (next : Nat) :
-    admitsReplacement old (successor old next) = true := by simp [admitsReplacement, successor]
+theorem second_op_on_a_cell_is_rejected :
+    admissible [1, 2] [.replace 1, .remove 1] = false := by decide
 
-theorem null_predecessor_is_stale (old : Cell) (next : Nat) :
-    admitsReplacement old ⟨next, none⟩ = false := by simp [admitsReplacement]
+theorem cell_added_in_step_is_not_targetable (existing : List Nat) (next k : Nat)
+    (h : ∀ x ∈ existing, x < next) : admissible existing [.replace (next + k)] = false := by
+  have : next + k ∉ existing := fun m => by have := h _ m; omega
+  simp [admissible, Op.target, this]
 
-/-- Replace/remove may target only Cells that existed before the patch (id < next). -/
-def changeable (cellId nextId : Nat) : Bool := cellId < nextId
+/-- The runtime, not the model, checks the revision a turn was prepared from. -/
+def acceptsTurn (prepared current : Nat) : Bool := prepared == current
 
-theorem cell_added_in_patch_is_not_changeable (nextId k : Nat) :
-    changeable (nextId + k) nextId = false := by simp [changeable]
+theorem stale_turn_is_rejected (prepared current : Nat) (h : prepared ≠ current) :
+    acceptsTurn prepared current = false := by simp [acceptsTurn, h]
 
 /-- Notes are built in; callers extend the agent with named runnable kinds. -/
 inductive Kind where
@@ -81,6 +97,18 @@ theorem note_only_agent_admits_only_notes (k : Kind) :
 
 theorem notes_need_no_registration (registered : List String) :
     admits registered .note = true := rfl
+
+/-- The step schema offers note plus the registered kinds, in one shared Cell shape. -/
+def kindEnum (registered : List String) : List String := "note" :: registered
+
+theorem note_only_schema_offers_only_note : kindEnum [] = ["note"] := rfl
+
+/-- A field name (paired with its JSON type) must mean the same thing in every kind. -/
+def fieldsAgree (fields : List (String × String)) : Bool :=
+  fields.all fun (f, t) => fields.all fun (g, u) => f != g || t == u
+
+theorem redefined_field_is_rejected :
+    fieldsAgree [("text", "string"), ("text", "integer")] = false := by decide
 
 /-- Runnable Cells request one execution; notes never run. -/
 def runs : Kind → Bool

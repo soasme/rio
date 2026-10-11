@@ -7,7 +7,7 @@ This document defines the agreed next Rio core. It describes intended behavior, 
 
 ## 1. Core contract
 
-Rio uses one SKILL.state. The whole State is model context. Each round, the LLM calls one tool, `step`, with a JSON Patch. The Harness commits the patch, evaluates State, runs accepted code Cells, and records output. The LLM manages its context by adding, replacing, summarizing, and removing Cells.
+Rio uses one SKILL.state. The whole State is model context. Each round, the LLM calls one tool, `step`, with a list of ops on Cells. The Harness commits the step, evaluates State, runs accepted code Cells, and records output. The LLM manages its context by adding, replacing, summarizing, and removing Cells.
 
 Cells are immutable and independent. Each new code or cmd Cell version requests one finite execution. Notes do not execute code. A Session can last for months without retaining a worker between events.
 
@@ -36,7 +36,7 @@ State has six top-level fields:
 
 ```json
 {
-  "schema": "rio.state/1",
+  "schema": "rio.state/2",
   "id": "s1",
   "revision": 12,
   "goal": "Fix the Flask route and pass the required tests",
@@ -64,11 +64,11 @@ State has six top-level fields:
 }
 ```
 
-There is no separate `context` field or State lifecycle `status`. The Harness owns `revision` and `runtime`. Original goal requirements, permissions, supplied validators, and budget limits cannot be weakened by a model patch. Session records whether a run has ended.
+There is no separate `context` field or State lifecycle `status`. The Harness owns `revision` and `runtime`. Original goal requirements, permissions, supplied validators, and budget limits cannot be weakened by a model step. Session records whether a run has ended.
 
-`cells` is an ordered array of current Cell versions. IDs start at 1 and increase by one for every accepted new version. The Harness validates allocations against `runtime.next_cell_id` and advances it in the same transaction. Removed IDs are never reused.
+`cells` is an ordered array of current Cell versions. IDs start at 1 and increase by one for every accepted new version. The Harness allocates them from `runtime.next_cell_id` in op order and advances it in the same transaction. Removed IDs are never reused.
 
-An update replaces a full Cell object at the same array position. It receives the next ID and sets `previous_id` to the replaced Cell's ID. A new lineage uses `previous_id: null`. Updating Cell 1 in `[1, 2]` produces `[3, 2]`, with Cell 3 pointing to 1. Session retains Cell 1 unchanged. Array order does not imply numeric ID order.
+An update replaces a full Cell object at the same array position. The Harness gives it the next ID and sets `previous_id` to the replaced Cell's ID. A new lineage uses `previous_id: null`. Updating Cell 1 in `[1, 2]` produces `[3, 2]`, with Cell 3 pointing to 1. Session retains Cell 1 unchanged. Array order does not imply numeric ID order.
 
 The predecessor link records history only. It does not grant access to another Cell's code or memory. The first version has linear histories, without branches or merges. Results refer to the exact Cell that ran and never transfer to its successor.
 
@@ -84,32 +84,23 @@ Cells cannot share variables, import Cell definitions, or call other Cells. They
 
 ## 4. The step transaction
 
-The only model tool accepts a restricted RFC 6902 JSON Patch. [R1]
+The only model tool takes a list of ops that name existing Cells by ID.
 
 ```json
 {
-  "patch": [
-    {"op": "test", "path": "/revision", "value": 12},
-    {"op": "test", "path": "/cells/0/id", "value": 1},
-    {
-      "op": "replace",
-      "path": "/cells/0",
-      "value": {
-        "id": 3,
-        "previous_id": 1,
-        "kind": "note",
-        "text": "Check the route and its tests"
-      }
-    }
+  "ops": [
+    {"op": "replace", "id": 1, "cell": {"kind": "note", "text": "Check the route and its tests"}},
+    {"op": "remove", "id": 2},
+    {"op": "add", "cell": {"kind": "cmd", "argv": ["pytest", "-q", "tests/test_routes.py"]}}
   ]
 }
 ```
 
-Replace whole Cell objects. Reject edits such as `/cells/0/source`, stale predecessor IDs, and multiple successors of one Cell in a patch. Append new lineages at `/cells/-`. Allocate IDs in patch operation order. Remove array elements from higher indexes first. Do not use `move` or `copy` to change Cell identity, or disguise an update as removal and insertion elsewhere.
+The model writes Cell bodies without `id` or `previous_id`. The Harness assigns IDs in op order, sets `previous_id`, keeps a replacement at its position, appends added Cells, and applies removals in any order. Reject an unknown ID, a second op on one Cell, and an op on a Cell added in the same step. The model does not echo the revision: the Harness rejects a turn whose prepared State is no longer current.
 
-Validate the complete candidate, including context limits, before committing. One SQLite transaction stores new Cell versions, accepts the patch, advances revision and IDs, creates execution records, records control requests, and consumes the round's delivered messages. Invalid patches have no partial effect.
+Validate the complete candidate, including context limits, before committing. One SQLite transaction stores new Cell versions, accepts the step, advances revision and IDs, creates execution records, records control requests, and consumes the round's delivered messages. Invalid steps have no partial effect.
 
-A durable `turn_id` identifies a model round. Only one patch can be accepted for that turn. Duplicate submissions return the original receipt; conflicting submissions are rejected. Enforce a unique execution record per code Cell ID. Rebuilding or repeatedly evaluating State creates no additional execution.
+A durable `turn_id` identifies a model round. Only one step can be accepted for that turn. Duplicate submissions return the original receipt; conflicting submissions are rejected. Enforce a unique execution record per code Cell ID. Rebuilding or repeatedly evaluating State creates no additional execution.
 
 Process accepted control requests before dispatching queued code. Publish receipts and dispatch work only after commit.
 
@@ -125,7 +116,7 @@ Use Python processes for code execution and async control work in the owner. Bor
 
 Commit `started` before launching `uv run`. A crash between authorization and actual launch can conservatively produce UnknownExecution. Treating this as uncertain avoids accidental duplicate execution. Environment setup failures return ordinary execution errors when their outcome is known; a new code version can request another attempt.
 
-Run queued Cells serially in accepted order, independent of their current array positions. A successful execution allows dispatch to continue. An error or interruption durably pauses dispatch until the model consumes that observation in its next accepted patch. Apply cancellations before resuming the remaining queue. The model can cancel stale queued work before adding investigation Cells.
+Run queued Cells serially in accepted order, independent of their current array positions. A successful execution allows dispatch to continue. An error or interruption durably pauses dispatch until the model consumes that observation in its next accepted step. Apply cancellations before resuming the remaining queue. The model can cancel stale queued work before adding investigation Cells.
 
 A Cell starts at its script entry point in a fresh process. It can run for hours while that process survives. Rio does not save stacks or replay internal calls. Uncommitted progress can be lost.
 
@@ -141,7 +132,7 @@ SQLite is the sole persistent backend. Store ordered events, immutable Cell vers
 
 Session records include:
 
-- State creation, accepted patches, Cell history, and control receipts.
+- State creation, accepted steps, Cell history, and control receipts.
 - Model request inputs, attempts, accepted responses, and known usage.
 - Execution authorization, output, errors, cancellation, and uncertainty.
 - Inbox receipt and consumption, timers, and dispatch pauses.
@@ -151,15 +142,15 @@ Use WAL and `synchronous=FULL` on writer connections, and verify the settings at
 
 If the outcome of a SQLite commit is uncertain, stop admission and publication, stop local workers, and discard the in-memory projection. Reopen storage and inspect committed stable IDs before continuing. Existing external work can still have effects. If storage cannot be recovered, report storage failure. The LLM does not repair uncertain database commits.
 
-Publish model-visible and user-visible progress only from committed records. Buffer stdout and streaming tokens for a configurable short interval, initially 100 ms. A crash may lose that unpublished buffer. Do not buffer required causal commits such as patch acceptance, launch authorization, control requests, message acknowledgment, or run endings. Do not hold a mutation transaction across external work.
+Publish model-visible and user-visible progress only from committed records. Buffer stdout and streaming tokens for a configurable short interval, initially 100 ms. A crash may lose that unpublished buffer. Do not buffer required causal commits such as step acceptance, launch authorization, control requests, message acknowledgment, or run endings. Do not hold a mutation transaction across external work.
 
 ### Fixed State during generation
 
 Between rounds, fold a bounded set of Inbox observations into State and commit the resulting revision. Prepare one model request with its turn ID, exact State, delivered message IDs, prompt and tool schema references, model configuration, and retry count.
 
-State remains fixed during that request. Workers can finish and incoming observations can commit to Inbox, but they do not modify the model's snapshot. Accept its patch against the revision it saw. The next round incorporates later observations. This permits decisions based on slightly old information and avoids constant revision conflicts.
+State remains fixed during that request. Workers can finish and incoming observations can commit to Inbox, but they do not modify the model's snapshot. Accept its step against the revision it saw; reject it if State has moved on. The next round incorporates later observations. This permits decisions based on slightly old information and avoids constant revision conflicts.
 
-Commit message consumption with patch acceptance. A paused dispatch resumes only after the error or interruption that caused the pause has been delivered and consumed. An unrelated in-flight model response cannot clear a newer pause.
+Commit message consumption with step acceptance. A paused dispatch resumes only after the error or interruption that caused the pause has been delivered and consumed. An unrelated in-flight model response cannot clear a newer pause.
 
 For an unaccepted request after restart, query a persisted provider handle if supported; otherwise retry the saved request within budget. Never apply partial JSON. Accepted turns are not requested again. Persist retries, backoff deadlines, and known usage. Repeated provider calls may differ and may incur additional charges; unknown usage remains unknown.
 
@@ -222,11 +213,11 @@ Duplicate delivery does not duplicate consumption or accepted work. External sen
 
 A code Cell can register a timer through a small Harness API. Commit the registration before acknowledging it to the worker. Store absolute deadlines and generations; recovery emits one logical event per expired generation. Registration request identities protect against duplicate delivery. A timer does not suspend or later resume the registering Cell.
 
-If an accepted patch creates no work or conclusion, the Session may sleep while there is a running worker, timer, or configured external wake-up source. Without one, return an invalid-idle observation. Repeated invalid idle decisions consume the retry budget and eventually fail. Do not poll the model without new input.
+If an accepted step creates no work or conclusion, the Session may sleep while there is a running worker, timer, or configured external wake-up source. Without one, return an invalid-idle observation. Repeated invalid idle decisions consume the retry budget and eventually fail. Do not poll the model without new input.
 
 ### Cancellation
 
-A note with `role: "cancel"` and `target_cell_id` requests cancellation. The owner handles it directly after patch commit, without waiting for a code execution slot. Record handling by note ID so repeated State evaluation does not repeat the command.
+A note with `role: "cancel"` and `target_cell_id` requests cancellation. The owner handles it directly after step commit, without waiting for a code execution slot. Record handling by note ID so repeated State evaluation does not repeat the command.
 
 Queued cancellation finishes the target without launching it. Running cancellation stops the local worker and its children, then records the observed outcome. If the outcome is uncertain, return UnknownExecution. Failure to establish local termination blocks new execution. Cancellation cannot undo earlier writes or recall external requests. Removing a cancellation note does not undo an accepted cancellation.
 
@@ -234,7 +225,7 @@ Queued cancellation finishes the target without launching it. Running cancellati
 
 A note with `role: "conclusion"`, `result: "success" | "failure"`, and a reason requests a run ending. Ordinary text such as “done” has no control effect. Record the request outcome so it is not repeatedly processed. Rejected requests return observations; a new request requires a new note version.
 
-The LLM judges whether a natural-language goal is achieved. Supplied validators are mandatory and cannot be weakened by model patches. The Harness checks their recorded outcomes and mechanical conditions; it does not prove semantic success for arbitrary goals.
+The LLM judges whether a natural-language goal is achieved. Supplied validators are mandatory and cannot be weakened by model steps. The Harness checks their recorded outcomes and mechanical conditions; it does not prove semantic success for arbitrary goals.
 
 Success requires no outstanding work or unresolved uncertainty and passing required validators. Account for observations that arrived during generation before accepting success; return them to a new round if they could invalidate the conclusion.
 
@@ -242,11 +233,11 @@ Failure stops admission, cancels queued work, and stops local workers. Record re
 
 ## 10. Context and resource limits
 
-Bound State size and each output before it enters context. Reserve room for new observations and patch generation. Retain recorded output in Session within storage limits. Removing selected Cells and outputs reduces context without erasing history; read-only retrieval remains available through code.
+Bound State size and each output before it enters context. Reserve room for new observations and step generation. Retain recorded output in Session within storage limits. Removing selected Cells and outputs reduces context without erasing history; read-only retrieval remains available through code.
 
-Reject patches that exceed the State budget. Ask the LLM to prune before the hard limit. Keep compact pending and uncertainty records visible, and bound admitted work so those records fit. If the model cannot produce a valid smaller State within its retry budget, fail.
+Reject steps that exceed the State budget. Ask the LLM to prune before the hard limit. Keep compact pending and uncertainty records visible, and bound admitted work so those records fit. If the model cannot produce a valid smaller State within its retry budget, fail.
 
-Persist configured model-round, token, execution-time, and consecutive-invalid-patch limits. Invalid idle decisions use the retry budget. Restart does not reset usage. The LLM judges lack of progress; there is no separate semantic progress detector. Exact numeric limits are deployment configuration.
+Persist configured model-round, token, execution-time, and consecutive-invalid-step limits. Invalid idle decisions use the retry budget. Restart does not reset usage. The LLM judges lack of progress; there is no separate semantic progress detector. Exact numeric limits are deployment configuration.
 
 ## 11. Recovery and required tests
 
@@ -263,19 +254,19 @@ Example: a Cell edits a Flask route and starts tests. Rio stops before final out
 
 | Failure or input | Required result |
 | --- | --- |
-| Repeated State evaluation or duplicate patch | One accepted version and at most one execution record per code ID |
+| Repeated State evaluation or duplicate step | One accepted version and at most one execution record per code ID |
 | Update Cell 1 in `[1, 2]` | `[3, 2]`; Cell 3 points to 1; stored Cell 1 stays unchanged |
-| In-place field edit or stale predecessor | Reject the whole patch |
+| Unknown Cell ID or second op on one Cell | Reject the whole step |
 | Replace unchanged code | New version requests one run |
 | Replace a busy Cell | Reject until it finishes or cancellation settles |
 | Remove a busy or uncertain Cell | Context shrinks; pending work or uncertainty remains visible |
 | Concurrent accepted code Cells | Serial dispatch in accepted order |
-| Error with more queued work | Pause until the model consumes the error in an accepted patch |
+| Error with more queued work | Pause until the model consumes the error in an accepted step |
 | Cancel while worker slot is occupied | Owner handles cancellation without running another code Cell |
-| Crash after patch commit, before dispatch | Queued work survives |
+| Crash after step commit, before dispatch | Queued work survives |
 | Crash after launch authorization | UnknownExecution; no automatic rerun |
 | Old worker or child survives restart | Stop it before new execution, or fail recovery |
-| Lost model response or partial JSON | Bounded retry; no partial or duplicate accepted patch |
+| Lost model response or partial JSON | Bounded retry; no partial or duplicate accepted step |
 | Observation arrives during generation | Persist to Inbox; keep the round's State fixed |
 | Unrelated response arrives after a new error | It cannot clear the new dispatch pause |
 | Uncertain SQLite commit | Stop admission/publication and local workers; reopen and inspect |
@@ -298,7 +289,7 @@ Test process termination and host/power failure separately. A process-kill test 
 
 Implement the SQLite reducer and commit protocol, step admission, serial execution and worker cleanup, fixed model rounds, Inbox and timers, control notes, then fault-injection tests and coding evaluations.
 
-BEAM informs process ownership and supervision. Rio keeps Python. The CLM approach informs model-managed context. Rio v0.7.0–v0.7.1 provide the earlier notebook-based direction; this design keeps JSON Patch and Session history while replacing shared kernel execution. [R8–R10, R13]
+BEAM informs process ownership and supervision. Rio keeps Python. The CLM approach informs model-managed context. Rio v0.7.0–v0.7.1 provide the earlier notebook-based direction; this design keeps model-edited JSON State and Session history while replacing shared kernel execution. [R8–R10, R13]
 
 Sessions use SQLite only. There is no legacy session importer. Each accepted code Cell must be an independent script.
 
@@ -308,7 +299,6 @@ The core excludes stack persistence, internal-call replay, mandatory effect adap
 
 ## References
 
-- [R1: RFC 6902 JSON Patch](https://www.rfc-editor.org/rfc/rfc6902)
 - [R2: SQLite synchronization settings](https://sqlite.org/pragma.html#pragma_synchronous)
 - [R3: Erlang processes](https://www.erlang.org/doc/system/ref_man_processes.html)
 - [R4: OTP supervisor behavior](https://www.erlang.org/doc/system/sup_princ.html)

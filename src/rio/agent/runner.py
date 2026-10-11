@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from rio.agent.owner import Owner
-from rio.agent.prompt import SCHEMA, STEP
+from rio.agent.prompt import STEP
 from rio.agent.session import Session, observation
 from rio.agent.state import InvalidPatch
 from rio.agent.store import encode
@@ -81,7 +81,7 @@ async def run(
                     },
                 )
             try:
-                turn = session.prepare_turn(session.system, SCHEMA)
+                turn = session.prepare_turn(session.system, session.schema)
                 if turn["response"] is None:
                     while time.time() < turn["retry_at"]:
                         await owner.tick()
@@ -134,9 +134,9 @@ async def run(
                 if len(response.tool_calls) != 1 or response.tool_calls[0].name != "step":
                     raise InvalidPatch("Call exactly one step tool")
                 arguments = response.tool_calls[0].arguments
-                if raw_tool_arguments(arguments) is not None or set(arguments) != {"patch"}:
-                    raise InvalidPatch("step requires a complete JSON patch argument")
-                session.accept(turn["id"], arguments["patch"])
+                if raw_tool_arguments(arguments) is not None or set(arguments) != {"ops"}:
+                    raise InvalidPatch("step requires one complete ops argument")
+                session.accept(turn["id"], arguments["ops"])
                 if session.pending():
                     session.store.commit("work_requested", {"meta": {"idle": 0}})
                 await owner.controls()

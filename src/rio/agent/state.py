@@ -1,15 +1,11 @@
-"""Restricted JSON Patch admission for immutable, independent Cells."""
+"""Step admission for immutable, independent Cells addressed by id."""
 
 from __future__ import annotations
 
 import copy
-import re
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-
-import jsonpatch
-from jsonpointer import JsonPointerException
 
 from rio.agent.store import encode
 from rio.truncate import DEFAULT_MAX_OUTPUT_BYTES
@@ -45,30 +41,37 @@ class Limits:
 class CellKind:
     """A runnable Cell kind. Notes are built in and never run; callers add kinds to act.
 
-    ``validate`` raises InvalidPatch for a malformed Cell. ``command`` returns the argv that
-    runs one Cell version, and may write files into the given scratch directory.
+    ``fields`` maps each field besides ``kind`` to its JSON schema for the step tool.
+    ``validate`` raises InvalidPatch for a malformed Cell body. ``command`` returns the argv
+    that runs one Cell version, and may write files into the given scratch directory.
     """
 
     name: str
-    fields: frozenset[str]
+    fields: Mapping[str, dict]
     prompt: str
     validate: Callable[[dict], None]
     command: Callable[[dict, Path], list[str]]
 
 
+# Note fields besides kind, as JSON schemas for the step tool.
+NOTE = {
+    "text": {"type": "string"},
+    "role": {"type": "string", "enum": ["cancel", "resolution", "conclusion"]},
+    "target_cell_id": {"type": "integer"},
+    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+    "result": {"type": "string", "enum": ["success", "failure"]},
+}
+
+
 def validate_cell(cell: object, kinds: Mapping[str, CellKind]) -> None:
+    """Check a model-written Cell body; the runtime adds id and previous_id."""
     if not isinstance(cell, dict):
-        raise InvalidPatch("Replace a whole Cell object")
-    if type(cell.get("id")) is not int or cell["id"] < 1:
-        raise InvalidPatch("Cell id must be a positive integer")
-    if "previous_id" not in cell or (
-        cell["previous_id"] is not None and type(cell["previous_id"]) is not int
-    ):
-        raise InvalidPatch("previous_id must be an integer or null")
-    common = {"id", "previous_id", "kind"}
+        raise InvalidPatch("cell must be an object")
+    if {"id", "previous_id"} & set(cell):
+        raise InvalidPatch("Omit id and previous_id from cell; the runtime assigns them")
     name = cell.get("kind")
     if name == "note":
-        allowed = common | {"text", "role", "target_cell_id", "evidence_refs", "result"}
+        allowed = {"kind", *NOTE}
         if not isinstance(cell.get("text"), str) or not cell["text"].strip():
             raise InvalidPatch("Notes require nonblank text")
         role = cell.get("role")
@@ -83,7 +86,7 @@ def validate_cell(cell: object, kinds: Mapping[str, CellKind]) -> None:
         if role == "conclusion" and cell.get("result") not in ("success", "failure"):
             raise InvalidPatch("Conclusion requires result: success or failure")
     elif isinstance(name, str) and name in kinds:
-        allowed = common | kinds[name].fields
+        allowed = {"kind", *kinds[name].fields}
         kinds[name].validate(cell)
     else:
         raise InvalidPatch(f"Cell kind must be one of: {', '.join(['note', *kinds])}")
@@ -91,102 +94,70 @@ def validate_cell(cell: object, kinds: Mapping[str, CellKind]) -> None:
         raise InvalidPatch(f"Unknown Cell fields: {sorted(set(cell) - allowed)}")
 
 
-def located(cells: list[dict], message: str, cell_id: object) -> str:
-    """Append where Cell id cell_id lives, so a retry can address it correctly."""
-    for position, cell in enumerate(cells):
-        if cell["id"] == cell_id:
-            return f"{message}. Cell id {cell_id} is at /cells/{position}"
-    return message
+OPS = {"add": {"op", "cell"}, "replace": {"op", "id", "cell"}, "remove": {"op", "id"}}
+USAGE = (
+    'Use {"op":"add","cell":{...}}, {"op":"replace","id":N,"cell":{...}}, or {"op":"remove","id":N}'
+)
 
 
-def index_error(cells: list[dict], index: int) -> str:
-    """Explain that /cells/N is an array position, and where Cell id N lives if it exists."""
-    positions = f"0..{len(cells) - 1}" if cells else "none; append at /cells/-"
-    message = (
-        f"Cell index {index} out of range: /cells/N is the array position, not the Cell id "
-        f"(valid positions: {positions})"
-    )
-    return located(cells, message, index)
-
-
-def stale_error(cells: list[dict], index: int, previous_id: object) -> str:
-    """Name the predecessor /cells/N requires, and where the given previous_id lives."""
-    old_id = cells[index]["id"]
-    message = (
-        f"Stale predecessor: /cells/{index} holds Cell id {old_id}, so its "
-        f"replacement needs previous_id: {old_id} (got {previous_id})"
-    )
-    if previous_id is None:
-        return f"{message}. To add a new Cell instead, append at /cells/-"
-    return located(cells, message, previous_id)
+def present(value: dict) -> dict:
+    """Drop null fields, which strict-schema providers send for omitted ones."""
+    return {key: item for key, item in value.items() if item is not None}
 
 
 def admit(
-    state: dict, patch: object, executions: dict, limit: int, kinds: Mapping[str, CellKind]
+    state: dict, ops: object, executions: dict, limit: int, kinds: Mapping[str, CellKind]
 ) -> tuple[dict, list[dict]]:
-    if not isinstance(patch, list):
-        raise InvalidPatch("patch must be an array")
-    if not patch or patch[0] != {"op": "test", "path": "/revision", "value": state["revision"]}:
-        raise InvalidPatch("First operation must test the current /revision")
-    candidate = copy.deepcopy(state)
+    """Apply id-addressed ops; the runtime assigns ids, lineage, and positions."""
+    if not isinstance(ops, list):
+        raise InvalidPatch(f"ops must be an array. {USAGE}")
+    next_id = state["runtime"]["next_cell_id"]
+    ids = [cell["id"] for cell in state["cells"]]
+    replaced: dict[int, dict] = {}
+    removed: set[int] = set()
     new = []
-    last_removed = len(state["cells"])
-    for operation in patch:
-        if not isinstance(operation, dict):
-            raise InvalidPatch("Patch operations must be objects")
-        op, path = operation.get("op"), operation.get("path", "")
-        if not isinstance(path, str):
-            raise InvalidPatch("Patch path must be a JSON pointer string")
-        if op == "test":
-            pass
-        elif op == "add" and path == "/cells/-":
-            cell = operation.get("value")
-            validate_cell(cell, kinds)
-            if cell["previous_id"] is not None:
-                raise InvalidPatch("New lineages require previous_id: null")
-            new.append(cell)
-        elif (
-            op in ("replace", "remove")
-            and isinstance(path, str)
-            and re.fullmatch(r"/cells/(0|[1-9][0-9]*)", path)
+    for index, operation in enumerate(ops):
+        operation = present(operation) if isinstance(operation, dict) else None
+        if (
+            operation is None
+            or operation.get("op") not in ("add", "replace", "remove")
+            or set(operation) != OPS[operation["op"]]
         ):
-            index = int(path.rsplit("/", 1)[1])
-            if index >= len(candidate["cells"]):
-                raise InvalidPatch(index_error(candidate["cells"], index))
-            old = candidate["cells"][index]
-            if old["id"] >= state["runtime"]["next_cell_id"]:
+            raise InvalidPatch(f"Invalid ops[{index}]. {USAGE}")
+        previous = None
+        if operation["op"] != "add":
+            cell_id = operation["id"]
+            if type(cell_id) is not int or cell_id not in ids:
                 raise InvalidPatch(
-                    f"/cells/{index} holds Cell id {old['id']}, added earlier in this patch; "
-                    "edit or drop that operation instead of changing the Cell again"
+                    f"ops[{index}]: Cell {cell_id} is not in cells (ids: {ids}). "
+                    "Replace or remove an existing Cell; new Cells get ids on acceptance"
                 )
-            if op == "remove":
-                if index >= last_removed:
-                    raise InvalidPatch("Remove cells in descending index order")
-                last_removed = index
-            else:
-                cell = operation.get("value")
-                validate_cell(cell, kinds)
-                if cell["previous_id"] != old["id"]:
-                    raise InvalidPatch(stale_error(candidate["cells"], index, cell["previous_id"]))
-                if executions.get(str(old["id"]), {}).get("phase") in ("queued", "started"):
-                    raise InvalidPatch("Cannot replace a queued or running Cell")
-                new.append(cell)
-        else:
-            raise InvalidPatch("Only test, append, whole-Cell replacement and removal are allowed")
-        if op in ("add", "replace") and cell["id"] != (
-            state["runtime"]["next_cell_id"] + len(new) - 1
-        ):
-            raise InvalidPatch("Allocate consecutive IDs in operation order")
+            if cell_id in replaced or cell_id in removed:
+                raise InvalidPatch(
+                    f"ops[{index}]: Cell {cell_id} already has an op in this step; "
+                    "use one op per Cell"
+                )
+            if operation["op"] == "remove":
+                removed.add(cell_id)
+                continue
+            if executions.get(str(cell_id), {}).get("phase") in ("queued", "started"):
+                raise InvalidPatch(
+                    f"ops[{index}]: Cell {cell_id} is queued or running; add a new Cell, "
+                    "or cancel it with a cancel note"
+                )
+            previous = cell_id
+        body = present(operation["cell"]) if isinstance(operation["cell"], dict) else None
         try:
-            candidate = jsonpatch.apply_patch(candidate, [operation])
-        except (
-            jsonpatch.JsonPatchException,
-            JsonPointerException,
-            KeyError,
-            IndexError,
-            TypeError,
-        ) as exc:
-            raise InvalidPatch(str(exc)) from exc
+            validate_cell(body, kinds)
+        except InvalidPatch as exc:
+            raise InvalidPatch(f"ops[{index}]: {exc}") from None
+        cell = {"id": next_id + len(new), "previous_id": previous, **body}
+        if previous is not None:
+            replaced[previous] = cell
+        new.append(cell)
+    cells = [replaced.get(c["id"], c) for c in state["cells"] if c["id"] not in removed]
+    cells += [cell for cell in new if cell["previous_id"] is None]
+    candidate = copy.deepcopy({**state, "cells": cells})
     candidate["runtime"]["inbox"] = []
     candidate["revision"] += 1
     candidate["runtime"]["next_cell_id"] += len(new)

@@ -771,24 +771,16 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
                                                 "name": "step",
                                                 "arguments": json.dumps(
                                                     {
-                                                        "patch": [
-                                                            {
-                                                                "op": "test",
-                                                                "path": "/revision",
-                                                                "value": 1,
-                                                            },
+                                                        "ops": [
                                                             {
                                                                 "op": "add",
-                                                                "path": "/cells/-",
-                                                                "value": {
-                                                                    "id": 1,
+                                                                "cell": {
                                                                     "kind": "note",
                                                                     "text": "hello",
-                                                                    "previous_id": None,
                                                                     "role": "conclusion",
                                                                     "result": "success",
                                                                 },
-                                                            },
+                                                            }
                                                         ]
                                                     }
                                                 ),

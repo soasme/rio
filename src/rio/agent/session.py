@@ -10,15 +10,24 @@ from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
 
-from rio.agent.prompt import system
-from rio.agent.state import CellKind, InvalidPatch, Limits, admit
+from rio.agent.prompt import schema, system
+from rio.agent.state import NOTE, CellKind, InvalidPatch, Limits, admit
 from rio.agent.store import Store, encode
+
+# Bump when the model-facing step protocol changes; saved turns hold the old prompt.
+STATE_SCHEMA = "rio.state/2"
 
 
 def by_name(kinds: Iterable[CellKind]) -> dict[str, CellKind]:
     named = {kind.name: kind for kind in kinds}
     if "note" in named:
         raise ValueError("note is a built-in Cell kind")
+    # All kinds share one cell schema in the step tool, so a field means one thing.
+    fields = dict(NOTE)
+    for kind in named.values():
+        for field, spec in kind.fields.items():
+            if field in ("kind", "id", "previous_id") or fields.setdefault(field, spec) != spec:
+                raise ValueError(f"Cell kind {kind.name} redefines field {field}")
     return named
 
 
@@ -31,6 +40,11 @@ class Session:
         self.store = store
         if not store.data:
             raise ValueError("Create a Session before opening it")
+        if self.meta["state"]["schema"] != STATE_SCHEMA:
+            raise ValueError(
+                f"Session uses {self.meta['state']['schema']}, but this Rio needs "
+                f"{STATE_SCHEMA}; start a new session"
+            )
         self.limits = Limits(**self.meta["limits"])
         self.kinds = by_name(kinds)
 
@@ -52,7 +66,7 @@ class Session:
         kinds = by_name(kinds)
         limits = limits or Limits()
         state = {
-            "schema": "rio.state/1",
+            "schema": STATE_SCHEMA,
             "id": uuid.uuid4().hex,
             "revision": 0,
             "goal": goal,
@@ -103,6 +117,10 @@ class Session:
     @property
     def system(self) -> str:
         return system(self.kinds.values()) + self.meta.get("instructions", "")
+
+    @property
+    def schema(self) -> dict:
+        return schema(self.kinds.values())
 
     def pending(self) -> list[dict]:
         return [e for e in self.data["executions"].values() if e["phase"] != "finished"]
@@ -267,17 +285,19 @@ class Session:
             },
         )
 
-    def accept(self, turn_id: str, patch: list) -> dict:
+    def accept(self, turn_id: str, ops: list) -> dict:
         turn = self.data["turns"][turn_id]
         if turn["receipt"] is not None:
-            if turn["patch"] != patch:
+            if turn["ops"] != ops:
                 raise InvalidPatch("Conflicting submission for an accepted turn")
             return copy.deepcopy(turn["receipt"])
         if self.meta["terminal"]:
             raise InvalidPatch("Run has ended")
+        if turn["state"]["revision"] != self.meta["state"]["revision"]:
+            raise InvalidPatch("Stale turn: State changed after this turn was prepared")
         state, new = admit(
             turn["state"],
-            patch,
+            ops,
             self.data["executions"],
             self.limits.context_bytes // 2,
             self.kinds,
@@ -295,7 +315,7 @@ class Session:
                         raise InvalidPatch(
                             "Resolution notes apply only to unresolved UnknownExecution. "
                             "For an ordinary error, omit the resolution note; the next accepted "
-                            "patch consumes the error and resumes dispatch."
+                            "step consumes the error and resumes dispatch."
                         )
                     for ref in cell["evidence_refs"]:
                         if not isinstance(ref, str) or not ref.startswith("session:event:"):
@@ -349,7 +369,7 @@ class Session:
                 "executions": executions,
                 "controls": controls,
                 "inbox": messages,
-                "turns": {turn_id: {**turn, "receipt": receipt, "patch": patch}},
+                "turns": {turn_id: {**turn, "receipt": receipt, "ops": ops}},
             },
             identity=f"patch:{turn_id}",
         )

@@ -8,7 +8,7 @@ Rio saves each accepted change in SQLite and runs code in separate Python proces
 | Package | Job |
 | --- | --- |
 | `rio.ai` | Send requests to model providers and read their responses. |
-| `rio.agent` | Own state, check patches, run cells, and recover sessions. |
+| `rio.agent` | Own state, check steps, run cells, and recover sessions. |
 | `rio.coding` | Define code and cmd cells; configure providers, credentials, extensions, and MCP clients. |
 | `rio.cli` | Start or resume a task and print committed results. |
 
@@ -17,7 +17,7 @@ Rio saves each accepted change in SQLite and runs code in separate Python proces
 ```mermaid
 flowchart LR
     S[Saved state] --> M[Model]
-    M -->|step patch| C[Check and commit]
+    M -->|step ops| C[Check and commit]
     C --> W[Run Python script]
     W -->|commit output and result| I[Inbox]
     I --> S
@@ -25,17 +25,17 @@ flowchart LR
 
 State has a goal, a revision, cells, and runtime observations. `rio.agent` knows
 one cell kind, the note. A note-only agent can record facts and conclude. Callers
-add runnable kinds with `CellKind`: a name, its fields, a prompt, a validator, and
-the argv for one run. `rio.coding.cells` adds `code` (a complete Python script) and
-`cmd` (a command); `rio run` uses both. The model calls one tool, `step`, with a
-JSON Patch. The patch must test the revision first. It can append, replace, or
-remove whole cells. A replacement gets a new ID and links to the old cell. Old versions stay
+add runnable kinds with `CellKind`: a name, its fields and their JSON schemas, a prompt,
+a validator, and the argv for one run. `rio.coding.cells` adds `code` (a complete Python
+script) and `cmd` (a command); `rio run` uses both. The model calls one tool, `step`, with a
+list of ops: `add` a cell, or `replace` or `remove` a cell by ID. Rio assigns IDs
+and keeps positions. A replacement gets a new ID and links to the old cell. Old versions stay
 in history. Removing a cell from context does not cancel its work.
 
 Each model round uses a saved, fixed state. New observations wait in the inbox.
 Successful completions wait until queued work drains or an error pauses it,
 so one round sees them together.
-Accepting a patch also records which observations that round consumed. Retrying
+Accepting a step also records which observations that round consumed. Retrying
 an accepted step returns the same receipt and does not launch the code again.
 A complete saved model response can be accepted after restart. Lost responses
 use bounded retries; missing token usage stays unknown.
@@ -88,7 +88,7 @@ no pending work, unread observations, or unresolved results, and passing any
 configured validators. Validators use the same process supervision.
 
 `Session.create` accepts `Limits` and validator argument lists. These are outside
-model patch authority. Limits cover model rounds, tokens, script time, retries,
+model authority. Limits cover model rounds, tokens, script time, retries,
 context, output, pending work, inbox messages, and journal size. Cleanup and final
 records may exceed the journal admission limit.
 
