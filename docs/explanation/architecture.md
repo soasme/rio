@@ -54,8 +54,9 @@ directly, without a shell or uv. It shares the script queue and supervision.
 
 The owner commits launch permission and the supervisor's identity before allowing
 code to start. It commits output before printing it, normally every 100 ms.
-Output has a size limit and a visible truncation flag. An idle session has no
-script process.
+Output over 2000 lines or 50 KB keeps its tail, ends with a
+`[Showing lines X-Y of Z. Full output: PATH]` notice, and sets the truncation flag.
+The full output stays in a temporary file. An idle session has no script process.
 
 ## Recovery
 

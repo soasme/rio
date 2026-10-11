@@ -147,18 +147,9 @@ class Session:
             for key, execution in self.data["executions"].items()
             if key in selected or execution["phase"] != "finished" or int(key) in self.unresolved()
         }
-        outputs = state["runtime"]["cells"]
-        per_output = min(
-            self.limits.output_bytes, self.limits.context_bytes // 8 // max(1, len(outputs))
-        )
-        for key, execution in outputs.items():
+        for key, execution in state["runtime"]["cells"].items():
             if key in self.data["resolutions"]:
                 execution["resolved_by"] = self.data["resolutions"][key]
-            for name in ("output", "stderr"):
-                raw = execution[name].encode()
-                if len(raw) > per_output:
-                    execution[name] = raw[:per_output].decode(errors="ignore")
-                    execution["context_truncated"] = True
         # Selected output competes with new observations. Keep receipts compact; full records
         # stay available through read-only SQLite retrieval, even after context pruning.
         delivered = []

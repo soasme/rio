@@ -11,6 +11,7 @@ import jsonpatch
 from jsonpointer import JsonPointerException
 
 from rio.agent.store import encode
+from rio.truncate import DEFAULT_MAX_OUTPUT_BYTES
 
 
 class InvalidPatch(ValueError):
@@ -23,8 +24,8 @@ class Limits:
     tokens: int = 1_000_000
     execution_seconds: float = 600
     invalid_attempts: int = 3
-    context_bytes: int = 160_000
-    output_bytes: int = 16_000
+    context_bytes: int = 204_800
+    output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES
     pending_cells: int = 32
     inbox_messages: int = 256
     storage_bytes: int = 256_000_000

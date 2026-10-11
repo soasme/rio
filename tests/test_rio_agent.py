@@ -427,10 +427,24 @@ async def test_uv_timer_api_acknowledges_committed_registration(session):
 def test_output_limit_is_explicit(session):
     accept(session, code(1))
     session.authorize(1, {"token": "none"})
-    session.output(1, "x" * 20000)
+    session.output(1, "x" * (session.limits.output_bytes + 1))
     execution = session.data["executions"]["1"]
     assert len(execution["output"].encode()) == session.limits.output_bytes
     assert execution["truncated"]
+
+
+async def test_truncated_output_keeps_tail_and_full_output_file(session):
+    source = "print('\\n'.join(map(str, range(3000))))"
+    accept(session, cmd(1, "python3", "-c", source), cmd(2, "true"))
+    async with Owner(session) as owner:
+        await settle(owner)
+    execution = session.data["executions"]["1"]
+    assert execution["truncated"]
+    assert execution["output"].startswith("1000\n")
+    path = execution["output"].rsplit("Full output: ", 1)[1].rstrip("]")
+    assert execution["output"].endswith(f"[Showing lines 1001-3000 of 3000. Full output: {path}]")
+    assert Path(path).read_text().splitlines() == [str(i) for i in range(3000)]
+    assert not session.data["executions"]["2"]["truncated"]
 
 
 async def test_required_validator_blocks_success(tmp_path):
@@ -565,16 +579,15 @@ async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch
         assert session.meta["usage"]["rounds"] == 2
 
 
-def test_context_reserves_output_and_observation_space(session):
-    accept(session, *(code(i) for i in range(1, 20)))
-    for i in range(1, 20):
+def test_context_keeps_each_output_whole(session):
+    accept(session, code(1), code(2))
+    for i in (1, 2):
         session.authorize(i, {"token": "none"})
-        session.output(i, "x" * session.limits.output_bytes, "y" * session.limits.output_bytes)
+        session.output(i, "x" * session.limits.output_bytes)
         session.finish(i, {"type": "success"})
     turn = prepare(session)
-    assert len(json.dumps(turn["state"]).encode()) < session.limits.context_bytes
-    assert turn["state"]["runtime"]["cells"]["1"]["context_truncated"]
-    assert len(session.data["executions"]["1"]["output"]) == session.limits.output_bytes
+    for key in ("1", "2"):
+        assert turn["state"]["runtime"]["cells"][key]["output"] == "x" * session.limits.output_bytes
     session.accept(turn["id"], patch(turn))
 
 
