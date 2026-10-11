@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import copy
 import re
-import tomllib
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import jsonpatch
 from jsonpointer import JsonPointerException
@@ -40,24 +41,22 @@ class Limits:
             raise ValueError("Reserve context for observations: output <= context / 4")
 
 
-def script_metadata(source: str) -> dict:
-    blocks = re.findall(r"(?m)^# /// script\n((?:#(?: .*|)\n)*)# ///\s*$", source)
-    if len(blocks) != 1:
-        raise InvalidPatch("Code requires one PEP 723 script block with dependencies")
-    try:
-        metadata = tomllib.loads("\n".join(line[2:] for line in blocks[0].splitlines()))
-    except tomllib.TOMLDecodeError as exc:
-        raise InvalidPatch(str(exc)) from exc
-    if not isinstance(metadata.get("dependencies"), list) or not all(
-        isinstance(item, str) for item in metadata["dependencies"]
-    ):
-        raise InvalidPatch("PEP 723 dependencies must be an array of strings")
-    if "requires-python" in metadata and not isinstance(metadata["requires-python"], str):
-        raise InvalidPatch("requires-python must be a string")
-    return metadata
+@dataclass(frozen=True)
+class CellKind:
+    """A runnable Cell kind. Notes are built in and never run; callers add kinds to act.
+
+    ``validate`` raises InvalidPatch for a malformed Cell. ``command`` returns the argv that
+    runs one Cell version, and may write files into the given scratch directory.
+    """
+
+    name: str
+    fields: frozenset[str]
+    prompt: str
+    validate: Callable[[dict], None]
+    command: Callable[[dict, Path], list[str]]
 
 
-def validate_cell(cell: object) -> None:
+def validate_cell(cell: object, kinds: Mapping[str, CellKind]) -> None:
     if not isinstance(cell, dict):
         raise InvalidPatch("Replace a whole Cell object")
     if type(cell.get("id")) is not int or cell["id"] < 1:
@@ -67,17 +66,8 @@ def validate_cell(cell: object) -> None:
     ):
         raise InvalidPatch("previous_id must be an integer or null")
     common = {"id", "previous_id", "kind"}
-    if cell.get("kind") == "code":
-        allowed = common | {"runtime", "source"}
-        if cell.get("runtime") != "python" or not isinstance(cell.get("source"), str):
-            raise InvalidPatch("Code requires runtime: python and a source string")
-        script_metadata(cell["source"])
-    elif cell.get("kind") == "cmd":
-        allowed = common | {"argv"}
-        argv = cell.get("argv")
-        if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
-            raise InvalidPatch("Cmd requires a nonempty argv array of strings")
-    elif cell.get("kind") == "note":
+    name = cell.get("kind")
+    if name == "note":
         allowed = common | {"text", "role", "target_cell_id", "evidence_refs", "result"}
         if not isinstance(cell.get("text"), str) or not cell["text"].strip():
             raise InvalidPatch("Notes require nonblank text")
@@ -92,8 +82,11 @@ def validate_cell(cell: object) -> None:
             raise InvalidPatch("Resolution requires recorded evidence_refs")
         if role == "conclusion" and cell.get("result") not in ("success", "failure"):
             raise InvalidPatch("Conclusion requires result: success or failure")
+    elif isinstance(name, str) and name in kinds:
+        allowed = common | kinds[name].fields
+        kinds[name].validate(cell)
     else:
-        raise InvalidPatch("Cell kind must be note, code, or cmd")
+        raise InvalidPatch(f"Cell kind must be one of: {', '.join(['note', *kinds])}")
     if set(cell) - allowed:
         raise InvalidPatch(f"Unknown Cell fields: {sorted(set(cell) - allowed)}")
 
@@ -128,7 +121,9 @@ def stale_error(cells: list[dict], index: int, previous_id: object) -> str:
     return located(cells, message, previous_id)
 
 
-def admit(state: dict, patch: object, executions: dict, limit: int) -> tuple[dict, list[dict]]:
+def admit(
+    state: dict, patch: object, executions: dict, limit: int, kinds: Mapping[str, CellKind]
+) -> tuple[dict, list[dict]]:
     if not isinstance(patch, list):
         raise InvalidPatch("patch must be an array")
     if not patch or patch[0] != {"op": "test", "path": "/revision", "value": state["revision"]}:
@@ -146,7 +141,7 @@ def admit(state: dict, patch: object, executions: dict, limit: int) -> tuple[dic
             pass
         elif op == "add" and path == "/cells/-":
             cell = operation.get("value")
-            validate_cell(cell)
+            validate_cell(cell, kinds)
             if cell["previous_id"] is not None:
                 raise InvalidPatch("New lineages require previous_id: null")
             new.append(cell)
@@ -170,7 +165,7 @@ def admit(state: dict, patch: object, executions: dict, limit: int) -> tuple[dic
                 last_removed = index
             else:
                 cell = operation.get("value")
-                validate_cell(cell)
+                validate_cell(cell, kinds)
                 if cell["previous_id"] != old["id"]:
                     raise InvalidPatch(stale_error(candidate["cells"], index, cell["previous_id"]))
                 if executions.get(str(old["id"]), {}).get("phase") in ("queued", "started"):

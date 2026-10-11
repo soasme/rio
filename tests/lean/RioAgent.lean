@@ -64,14 +64,28 @@ def changeable (cellId nextId : Nat) : Bool := cellId < nextId
 theorem cell_added_in_patch_is_not_changeable (nextId k : Nat) :
     changeable (nextId + k) nextId = false := by simp [changeable]
 
+/-- Notes are built in; callers extend the agent with named runnable kinds. -/
 inductive Kind where
-  | note | code | cmd
+  | note
+  | runnable (name : String)
   deriving DecidableEq, Repr
 
-/-- Code and cmd Cells request one execution; notes never run. -/
+/-- Admission accepts a note, or a runnable kind the caller registered. -/
+def admits (registered : List String) : Kind → Bool
+  | .note => true
+  | .runnable name => registered.contains name
+
+theorem note_only_agent_admits_only_notes (k : Kind) :
+    admits [] k = true ↔ k = .note := by
+  cases k <;> simp [admits]
+
+theorem notes_need_no_registration (registered : List String) :
+    admits registered .note = true := rfl
+
+/-- Runnable Cells request one execution; notes never run. -/
 def runs : Kind → Bool
   | .note => false
-  | .code | .cmd => true
+  | .runnable _ => true
 
 def requested (cells : List (Nat × Kind)) : List Nat :=
   (cells.filter (runs ·.2)).map (·.1)
@@ -80,8 +94,8 @@ theorem notes_request_no_execution (ids : List Nat) :
     requested (ids.map (·, .note)) = [] := by
   induction ids <;> simp_all [requested, runs]
 
-theorem cmd_requests_like_code (id : Nat) :
-    requested [(id, .cmd)] = requested [(id, .code)] := rfl
+theorem every_runnable_kind_requests_alike (id : Nat) (a b : String) :
+    requested [(id, .runnable a)] = requested [(id, .runnable b)] := rfl
 
 structure Journal where
   accepted : List Nat := []

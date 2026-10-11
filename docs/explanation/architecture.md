@@ -8,8 +8,8 @@ Rio saves each accepted change in SQLite and runs code in separate Python proces
 | Package | Job |
 | --- | --- |
 | `rio.ai` | Send requests to model providers and read their responses. |
-| `rio.agent` | Own state, check patches, run scripts, and recover sessions. |
-| `rio.coding` | Configure providers, credentials, extensions, and MCP clients. |
+| `rio.agent` | Own state, check patches, run cells, and recover sessions. |
+| `rio.coding` | Define code and cmd cells; configure providers, credentials, extensions, and MCP clients. |
 | `rio.cli` | Start or resume a task and print committed results. |
 
 ## One step
@@ -23,8 +23,11 @@ flowchart LR
     I --> S
 ```
 
-State has a goal, a revision, cells, and runtime observations. A cell is a note,
-a complete Python script, or a command. The model calls one tool, `step`, with a
+State has a goal, a revision, cells, and runtime observations. `rio.agent` knows
+one cell kind, the note. A note-only agent can record facts and conclude. Callers
+add runnable kinds with `CellKind`: a name, its fields, a prompt, a validator, and
+the argv for one run. `rio.coding.cells` adds `code` (a complete Python script) and
+`cmd` (a command); `rio run` uses both. The model calls one tool, `step`, with a
 JSON Patch. The patch must test the revision first. It can append, replace, or
 remove whole cells. A replacement gets a new ID and links to the old cell. Old versions stay
 in history. Removing a cell from context does not cancel its work.
@@ -39,7 +42,8 @@ use bounded retries; missing token usage stays unknown.
 
 ## Running code
 
-One owner runs scripts in order with `uv run --script`. Each script has PEP 723
+One owner runs runnable cells in order, each in its own supervised process. A
+`code` cell runs with `uv run --script`. Each script has PEP 723
 metadata and its own process. Files can pass data between scripts; variables do
 not carry over. For example:
 

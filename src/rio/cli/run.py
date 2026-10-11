@@ -7,6 +7,7 @@ import statistics
 import uuid
 from pathlib import Path
 
+from rio.coding import cells
 from rio.coding.context import load_agents_md
 from rio.coding.extensions.startup import resolve_dynamic_startup
 from rio.coding.paths import RioPaths
@@ -49,7 +50,7 @@ async def run_persistent_session(
         raise ValueError(f"No Session found with id '{resume}'")
     with Store(path) as store:
         if store.data:
-            session = Session(store)
+            session = Session(store, cells.KINDS)
             recorded = Path(session.meta["cwd"])
             if cwd is not None and cwd.resolve() != recorded:
                 raise ValueError("--cwd must match the resumed Session")
@@ -72,7 +73,9 @@ async def run_persistent_session(
             raise ValueError(f"Working directory does not exist: {cwd}")
         if session is None:
             context = load_agents_md(cwd, agents_md)
-            instructions = format_project_context((context,) if context else ())
+            instructions = cells.INSTRUCTIONS + format_project_context(
+                (context,) if context else ()
+            )
         dynamic = None
         try:
             selection = resolve_provider_selection(
@@ -106,6 +109,7 @@ async def run_persistent_session(
                     store,
                     prompt,
                     cwd,
+                    kinds=cells.KINDS,
                     model_config={
                         "provider": provider_name,
                         "model": model,

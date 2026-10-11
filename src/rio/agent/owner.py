@@ -1,4 +1,4 @@
-"""Serial uv and command execution, immediate controls, and conservative recovery."""
+"""Serial Cell execution, immediate controls, and conservative recovery."""
 
 from __future__ import annotations
 
@@ -97,6 +97,10 @@ class Owner:
     async def __aenter__(self):
         if os.name != "posix":
             raise RecoveryFailure("Durable worker containment currently requires POSIX")
+        cells = self.session.data["cells"].values()
+        missing = {c["kind"] for c in cells} - {"note", *self.session.kinds}
+        if missing:
+            raise ValueError(f"Open this Session with its Cell kinds: {', '.join(sorted(missing))}")
         await self.recover()
         self.temporary = tempfile.TemporaryDirectory(prefix="rio-owner-")
         self.socket_path = str(Path(self.temporary.name) / "timer.sock")
@@ -283,7 +287,6 @@ class Owner:
             sys.executable,
             str(Path(worker.__file__)),
             identity["token"],
-            "--command",
             *command,
             cwd=self.session.meta["cwd"],
             stdin=asyncio.subprocess.PIPE,
@@ -358,12 +361,7 @@ class Owner:
             "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
         }
         try:
-            if cell["kind"] == "cmd":
-                command = ["--command", *cell["argv"]]
-            else:
-                script = Path(self.temporary.name) / f"cell-{cell_id}.py"
-                script.write_text(cell["source"], encoding="utf-8")
-                command = [str(script)]
+            command = session.kinds[cell["kind"]].command(cell, Path(self.temporary.name))
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
                 str(Path(worker.__file__)),
