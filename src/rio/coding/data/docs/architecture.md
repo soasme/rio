@@ -8,8 +8,8 @@ Rio saves each accepted change in SQLite and runs code in separate Python proces
 | Package | Job |
 | --- | --- |
 | `rio.ai` | Send requests to model providers and read their responses. |
-| `rio.agent` | Own state, check steps, run scripts, and recover sessions. |
-| `rio.coding` | Configure providers, credentials, and MCP clients. |
+| `rio.agent` | Own state, check steps, run cells, and recover sessions. |
+| `rio.coding` | Define code and cmd cells; configure providers, credentials, and MCP clients. |
 | `rio.cli` | Start or resume a task and print committed results. |
 
 ## One step
@@ -23,13 +23,18 @@ flowchart LR
     I --> S
 ```
 
-State has a goal, a revision, cells, and runtime observations. A cell is a note,
-a complete Python script, or a command. The model calls one tool, `step`, with a
+State has a goal, a revision, cells, and runtime observations. `rio.agent` knows
+one cell kind, the note. A note-only agent can record facts and conclude. Callers
+add runnable kinds with `CellKind`: a name, its fields and their JSON schemas, a prompt,
+a validator, and the argv for one run. `rio.coding.cells` adds `code` (a complete Python
+script) and `cmd` (a command); `rio run` uses both. The model calls one tool, `step`, with a
 list of ops: `add` a cell, or `replace` or `remove` a cell by ID. Rio assigns IDs
 and keeps positions. A replacement gets a new ID and links to the old cell. Old versions stay
 in history. Removing a cell from context does not cancel its work.
 
 Each model round uses a saved, fixed state. New observations wait in the inbox.
+Successful completions wait until queued work drains or an error pauses it,
+so one round sees them together.
 Accepting a step also records which observations that round consumed. Retrying
 an accepted step returns the same receipt and does not launch the code again.
 A complete saved model response can be accepted after restart. Lost responses
@@ -37,7 +42,8 @@ use bounded retries; missing token usage stays unknown.
 
 ## Running code
 
-One owner runs scripts in order with `uv run --script`. Each script has PEP 723
+One owner runs runnable cells in order, each in its own supervised process. A
+`code` cell runs with `uv run --script`. Each script has PEP 723
 metadata and its own process. Files can pass data between scripts; variables do
 not carry over. For example:
 
@@ -46,7 +52,6 @@ not carry over. For example:
 # dependencies = []
 # ///
 from pathlib import Path
-
 print(Path("README.md").read_text())
 ```
 
@@ -55,17 +60,21 @@ directly, without a shell or uv. It shares the script queue and supervision.
 
 The owner commits launch permission and the supervisor's identity before allowing
 code to start. It commits output before printing it, normally every 100 ms.
-Output has a size limit and a visible truncation flag. An idle session has no
-script process.
+Output over 2000 lines or 50 KB keeps its tail, ends with a
+`[Showing lines X-Y of Z. Full output: PATH]` notice, and sets the truncation flag.
+The full output stays in a temporary file. An idle session has no script process.
 
 ## Recovery
 
 Sessions live at `~/.rio/sessions/SESSION_ID.sqlite3`. Resume with
 `rio run --resume SESSION_ID`. The goal, limits, model configuration, and recorded
-results stay the same. A finished run stays finished; use a new run for a new task.
+results stay the same. A completed run cleans up recorded workers and replays its
+journal without loading a provider or requiring the original project directory.
+Cleanup failures stop replay. Use a new run for a new task.
 
 SQLite uses WAL and `synchronous=FULL`. Events rebuild state without executing
-code or calling a model. A failed commit stops new work and publication. Reopen
+code or calling a model. `Session` owns event writes; `Store` commits and folds
+them into state. A failed commit stops new work and publication. Reopen
 the session to check what committed; a missing receipt does not prove rollback.
 
 Recovery checks worker identities and stops surviving local processes. A script
@@ -84,7 +93,9 @@ configured validators. Validators use the same process supervision.
 `Session.create` accepts `Limits` and validator argument lists. These are outside
 model authority. Limits cover model rounds, tokens, script time, retries,
 context, output, pending work, inbox messages, and journal size. Cleanup and final
-records may exceed the journal admission limit.
+records may exceed the journal admission limit. Set
+`Session.create(external_wakeup=True)` when an application supplies external
+observations that can wake an idle session; the default is `False`.
 
 `Session.receive` saves an external observation before acknowledging it. Stable
 IDs make duplicate delivery harmless; conflicting IDs are rejected. The prefixes
@@ -104,3 +115,6 @@ are not guaranteed to happen exactly once.
 
 Tests cover process crashes, lost commit receipts, replay, and child cleanup.
 They do not prove power-loss durability. That needs testing on the target storage.
+
+See the [design contract](https://github.com/soasme/rio/blob/main/docs/design/durable.md), [Lean models](https://github.com/soasme/rio/blob/main/tests/lean/README.md),
+and [evals](https://github.com/soasme/rio/blob/main/evals/README.md) for details and checks.

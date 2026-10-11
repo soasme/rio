@@ -9,12 +9,11 @@ resume its durable session when needed.
 
 ## Guides
 
-- [Migrate to the one-shot runtime](guides/migration.md)
 - [Configure providers and models](guides/providers.md)
 - [Use Rio as a library](guides/library-usage.md)
 - [Use a local llama-server model](guides/local-llama-server.md)
 - [Resume a session](guides/sessions.md)
-- [Trust project resources](guides/project-trust.md)
+- [Trust project MCP configuration](guides/project-trust.md)
 - [Use MCP servers](guides/mcp.md)
 
 ## Reference
@@ -24,3 +23,10 @@ resume its durable session when needed.
 ## Explanation
 
 - [How Rio runs tasks](explanation/architecture.md)
+
+## Packages
+
+- [rio.agent](../src/rio/agent/README.md): durable sessions and cell execution.
+- [rio.ai](../src/rio/ai/README.md): provider requests and response streams.
+- [rio.coding](../src/rio/coding/README.md): coding cells and service configuration.
+- [rio.cli](../src/rio/cli/README.md): task startup, resume, and command dispatch.

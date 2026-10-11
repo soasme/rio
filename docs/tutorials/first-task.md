@@ -28,8 +28,9 @@ cd my-project
 rio run "Add a health-check endpoint and tests."
 ```
 
-Rio prints progress and a session ID when it finishes. Keep that ID if the
-task needs a follow-up.
+Rio prints progress and a session ID when it finishes. Use the ID to
+[resume interrupted work or replay completed results](../guides/sessions.md).
+Start a new run for a new task.
 
 ## Run a task from a file
 

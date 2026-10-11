@@ -24,16 +24,14 @@ levels when a combination is unsupported.
 User provider and model overrides live in `~/.rio/catalog.toml`. Rio ships a
 built-in catalog; the user catalog is applied last and can add or override its
 entries. `rio run` uses only this catalog and saved provider preferences.
-Unknown providers and invalid models are configuration errors; they do not load
-Python extensions or trigger project trust checks. Configure custom endpoints in
-`~/.rio/catalog.toml`, including [local servers](local-llama-server.md).
-
-Saved `scoped_models` entries from older versions are ignored and omitted when
-provider preferences are saved. Each run selects one provider and model.
+Unknown providers and invalid models are configuration errors. Configure custom
+endpoints in `~/.rio/catalog.toml`, including [local servers](local-llama-server.md).
+Each run selects one provider and model.
 
 Runtime provider objects carry request settings only. Cost rates, tiers, display
 names, and context-window sizes stay in the catalog; saving runtime preferences
-preserves them. See [migration notes](migration.md) for Python API changes.
+preserves them. Python callers can read descriptive metadata through
+`rio.coding.catalog_loader.effective_catalog()`.
 
 ## Catalog keys
 

@@ -4,6 +4,7 @@
 rio login PROVIDER [--method METHOD]
 rio run [OPTIONS] TASK
 rio mcp add|remove|list|login|logout
+rio version
 ```
 
 ## `rio login`
@@ -19,7 +20,7 @@ Saves credentials for a provider.
 
 Executes a task in a durable session. A sole Markdown file is read as task
 text; otherwise the positional arguments are joined into the task.
-Providers come from the configured catalog. The run command does not load extensions.
+Providers come from the configured catalog; each run selects one provider and model.
 
 | Option | Description |
 | --- | --- |
@@ -30,9 +31,13 @@ Providers come from the configured catalog. The run command does not load extens
 | `--agents-md PATH` | Project instructions file. Defaults to `AGENTS.md` in the working directory when present. |
 | `-r`, `--resume SESSION_ID` | Resume a durable session. |
 | `--output human\|json` | Output format; defaults to `human`. |
+| `--no-color` | Disable ANSI color output. |
 
-Omit TASK when resuming a SQLite Session. Resume keeps the original goal, project instructions, and model
-configuration; terminal runs remain terminal. Sessions use SQLite only.
+Omit TASK when resuming. Resume keeps the original goal, project instructions,
+and model configuration. An unfinished session needs its configured provider and
+project directory. A completed session cleans up recorded workers and replays its
+journal without provider setup or the original directory. Cleanup failures stop
+replay. See [sessions](../guides/sessions.md).
 
 `human` prints accepted content (notes, commands, and Python source), execution output and
 outcomes, and the session ID. Cell labels and numbers are not displayed. Resume replays the committed
@@ -63,3 +68,7 @@ Manages [MCP servers](../guides/mcp.md) without starting a session.
 servers, `--header KEY=VALUE`, `--oauth-client-id`, `--oauth-client-secret`,
 `--oauth-callback-port`, and `--oauth-scope` for HTTP servers, and
 `--description TEXT`.
+
+## `rio version`
+
+Prints the installed version.

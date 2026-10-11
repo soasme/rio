@@ -68,10 +68,13 @@ The full output stays in a temporary file. An idle session has no script process
 
 Sessions live at `~/.rio/sessions/SESSION_ID.sqlite3`. Resume with
 `rio run --resume SESSION_ID`. The goal, limits, model configuration, and recorded
-results stay the same. A finished run stays finished; use a new run for a new task.
+results stay the same. A completed run cleans up recorded workers and replays its
+journal without loading a provider or requiring the original project directory.
+Cleanup failures stop replay. Use a new run for a new task.
 
 SQLite uses WAL and `synchronous=FULL`. Events rebuild state without executing
-code or calling a model. A failed commit stops new work and publication. Reopen
+code or calling a model. `Session` owns event writes; `Store` commits and folds
+them into state. A failed commit stops new work and publication. Reopen
 the session to check what committed; a missing receipt does not prove rollback.
 
 Recovery checks worker identities and stops surviving local processes. A script
@@ -90,7 +93,9 @@ configured validators. Validators use the same process supervision.
 `Session.create` accepts `Limits` and validator argument lists. These are outside
 model authority. Limits cover model rounds, tokens, script time, retries,
 context, output, pending work, inbox messages, and journal size. Cleanup and final
-records may exceed the journal admission limit.
+records may exceed the journal admission limit. Set
+`Session.create(external_wakeup=True)` when an application supplies external
+observations that can wake an idle session; the default is `False`.
 
 `Session.receive` saves an external observation before acknowledging it. Stable
 IDs make duplicate delivery harmless; conflicting IDs are rejected. The prefixes
