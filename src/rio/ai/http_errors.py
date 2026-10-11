@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from json import JSONDecodeError, loads
 from typing import Any
+
+from rio.ai._parsing import loads_object
 
 _MAX_ERROR_DETAIL_LENGTH = 1000
 
@@ -28,7 +29,7 @@ def provider_http_error_message(
 
 def provider_http_error_detail(body: str) -> str:
     """Extract a concise provider-supplied error detail from an HTTP body."""
-    parsed = _loads_object(body)
+    parsed = loads_object(body)
     if parsed is not None:
         detail = provider_error_detail_from_mapping(parsed)
         if detail:
@@ -55,11 +56,3 @@ def provider_error_detail_from_mapping(value: Mapping[str, Any]) -> str:
             if nested:
                 return nested
     return ""
-
-
-def _loads_object(value: str) -> Mapping[str, Any] | None:
-    try:
-        parsed = loads(value)
-    except JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, Mapping) else None

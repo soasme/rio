@@ -12,11 +12,19 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
-from json import JSONDecodeError, dumps, loads
+from json import dumps, loads
 from typing import Any, Protocol
 
 import httpx
 
+from rio.ai._parsing import (
+    first_choice,
+    int_or_none,
+    int_or_zero,
+    loads_object,
+    parse_sse_line,
+    tool_arguments,
+)
 from rio.ai._provider_events import (
     ProviderErrorEvent,
     ProviderEvent,
@@ -50,12 +58,11 @@ from rio.ai.messages import (
     Usage,
     UserMessage,
     assistant_content,
-    malformed_tool_arguments,
     message_to_user,
 )
 from rio.ai.openai_cache import is_direct_openai_url, openai_prompt_cache_key
 from rio.ai.provider import CancellationToken
-from rio.ai.retry import provider_retry_event, retry_delay_seconds, wait_for_retry
+from rio.ai.retry import RetryAttempt, check_response_status, stream_with_retries
 from rio.ai.stream import canonicalize_provider_stream
 from rio.ai.tool_call_ids import portable_tool_call_id
 from rio.ai.tools import AgentTool, ToolCall
@@ -270,114 +277,78 @@ class OpenAICompatibleProvider:
                     headers["Authorization"] = f"Bearer {api_key}"
             _apply_session_affinity_headers(headers, session_id, session_affinity_format)
 
-            attempt = 0
-            while True:
+            async def stream_attempt(attempt: RetryAttempt) -> AsyncIterator[ProviderEvent]:
                 parser = parser_factory()
-                try:
-                    async with client.stream(
-                        "POST", request_url, json=payload, headers=headers
-                    ) as response:
-                        response_provider = _response_header_value(
-                            response,
-                            self._config.response_provider_header,
-                        )
-                        if response.status_code >= 400:
-                            body = await response.aread()
-                            body_text = body.decode(errors="replace")
-                            if self._should_retry(attempt, status_code=response.status_code):
-                                delay = retry_delay_seconds(
-                                    attempt,
-                                    max_delay_seconds=self._config.max_retry_delay_seconds,
-                                )
-                                yield provider_retry_event(
-                                    attempt=attempt,
-                                    max_retries=self._config.max_retries,
-                                    delay_seconds=delay,
-                                    reason=f"HTTP {response.status_code}",
-                                    data={
-                                        "status_code": response.status_code,
-                                        "body": body_text,
-                                    },
-                                )
-                                attempt += 1
-                                if not await wait_for_retry(delay, signal=signal):
-                                    return
-                                continue
-                            yield ProviderErrorEvent(
-                                message=provider_http_error_message(
-                                    provider_name=self._config.provider_name,
-                                    status_code=response.status_code,
-                                    body=body_text,
-                                    model=model,
-                                ),
-                                data={
-                                    "status_code": response.status_code,
-                                    "body": body_text,
-                                    "attempts": attempt + 1,
-                                },
-                                response_provider=response_provider,
-                            )
-                            return
-
-                        yield ProviderResponseStartEvent(
-                            model=model,
-                            response_provider=response_provider,
-                        )
-
-                        async for line in response.aiter_lines():
-                            if signal is not None and signal.is_cancelled():
-                                return
-
-                            event = _parse_sse_line(line)
-                            if event is None:
-                                continue
-
-                            events, stop = parser.feed(event)
-                            for parser_event in events:
-                                yield parser_event
-                            if stop:
-                                break
-
-                        if parser.fatal:
-                            return
-                        final_events = parser.finalize()
-                        observer = self._config.response_headers_observer
-                        if observer is not None:
-                            try:
-                                observer(dict(response.headers))
-                            except Exception as exc:
-                                # Observer reporting is also best-effort; response
-                                # completion must never depend on metadata hooks.
-                                with suppress(Exception):
-                                    _append_response_observer_diagnostic(final_events, exc)
-                        for parser_event in final_events:
-                            yield parser_event
-                        return
-                except httpx.HTTPError as exc:
-                    if not parser.emitted_content and self._should_retry(attempt):
-                        delay = retry_delay_seconds(
-                            attempt,
-                            max_delay_seconds=self._config.max_retry_delay_seconds,
-                        )
-                        yield provider_retry_event(
-                            attempt=attempt,
-                            max_retries=self._config.max_retries,
-                            delay_seconds=delay,
-                            reason="network error",
-                            data={
-                                "error": str(exc),
-                                "error_type": type(exc).__name__,
-                            },
-                        )
-                        attempt += 1
-                        if not await wait_for_retry(delay, signal=signal):
-                            return
-                        continue
-                    yield ProviderErrorEvent(
-                        message=str(exc),
-                        data={"attempts": attempt + 1},
+                async with client.stream(
+                    "POST", request_url, json=payload, headers=headers
+                ) as response:
+                    response_provider = _response_header_value(
+                        response,
+                        self._config.response_provider_header,
                     )
-                    return
+                    error = await check_response_status(
+                        response,
+                        lambda body: ProviderErrorEvent(
+                            message=provider_http_error_message(
+                                provider_name=self._config.provider_name,
+                                status_code=response.status_code,
+                                body=body,
+                                model=model,
+                            ),
+                            data={
+                                "status_code": response.status_code,
+                                "body": body,
+                                "attempts": attempt.number + 1,
+                            },
+                            response_provider=response_provider,
+                        ),
+                    )
+                    if error is not None:
+                        yield error
+                        return
+
+                    yield ProviderResponseStartEvent(
+                        model=model,
+                        response_provider=response_provider,
+                    )
+
+                    async for line in response.aiter_lines():
+                        if signal is not None and signal.is_cancelled():
+                            return
+
+                        event = parse_sse_line(line)
+                        if event is None:
+                            continue
+
+                        events, stop = parser.feed(event)
+                        for parser_event in events:
+                            yield parser_event
+                        attempt.emitted_content = parser.emitted_content
+                        if stop:
+                            break
+
+                    if parser.fatal:
+                        return
+                    final_events = parser.finalize()
+                    observer = self._config.response_headers_observer
+                    if observer is not None:
+                        try:
+                            observer(dict(response.headers))
+                        except Exception as exc:
+                            # Observer reporting is also best-effort; response
+                            # completion must never depend on metadata hooks.
+                            with suppress(Exception):
+                                _append_response_observer_diagnostic(final_events, exc)
+                    for parser_event in final_events:
+                        yield parser_event
+
+            async for event in stream_with_retries(
+                stream_attempt,
+                max_retries=self._config.max_retries,
+                max_retry_delay_seconds=self._config.max_retry_delay_seconds,
+                signal=signal,
+            ):
+                yield event
 
         return iterator()
 
@@ -402,11 +373,6 @@ class OpenAICompatibleProvider:
         if self._client is None:
             self._client = create_async_client(timeout=self._config.timeout_seconds)
         return self._client
-
-    def _should_retry(self, attempt: int, *, status_code: int | None = None) -> bool:
-        if attempt >= self._config.max_retries:
-            return False
-        return status_code is None or _is_transient_status(status_code)
 
 
 def _response_header_value(response: httpx.Response, header_name: str | None) -> str | None:
@@ -490,7 +456,7 @@ class _ChatStreamParser:
         if event == "[DONE]":
             return [], True
 
-        chunk = _loads_object(event)
+        chunk = loads_object(event)
         if chunk is None:
             self.fatal = True
             return [ProviderErrorEvent(message="Provider returned invalid JSON chunk")], True
@@ -501,7 +467,7 @@ class _ChatStreamParser:
         if isinstance(chunk_usage, Mapping):
             self._usage = _parse_chunk_usage(chunk_usage)
 
-        choice = _first_choice(chunk)
+        choice = first_choice(chunk)
         if choice is None:
             return [], False
 
@@ -588,7 +554,7 @@ class _ResponsesStreamParser:
         if event == "[DONE]":
             return [], False
 
-        chunk = _loads_object(event)
+        chunk = loads_object(event)
         if chunk is None:
             return [], False
 
@@ -633,7 +599,7 @@ class _ResponsesStreamParser:
             if key is not None:
                 builder = self._tool_call_builders.setdefault(key, _ResponsesToolCallBuilder())
                 builder.add_arguments_delta(chunk.get("delta"))
-                builder.set_final(output_index=_int_or_none(chunk.get("output_index")))
+                builder.set_final(output_index=int_or_none(chunk.get("output_index")))
                 self.emitted_content = True
 
         elif chunk_type == "response.function_call_arguments.done":
@@ -643,7 +609,7 @@ class _ResponsesStreamParser:
                 builder.set_final(
                     name=_str_or_none(chunk.get("name")),
                     arguments=chunk.get("arguments"),
-                    output_index=_int_or_none(chunk.get("output_index")),
+                    output_index=int_or_none(chunk.get("output_index")),
                 )
                 builder.done = True
 
@@ -749,15 +715,10 @@ class _ToolCallBuilder:
             self.arguments_parts.append(arguments)
 
     def build(self, index: int) -> ToolCall:
-        arguments_text = "".join(self.arguments_parts)
-        arguments = _loads_object(arguments_text) if arguments_text else {}
-        if arguments is None:
-            arguments = malformed_tool_arguments(arguments_text)
-
         return ToolCall(
             id=self.id or f"tool-call-{index}",
             name=self.name,
-            arguments=arguments,
+            arguments=tool_arguments("".join(self.arguments_parts)),
         )
 
 
@@ -805,14 +766,10 @@ class _ResponsesToolCallBuilder:
             if self.arguments_final is not None
             else "".join(self.arguments_parts)
         )
-        arguments = _loads_object(arguments_text) if arguments_text else {}
-        if arguments is None:
-            arguments = malformed_tool_arguments(arguments_text)
-
         return ToolCall(
             id=self.call_id or f"tool-call-{index}",
             name=self.name,
-            arguments=arguments,
+            arguments=tool_arguments(arguments_text),
         )
 
 
@@ -1091,7 +1048,7 @@ def _register_responses_item(
         call_id=_str_or_none(item.get("call_id")),
         name=_str_or_none(item.get("name")),
         arguments=raw_arguments if isinstance(raw_arguments, str) and raw_arguments else None,
-        output_index=_int_or_none(output_index),
+        output_index=int_or_none(output_index),
     )
 
 
@@ -1111,7 +1068,7 @@ def _finalize_responses_item(
         call_id=_str_or_none(item.get("call_id")),
         name=_str_or_none(item.get("name")),
         arguments=item.get("arguments"),
-        output_index=_int_or_none(output_index),
+        output_index=int_or_none(output_index),
     )
     builder.done = True
 
@@ -1306,41 +1263,6 @@ def _tool_call_to_openai(tool_call: ToolCall) -> dict[str, JSONValue]:
     }
 
 
-def _parse_sse_line(line: str) -> str | None:
-    line = line.strip()
-    if not line or not line.startswith("data:"):
-        return None
-    return line.removeprefix("data:").strip()
-
-
-def _loads_object(value: str) -> dict[str, JSONValue] | None:
-    try:
-        loaded = loads(value)
-    except JSONDecodeError:
-        return None
-    if isinstance(loaded, dict):
-        return loaded
-    return None
-
-
-def _first_choice(chunk: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    choices = chunk.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return None
-    choice = choices[0]
-    if not isinstance(choice, Mapping):
-        return None
-    return choice
-
-
-def _int_or_zero(value: object) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
-
-
-def _int_or_none(value: object) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
 def _parse_chunk_usage(raw: Mapping[str, Any]) -> Usage:
     """Parse an OpenAI-compatible ``usage`` payload into a Usage.
 
@@ -1349,25 +1271,25 @@ def _parse_chunk_usage(raw: Mapping[str, Any]) -> Usage:
     and ``completion_tokens`` already includes reasoning tokens. Cost is left
     unset (None) because Rio has no per-model pricing table.
     """
-    prompt_tokens = _int_or_zero(raw.get("prompt_tokens"))
+    prompt_tokens = int_or_zero(raw.get("prompt_tokens"))
     prompt_details = raw.get("prompt_tokens_details")
     cached_tokens: int | None = None
     cache_write = 0
     if isinstance(prompt_details, Mapping):
-        cached_tokens = _int_or_none(prompt_details.get("cached_tokens"))
-        cache_write = _int_or_zero(prompt_details.get("cache_write_tokens"))
+        cached_tokens = int_or_none(prompt_details.get("cached_tokens"))
+        cache_write = int_or_zero(prompt_details.get("cache_write_tokens"))
     # Nullish fallback, matching Pi's `cached_tokens ?? prompt_cache_hit_tokens
     # ?? 0` (DeepSeek reports cache hits in prompt_cache_hit_tokens): a reported
     # 0 does not fall through.
     if cached_tokens is None:
-        cached_tokens = _int_or_none(raw.get("prompt_cache_hit_tokens"))
+        cached_tokens = int_or_none(raw.get("prompt_cache_hit_tokens"))
     cache_read = cached_tokens or 0
     fresh_input = max(0, prompt_tokens - cache_read - cache_write)
-    output = _int_or_zero(raw.get("completion_tokens"))
+    output = int_or_zero(raw.get("completion_tokens"))
     reasoning = None
     completion_details = raw.get("completion_tokens_details")
     if isinstance(completion_details, Mapping):
-        reasoning = _int_or_zero(completion_details.get("reasoning_tokens"))
+        reasoning = int_or_zero(completion_details.get("reasoning_tokens"))
     return Usage(
         input=fresh_input,
         output=output,
@@ -1393,12 +1315,10 @@ def _usage_from_responses_event(chunk: Mapping[str, Any]) -> Usage | None:
         return None
     input_details = raw.get("input_tokens_details")
     cache_read = (
-        _int_or_zero(input_details.get("cached_tokens"))
-        if isinstance(input_details, Mapping)
-        else 0
+        int_or_zero(input_details.get("cached_tokens")) if isinstance(input_details, Mapping) else 0
     )
     cache_write = (
-        _int_or_zero(input_details.get("cache_write_tokens"))
+        int_or_zero(input_details.get("cache_write_tokens"))
         if isinstance(input_details, Mapping)
         else 0
     )
@@ -1406,17 +1326,17 @@ def _usage_from_responses_event(chunk: Mapping[str, Any]) -> Usage | None:
     # Leave reasoning None (not 0) when the provider reports no breakdown,
     # honoring the "None = not reported" contract on Usage.
     reasoning = (
-        _int_or_zero(output_details.get("reasoning_tokens"))
+        int_or_zero(output_details.get("reasoning_tokens"))
         if isinstance(output_details, Mapping)
         else None
     )
     return Usage(
-        input=max(0, _int_or_zero(raw.get("input_tokens")) - cache_read - cache_write),
-        output=_int_or_zero(raw.get("output_tokens")),
+        input=max(0, int_or_zero(raw.get("input_tokens")) - cache_read - cache_write),
+        output=int_or_zero(raw.get("output_tokens")),
         cache_read=cache_read,
         cache_write=cache_write,
         reasoning=reasoning,
-        total_tokens=_int_or_zero(raw.get("total_tokens")),
+        total_tokens=int_or_zero(raw.get("total_tokens")),
     )
 
 
@@ -1433,7 +1353,3 @@ def _thinking_delta(delta: Mapping[str, Any]) -> tuple[str, str] | None:
         if isinstance(value, str) and value:
             return field_name, value
     return None
-
-
-def _is_transient_status(status_code: int) -> bool:
-    return status_code in {408, 409, 425, 429} or status_code >= 500

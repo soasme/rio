@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
-from json import JSONDecodeError, dumps, loads
-from typing import Any, Protocol
+from json import dumps
+from typing import Any
 
 import httpx
 
+from rio.ai._parsing import first_choice, loads_object, parse_sse_line, tool_arguments
 from rio.ai._provider_events import (
     ProviderErrorEvent,
     ProviderEvent,
@@ -38,11 +39,10 @@ from rio.ai.messages import (
     ToolResultMessage,
     UserMessage,
     assistant_content,
-    malformed_tool_arguments,
     message_to_user,
 )
 from rio.ai.provider import CancellationToken
-from rio.ai.retry import provider_retry_event, retry_delay_seconds, wait_for_retry
+from rio.ai.retry import RetryAttempt, check_response_status, stream_with_retries
 from rio.ai.stream import canonicalize_provider_stream
 from rio.ai.tool_call_ids import portable_tool_call_id
 from rio.ai.tools import AgentTool, ToolCall
@@ -127,77 +127,49 @@ class MistralConversationsProvider:
                 **dict(self._config.headers or {}),
                 "Authorization": f"Bearer {self._config.api_key}",
             }
-            attempt = 0
-            while True:
-                parser = _MistralStreamParser()
-                try:
-                    async with client.stream(
-                        "POST", url, json=payload, headers=headers
-                    ) as response:
-                        if response.status_code >= 400:
-                            body = await response.aread()
-                            body_text = body.decode(errors="replace")
-                            if self._should_retry(attempt, status_code=response.status_code):
-                                delay = retry_delay_seconds(
-                                    attempt,
-                                    max_delay_seconds=self._config.max_retry_delay_seconds,
-                                )
-                                yield provider_retry_event(
-                                    attempt=attempt,
-                                    max_retries=self._config.max_retries,
-                                    delay_seconds=delay,
-                                    reason=f"HTTP {response.status_code}",
-                                    data={"status_code": response.status_code, "body": body_text},
-                                )
-                                attempt += 1
-                                if not await wait_for_retry(delay, signal=signal):
-                                    return
-                                continue
-                            yield ProviderErrorEvent(
-                                message=provider_http_error_message(
-                                    provider_name=self._config.provider_name,
-                                    status_code=response.status_code,
-                                    body=body_text,
-                                    model=model,
-                                ),
-                                data={"status_code": response.status_code, "body": body_text},
-                            )
-                            return
 
-                        yield ProviderResponseStartEvent(model=model)
-                        async for line in response.aiter_lines():
-                            if signal is not None and signal.is_cancelled():
-                                return
-                            event = _parse_sse_line(line)
-                            if event is None:
-                                continue
-                            events, stop = parser.feed(event)
-                            for parser_event in events:
-                                yield parser_event
-                            if stop:
-                                break
-                        for parser_event in parser.finalize():
-                            yield parser_event
+            async def stream_attempt(attempt: RetryAttempt) -> AsyncIterator[ProviderEvent]:
+                parser = _MistralStreamParser()
+                async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    error = await check_response_status(
+                        response,
+                        lambda body: ProviderErrorEvent(
+                            message=provider_http_error_message(
+                                provider_name=self._config.provider_name,
+                                status_code=response.status_code,
+                                body=body,
+                                model=model,
+                            ),
+                            data={"status_code": response.status_code, "body": body},
+                        ),
+                    )
+                    if error is not None:
+                        yield error
                         return
-                except httpx.HTTPError as exc:
-                    if not parser.emitted_content and self._should_retry(attempt):
-                        delay = retry_delay_seconds(
-                            attempt,
-                            max_delay_seconds=self._config.max_retry_delay_seconds,
-                        )
-                        yield provider_retry_event(
-                            attempt=attempt,
-                            max_retries=self._config.max_retries,
-                            delay_seconds=delay,
-                            reason="network error",
-                            data={"error": str(exc), "error_type": type(exc).__name__},
-                        )
-                        attempt += 1
-                        if not await wait_for_retry(delay, signal=signal):
+
+                    yield ProviderResponseStartEvent(model=model)
+                    async for line in response.aiter_lines():
+                        if signal is not None and signal.is_cancelled():
                             return
-                        continue
-                    yield ProviderErrorEvent(message=str(exc), data={"attempts": attempt + 1})
-                    return
+                        event = parse_sse_line(line)
+                        if event is None:
+                            continue
+                        events, stop = parser.feed(event)
+                        for parser_event in events:
+                            yield parser_event
+                        attempt.emitted_content = parser.emitted_content
+                        if stop:
+                            break
+                    for parser_event in parser.finalize():
+                        yield parser_event
+
+            async for event in stream_with_retries(
+                stream_attempt,
+                max_retries=self._config.max_retries,
+                max_retry_delay_seconds=self._config.max_retry_delay_seconds,
+                signal=signal,
+            ):
+                yield event
 
         return iterator()
 
@@ -205,19 +177,6 @@ class MistralConversationsProvider:
         if self._client is None:
             self._client = create_async_client(timeout=self._config.timeout_seconds)
         return self._client
-
-    def _should_retry(self, attempt: int, *, status_code: int | None = None) -> bool:
-        if attempt >= self._config.max_retries:
-            return False
-        return status_code is None or status_code in {408, 409, 425, 429} or status_code >= 500
-
-
-class _StreamParser(Protocol):
-    emitted_content: bool
-
-    def feed(self, event: str) -> tuple[list[ProviderEvent], bool]: ...
-
-    def finalize(self) -> list[ProviderEvent]: ...
 
 
 class _MistralStreamParser:
@@ -231,10 +190,10 @@ class _MistralStreamParser:
     def feed(self, event: str) -> tuple[list[ProviderEvent], bool]:
         if event == "[DONE]":
             return [], True
-        chunk = _loads_object(event)
+        chunk = loads_object(event)
         if chunk is None:
             return [], False
-        choice = _first_choice(chunk)
+        choice = first_choice(chunk)
         if choice is None:
             return [], False
         self._finish_reason = (
@@ -301,14 +260,10 @@ class _ToolCallBuilder:
             self.arguments_parts.append(dumps(arguments))
 
     def build(self, index: int) -> ToolCall:
-        arguments_text = "".join(self.arguments_parts)
-        arguments = _loads_object(arguments_text) if arguments_text else {}
-        if arguments is None:
-            arguments = malformed_tool_arguments(arguments_text)
         return ToolCall(
             id=self.id or f"tool-call-{index}",
             name=self.name,
-            arguments=arguments,
+            arguments=tool_arguments("".join(self.arguments_parts)),
         )
 
 
@@ -469,29 +424,6 @@ def _uses_reasoning_effort(model: str) -> bool:
         "mistral-small-2603",
         "mistral-small-latest",
     }
-
-
-def _parse_sse_line(line: str) -> str | None:
-    line = line.strip()
-    if not line or not line.startswith("data:"):
-        return None
-    return line.removeprefix("data:").strip()
-
-
-def _loads_object(value: str) -> dict[str, JSONValue] | None:
-    try:
-        loaded = loads(value)
-    except JSONDecodeError:
-        return None
-    return loaded if isinstance(loaded, dict) else None
-
-
-def _first_choice(chunk: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    choices = chunk.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return None
-    choice = choices[0]
-    return choice if isinstance(choice, Mapping) else None
 
 
 def _content_deltas(delta: Mapping[str, Any]) -> list[str]:
