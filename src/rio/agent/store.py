@@ -10,6 +10,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from rio.agent.shapes import EventKind, JournalEvent
+
 
 class StorageFailure(RuntimeError):
     """Admission must stop; reopen the journal before making further decisions."""
@@ -78,7 +80,7 @@ class Store:
             raise
         self.rebuild_seconds = time.monotonic() - started
 
-    def commit(self, kind: str, changes: dict, *, identity: str | None = None) -> int:
+    def commit(self, kind: EventKind, changes: dict, *, identity: str | None = None) -> int:
         if self.failed:
             raise StorageFailure("Discard this owner and reopen the journal")
         seq = self.sequence + 1
@@ -105,7 +107,7 @@ class Store:
             self.on_commit()
         return seq
 
-    def events(self, after: int = 0) -> list[dict]:
+    def events(self, after: int = 0) -> list[JournalEvent]:
         if self.failed:
             raise StorageFailure("Cannot publish from an uncertain connection")
         return [

@@ -19,6 +19,7 @@ import psutil
 
 from rio.agent import worker
 from rio.agent.session import Session
+from rio.agent.shapes import ValidatorResult, WorkerIdentity
 from rio.agent.store import StorageFailure
 from rio.truncate import tail_notice, truncate_tail
 
@@ -27,7 +28,7 @@ class RecoveryFailure(RuntimeError):
     pass
 
 
-def stop_worker(identity: dict) -> None:
+def stop_worker(identity: WorkerIdentity) -> None:
     """Verify a durable identity before signaling; never trust a recycled PID."""
     pid = identity.get("pid")
     if pid is None:
@@ -89,7 +90,7 @@ class Owner:
         self.task: asyncio.Task | None = None
         self.process: asyncio.subprocess.Process | None = None
         self.active_id: int | None = None
-        self.identity: dict | None = None
+        self.identity: WorkerIdentity | None = None
         self.server: asyncio.Server | None = None
         self.temporary: tempfile.TemporaryDirectory | None = None
         self.socket_path = ""
@@ -280,11 +281,11 @@ class Owner:
             return "Observations arrived during validation"
         return None
 
-    async def _validate(self, key: str, command: list[str]) -> dict:
+    async def _validate(self, key: str, command: list[str]) -> ValidatorResult:
         previous = self.session.data.get("validation_workers", {}).get(key)
         if previous:
             return previous["result"]
-        identity = {"token": uuid.uuid4().hex}
+        identity: WorkerIdentity = {"token": uuid.uuid4().hex}
         record = {"worker": identity, "result": None}
         self.session.store.commit("validator_started", {"validation_workers": {key: record}})
         process = await asyncio.create_subprocess_exec(

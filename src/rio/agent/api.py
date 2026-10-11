@@ -6,6 +6,14 @@ import json
 import os
 import socket
 import sqlite3
+from typing import TypedDict
+
+
+class Record(TypedDict):
+    # Store.events names the event kind "type"; this read-only view calls it "kind".
+    seq: int
+    kind: str
+    changes: dict
 
 
 def timer(request_id: str, deadline: float, payload: dict | None = None) -> None:
@@ -20,7 +28,7 @@ def timer(request_id: str, deadline: float, payload: dict | None = None) -> None
         raise RuntimeError(result["error"])
 
 
-def records(after: int = 0) -> list[dict]:
+def records(after: int = 0) -> list[Record]:
     """Retrieve committed history as data, without evaluating any historical code."""
     with sqlite3.connect(os.environ["RIO_SESSION_URI"], uri=True) as db:
         return [

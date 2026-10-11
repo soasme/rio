@@ -11,6 +11,7 @@ from dataclasses import replace
 from rio.agent.owner import Owner
 from rio.agent.prompt import STEP
 from rio.agent.session import Session, observation
+from rio.agent.shapes import JournalEvent
 from rio.agent.state import InvalidPatch
 from rio.agent.store import encode
 from rio.ai.events import AssistantDoneEvent, AssistantErrorEvent
@@ -22,7 +23,7 @@ async def run(
     session: Session,
     provider: ModelProvider,
     model: str,
-    publish: Callable[[dict], None] | None = None,
+    publish: Callable[[JournalEvent], None] | None = None,
 ) -> bool:
     published = 0
 
