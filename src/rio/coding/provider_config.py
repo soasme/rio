@@ -9,8 +9,18 @@ from json import JSONDecodeError, dumps, loads
 from os import environ
 from pathlib import Path
 from shutil import copy2
-from typing import Any, ClassVar, cast
+from typing import Annotated, Any, ClassVar, Literal, cast
 from urllib.parse import urlsplit
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    NonNegativeFloat,
+    NonNegativeInt,
+    PositiveFloat,
+    StringConstraints,
+    ValidationError,
+)
 
 from rio.ai.env import (
     CACHE_RETENTION_LONG,
@@ -50,6 +60,8 @@ from rio.coding.thinking import (
 DEFAULT_PROVIDER_NAME = "openai"
 DEFAULT_MODEL = "gpt-5.4"
 PROVIDER_SETTINGS_SCHEMA_VERSION = 2
+
+_Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class ProviderConfigError(ValueError):
@@ -420,15 +432,9 @@ def _with_catalog_providers(
     *,
     paths: RioPaths | None = None,
 ) -> ProviderSettings:
-    """Merge effective catalog definitions into settings and add missing catalog providers."""
+    """Add catalog providers that have no saved preferences."""
     catalog_configs = {config.name: config for config in _effective_provider_configs(paths)}
-    providers = tuple(
-        _merge_provider_config(provider, catalog_configs[provider.name])
-        if provider.name in catalog_configs
-        else provider
-        for provider in settings.providers
-    )
-    providers = _append_catalog_providers(providers, catalog_configs, paths=paths)
+    providers = _append_catalog_providers(settings.providers, catalog_configs, paths=paths)
     default_provider = settings.default_provider
     if default_provider not in {provider.name for provider in providers}:
         default_provider = providers[0].name if providers else DEFAULT_PROVIDER_NAME
@@ -685,216 +691,87 @@ def _catalog_model_metadata_from_provider(
     }
 
 
+class _Preference(BaseModel):
+    """Runtime overrides for one catalog provider. Newer Rio versions may add keys."""
+
+    model_config = ConfigDict(extra="ignore", strict=True, str_strip_whitespace=True)
+
+    default_model: _Text | None = None
+    headers: dict[_Text, _Text] | None = None
+    timeout_seconds: PositiveFloat | None = None
+    max_retries: NonNegativeInt | None = None
+    max_retry_delay_seconds: NonNegativeFloat | None = None
+    thinking_defaults: dict[_Text, _Text] | None = None
+    inference_providers: dict[_Text, _Text] | None = None
+
+
+class _SettingsFile(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True, str_strip_whitespace=True)
+
+    schema_version: Literal[2] | None = None
+    default_provider: _Text
+    provider_preferences: dict[_Text, _Preference]
+
+
 def provider_settings_from_json(
     data: dict[str, Any],
     *,
     paths: RioPaths | None = None,
 ) -> ProviderSettings:
-    """Parse provider preferences from JSON-compatible data.
-
-    The current providers.json shape stores runtime preferences under
-    provider_preferences. Full providers[] entries remain supported for custom
-    provider configuration.
-    """
-    schema_version = data.get("schema_version")
-    if schema_version not in (None, PROVIDER_SETTINGS_SCHEMA_VERSION):
+    """Parse saved preferences; provider definitions come from the catalog."""
+    if "provider_preferences" not in data and "providers" in data:
         raise ProviderConfigError(
-            f"Unsupported provider settings schema_version: {schema_version!r}"
+            "providers.json no longer defines providers; move providers[] entries "
+            "to ~/.rio/catalog.toml"
         )
-    default_provider = _string(data.get("default_provider"), "default_provider")
-    if "provider_preferences" in data:
-        providers = _providers_with_preferences(
-            data.get("provider_preferences"),
-            paths=paths,
-        )
-        return ProviderSettings(
-            default_provider=default_provider,
-            providers=providers,
-        )
-
-    providers_data = data.get("providers")
-    if not isinstance(providers_data, list) or not providers_data:
+    try:
+        parsed = _SettingsFile.model_validate(data)
+    except ValidationError as error:
+        problem = error.errors()[0]
+        location = ".".join(str(part) for part in problem["loc"])
         raise ProviderConfigError(
-            "Provider settings must include provider_preferences or legacy providers"
-        )
-    providers = tuple(_provider_from_json(item) for item in providers_data)
-    names = [provider.name for provider in providers]
-    if len(set(names)) != len(names):
-        raise ProviderConfigError("Provider names must be unique")
-    return ProviderSettings(
-        default_provider=default_provider,
-        providers=providers,
+            f"Invalid provider settings {location}: {problem['msg']}"
+        ) from None
+    catalog = {provider.name: provider for provider in _effective_provider_configs(paths)}
+    # A catalog entry may be removed independently of its saved preference. Ignore the
+    # orphan so one stale entry cannot prevent rio from starting.
+    providers = tuple(
+        _apply_provider_preference(catalog[name], preference)
+        for name, preference in parsed.provider_preferences.items()
+        if name in catalog
     )
+    return ProviderSettings(default_provider=parsed.default_provider, providers=providers)
 
 
-def _providers_with_preferences(
-    value: object,
-    *,
-    paths: RioPaths | None,
-) -> tuple[ProviderConfig, ...]:
-    if not isinstance(value, dict):
-        raise ProviderConfigError("Provider settings field must be an object: provider_preferences")
-    catalog_configs = {provider.name: provider for provider in _effective_provider_configs(paths)}
-    providers = []
-    seen: set[str] = set()
-    for name, preference_data in value.items():
-        if not isinstance(name, str) or not name.strip():
-            raise ProviderConfigError("Provider preference names must be non-empty strings")
-        provider_name = name.strip()
-        if provider_name in seen:
-            raise ProviderConfigError("Provider preference names must be unique")
-        if provider_name not in catalog_configs:
-            # Preferences contain runtime overrides, not provider definitions. A
-            # catalog entry may be removed independently, leaving an orphaned
-            # preference behind. Ignore it so one stale entry cannot prevent rio
-            # from starting or running `rio setup` to register it again.
-            continue
-        providers.append(
-            _apply_provider_preference(
-                catalog_configs[provider_name],
-                preference_data,
-            )
+def _apply_provider_preference(provider: ProviderConfig, preference: _Preference) -> ProviderConfig:
+    changes = preference.model_dump(exclude_none=True)
+    if changes.get("default_model") not in provider.models:
+        changes.pop("default_model", None)
+    if "thinking_defaults" in changes:
+        changes["thinking_defaults"] = _available_thinking_defaults(
+            provider, changes["thinking_defaults"]
         )
-        seen.add(provider_name)
-    return tuple(providers)
+    routes = changes.pop("inference_providers", None)
+    if routes is not None and isinstance(provider, OpenAICompatibleProviderConfig):
+        routes = {model: route for model, route in routes.items() if model in provider.models}
+        _validate_inference_providers(provider.name, provider.models, routes)
+        changes["inference_providers"] = routes
+    return replace(provider, **changes)
 
 
-def _apply_provider_preference(
-    provider: ProviderConfig,
-    value: object,
-) -> ProviderConfig:
-    if not isinstance(value, dict):
-        raise ProviderConfigError("Provider preference entries must be objects")
-    # Provider preferences are user-level state shared across rio versions.
-    # Ignore options introduced by newer versions while continuing to validate
-    # every recognized option below.
-    default_model = (
-        _string(value.get("default_model"), f"provider_preferences.{provider.name}.default_model")
-        if "default_model" in value
-        else provider.default_model
-    )
-    if default_model not in provider.models:
-        default_model = provider.default_model
-    headers = (
-        _string_dict(value.get("headers"), f"provider_preferences.{provider.name}.headers")
-        if "headers" in value
-        else provider.headers
-    )
-    timeout_seconds = (
-        _positive_float(
-            value.get("timeout_seconds"),
-            f"provider_preferences.{provider.name}.timeout_seconds",
-        )
-        if "timeout_seconds" in value
-        else provider.timeout_seconds
-    )
-    max_retries = (
-        _non_negative_int(
-            value.get("max_retries"),
-            f"provider_preferences.{provider.name}.max_retries",
-        )
-        if "max_retries" in value
-        else provider.max_retries
-    )
-    max_retry_delay_seconds = (
-        _non_negative_float(
-            value.get("max_retry_delay_seconds"),
-            f"provider_preferences.{provider.name}.max_retry_delay_seconds",
-        )
-        if "max_retry_delay_seconds" in value
-        else provider.max_retry_delay_seconds
-    )
-    thinking_defaults = (
-        _thinking_defaults_dict(
-            value.get("thinking_defaults"),
-            provider,
-            f"provider_preferences.{provider.name}.thinking_defaults",
-            ignore_unknown_models=True,
-            ignore_unavailable=True,
-        )
-        if "thinking_defaults" in value
-        else provider.thinking_defaults
-    )
-    if isinstance(provider, OpenAICompatibleProviderConfig):
-        inference_providers = (
-            _inference_providers_dict(
-                value.get("inference_providers"),
-                provider,
-                f"provider_preferences.{provider.name}.inference_providers",
-            )
-            if "inference_providers" in value
-            else provider.inference_providers
-        )
-        return replace(
-            provider,
-            default_model=default_model,
-            headers=headers,
-            timeout_seconds=timeout_seconds,
-            max_retries=max_retries,
-            max_retry_delay_seconds=max_retry_delay_seconds,
-            thinking_defaults=thinking_defaults,
-            inference_providers=inference_providers,
-        )
-    return replace(
-        provider,
-        default_model=default_model,
-        headers=headers,
-        timeout_seconds=timeout_seconds,
-        max_retries=max_retries,
-        max_retry_delay_seconds=max_retry_delay_seconds,
-        thinking_defaults=thinking_defaults,
-    )
-
-
-def _inference_providers_dict(
-    value: object,
-    provider: OpenAICompatibleProviderConfig,
-    field_name: str,
-) -> dict[str, str]:
-    routes = _string_dict(value, field_name)
-    routes = {model: route.strip() for model, route in routes.items() if model in provider.models}
-    _validate_inference_providers(provider.name, provider.models, routes)
-    return routes
-
-
-def _thinking_defaults_dict(
-    value: object,
-    provider: ProviderConfig,
-    field_name: str,
-    *,
-    ignore_unknown_models: bool = False,
-    ignore_unavailable: bool = False,
+def _available_thinking_defaults(
+    provider: ProviderConfig, defaults: dict[str, str]
 ) -> dict[str, ThinkingLevel]:
-    raw = _raw_thinking_defaults_dict(value, field_name)
-    if ignore_unknown_models:
-        raw = {model: level for model, level in raw.items() if model in provider.models}
+    """Keep saved defaults the provider still offers; catalogs change between runs."""
     valid: dict[str, ThinkingLevel] = {}
-    for model, thinking_level in raw.items():
-        validate_provider_model(provider, model)
-        available = provider_thinking_levels(provider, model=model)
-        if thinking_level not in available:
-            if ignore_unavailable:
-                continue
-            modes = ", ".join(available) or "none"
-            raise ProviderConfigError(
-                f"Provider thinking default {thinking_level} is not available for "
-                f"{provider.name}:{model}. Available modes: {modes}"
-            )
-        valid[model] = thinking_level
+    for model, value in defaults.items():
+        try:
+            level = normalize_thinking_level(value)
+        except ValueError as exc:
+            raise ProviderConfigError(str(exc)) from exc
+        if model in provider.models and level in provider_thinking_levels(provider, model=model):
+            valid[model] = level
     return valid
-
-
-def _raw_thinking_defaults_dict(value: object, field_name: str) -> dict[str, ThinkingLevel]:
-    if not isinstance(value, dict):
-        raise ProviderConfigError(f"Provider field must be a thinking mode object: {field_name}")
-    defaults: dict[str, ThinkingLevel] = {}
-    for key, item in value.items():
-        model = _string(key, field_name)
-        thinking_level = _optional_thinking_level(item, f"{field_name}.{model}")
-        if thinking_level is None:
-            raise ProviderConfigError(f"Provider field must be a thinking mode: {field_name}")
-        defaults[model] = thinking_level
-    return defaults
 
 
 def resolve_provider_selection(
@@ -1427,91 +1304,6 @@ def anthropic_cache_settings(
     return retention, compat.get("supportsCacheControlOnTools") is not False
 
 
-def _provider_from_json(data: object) -> ProviderConfig:
-    if not isinstance(data, dict):
-        raise ProviderConfigError("Provider entries must be JSON objects")
-    provider_type = _string(data.get("type"), "providers[].type")
-    if provider_type not in {
-        "openai-compatible",
-        "anthropic",
-        "openai-codex",
-        "google-generative-ai",
-        "mistral-conversations",
-    }:
-        raise ProviderConfigError(f"Unsupported provider type: {provider_type}")
-    name = _string(data.get("name"), "providers[].name")
-    base_url = _string(data.get("base_url"), f"providers[{name}].base_url").rstrip("/")
-    api = _optional_provider_api(data.get("api"), f"providers[{name}].api")
-    api_key_env = _string(data.get("api_key_env"), f"providers[{name}].api_key_env")
-    credential_name = _optional_string(
-        data.get("credential_name"), f"providers[{name}].credential_name"
-    )
-    models = _string_tuple(data.get("models"), f"providers[{name}].models")
-    default_model = _string(data.get("default_model"), f"providers[{name}].default_model")
-    headers = _string_dict(data.get("headers", {}), f"providers[{name}].headers")
-    compat = _json_dict(data.get("compat", {}), f"providers[{name}].compat")
-    model_metadata = _model_metadata_dict(
-        data.get("model_metadata", {}),
-        models,
-        f"providers[{name}].model_metadata",
-    )
-    timeout_seconds = _positive_float(
-        data.get("timeout_seconds", DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS),
-        f"providers[{name}].timeout_seconds",
-    )
-    max_retries = _non_negative_int(
-        data.get("max_retries", DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES),
-        f"providers[{name}].max_retries",
-    )
-    max_retry_delay_seconds = _non_negative_float(
-        data.get(
-            "max_retry_delay_seconds",
-            DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS,
-        ),
-        f"providers[{name}].max_retry_delay_seconds",
-    )
-    thinking_levels = _optional_thinking_levels(
-        data.get("thinking_levels"), f"providers[{name}].thinking_levels"
-    )
-    thinking_models = _optional_string_tuple(
-        data.get("thinking_models"), f"providers[{name}].thinking_models"
-    )
-    thinking_default = _optional_thinking_level(
-        data.get("thinking_default"), f"providers[{name}].thinking_default"
-    )
-    thinking_parameter = _optional_thinking_parameter(
-        data.get("thinking_parameter"), f"providers[{name}].thinking_parameter"
-    )
-    thinking_defaults = _raw_thinking_defaults_dict(
-        data.get("thinking_defaults", {}), f"providers[{name}].thinking_defaults"
-    )
-    if default_model not in models:
-        models = (*models, default_model)
-    if provider_type == "openai-codex":
-        _reject_codex_legacy_compat(compat)
-    return _new_provider_config(
-        provider_type,
-        api=api,
-        compat=compat,
-        name=name,
-        base_url=base_url,
-        api_key_env=api_key_env,
-        credential_name=credential_name,
-        models=models,
-        default_model=default_model,
-        headers=headers,
-        model_metadata=model_metadata,
-        timeout_seconds=timeout_seconds,
-        max_retries=max_retries,
-        max_retry_delay_seconds=max_retry_delay_seconds,
-        thinking_levels=thinking_levels,
-        thinking_models=thinking_models,
-        thinking_default=thinking_default,
-        thinking_parameter=thinking_parameter,
-        thinking_defaults=thinking_defaults,
-    )
-
-
 def _api_key_from_provider(
     provider: ProviderConfig,
     *,
@@ -1603,11 +1395,6 @@ def _validate_json_value(value: object, field_name: str) -> None:
     raise ProviderConfigError(f"{field_name} must be JSON-compatible")
 
 
-def _reject_codex_legacy_compat(compat: dict[str, Any]) -> None:
-    if compat:
-        raise ProviderConfigError("OpenAI Codex legacy provider compat is not supported")
-
-
 _HF_INFERENCE_PROVIDER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -1685,216 +1472,3 @@ def _validate_thinking_config(
             "Provider thinking_parameter must be reasoning_effort, reasoning.effort, "
             "or anthropic.thinking"
         )
-
-
-def _optional_provider_api(value: object, field_name: str) -> ProviderApi | None:
-    if value is None:
-        return None
-    if value in {
-        "openai-completions",
-        "openai-responses",
-        "anthropic-messages",
-        "openai-codex-responses",
-        "google-generative-ai",
-        "mistral-conversations",
-    }:
-        return cast(ProviderApi, value)
-    raise ProviderConfigError(f"Provider field has unsupported API: {field_name}")
-
-
-def _optional_string(value: object, field_name: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise ProviderConfigError(f"Provider field must be a non-empty string: {field_name}")
-    return value.strip()
-
-
-def _string(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ProviderConfigError(f"Provider field must be a non-empty string: {field_name}")
-    return value.strip()
-
-
-def _string_tuple(value: object, field_name: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or not value:
-        raise ProviderConfigError(f"Provider field must be a non-empty string list: {field_name}")
-    items = tuple(item.strip() for item in value if isinstance(item, str) and item.strip())
-    if len(items) != len(value):
-        raise ProviderConfigError(f"Provider field must be a string list: {field_name}")
-    return items
-
-
-def _optional_string_tuple(value: object, field_name: str) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if not isinstance(value, list):
-        raise ProviderConfigError(f"Provider field must be a string list: {field_name}")
-    items = tuple(item.strip() for item in value if isinstance(item, str) and item.strip())
-    if len(items) != len(value):
-        raise ProviderConfigError(f"Provider field must be a string list: {field_name}")
-    return items
-
-
-def _optional_thinking_levels(
-    value: object,
-    field_name: str,
-) -> tuple[ThinkingLevel, ...] | None:
-    if value is None:
-        return None
-    if not isinstance(value, list):
-        raise ProviderConfigError(f"Provider field must be a thinking mode list: {field_name}")
-    try:
-        return normalize_thinking_levels(value)
-    except ValueError as exc:
-        raise ProviderConfigError(str(exc)) from exc
-
-
-def _optional_thinking_level(value: object, field_name: str) -> ThinkingLevel | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ProviderConfigError(f"Provider field must be a thinking mode: {field_name}")
-    try:
-        return normalize_thinking_level(value)
-    except ValueError as exc:
-        raise ProviderConfigError(str(exc)) from exc
-
-
-def _optional_thinking_parameter(
-    value: object,
-    field_name: str,
-) -> ThinkingParameter | None:
-    if value is None:
-        return None
-    if value == "reasoning_effort":
-        return "reasoning_effort"
-    if value == "reasoning.effort":
-        return "reasoning.effort"
-    if value == "anthropic.thinking":
-        return "anthropic.thinking"
-    raise ProviderConfigError(
-        f"Provider field must be reasoning_effort, reasoning.effort, "
-        f"or anthropic.thinking: {field_name}"
-    )
-
-
-def _string_dict(value: object, field_name: str) -> dict[str, str]:
-    if not isinstance(value, dict):
-        raise ProviderConfigError(f"Provider field must be a string object: {field_name}")
-    items: dict[str, str] = {}
-    for key, item in value.items():
-        if not isinstance(key, str) or not key.strip():
-            raise ProviderConfigError(f"Provider field must be a string object: {field_name}")
-        if not isinstance(item, str) or not item.strip():
-            raise ProviderConfigError(f"Provider field must be a string object: {field_name}")
-        items[key.strip()] = item.strip()
-    return items
-
-
-def _json_dict(value: object, field_name: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ProviderConfigError(f"Provider field must be an object: {field_name}")
-    items: dict[str, Any] = {}
-    for key, item in value.items():
-        if not isinstance(key, str) or not key.strip():
-            raise ProviderConfigError(f"Provider field must have string keys: {field_name}")
-        _validate_json_value(item, f"{field_name}.{key}")
-        items[key.strip()] = item
-    return items
-
-
-def _model_metadata_dict(
-    value: object,
-    models: tuple[str, ...],
-    field_name: str,
-) -> dict[str, ProviderModelMetadata]:
-    if not isinstance(value, dict):
-        raise ProviderConfigError(f"Provider field must be an object: {field_name}")
-    model_names = set(models)
-    items: dict[str, ProviderModelMetadata] = {}
-    for key, item in value.items():
-        model = _string(key, field_name)
-        if model not in model_names:
-            raise ProviderConfigError(f"Provider model_metadata key is not in models: {model}")
-        if not isinstance(item, dict):
-            raise ProviderConfigError(
-                f"Provider model_metadata entries must be objects: {field_name}"
-            )
-        items[model] = ProviderModelMetadata(
-            api=_optional_provider_api(item.get("api"), f"{field_name}.{model}.api"),
-            base_url=_optional_string(item.get("base_url"), f"{field_name}.{model}.base_url"),
-            reasoning=_optional_bool(item.get("reasoning"), f"{field_name}.{model}.reasoning"),
-            input=_optional_string_tuple(item.get("input"), f"{field_name}.{model}.input"),
-            max_tokens=_optional_positive_int(
-                item.get("max_tokens"), f"{field_name}.{model}.max_tokens"
-            ),
-            headers=_string_dict(item.get("headers", {}), f"{field_name}.{model}.headers"),
-            compat=_json_dict(item.get("compat", {}), f"{field_name}.{model}.compat"),
-            thinking_level_map=_thinking_level_map_dict(
-                item.get("thinking_level_map", {}),
-                f"{field_name}.{model}.thinking_level_map",
-            ),
-        )
-    return items
-
-
-def _thinking_level_map_dict(
-    value: object,
-    field_name: str,
-) -> dict[ThinkingLevel, str | None]:
-    if not isinstance(value, dict):
-        raise ProviderConfigError(f"Provider field must be an object: {field_name}")
-    items: dict[ThinkingLevel, str | None] = {}
-    for key, item in value.items():
-        level = _optional_thinking_level(key, field_name)
-        if level is None:
-            raise ProviderConfigError(f"Provider field must be a thinking mode: {field_name}")
-        if item is not None and (not isinstance(item, str) or not item.strip()):
-            raise ProviderConfigError(
-                f"Provider field values must be strings or null: {field_name}"
-            )
-        items[level] = item.strip() if isinstance(item, str) else None
-    return items
-
-
-def _optional_bool(value: object, field_name: str) -> bool | None:
-    if value is None:
-        return None
-    if not isinstance(value, bool):
-        raise ProviderConfigError(f"Provider field must be a boolean: {field_name}")
-    return value
-
-
-def _optional_positive_int(value: object, field_name: str) -> int | None:
-    if value is None:
-        return None
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise ProviderConfigError(f"Provider field must be a positive integer: {field_name}")
-    return value
-
-
-def _positive_float(value: object, field_name: str) -> float:
-    if not isinstance(value, int | float) or isinstance(value, bool):
-        raise ProviderConfigError(f"Provider field must be a positive number: {field_name}")
-    converted = float(value)
-    if converted <= 0:
-        raise ProviderConfigError(f"Provider field must be greater than 0: {field_name}")
-    return converted
-
-
-def _non_negative_int(value: object, field_name: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ProviderConfigError(f"Provider field must be a non-negative integer: {field_name}")
-    if value < 0:
-        raise ProviderConfigError(f"Provider field must be 0 or greater: {field_name}")
-    return value
-
-
-def _non_negative_float(value: object, field_name: str) -> float:
-    if not isinstance(value, int | float) or isinstance(value, bool):
-        raise ProviderConfigError(f"Provider field must be a non-negative number: {field_name}")
-    converted = float(value)
-    if converted < 0:
-        raise ProviderConfigError(f"Provider field must be 0 or greater: {field_name}")
-    return converted

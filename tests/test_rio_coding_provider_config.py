@@ -476,25 +476,14 @@ def test_save_and_load_provider_settings_round_trip(
 def test_provider_settings_ignores_legacy_scoped_models(scopes) -> None:
     settings = provider_settings_from_json(
         {
-            "default_provider": "local",
-            "providers": [
-                {
-                    "type": "openai-compatible",
-                    "name": "local",
-                    "base_url": "http://localhost:11434/v1",
-                    "api_key_env": "LOCAL_API_KEY",
-                    "models": ["qwen", "llama"],
-                    "default_model": "qwen",
-                    "context_windows": {"qwen": 64000},
-                }
-            ],
+            "default_provider": "openai",
+            "provider_preferences": {"openai": {}},
             "scoped_models": scopes,
         }
     )
 
     assert "scoped_models" not in settings.to_json()
-    selection = resolve_provider_selection(settings)
-    assert (selection.provider.name, selection.model) == ("local", "qwen")
+    assert resolve_provider_selection(settings).provider.name == "openai"
 
 
 def test_upsert_provider_replaces_and_sets_default() -> None:
@@ -1200,238 +1189,6 @@ def test_openai_compatible_config_from_provider_sets_reasoning_parameter(
     assert config.reasoning_effort_parameter == expected
 
 
-def test_provider_settings_from_json_loads_headers() -> None:
-    settings = provider_settings_from_json(
-        {
-            "default_provider": "huggingface",
-            "providers": [
-                {
-                    "type": "openai-compatible",
-                    "name": "huggingface",
-                    "base_url": "https://router.huggingface.co/v1",
-                    "api_key_env": "HF_TOKEN",
-                    "credential_name": "huggingface",
-                    "models": ["Qwen/Qwen3-Coder"],
-                    "default_model": "Qwen/Qwen3-Coder",
-                    "headers": {"X-HF-Bill-To": "my-org"},
-                }
-            ],
-        }
-    )
-
-    provider = settings.get_provider("huggingface")
-
-    assert isinstance(provider, OpenAICompatibleProviderConfig)
-    assert provider.headers == {"X-HF-Bill-To": "my-org"}
-
-
-def test_provider_settings_from_json_loads_custom_thinking_capabilities() -> None:
-    settings = provider_settings_from_json(
-        {
-            "default_provider": "local",
-            "providers": [
-                {
-                    "type": "openai-compatible",
-                    "name": "local",
-                    "base_url": "http://localhost:11434/v1",
-                    "api_key_env": "LOCAL_API_KEY",
-                    "models": ["reasoner", "plain"],
-                    "default_model": "reasoner",
-                    "thinking_levels": ["off", "low", "high"],
-                    "thinking_models": ["reasoner"],
-                    "thinking_default": "low",
-                    "thinking_parameter": "reasoning_effort",
-                    "thinking_defaults": {"reasoner": "high"},
-                }
-            ],
-        }
-    )
-
-    provider = settings.get_provider("local")
-
-    assert isinstance(provider, OpenAICompatibleProviderConfig)
-    assert provider_thinking_levels(provider, model="reasoner") == ("off", "low", "high")
-    assert provider_thinking_levels(provider, model="plain") == ()
-    assert provider_default_thinking_level(provider, model="reasoner") == "low"
-    assert provider.thinking_defaults == {"reasoner": "high"}
-    assert provider.to_json()["thinking_parameter"] == "reasoning_effort"
-
-
-def test_provider_settings_from_json_loads_openai_codex_provider() -> None:
-    settings = provider_settings_from_json(
-        {
-            "default_provider": "openai-codex",
-            "providers": [
-                {
-                    "type": "openai-codex",
-                    "name": "openai-codex",
-                    "base_url": "https://chatgpt.com/backend-api",
-                    "api_key_env": "OPENAI_CODEX_ACCESS_TOKEN",
-                    "credential_name": "openai-codex",
-                    "models": ["gpt-5.5", "gpt-5.4"],
-                    "default_model": "gpt-5.5",
-                    "headers": {"X-Test": "enabled"},
-                }
-            ],
-        }
-    )
-
-    provider = settings.get_provider("openai-codex")
-
-    assert isinstance(provider, OpenAICodexProviderConfig)
-    assert provider.default_model == "gpt-5.5"
-    assert provider.headers == {"X-Test": "enabled"}
-
-
-def test_provider_settings_from_json_loads_anthropic_thinking_provider() -> None:
-    settings = provider_settings_from_json(
-        {
-            "default_provider": "anthropic",
-            "providers": [
-                {
-                    "type": "anthropic",
-                    "name": "anthropic",
-                    "base_url": "https://api.anthropic.com/v1",
-                    "api_key_env": "ANTHROPIC_API_KEY",
-                    "models": ["claude-sonnet-4-6"],
-                    "default_model": "claude-sonnet-4-6",
-                    "thinking_levels": ["off", "low", "high"],
-                    "thinking_models": ["claude-sonnet-4-6"],
-                    "thinking_parameter": "anthropic.thinking",
-                }
-            ],
-        }
-    )
-
-    provider = settings.get_provider("anthropic")
-
-    assert isinstance(provider, AnthropicProviderConfig)
-    assert provider_thinking_levels(provider, model="claude-sonnet-4-6") == (
-        "off",
-        "low",
-        "high",
-    )
-    assert provider.thinking_parameter == "anthropic.thinking"
-
-
-def test_load_provider_settings_does_not_restore_stale_codex_builtin_models(
-    tmp_path: Path,
-) -> None:
-    rio_home = tmp_path / ".rio"
-    rio_home.mkdir()
-    (rio_home / "providers.json").write_text(
-        """
-{
-  "default_provider": "openai-codex",
-  "providers": [
-    {
-      "type": "openai-codex",
-      "name": "openai-codex",
-      "base_url": "https://chatgpt.com/backend-api",
-      "api_key_env": "OPENAI_CODEX_ACCESS_TOKEN",
-      "credential_name": "openai-codex",
-      "models": ["gpt-5", "gpt-5.5"],
-      "default_model": "gpt-5",
-      "thinking_levels": ["off", "minimal", "low", "medium", "high", "xhigh"],
-      "thinking_models": ["gpt-5.5"],
-      "thinking_default": "medium",
-      "thinking_parameter": "reasoning.effort"
-    }
-  ]
-}
-""".strip(),
-        encoding="utf-8",
-    )
-
-    settings = load_provider_settings(RioPaths(home=rio_home))
-    provider = settings.get_provider("openai-codex")
-
-    assert provider.models == (
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.3-codex",
-        "gpt-5.3-codex-spark",
-        "gpt-5.2",
-    )
-    assert provider.default_model == "gpt-5.5"
-    assert provider_thinking_levels(provider, model="gpt-5.6-sol") == ()
-    assert '"providers"' in (rio_home / "providers.json").read_text()
-    assert not (rio_home / "providers.json.bak").exists()
-    assert not (rio_home / "catalog.toml").exists()
-
-
-def test_load_provider_settings_merges_builtin_model_catalog(tmp_path: Path) -> None:
-    rio_home = tmp_path / ".rio"
-    rio_home.mkdir()
-    (rio_home / "providers.json").write_text(
-        """
-{
-  "default_provider": "huggingface",
-  "providers": [
-    {
-      "type": "openai-compatible",
-      "name": "huggingface",
-      "base_url": "https://router.huggingface.co/v1",
-      "api_key_env": "HF_TOKEN",
-      "credential_name": "huggingface",
-      "models": ["MiniMaxAI/MiniMax-M2.7", "custom/coder"],
-      "default_model": "MiniMaxAI/MiniMax-M2.7",
-      "headers": {"X-HF-Bill-To": "my-org"}
-    }
-  ]
-}
-""".strip(),
-        encoding="utf-8",
-    )
-
-    settings = load_provider_settings(RioPaths(home=rio_home))
-
-    provider = settings.get_provider("huggingface")
-    assert provider.default_model == "MiniMaxAI/MiniMax-M2.7"
-    assert provider.headers == {"X-HF-Bill-To": "my-org"}
-    assert "Qwen/Qwen3-Coder-480B-A35B-Instruct" in provider.models
-    assert "moonshotai/Kimi-K2.6" in provider.models
-    assert "custom/coder" in provider.models
-
-
-def test_load_provider_settings_keeps_custom_provider_in_json(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(provider_config, "environ", {})
-    rio_home = tmp_path / ".rio"
-    rio_home.mkdir()
-    original = {
-        "default_provider": "local",
-        "providers": [
-            {
-                "type": "openai-compatible",
-                "name": "local",
-                "base_url": "http://localhost:11434/v1",
-                "api_key_env": "LOCAL_API_KEY",
-                "credential_name": None,
-                "models": ["qwen"],
-                "default_model": "qwen",
-                "context_windows": {"qwen": 64000},
-                "headers": {"X-Test": "yes"},
-            }
-        ],
-    }
-    (rio_home / "providers.json").write_text(json.dumps(original), encoding="utf-8")
-
-    settings = load_provider_settings(RioPaths(home=rio_home))
-
-    provider = settings.get_provider("local")
-    assert provider.headers == {"X-Test": "yes"}
-    assert json.loads((rio_home / "providers.json").read_text()) == original
-    assert not (rio_home / "providers.json.bak").exists()
-    assert not (rio_home / "catalog.toml").exists()
-
-
 def test_load_provider_settings_restores_builtin_providers_with_stored_credentials(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1442,22 +1199,7 @@ def test_load_provider_settings_restores_builtin_providers_with_stored_credentia
     rio_home = tmp_path / ".rio"
     rio_home.mkdir()
     (rio_home / "providers.json").write_text(
-        """
-{
-  "default_provider": "local",
-  "providers": [
-    {
-      "type": "openai-compatible",
-      "name": "local",
-      "base_url": "http://localhost:11434/v1",
-      "api_key_env": "LOCAL_API_KEY",
-      "credential_name": null,
-      "models": ["qwen"],
-      "default_model": "qwen"
-    }
-  ]
-}
-""".strip(),
+        json.dumps({"default_provider": "openai", "provider_preferences": {"openai": {}}}),
         encoding="utf-8",
     )
     store = FileCredentialStore(rio_home / "credentials.json")
@@ -1474,60 +1216,14 @@ def test_load_provider_settings_restores_builtin_providers_with_stored_credentia
 
     settings = load_provider_settings(RioPaths(home=rio_home))
 
-    # Provider order is an implementation detail of BUILTIN_PROVIDER_CATALOG and
-    # shifts when built-ins are added; use set equality (not position) so the
-    # test still verifies that only credentialed built-ins are restored.
     assert {provider.name for provider in settings.providers} == {
-        "local",
+        "openai",
         "openai-codex",
         "openrouter",
     }
-    assert settings.default_provider == "local"
+    assert settings.default_provider == "openai"
     assert settings.get_provider("openrouter").credential_name == "openrouter"
     assert settings.get_provider("openai-codex").credential_name == "openai-codex"
-
-
-def test_load_provider_settings_restores_builtin_credential_name(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
-    rio_home = tmp_path / ".rio"
-    rio_home.mkdir()
-    (rio_home / "providers.json").write_text(
-        """
-{
-  "default_provider": "openrouter",
-  "providers": [
-    {
-      "type": "openai-compatible",
-      "name": "openrouter",
-      "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY",
-      "credential_name": null,
-      "models": ["openai/gpt-5.5"],
-      "default_model": "openai/gpt-5.5"
-    }
-  ]
-}
-""".strip(),
-        encoding="utf-8",
-    )
-
-    class FakeCredentials:
-        def get(self, name: str) -> str | None:
-            return "stored-key" if name == "openrouter" else None
-
-    settings = load_provider_settings(RioPaths(home=rio_home))
-    provider = settings.get_provider("openrouter")
-
-    assert isinstance(provider, OpenAICompatibleProviderConfig)
-    assert provider.credential_name == "openrouter"
-    config = openai_compatible_config_from_provider(
-        provider,
-        credential_reader=FakeCredentials(),
-    )
-    assert config.api_key == "stored-key"
 
 
 def test_provider_settings_from_json_rejects_unknown_schema_version() -> None:
@@ -1541,69 +1237,31 @@ def test_provider_settings_from_json_rejects_unknown_schema_version() -> None:
         )
 
 
-def test_provider_settings_from_json_rejects_invalid_headers() -> None:
-    with pytest.raises(ProviderConfigError, match="string object"):
+@pytest.mark.parametrize(
+    ("preference", "message"),
+    [
+        ({"headers": {"X-Test": 123}}, "headers.X-Test"),
+        ({"timeout_seconds": 0}, "timeout_seconds: Input should be greater than 0"),
+        ({"timeout_seconds": True}, "timeout_seconds"),
+        ({"max_retries": -1}, "max_retries: Input should be greater than or equal to 0"),
+        ({"default_model": " "}, "default_model"),
+    ],
+)
+def test_provider_settings_from_json_rejects_invalid_preferences(preference, message) -> None:
+    with pytest.raises(ProviderConfigError, match=message):
         provider_settings_from_json(
-            {
-                "default_provider": "local",
-                "providers": [
-                    {
-                        "type": "openai-compatible",
-                        "name": "local",
-                        "base_url": "http://localhost:11434/v1",
-                        "api_key_env": "LOCAL_API_KEY",
-                        "models": ["qwen"],
-                        "default_model": "qwen",
-                        "headers": {"X-Test": 123},
-                    }
-                ],
-            }
+            {"default_provider": "openai", "provider_preferences": {"openai": preference}}
         )
 
 
-def test_provider_settings_from_json_rejects_invalid_timeout() -> None:
-    with pytest.raises(ProviderConfigError, match="greater than 0"):
-        provider_settings_from_json(
-            {
-                "default_provider": "local",
-                "providers": [
-                    {
-                        "type": "openai-compatible",
-                        "name": "local",
-                        "base_url": "http://localhost:11434/v1",
-                        "api_key_env": "LOCAL_API_KEY",
-                        "models": ["qwen"],
-                        "default_model": "qwen",
-                        "timeout_seconds": 0,
-                    }
-                ],
-            }
-        )
+def test_provider_settings_from_json_points_legacy_providers_to_catalog() -> None:
+    with pytest.raises(ProviderConfigError, match="catalog.toml"):
+        provider_settings_from_json({"default_provider": "local", "providers": [{"name": "local"}]})
 
 
 def test_openai_compatible_provider_config_rejects_invalid_timeout() -> None:
     with pytest.raises(ProviderConfigError, match="greater than 0"):
         OpenAICompatibleProviderConfig(name="local", timeout_seconds=0)
-
-
-def test_provider_settings_from_json_rejects_invalid_retries() -> None:
-    with pytest.raises(ProviderConfigError, match="0 or greater"):
-        provider_settings_from_json(
-            {
-                "default_provider": "local",
-                "providers": [
-                    {
-                        "type": "openai-compatible",
-                        "name": "local",
-                        "base_url": "http://localhost:11434/v1",
-                        "api_key_env": "LOCAL_API_KEY",
-                        "models": ["qwen"],
-                        "default_model": "qwen",
-                        "max_retries": -1,
-                    }
-                ],
-            }
-        )
 
 
 def test_openai_compatible_provider_config_rejects_invalid_retries() -> None:
@@ -2259,35 +1917,3 @@ cacheWrite = 0.2
     assert after.model_metadata == before.model_metadata
     assert after.auth_methods == before.auth_methods
     assert load_provider_settings(paths).get_provider("local") == changed
-
-
-def test_legacy_provider_ignores_descriptive_metadata():
-    settings = provider_settings_from_json(
-        {
-            "default_provider": "local",
-            "providers": [
-                {
-                    "type": "openai-compatible",
-                    "name": "local",
-                    "base_url": "http://localhost/v1",
-                    "api_key_env": "LOCAL_API_KEY",
-                    "models": ["qwen"],
-                    "default_model": "qwen",
-                    "context_windows": {"qwen": 64000},
-                    "model_metadata": {
-                        "qwen": {
-                            "cost": {"input": 1},
-                            "cost_tiers": [],
-                            "context_window": 64000,
-                            "name": "Qwen",
-                            "max_tokens": 1024,
-                        }
-                    },
-                }
-            ],
-        }
-    )
-    provider = settings.get_provider()
-    assert provider_model_max_tokens(provider) == 1024
-    assert "context_windows" not in provider.to_json()
-    assert "cost" not in provider.model_metadata["qwen"].to_json()

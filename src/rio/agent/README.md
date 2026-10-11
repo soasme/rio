@@ -19,7 +19,7 @@
 
 | Module | Responsibility |
 | --- | --- |
-| [session.py](session.py) | Admit turns and own event writes, including controls and metrics. |
+| [session.py](session.py) | Admit turns and own event writes, including controls and run endings with metrics. |
 | [store.py](store.py) | Commit the SQLite journal and fold events into state. |
 | [state.py](state.py) | Validate cell kinds, apply operations and enforce context budgets. |
 | [runner.py](runner.py) | Drive model turns, idle decisions and terminal replay. |

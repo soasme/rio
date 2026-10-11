@@ -131,4 +131,42 @@ theorem cleanup_failure_blocks_replay (terminal : Bool) :
 theorem active_run_cannot_replay (cleanup : Bool) :
     canReplay false cleanup = false := rfl
 
+/-- Durability metrics ride on the run-ended record, so ending is the only metrics write. -/
+def endRun (journal : List String) : List String :=
+  if "run_ended" ∈ journal then journal else journal ++ ["run_ended"]
+
+theorem ending_twice_writes_once (journal : List String) :
+    endRun (endRun journal) = endRun journal := by
+  unfold endRun
+  split <;> simp_all
+
+/-- Replay appends only cleanup for leftover workers. -/
+def replayJournal (journal : List String) (leftoverWorkers : Nat) : List String :=
+  journal ++ List.replicate leftoverWorkers "worker_cleanup"
+
+theorem clean_replay_writes_nothing (journal : List String) :
+    replayJournal journal 0 = journal := by
+  simp [replayJournal]
+
+/-- Saved settings hold preferences only; provider definitions come from the catalog. -/
+inductive SettingsFile where
+  | preferences (names : List String)
+  | legacyProviders
+  deriving DecidableEq, Repr
+
+def loadProviders (catalog : List String) : SettingsFile → Except String (List String)
+  | .preferences names => .ok (names.filter (· ∈ catalog))
+  | .legacyProviders => .error "move providers[] to catalog.toml"
+
+theorem loaded_providers_are_catalog_providers (catalog names loaded : List String)
+    (h : loadProviders catalog (.preferences names) = .ok loaded) :
+    ∀ name ∈ loaded, name ∈ catalog := by
+  simp [loadProviders] at h
+  subst h
+  intro name hm
+  simpa using (List.mem_filter.mp hm).2
+
+theorem legacy_provider_definitions_are_rejected (catalog : List String) :
+    loadProviders catalog .legacyProviders = .error "move providers[] to catalog.toml" := rfl
+
 end RioCli

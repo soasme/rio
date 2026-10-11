@@ -33,7 +33,6 @@ EventKind = Literal[
     "validator_interrupted",
     "validator_result",
     "run_ended",
-    "durability_metrics",
 ]
 
 
