@@ -7,10 +7,11 @@ import contextlib
 import time
 from collections.abc import Callable
 from dataclasses import replace
+from typing import Literal
 
 from rio.agent.owner import Owner
 from rio.agent.prompt import STEP
-from rio.agent.session import Session, observation
+from rio.agent.session import Session
 from rio.agent.shapes import JournalEvent
 from rio.agent.state import InvalidPatch
 from rio.agent.store import encode
@@ -41,46 +42,15 @@ async def run(
             flush()
             if session.meta["terminal"]:
                 break
-            unaccepted = any(t["receipt"] is None for t in session.data["turns"].values())
-            # Successful completions wait for the queue to drain; a failure pauses it and wakes.
-            batching = session.pending() and not session.meta["pause"]
-            new_input = any(
-                not m["consumed"] and not (batching and m["kind"] == "execution")
-                for m in session.data["inbox"].values()
-            )
-            if session.data["turns"] and not unaccepted and not new_input:
-                wakeup = (
-                    owner.task
-                    or batching
-                    or any(not t["fired"] for t in session.data["timers"].values())
-                )
-                if wakeup or session.limits.external_wakeup:
-                    await owner.wait()
-                    continue
-                if session.meta.get("idle", 0) >= session.limits.invalid_attempts:
-                    await owner.fail("Repeated invalid idle decisions")
-                    break
-                seq = session.store.sequence + 1
-                message_id = f"idle:{seq}"
-                session.store.commit(
-                    "invalid_idle",
-                    {
-                        "meta": {"idle": session.meta.get("idle", 0) + 1},
-                        "inbox": {
-                            message_id: observation(
-                                message_id,
-                                "invalid_idle",
-                                {
-                                    "reason": (
-                                        "No work or wake-up source remains; "
-                                        "conclude or request work"
-                                    )
-                                },
-                                seq,
-                            )
-                        },
-                    },
-                )
+            action = _idle_action(owner)
+            if action == "wait":
+                await owner.wait()
+                continue
+            if action == "fail":
+                await owner.fail("Repeated invalid idle decisions")
+                break
+            if action == "invalid":
+                session.invalid_idle()
             try:
                 turn = session.prepare_turn(session.system, session.schema)
                 if turn["response"] is None:
@@ -138,8 +108,7 @@ async def run(
                 if raw_tool_arguments(arguments) is not None or set(arguments) != {"ops"}:
                     raise InvalidPatch("step requires one complete ops argument")
                 session.accept(turn["id"], arguments["ops"])
-                if session.pending():
-                    session.store.commit("work_requested", {"meta": {"idle": 0}})
+                session.request_work()
                 await owner.controls()
             except InvalidPatch as exc:
                 session.reject(turn["id"], str(exc))
@@ -148,6 +117,31 @@ async def run(
             flush()
         flush()
     return session.meta["terminal"]["result"] == "success"
+
+
+def _idle_action(owner: Owner) -> Literal["ready", "wait", "invalid", "fail"]:
+    session = owner.session
+    if not session.data["turns"] or any(
+        t["receipt"] is None for t in session.data["turns"].values()
+    ):
+        return "ready"
+    # Successful completions wait for the queue to drain; a failure pauses it and wakes.
+    batching = bool(session.pending()) and not session.meta["pause"]
+    if any(
+        not m["consumed"] and not (batching and m["kind"] == "execution")
+        for m in session.data["inbox"].values()
+    ):
+        return "ready"
+    if (
+        owner.task
+        or batching
+        or any(not t["fired"] for t in session.data["timers"].values())
+        or session.external_wakeup
+    ):
+        return "wait"
+    if session.meta.get("idle", 0) >= session.limits.invalid_attempts:
+        return "fail"
+    return "invalid"
 
 
 async def _call_model(

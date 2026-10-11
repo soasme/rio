@@ -932,3 +932,122 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
     assert len(provider.calls) == 2
     assert (tmp_path / "effect").read_text() == "changed after completion"
     assert provider.aclose.await_count == 2
+
+
+def test_idle_decision_and_budget_survive_reopen(session):
+    from rio.agent.runner import _idle_action
+
+    owner = Owner(session)
+    assert _idle_action(owner) == "ready"
+    accept(session)
+    for _ in range(session.limits.invalid_attempts):
+        assert _idle_action(owner) == "invalid"
+        session.invalid_idle()
+        assert _idle_action(owner) == "ready"
+        accept(session)
+    assert _idle_action(Owner(Session(session.store, KINDS))) == "fail"
+    accept(session, code())
+    session.request_work()
+    assert session.meta["idle"] == 0
+    assert _idle_action(owner) == "wait"
+
+
+@pytest.mark.parametrize("source", ["worker", "timer", "external"])
+def test_idle_waits_for_wakeup_sources(session, source):
+    from rio.agent.runner import _idle_action
+
+    accept(session)
+    owner = Owner(session)
+    if source == "worker":
+        owner.task = object()
+    elif source == "timer":
+        session.register_timer("later", 1e20, {})
+    else:
+        session.external_wakeup = True
+    assert _idle_action(owner) == "wait"
+    session.receive("new", "external", {})
+    assert _idle_action(owner) == "ready"
+
+
+@pytest.mark.parametrize("result", ["success", "error"])
+def test_idle_batches_only_successful_execution_observations(session, result):
+    from rio.agent.runner import _idle_action
+
+    accept(session, code(), code())
+    session.authorize(1, {"token": "none"})
+    session.finish(1, {"type": result})
+    assert _idle_action(Owner(session)) == ("wait" if result == "success" else "ready")
+    session.receive("new", "external", {})
+    assert _idle_action(Owner(session)) == "ready"
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_external_wakeup_policy_survives_reopen(tmp_path, legacy):
+    path = tmp_path / "wakeup.db"
+    with Store(path) as store:
+        session = Session.create(store, "goal", tmp_path, external_wakeup=not legacy)
+        if legacy:
+            # Simulate the metadata written before external_wakeup moved out of Limits.
+            meta = dict(session.meta)
+            del meta["external_wakeup"]
+            meta["limits"] = {**meta["limits"], "external_wakeup": True}
+            store.db.execute(
+                "UPDATE events SET changes = ? WHERE seq = 1",
+                (json.dumps({**store.events()[0]["changes"], "meta": meta}),),
+            )
+    with Store(path) as store:
+        session = Session(store)
+        assert session.external_wakeup is True
+        assert not hasattr(session.limits, "external_wakeup")
+
+
+@pytest.mark.parametrize("spare", [-1, 0])
+def test_context_budget_counts_utf8_and_inbox_commas(session, spare):
+    from rio.agent.store import encode
+
+    session.receive("first", "external", {"text": "é" * 1200})
+    session.receive("second", "external", {"text": "é" * 1200})
+    expected = session.state
+    expected["revision"] += 1
+    expected["runtime"]["usage"] = dict(session.meta["usage"])
+    expected["runtime"]["inbox"] = [
+        {k: v for k, v in m.items() if k != "consumed"} for m in session.data["inbox"].values()
+    ]
+    budget = len(encode(expected).encode()) + spare
+    session.limits = replace(session.limits, context_bytes=budget, output_bytes=128)
+    turn = prepare(session)
+    assert turn["delivered"] == (["first"] if spare == -1 else ["first", "second"])
+    assert len(encode(turn["state"]).encode()) <= budget
+    session.accept(turn["id"], [])
+    if spare == -1:
+        assert prepare(session)["delivered"] == ["second"]
+
+
+def test_metrics_are_recorded_once_even_when_first_written_after_reopen(tmp_path):
+    path = tmp_path / "metrics.db"
+    with Store(path) as store:
+        Session.create(store, "goal", tmp_path)
+    with Store(path) as store:
+        session = Session(store)
+        seq = session.record_durability_metrics()
+        assert store.event_kind(seq) == "durability_metrics"
+        assert session.data["metrics"]["commit_p50_seconds"] == 0
+        assert session.data["metrics"]["commit_max_seconds"] == 0
+    with Store(path) as store:
+        session = Session(store)
+        assert session.record_durability_metrics() is None
+        assert store.sequence == seq
+
+
+@pytest.mark.parametrize("ref", ["session:event:99999", "session:event:1"])
+def test_resolution_rejects_missing_events_and_non_observations(session, ref):
+    accept(session, code())
+    session.authorize(1, {"token": "none"})
+    session.finish(1, {"type": "UnknownExecution", "worker_stopped": True})
+    turn = prepare(session)
+    before = session.store.sequence
+    with pytest.raises(InvalidPatch, match="recorded observation"):
+        session.accept(
+            turn["id"], [add(note(role="resolution", target_cell_id=1, evidence_refs=[ref]))]
+        )
+    assert session.store.sequence == before

@@ -178,6 +178,44 @@ theorem drained_queue_wakes (execution paused : Bool) :
 theorem non_execution_input_wakes (pending paused : Bool) :
     wakesModel false pending paused = true := by simp [wakesModel]
 
+/-- The runner decides whether to call the model, wait, or record invalid idle. -/
+inductive IdleAction where
+  | ready | wait | invalid | fail
+  deriving DecidableEq, Repr
+
+def idleAction (first unaccepted newInput wakeup : Bool) (idle limit : Nat) : IdleAction :=
+  if first || unaccepted || newInput then .ready
+  else if wakeup then .wait
+  else if idle ≥ limit then .fail
+  else .invalid
+
+theorem unaccepted_turn_is_retried (first input wakeup : Bool) (idle limit : Nat) :
+    idleAction first true input wakeup idle limit = .ready := by simp [idleAction]
+
+theorem wakeup_prevents_invalid_idle (idle limit : Nat) :
+    idleAction false false false true idle limit = .wait := rfl
+
+theorem idle_budget_is_bounded (idle limit : Nat) (h : idle ≥ limit) :
+    idleAction false false false false idle limit = .fail := by simp [idleAction, h]
+
+/-- Inbox byte accounting adds one comma after the first observation. -/
+def appendBytes (current message : Nat) (hasMessages : Bool) : Nat :=
+  current + message + if hasMessages then 1 else 0
+
+def admitBytes (current message limit : Nat) (hasMessages : Bool) : Nat :=
+  let next := appendBytes current message hasMessages
+  if next ≤ limit then next else current
+
+theorem admitted_context_fits (current message limit : Nat) (hasMessages : Bool)
+    (h : current ≤ limit) : admitBytes current message limit hasMessages ≤ limit := by
+  simp only [admitBytes]
+  split <;> assumption
+
+theorem separator_can_exhaust_budget (current message : Nat) :
+    admitBytes current message (current + message) true = current := by
+  simp only [admitBytes, appendBytes, ↓reduceIte]
+  split <;> omega
+
 def fireTimer (fired expired : Bool) : Bool × Nat :=
   if !fired && expired then (true, 1) else (fired, 0)
 

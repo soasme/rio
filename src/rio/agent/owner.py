@@ -151,14 +151,7 @@ class Owner:
             if execution.get("worker") and not execution.get("worker_stopped"):
                 await asyncio.to_thread(stop_worker, execution["worker"])
                 if execution["phase"] == "finished":
-                    self.session.store.commit(
-                        "worker_cleanup",
-                        {
-                            "executions": {
-                                str(execution["cell_id"]): {**execution, "worker_stopped": True}
-                            }
-                        },
-                    )
+                    self.session.worker_stopped(execution["cell_id"])
                     continue
                 self.session.finish(
                     execution["cell_id"],
@@ -171,17 +164,7 @@ class Owner:
         for key, record in list(self.session.data.get("validation_workers", {}).items()):
             if record["result"] is None:
                 await asyncio.to_thread(stop_worker, record["worker"])
-                self.session.store.commit(
-                    "validator_interrupted",
-                    {
-                        "validation_workers": {
-                            key: {
-                                **record,
-                                "result": {"exit": None, "output": "Unknown validator execution"},
-                            }
-                        }
-                    },
-                )
+                self.session.interrupt_validator(key)
         if not self.session.meta["terminal"]:
             self.session.fire_timers()
             await self.controls()
@@ -270,10 +253,7 @@ class Owner:
         # The API uses argv lists, never model-editable shell commands.
         for index, command in enumerate(self.session.meta["validators"]):
             result = await self._validate(f"{note_id}:{index}", command)
-            self.session.store.commit(
-                "validator_result",
-                {"validator_results": {str(index): {"command": command, **result}}},
-            )
+            self.session.record_validator_result(index, command, result)
             if result["exit"] != 0:
                 return f"Required validator {index} failed: {result['output']}"
         self.session.fire_timers()
@@ -286,8 +266,7 @@ class Owner:
         if previous:
             return previous["result"]
         identity: WorkerIdentity = {"token": uuid.uuid4().hex}
-        record = {"worker": identity, "result": None}
-        self.session.store.commit("validator_started", {"validation_workers": {key: record}})
+        self.session.start_validator(key, identity)
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             str(Path(worker.__file__)),
@@ -305,8 +284,7 @@ class Owner:
             "birth": psutil.Process(process.pid).create_time(),
         }
         try:
-            record = {**record, "worker": identity}
-            self.session.store.commit("validator_registered", {"validation_workers": {key: record}})
+            self.session.register_validator(key, identity)
             process.stdin.write(b"start\n")
             await process.stdin.drain()
             output = bytearray()
@@ -333,9 +311,7 @@ class Owner:
         finally:
             await asyncio.to_thread(stop_worker, identity)
             await process.wait()
-        self.session.store.commit(
-            "validator_finished", {"validation_workers": {key: {**record, "result": result}}}
-        )
+        self.session.finish_validator(key, result)
         return result
 
     async def wait(self, until: float = math.inf, request: asyncio.Task | None = None) -> None:
@@ -409,11 +385,7 @@ class Owner:
                 "pid": process.pid,
                 "birth": psutil.Process(process.pid).create_time(),
             }
-            execution = session.data["executions"][str(cell_id)]
-            session.store.commit(
-                "worker_registered",
-                {"executions": {str(cell_id): {**execution, "worker": self.identity}}},
-            )
+            session.register_worker(cell_id, self.identity)
             process.stdin.write(b"start\n")
             await process.stdin.drain()
             decoders = {
@@ -475,11 +447,7 @@ class Owner:
                 else:
                     path.unlink()
             if truncated:
-                execution = session.data["executions"][str(cell_id)]
-                session.store.commit(
-                    "output_truncated",
-                    {"executions": {str(cell_id): {**execution, **truncated, "truncated": True}}},
-                )
+                session.truncate_output(cell_id, truncated)
             # Stop descendants before reporting completion, even when the script left them behind.
             await asyncio.to_thread(stop_worker, self.identity)
             await process.wait()
