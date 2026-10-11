@@ -25,7 +25,6 @@ from rio.coding.credentials import FileCredentialStore, OAuthCredential
 from rio.coding.oauth_registry import get_oauth_provider
 from rio.coding.oauth_types import OAuthLoginCallbacks, OAuthProvider, OAuthRuntimeAuth
 from rio.coding.paths import RioPaths
-from rio.coding.provider_catalog import ModelCostTier
 from rio.coding.provider_config import (
     DEFAULT_MODEL,
     AnthropicProviderConfig,
@@ -190,10 +189,6 @@ def test_builtin_openai_declares_model_scoped_thinking_capabilities() -> None:
     codex = settings.get_provider("openai-codex")
     anthropic = settings.get_provider("anthropic")
 
-    assert openai.context_windows["gpt-5.5"] == 272_000
-    assert openai.context_windows["gpt-5.5-pro"] == 1_050_000
-    assert settings.get_provider("anthropic").context_windows["claude-sonnet-4-6"] == 1_000_000
-    assert openrouter.context_windows["openai/gpt-5.5"] == 1_050_000
     assert provider_thinking_levels(openai, model="gpt-5.5") == (
         "off",
         "low",
@@ -454,7 +449,6 @@ def test_save_and_load_provider_settings_round_trip(
                 api_key_env="LOCAL_API_KEY",
                 models=("qwen", "llama"),
                 default_model="qwen",
-                context_windows={"qwen": 64_000},
                 headers={"X-Test": "enabled"},
                 timeout_seconds=120,
                 max_retries=2,
@@ -469,214 +463,6 @@ def test_save_and_load_provider_settings_round_trip(
     assert path == tmp_path / ".rio" / "providers.json"
     assert json.loads(path.read_text())["schema_version"] == 2
     assert loaded == settings
-
-
-def test_legacy_provider_model_cost_tiers_round_trip() -> None:
-    raw = {
-        "default_provider": "local",
-        "providers": [
-            {
-                "type": "openai-compatible",
-                "name": "local",
-                "base_url": "http://localhost:11434/v1",
-                "api_key_env": "LOCAL_API_KEY",
-                "models": ["qwen"],
-                "default_model": "qwen",
-                "model_metadata": {
-                    "qwen": {
-                        "cost": {
-                            "input": 0.3,
-                            "output": 1.2,
-                            "cacheRead": 0.06,
-                            "cacheWrite": 0,
-                        },
-                        "cost_tiers": [
-                            {
-                                "max_input_tokens": 512000,
-                                "input": 0.3,
-                                "output": 1.2,
-                                "cacheRead": 0.06,
-                                "cacheWrite": 0,
-                            },
-                            {
-                                "input": 0.6,
-                                "output": 2.4,
-                                "cacheRead": 0.12,
-                                "cacheWrite": 0,
-                            },
-                        ],
-                    }
-                },
-            }
-        ],
-    }
-
-    settings = provider_settings_from_json(raw)
-    provider = settings.get_provider("local")
-    assert isinstance(provider, OpenAICompatibleProviderConfig)
-    assert (
-        provider.model_metadata["qwen"].to_json()["cost_tiers"]
-        == raw["providers"][0]["model_metadata"]["qwen"]["cost_tiers"]
-    )
-
-
-def test_legacy_provider_cost_tier_accepts_one_hour_cache_write_rate() -> None:
-    raw = {
-        "default_provider": "local",
-        "providers": [
-            {
-                "type": "openai-compatible",
-                "name": "local",
-                "base_url": "http://localhost:11434/v1",
-                "api_key_env": "LOCAL_API_KEY",
-                "models": ["qwen"],
-                "default_model": "qwen",
-                "model_metadata": {
-                    "qwen": {
-                        "cost_tiers": [
-                            {
-                                "max_input_tokens": 512000,
-                                "input": 0.3,
-                                "output": 1.2,
-                                "cacheRead": 0.06,
-                                "cacheWrite": 0.375,
-                                "cacheWrite1h": 0.6,
-                            },
-                            {
-                                "input": 0.6,
-                                "output": 2.4,
-                                "cacheRead": 0.12,
-                                "cacheWrite": 0.75,
-                            },
-                        ],
-                    }
-                },
-            }
-        ],
-    }
-
-    settings = provider_settings_from_json(raw)
-    provider = settings.get_provider("local")
-    assert isinstance(provider, OpenAICompatibleProviderConfig)
-    tiers = provider.model_metadata["qwen"].cost_tiers
-    assert tiers[0].cost["cacheWrite1h"] == 0.6
-    # Tiers without the key omit it, so billing can fall back to cacheWrite.
-    assert "cacheWrite1h" not in tiers[1].cost
-    assert (
-        provider.model_metadata["qwen"].to_json()["cost_tiers"]
-        == raw["providers"][0]["model_metadata"]["qwen"]["cost_tiers"]
-    )
-
-
-@pytest.mark.parametrize(
-    ("cost_tiers", "match"),
-    [
-        (
-            [
-                {
-                    "max_input_tokens": 512000,
-                    "input": 0.3,
-                    "output": 1.2,
-                    "cacheRead": 0.06,
-                    "cacheWrite": 0,
-                }
-            ],
-            "final cost tier must omit max_input_tokens",
-        ),
-        (
-            [
-                {
-                    "max_input_tokens": 512000,
-                    "input": 0.3,
-                    "output": 1.2,
-                    "cacheRead": 0.06,
-                    "cacheWrite": 0,
-                },
-                {
-                    "max_input_tokens": 400000,
-                    "input": 0.4,
-                    "output": 1.6,
-                    "cacheRead": 0.08,
-                    "cacheWrite": 0,
-                },
-                {
-                    "input": 0.6,
-                    "output": 2.4,
-                    "cacheRead": 0.12,
-                    "cacheWrite": 0,
-                },
-            ],
-            "limits must be strictly increasing",
-        ),
-        (
-            [
-                {
-                    "unexpected": 1,
-                    "input": 0.3,
-                    "output": 1.2,
-                    "cacheRead": 0.06,
-                    "cacheWrite": 0,
-                }
-            ],
-            "unknown fields",
-        ),
-        (
-            [
-                {
-                    "input": -0.3,
-                    "output": 1.2,
-                    "cacheRead": 0.06,
-                    "cacheWrite": 0,
-                }
-            ],
-            "0 or greater",
-        ),
-    ],
-)
-def test_legacy_provider_rejects_invalid_cost_tiers(
-    cost_tiers: list[dict[str, object]],
-    match: str,
-) -> None:
-    raw = {
-        "default_provider": "local",
-        "providers": [
-            {
-                "type": "openai-compatible",
-                "name": "local",
-                "base_url": "http://localhost:11434/v1",
-                "api_key_env": "LOCAL_API_KEY",
-                "models": ["qwen"],
-                "default_model": "qwen",
-                "model_metadata": {"qwen": {"cost_tiers": cost_tiers}},
-            }
-        ],
-    }
-
-    with pytest.raises(ProviderConfigError, match=match):
-        provider_settings_from_json(raw)
-
-
-def test_runtime_metadata_rejects_invalid_cost_tier_values() -> None:
-    with pytest.raises(ProviderConfigError, match="cost tier values must be non-negative"):
-        OpenAICompatibleProviderConfig(
-            name="local",
-            models=("qwen",),
-            default_model="qwen",
-            model_metadata={
-                "qwen": ProviderModelMetadata(
-                    cost_tiers=(
-                        ModelCostTier(
-                            cost={
-                                "input": -0.3,
-                                "output": 1.2,
-                                "cacheRead": 0.06,
-                                "cacheWrite": 0,
-                            }
-                        ),
-                    )
-                )
-            },
-        )
 
 
 @pytest.mark.parametrize(
@@ -706,7 +492,6 @@ def test_provider_settings_ignores_legacy_scoped_models(scopes) -> None:
         }
     )
 
-    assert settings.get_provider("local").context_windows == {"qwen": 64000}
     assert "scoped_models" not in settings.to_json()
     selection = resolve_provider_selection(settings)
     assert (selection.provider.name, selection.model) == ("local", "qwen")
@@ -1372,8 +1157,8 @@ def test_provider_model_max_tokens_reads_model_metadata() -> None:
         models=("capped", "uncapped"),
         default_model="capped",
         model_metadata={
-            "capped": ProviderModelMetadata(context_window=200_000, max_tokens=64_000),
-            "uncapped": ProviderModelMetadata(context_window=256_000),
+            "capped": ProviderModelMetadata(max_tokens=64_000),
+            "uncapped": ProviderModelMetadata(),
         },
     )
 
@@ -1608,7 +1393,6 @@ def test_load_provider_settings_merges_builtin_model_catalog(tmp_path: Path) -> 
     provider = settings.get_provider("huggingface")
     assert provider.default_model == "MiniMaxAI/MiniMax-M2.7"
     assert provider.headers == {"X-HF-Bill-To": "my-org"}
-    assert provider.context_windows["MiniMaxAI/MiniMax-M2.7"] == 204_800
     assert "Qwen/Qwen3-Coder-480B-A35B-Instruct" in provider.models
     assert "moonshotai/Kimi-K2.6" in provider.models
     assert "custom/coder" in provider.models
@@ -1642,7 +1426,6 @@ def test_load_provider_settings_keeps_custom_provider_in_json(
     settings = load_provider_settings(RioPaths(home=rio_home))
 
     provider = settings.get_provider("local")
-    assert provider.context_windows == {"qwen": 64_000}
     assert provider.headers == {"X-Test": "yes"}
     assert json.loads((rio_home / "providers.json").read_text()) == original
     assert not (rio_home / "providers.json.bak").exists()
@@ -1740,7 +1523,6 @@ def test_load_provider_settings_restores_builtin_credential_name(
 
     assert isinstance(provider, OpenAICompatibleProviderConfig)
     assert provider.credential_name == "openrouter"
-    assert provider.context_windows["openai/gpt-5.5"] == 1_050_000
     config = openai_compatible_config_from_provider(
         provider,
         credential_reader=FakeCredentials(),
@@ -2427,3 +2209,85 @@ def test_builtin_oauth_registry_matches_supported_subscription_providers() -> No
     anthropic = get_oauth_provider("anthropic")
     assert anthropic is not None
     assert anthropic.name == "Anthropic (Claude Pro/Max)"
+
+
+def test_catalog_descriptive_metadata_survives_runtime_preference_save(tmp_path, monkeypatch):
+    from rio.coding.catalog_loader import effective_catalog
+
+    monkeypatch.setattr(provider_config, "environ", {})
+    paths = RioPaths(home=tmp_path / ".rio")
+    paths.home.mkdir()
+    (paths.home / "catalog.toml").write_text("""
+schema_version = 1
+[[providers]]
+name = "local"
+base_url = "http://localhost:8080/v1"
+models = ["qwen"]
+auth_methods = ["api_key", "oauth"]
+[providers.context_windows]
+qwen = 64000
+[providers.model_metadata.qwen]
+name = "Local Qwen"
+context_window = 64000
+max_tokens = 4096
+input = ["text", "image"]
+[providers.model_metadata.qwen.cost]
+input = 1.0
+output = 2.0
+[[providers.model_metadata.qwen.cost_tiers]]
+input = 1.0
+output = 2.0
+cacheRead = 0.1
+cacheWrite = 0.2
+""")
+    before = next(e for e in effective_catalog(paths) if e.name == "local")
+    provider = load_provider_settings(paths).get_provider("local")
+    serialized = provider.to_json()
+    assert "context_windows" not in serialized
+    assert (
+        not {"name", "cost", "cost_tiers", "context_window"}
+        & serialized["model_metadata"]["qwen"].keys()
+    )
+    assert provider_model_max_tokens(provider, "qwen") == 4096
+    assert provider_model_supports_images(provider, "qwen")
+    # Changing a request field rewrites the catalog, preserving its descriptive fields.
+    changed = replace(provider, base_url="http://localhost:9000/v1")
+    save_provider_settings(ProviderSettings(default_provider="local", providers=(changed,)), paths)
+    after = next(e for e in effective_catalog(paths) if e.name == "local")
+    assert after.base_url == changed.base_url
+    assert after.context_windows == before.context_windows
+    assert after.model_metadata == before.model_metadata
+    assert after.auth_methods == before.auth_methods
+    assert load_provider_settings(paths).get_provider("local") == changed
+
+
+def test_legacy_provider_ignores_descriptive_metadata():
+    settings = provider_settings_from_json(
+        {
+            "default_provider": "local",
+            "providers": [
+                {
+                    "type": "openai-compatible",
+                    "name": "local",
+                    "base_url": "http://localhost/v1",
+                    "api_key_env": "LOCAL_API_KEY",
+                    "models": ["qwen"],
+                    "default_model": "qwen",
+                    "context_windows": {"qwen": 64000},
+                    "model_metadata": {
+                        "qwen": {
+                            "cost": {"input": 1},
+                            "cost_tiers": [],
+                            "context_window": 64000,
+                            "name": "Qwen",
+                            "max_tokens": 1024,
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    provider = settings.get_provider()
+    assert provider_model_max_tokens(provider) == 1024
+    assert "context_windows" not in provider.to_json()
+    assert "cost" not in provider.model_metadata["qwen"].to_json()

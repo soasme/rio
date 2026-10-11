@@ -31,6 +31,10 @@ Python extensions or trigger project trust checks. Configure custom endpoints in
 Saved `scoped_models` entries from older versions are ignored and omitted when
 provider preferences are saved. Each run selects one provider and model.
 
+Runtime provider objects carry request settings only. Cost rates, tiers, display
+names, and context-window sizes stay in the catalog; saving runtime preferences
+preserves them. See [migration notes](migration.md) for Python API changes.
+
 ## Catalog keys
 
 A catalog has `schema_version = 1` and one or more `[[providers]]` tables.

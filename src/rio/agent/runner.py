@@ -20,6 +20,20 @@ from rio.ai.messages import AssistantMessage, UserMessage, raw_tool_arguments
 from rio.ai.provider import ModelProvider
 
 
+async def replay(
+    session: Session,
+    publish: Callable[[JournalEvent], None] | None = None,
+) -> bool:
+    """Recover workers and publish a terminal session without a model provider."""
+    if not session.meta["terminal"]:
+        raise ValueError("Only terminal sessions can be replayed")
+    await Owner(session).recover()
+    if publish:
+        for event in session.store.events():
+            publish(event)
+    return session.meta["terminal"]["result"] == "success"
+
+
 async def run(
     session: Session,
     provider: ModelProvider,

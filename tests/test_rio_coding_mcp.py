@@ -32,7 +32,7 @@ from rio.coding.mcp.config import (
 from rio.coding.mcp.connection import create_client
 from rio.coding.mcp.oauth import McpAuthStore, parse_www_authenticate, select_resource
 from rio.coding.paths import RioPaths
-from rio.coding.project_trust import CanonicalProjectPath, ProtectedResourceDetector
+from rio.coding.project_trust import is_project_trusted
 
 FAKE_SERVER = Path(__file__).parent / "fixtures" / "mcp_stdio_server.py"
 STDIO = {"command": sys.executable, "args": [str(FAKE_SERVER)]}
@@ -147,15 +147,13 @@ class TestConfig:
             "mcpServers": {"b": {"url": "https://c"}},
         }
 
-    def test_project_mcp_json_needs_trust(self, repo):
+    def test_project_mcp_json_needs_trust(self, paths, repo):
         write(repo / ".rio" / "mcp.json", {"a": STDIO})
-        summary = ProtectedResourceDetector().detect(CanonicalProjectPath(repo))
-        assert "mcp" in summary.categories
+        assert not is_project_trusted(repo, paths)
 
 
-async def test_saved_mcp_trust_survives_extension_removal(paths, repo):
+def test_saved_mcp_trust_survives_extension_removal(paths, repo):
     from rio.coding.project_trust import (
-        ProjectTrustCoordinator,
         ProjectTrustStore,
         canonicalize_project_path,
     )
@@ -169,10 +167,7 @@ async def test_saved_mcp_trust_survives_extension_removal(paths, repo):
     for decision, expected in [(None, False), ("trusted", True), ("untrusted", False)]:
         if decision is not None:
             store.set(canonical, decision)
-        summary, result = await ProjectTrustCoordinator(store).resolve(repo, persist=False)
-        assert "mcp" in summary.categories
-        assert "extensions" not in summary.categories
-        assert result.trusted is expected
+        assert is_project_trusted(repo, paths) is expected
 
 
 # -- stdio client and the `mcp` object -------------------------------------------------
@@ -575,3 +570,73 @@ class TestCommands:
             ("off", "disabled"),
         ]
         assert data["servers"][0]["tools"] == ["add", "echo-text", "fail", "roots", "venv"]
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected"),
+    [
+        ("ask", False),
+        ("never", False),
+        ("always", True),
+        ("invalid", False),
+        ([], False),
+    ],
+)
+def test_mcp_trust_reads_only_policy_from_supplied_home(paths, repo, policy, expected):
+    paths.home.mkdir(parents=True)
+    (paths.home / "settings.json").write_text(
+        json.dumps(
+            {
+                "defaultProjectTrust": policy,
+                "shellCommandPrefix": [],
+                "shell_command_prefix": 123,
+            }
+        )
+    )
+    assert is_project_trusted(repo, paths) is expected
+
+
+def test_mcp_saved_child_decision_overrides_parent_and_default(paths, repo):
+    from rio.coding.project_trust import ProjectTrustStore, canonicalize_project_path
+
+    child = repo / "child"
+    child.mkdir()
+    store = ProjectTrustStore(paths)
+    store.set(canonicalize_project_path(repo), "trusted")
+    assert is_project_trusted(child, paths)
+    store.set(canonicalize_project_path(child), "untrusted")
+    (paths.home / "settings.json").write_text('{"defaultProjectTrust":"always"}')
+    assert not is_project_trusted(child, paths)
+    store.remove(canonicalize_project_path(child))
+    assert is_project_trusted(child, paths)
+
+
+@pytest.mark.parametrize("failure", ["invalid_json", "invalid_decision", "pending", "io_error"])
+def test_mcp_trust_errors_deny_even_with_always_default(paths, repo, monkeypatch, failure):
+    from rio.coding.project_trust import ProjectTrustStore, canonicalize_project_path
+
+    store = ProjectTrustStore(paths)
+    store.set(canonicalize_project_path(repo), "trusted")
+    (paths.home / "settings.json").write_text('{"defaultProjectTrust":"always"}')
+    if failure == "invalid_json":
+        store.path.write_text("{")
+    elif failure == "invalid_decision":
+        store.path.write_text(
+            json.dumps({"version": 1, "decisions": [{"path": str(repo.resolve()), "decision": []}]})
+        )
+    elif failure == "pending":
+        store.pending_path.write_text("incomplete")
+    else:
+
+        def unavailable(self):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(ProjectTrustStore, "read", unavailable)
+    assert not is_project_trusted(repo, paths)
+
+
+@pytest.mark.parametrize("settings", ["{", "[]", "null"])
+def test_mcp_invalid_settings_deny_trust(paths, repo, settings):
+    paths.home.mkdir(parents=True)
+    (paths.home / "settings.json").write_text(settings)
+    assert not is_project_trusted(repo, paths)

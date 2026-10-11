@@ -108,4 +108,17 @@ theorem token_for_its_own_url (url token : String) :
     bearer false url (some (url, token)) = some token := by
   simp [bearer]
 
+/-- Saved trust wins over the default; an unreadable store always denies. -/
+def trustPolicy (saved : Option Bool) (always storeFailed : Bool) : Bool :=
+  !storeFailed && saved.getD always
+
+theorem broken_store_denies (saved : Option Bool) (always : Bool) :
+    trustPolicy saved always true = false := by simp [trustPolicy]
+
+theorem saved_denial_overrides_always : trustPolicy (some false) true false = false := rfl
+
+theorem saved_approval_overrides_default : trustPolicy (some true) false false = true := rfl
+
+theorem ask_without_saved_decision_denies : trustPolicy none false false = false := rfl
+
 end RioCodingMcp

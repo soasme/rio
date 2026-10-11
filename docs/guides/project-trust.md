@@ -9,6 +9,10 @@ which can start processes. They use saved decisions in `~/.rio/trust.json` and
 project resources without an interactive prompt. User-level `~/.rio/mcp.json`
 does not require project trust.
 
+The nearest saved decision wins over the default. Unreadable or incomplete trust
+stores deny project configuration. Trust checks do not scan instruction files,
+themes, or system prompts. Legacy shell-command-prefix settings are ignored.
+
 The Python MCP client takes an explicit `project_trusted` argument when loading
 configuration. See [Use MCP servers](mcp.md).
 
