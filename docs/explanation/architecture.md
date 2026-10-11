@@ -30,6 +30,8 @@ remove whole cells. A replacement gets a new ID and links to the old cell. Old v
 in history. Removing a cell from context does not cancel its work.
 
 Each model round uses a saved, fixed state. New observations wait in the inbox.
+Successful completions wait until queued work drains or an error pauses it,
+so one round sees them together.
 Accepting a patch also records which observations that round consumed. Retrying
 an accepted step returns the same receipt and does not launch the code again.
 A complete saved model response can be accepted after restart. Lost responses

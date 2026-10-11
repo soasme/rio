@@ -216,7 +216,7 @@ A `cmd` Cell holds an argv array, such as `{"kind": "cmd", "argv": ["pytest", "-
 
 ## 9. Inbox, timers, and control notes
 
-Persist Inbox messages before acknowledging receipt. Each has a stable message ID, kind, payload reference, causal identity, and Session sequence. Completion messages name the exact Cell ID. External events target the Session, with no Cell subscriptions to transfer between versions. Events wake the model; they never rerun existing Cell versions.
+Persist Inbox messages before acknowledging receipt. Each has a stable message ID, kind, payload reference, causal identity, and Session sequence. Completion messages name the exact Cell ID. External events target the Session, with no Cell subscriptions to transfer between versions. Events wake the model; they never rerun existing Cell versions. A successful completion does not wake the model while accepted work is still queued; completions are delivered together once the queue drains or an error pauses it.
 
 Duplicate delivery does not duplicate consumption or accepted work. External senders require stable IDs and redelivery for end-to-end delivery guarantees. Apply backpressure before acknowledgment. Do not silently discard completion or error records.
 

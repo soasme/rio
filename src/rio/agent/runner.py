@@ -41,9 +41,18 @@ async def run(
             if session.meta["terminal"]:
                 break
             unaccepted = any(t["receipt"] is None for t in session.data["turns"].values())
-            new_input = any(not m["consumed"] for m in session.data["inbox"].values())
+            # Successful completions wait for the queue to drain; a failure pauses it and wakes.
+            batching = session.pending() and not session.meta["pause"]
+            new_input = any(
+                not m["consumed"] and not (batching and m["kind"] == "execution")
+                for m in session.data["inbox"].values()
+            )
             if session.data["turns"] and not unaccepted and not new_input:
-                wakeup = owner.task or any(not t["fired"] for t in session.data["timers"].values())
+                wakeup = (
+                    owner.task
+                    or batching
+                    or any(not t["fired"] for t in session.data["timers"].values())
+                )
                 if wakeup or session.limits.external_wakeup:
                     await asyncio.sleep(0.05)
                     continue

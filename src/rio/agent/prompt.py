@@ -38,6 +38,7 @@ separate from a project environment. When writing multiline files, prefer triple
 Python strings so newline escaping does not break the script.
 Read existing code before editing it. Make the smallest correct change and run relevant tests.
 Inspect output in runtime.cells (stdout is named output), plus completion notices in runtime.inbox.
+You are woken after queued work finishes or an error pauses it; do not add waiting notes.
 An ordinary execution error pauses the queue. Consume it by accepting your next patch;
 you can cancel queued work and add a corrected code Cell in that patch. Ordinary errors
 DO NOT require resolution notes. A resolution note is ONLY for UnknownExecution.

@@ -405,6 +405,29 @@ async def test_public_loop_finishes_and_reopens_without_model_call(session):
     assert await run(session, FakeProvider([]), "fake")
 
 
+async def test_successful_completions_wake_the_model_once_after_the_queue_drains(session):
+    provider = FakeProvider(
+        [
+            response(
+                [
+                    {"op": "test", "path": "/revision", "value": 1},
+                    append(cmd(1, sys.executable, "-c", "print(1)")),
+                    append(cmd(2, sys.executable, "-c", "print(2)")),
+                ]
+            ),
+            response(
+                [
+                    {"op": "test", "path": "/revision", "value": 3},
+                    append(note(3, "completed", role="conclusion", result="success")),
+                ]
+            ),
+        ]
+    )
+    assert await run(session, provider, "fake")
+    state = json.loads(provider.calls[1][2][0].content)
+    assert [m["id"] for m in state["runtime"]["inbox"]] == ["execution:1", "execution:2"]
+
+
 async def test_instructions_extend_system_prompt(tmp_path):
     with Store(tmp_path / "session.sqlite3") as store:
         session = Session.create(store, "goal", tmp_path, instructions="\n\nUse tabs.")
