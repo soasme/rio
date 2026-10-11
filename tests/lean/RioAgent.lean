@@ -120,6 +120,22 @@ theorem unknown_blocks_success (pending unread failed : Bool) :
 theorem unread_blocks_success (pending unknown failed : Bool) :
     canSucceed pending unknown true failed = false := by simp [canSucceed]
 
+/-- A successful completion waits while work is queued; a pause or empty queue wakes. -/
+def wakesModel (execution pending paused : Bool) : Bool :=
+  !execution || !pending || paused
+
+theorem completion_with_queued_work_does_not_wake :
+    wakesModel true true false = false := rfl
+
+theorem pause_wakes_with_queued_work (execution : Bool) :
+    wakesModel execution true true = true := by simp [wakesModel]
+
+theorem drained_queue_wakes (execution paused : Bool) :
+    wakesModel execution false paused = true := by simp [wakesModel]
+
+theorem non_execution_input_wakes (pending paused : Bool) :
+    wakesModel false pending paused = true := by simp [wakesModel]
+
 def fireTimer (fired expired : Bool) : Bool × Nat :=
   if !fired && expired then (true, 1) else (fired, 0)
 
