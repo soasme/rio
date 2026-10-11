@@ -149,7 +149,6 @@ def run_case(
             (case / "task.md").read_text(encoding="utf-8"),
             "--cwd",
             str(workspace),
-            "--no-approve",
             "--output",
             "json",
         ]
