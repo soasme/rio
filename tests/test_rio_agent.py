@@ -6,24 +6,26 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from rio.agent import InvalidPatch, Limits, Session, StorageFailure, Store
+from rio.agent import CellKind, InvalidPatch, Limits, Session, StorageFailure, Store
 from rio.agent.owner import Owner, RecoveryFailure, stop_worker
-from rio.agent.prompt import SCHEMA, SYSTEM
+from rio.agent.prompt import CONCLUSION, PROTOCOL, SCHEMA
 from rio.agent.runner import run
 from rio.agent.store import reduce_event
 from rio.ai import FakeProvider
 from rio.ai.messages import AssistantMessage, ToolCall
 from rio.ai.provider_events import AssistantDoneEvent
+from rio.coding.cells import KINDS
 
 
 @pytest.fixture
 def session(tmp_path):
     with Store(tmp_path / "session.sqlite3") as store:
-        yield Session.create(store, "fix the code", tmp_path)
+        yield Session.create(store, "fix the code", tmp_path, kinds=KINDS)
 
 
 def note(n, text="remember", **extra):
@@ -46,7 +48,7 @@ def cmd(n, *argv, **extra):
 
 
 def prepare(session):
-    return session.prepare_turn(SYSTEM, SCHEMA)
+    return session.prepare_turn(session.system, SCHEMA)
 
 
 def patch(turn, *operations):
@@ -436,7 +438,64 @@ async def test_instructions_extend_system_prompt(tmp_path):
             [response([{"op": "test", "path": "/revision", "value": 1}, append(conclude)])]
         )
         assert await run(session, provider, "fake")
-        assert provider.calls[0][1] == SYSTEM + "\n\nUse tabs."
+        # A note-only agent never hears about execution.
+        assert provider.calls[0][1] == PROTOCOL + CONCLUSION + "\n\nUse tabs."
+
+
+def test_note_only_agent_rejects_runnable_cells(tmp_path):
+    with Store(tmp_path / "s.db") as store:
+        session = Session.create(store, "goal", tmp_path)
+        with pytest.raises(InvalidPatch, match="Cell kind must be one of: note$"):
+            accept(session, code(1))
+        with pytest.raises(InvalidPatch, match="Cell kind must be"):
+            accept(session, {**note(1), "kind": ["note"]})
+        assert accept(session, note(1))["cell_ids"] == [1]
+
+
+def test_note_is_not_an_extension_kind(tmp_path):
+    with Store(tmp_path / "s.db") as store, pytest.raises(ValueError, match="built-in"):
+        Session.create(store, "goal", tmp_path, kinds=[replace(KINDS[0], name="note")])
+    with Store(tmp_path / "s.db") as store:
+        assert not store.data
+
+
+async def test_owner_requires_the_recorded_cell_kinds(tmp_path):
+    path = tmp_path / "s.db"
+    with Store(path) as store:
+        accept(Session.create(store, "goal", tmp_path, kinds=KINDS), code(1))
+    with Store(path) as store:
+        assert Session(store).state["goal"] == "goal"
+        with pytest.raises(ValueError, match="Cell kinds: code"):
+            async with Owner(Session(store)):
+                pass
+
+
+async def test_caller_extends_agent_with_a_cell_kind(tmp_path):
+    def validate(cell):
+        if not isinstance(cell.get("text"), str):
+            raise InvalidPatch("Echo requires text")
+
+    echo = CellKind(
+        name="echo",
+        fields=frozenset({"text"}),
+        prompt='Echo: {"id":N,"previous_id":null,"kind":"echo","text":"..."}.\n',
+        validate=validate,
+        command=lambda cell, scratch: [
+            sys.executable,
+            "-c",
+            "import sys; print(sys.argv[1])",
+            cell["text"],
+        ],
+    )
+    with Store(tmp_path / "s.db") as store:
+        session = Session.create(store, "goal", tmp_path, kinds=[echo])
+        assert echo.prompt in session.system
+        with pytest.raises(InvalidPatch, match="Echo requires text"):
+            accept(session, {"id": 1, "previous_id": None, "kind": "echo"})
+        accept(session, {"id": 1, "previous_id": None, "kind": "echo", "text": "hi"})
+        async with Owner(session) as owner:
+            await settle(owner)
+        assert session.data["executions"]["1"]["output"] == "hi\n"
 
 
 async def test_uv_timer_api_acknowledges_committed_registration(session):
@@ -491,7 +550,7 @@ def test_commit_uncertainty_reopens_committed_identity(tmp_path):
 
     path = tmp_path / "uncertain.db"
     with Store(path) as store:
-        session = Session.create(store, "goal", tmp_path)
+        session = Session.create(store, "goal", tmp_path, kinds=KINDS)
         turn = prepare(session)
         connection = store.db
 
@@ -512,7 +571,7 @@ def test_commit_uncertainty_reopens_committed_identity(tmp_path):
         with pytest.raises(StorageFailure):
             store.events()
     with Store(path) as store:
-        session = Session(store)
+        session = Session(store, KINDS)
         receipt = session.accept(turn["id"], patch(turn, append(code(1))))
         assert receipt["cell_ids"] == [1]
         assert len(session.data["executions"]) == 1
@@ -529,12 +588,13 @@ import asyncio, sys
 from pathlib import Path
 from rio.agent import Session, Store
 from rio.agent.owner import Owner
-from rio.agent.prompt import SYSTEM, SCHEMA
+from rio.agent.prompt import SCHEMA
+from rio.coding.cells import KINDS
 async def main():
     root=Path(sys.argv[1]); boundary=sys.argv[2]
     with Store(root/'crash.db') as store:
-        s=Session.create(store, 'one effect', root)
-        t=s.prepare_turn(SYSTEM, SCHEMA)
+        s=Session.create(store, 'one effect', root, kinds=KINDS)
+        t=s.prepare_turn(s.system, SCHEMA)
         s.accept(t['id'], [{'op':'test','path':'/revision','value':1},
             {'op':'add','path':'/cells/-','value':{'id':1,'previous_id':None,
              'kind':'code','runtime':'python','source':
@@ -564,7 +624,7 @@ asyncio.run(main())
         process.wait(timeout=5)
         await asyncio.sleep(0.1)  # Allow the supervisor's EOF cleanup to finish.
         with Store(path) as store:
-            session = Session(store)
+            session = Session(store, KINDS)
             async with Owner(session):
                 execution = session.data["executions"]["1"]
                 if boundary == "queued":
@@ -581,8 +641,6 @@ asyncio.run(main())
 
 
 async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch):
-    from dataclasses import replace
-
     from rio.agent import runner
 
     monkeypatch.setattr(runner.time, "time", lambda: 1e20)

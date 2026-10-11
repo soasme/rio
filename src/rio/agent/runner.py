@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from rio.agent.owner import Owner
-from rio.agent.prompt import SCHEMA, STEP, SYSTEM
+from rio.agent.prompt import SCHEMA, STEP
 from rio.agent.session import Session, observation
 from rio.agent.state import InvalidPatch
 from rio.agent.store import encode
@@ -81,7 +81,7 @@ async def run(
                     },
                 )
             try:
-                turn = session.prepare_turn(SYSTEM + session.meta.get("instructions", ""), SCHEMA)
+                turn = session.prepare_turn(session.system, SCHEMA)
                 if turn["response"] is None:
                     while time.time() < turn["retry_at"]:
                         await owner.tick()

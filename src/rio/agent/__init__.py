@@ -6,6 +6,7 @@ Keep imports lazy so ``rio.agent.api`` works inside dependency-free uv scripts.
 from importlib import import_module
 
 _EXPORTS = {
+    "CellKind": "state",
     "InvalidPatch": "state",
     "Limits": "state",
     "Session": "session",

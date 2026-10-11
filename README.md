@@ -74,6 +74,8 @@ cd tests/lean && lake build
 See [the Lean behavior models](tests/lean/README.md) for their scope and limits.
 
 * `rio.ai` streams model responses from multiple providers.
-* `rio.agent` owns SQLite state, immutable cells, workers, and recovery.
-* `rio.coding` supplies provider configuration, credentials, and MCP clients.
+* `rio.agent` owns SQLite state, immutable cells, notes, workers, and recovery. Callers add
+  runnable Cell kinds.
+* `rio.coding` supplies code and cmd Cells, provider configuration, credentials, and MCP
+  clients.
 * `rio.cli` runs coding tasks.

@@ -17,10 +17,9 @@ import sys
 def main() -> None:
     if sys.stdin.readline() != "start\n":
         return
-    command = sys.argv[3:] if sys.argv[2] == "--command" else ["uv", "run", "--script", sys.argv[2]]
     try:
         child = subprocess.Popen(
-            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            sys.argv[2:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
     except OSError as exc:
         print(json.dumps({"stderr": str(exc).encode().hex()}), flush=True)

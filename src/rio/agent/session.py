@@ -6,11 +6,20 @@ import copy
 import math
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
 
-from rio.agent.state import InvalidPatch, Limits, admit
+from rio.agent.prompt import system
+from rio.agent.state import CellKind, InvalidPatch, Limits, admit
 from rio.agent.store import Store, encode
+
+
+def by_name(kinds: Iterable[CellKind]) -> dict[str, CellKind]:
+    named = {kind.name: kind for kind in kinds}
+    if "note" in named:
+        raise ValueError("note is a built-in Cell kind")
+    return named
 
 
 def observation(message_id: str, kind: str, payload: dict, seq: int) -> dict:
@@ -18,11 +27,12 @@ def observation(message_id: str, kind: str, payload: dict, seq: int) -> dict:
 
 
 class Session:
-    def __init__(self, store: Store):
+    def __init__(self, store: Store, kinds: Iterable[CellKind] = ()):
         self.store = store
         if not store.data:
             raise ValueError("Create a Session before opening it")
         self.limits = Limits(**self.meta["limits"])
+        self.kinds = by_name(kinds)
 
     @classmethod
     def create(
@@ -31,6 +41,7 @@ class Session:
         goal: str,
         cwd: Path,
         *,
+        kinds: Iterable[CellKind] = (),
         limits: Limits | None = None,
         validators: tuple[tuple[str, ...], ...] = (),
         model_config: dict | None = None,
@@ -38,6 +49,7 @@ class Session:
     ) -> Session:
         if store.data:
             raise ValueError("Session already exists")
+        kinds = by_name(kinds)
         limits = limits or Limits()
         state = {
             "schema": "rio.state/1",
@@ -74,7 +86,7 @@ class Session:
                 "validator_results": {},
             },
         )
-        return cls(store)
+        return cls(store, kinds.values())
 
     @property
     def data(self) -> dict:
@@ -87,6 +99,10 @@ class Session:
     @property
     def state(self) -> dict:
         return copy.deepcopy(self.meta["state"])
+
+    @property
+    def system(self) -> str:
+        return system(self.kinds.values()) + self.meta.get("instructions", "")
 
     def pending(self) -> list[dict]:
         return [e for e in self.data["executions"].values() if e["phase"] != "finished"]
@@ -260,7 +276,11 @@ class Session:
         if self.meta["terminal"]:
             raise InvalidPatch("Run has ended")
         state, new = admit(
-            turn["state"], patch, self.data["executions"], self.limits.context_bytes // 2
+            turn["state"],
+            patch,
+            self.data["executions"],
+            self.limits.context_bytes // 2,
+            self.kinds,
         )
         runs = [cell for cell in new if cell["kind"] != "note"]
         if len(self.pending()) + len(self.unresolved()) + len(runs) > self.limits.pending_cells:
