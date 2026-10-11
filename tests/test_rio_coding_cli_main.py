@@ -21,24 +21,18 @@ def test_thinking_flag_reaches_thinking_level_param(monkeypatch: pytest.MonkeyPa
         provider_name: str | None = None,
         model: str | None = None,
         thinking_level: object | None = None,
-        extension_paths: tuple[Path, ...] = (),
-        trust_override: object | None = None,
         resume: str | None = None,
         output_mode: object | None = None,
         agents_md: Path | None = None,
     ) -> tuple[bool, str]:
         captured["thinking_level"] = thinking_level
-        captured["extension_paths"] = extension_paths
-        captured["trust_override"] = trust_override
         captured["output_mode"] = output_mode
         return True, "session-id"
 
     monkeypatch.setattr(run_module, "run_persistent_session", fake_run_persistent_session)
 
-    app(["run", "--thinking", "high", "--approve", "do it"])
+    app(["run", "--thinking", "high", "do it"])
     assert captured["thinking_level"] == "high"
-    assert captured["extension_paths"] == ()
-    assert captured["trust_override"] == "approve"
     assert captured["output_mode"] == "human"
 
 
@@ -46,7 +40,7 @@ def test_json_output_reaches_session_runner(monkeypatch: pytest.MonkeyPatch) -> 
     captured: dict[str, object] = {}
 
     async def fake_run(*args: object, **kwargs: object) -> tuple[bool, str]:
-        captured["output_mode"] = args[-1]
+        captured["output_mode"] = kwargs["output_mode"]
         captured["agents_md"] = kwargs["agents_md"]
         return True, "session-id"
 
@@ -120,8 +114,6 @@ def test_unrelated_value_error_does_not_blame_cwd(
         provider_name: str | None = None,
         model: str | None = None,
         thinking_level: object | None = None,
-        extension_paths: tuple[Path, ...] = (),
-        trust_override: object | None = None,
         resume: str | None = None,
         output_mode: object | None = None,
         agents_md: Path | None = None,

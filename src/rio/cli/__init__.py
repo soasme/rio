@@ -44,17 +44,6 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="Project instructions file (default: AGENTS.md in the working directory).",
     )
-    run_parser.add_argument(
-        "-e",
-        "--extension",
-        type=Path,
-        action="append",
-        default=[],
-        help="Extension path (repeatable).",
-    )
-    trust = run_parser.add_mutually_exclusive_group()
-    trust.add_argument("-a", "--approve", action="store_true", help="Trust project resources.")
-    trust.add_argument("--no-approve", action="store_true", help="Do not trust project resources.")
     run_parser.add_argument("-r", "--resume", help="Session ID to resume.")
     run_parser.add_argument(
         "--output",
@@ -153,16 +142,17 @@ def _run(args: argparse.Namespace) -> None:
         if os.name != "posix":
             raise ValueError("Rio execution requires POSIX process supervision")
         succeeded, session_id = anyio.run(
-            functools.partial(run_module.run_persistent_session, agents_md=args.agents_md),
-            prompt,
-            args.cwd,
-            args.provider,
-            args.model,
-            level,
-            tuple(args.extension),
-            "approve" if args.approve else "decline" if args.no_approve else None,
-            args.resume,
-            PrintOutputMode(args.output),
+            functools.partial(
+                run_module.run_persistent_session,
+                prompt,
+                cwd=args.cwd,
+                provider_name=args.provider,
+                model=args.model,
+                thinking_level=level,
+                resume=args.resume,
+                output_mode=PrintOutputMode(args.output),
+                agents_md=args.agents_md,
+            ),
         )
     except ValueError as exc:
         status.report("error")

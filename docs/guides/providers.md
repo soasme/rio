@@ -23,7 +23,10 @@ levels when a combination is unsupported.
 
 User provider and model overrides live in `~/.rio/catalog.toml`. Rio ships a
 built-in catalog; the user catalog is applied last and can add or override its
-entries.
+entries. `rio run` uses only this catalog and saved provider preferences.
+Unknown providers and invalid models are configuration errors; they do not load
+Python extensions or trigger project trust checks. Configure custom endpoints in
+`~/.rio/catalog.toml`, including [local servers](local-llama-server.md).
 
 ## Catalog keys
 

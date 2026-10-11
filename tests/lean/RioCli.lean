@@ -82,4 +82,23 @@ theorem run_reports_two_states (o : Outcome) : (reports o).length = 2 := by
 
 theorem interrupt_is_not_failure : reports .interrupted ≠ reports .failed := by decide
 
+/-- Startup resolves only catalog entries. Invalid selection remains an error. -/
+def resolveProvider (catalog : List (String × List String)) (name model : String) :
+    Except String (String × String) :=
+  match catalog.find? (fun entry => entry.1 == name) with
+  | none => .error "unknown provider"
+  | some entry =>
+    if model ∈ entry.2 then .ok (name, model) else .error "unknown model"
+
+theorem missing_provider_is_error (name model : String) :
+    resolveProvider [] name model = .error "unknown provider" := rfl
+
+theorem configured_model_is_selected (name model : String) :
+    resolveProvider [(name, [model])] name model = .ok (name, model) := by
+  simp [resolveProvider]
+
+theorem invalid_model_does_not_choose_another_provider (name model : String) :
+    resolveProvider [(name, [])] name model = .error "unknown model" := by
+  simp [resolveProvider]
+
 end RioCli

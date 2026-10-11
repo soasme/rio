@@ -1,14 +1,8 @@
 # Provider extensions
 
-Extensions are Python modules with `setup(api)`. They can register provider
-definitions and cached model catalogs. Select a provider with
-`rio run --provider NAME --model MODEL`.
+The extension API is available to custom library hosts. Python modules with
+`setup(api)` can register providers, tools, commands, and event hooks.
 
-When a provider is not in the saved catalog, the CLI looks in built-in extensions,
-`~/.rio/extensions`, explicit `--extension PATH` arguments, and approved project
-`.rio/extensions`. Use `--approve` or `--no-approve` to control project loading.
-Extensions execute Python; approve only code you trust.
-
-The library also exposes tool, command, and event registration for custom hosts.
-The one-shot CLI uses provider registrations only. It does not bind UI widgets,
-slash commands, or session hooks.
+`rio run` does not load extensions. It selects providers from the built-in and
+user catalogs, with saved provider preferences. Configure custom endpoints in
+`~/.rio/catalog.toml`; unknown providers and invalid models are errors.

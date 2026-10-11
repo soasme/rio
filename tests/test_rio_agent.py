@@ -806,13 +806,13 @@ def test_cli_defaults_to_durable_and_resume_needs_no_new_goal(monkeypatch):
     calls = []
 
     async def run_session(*args, **kwargs):
-        calls.append(args)
+        calls.append((args, kwargs))
         return True, "abc"
 
     monkeypatch.setattr(run_module, "run_persistent_session", run_session)
     app(["run", "--resume", "abc", "--output", "json"])
-    assert calls[0][0] == ""
-    assert calls[0][7] == "abc"
+    assert calls[0][0] == ("",)
+    assert calls[0][1]["resume"] == "abc"
 
 
 @pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
