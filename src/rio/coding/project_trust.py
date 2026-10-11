@@ -17,13 +17,10 @@ from pathlib import Path
 from typing import IO, Literal
 
 from rio.coding.paths import RioPaths
-from rio.coding.prompt_templates import is_prompt_template_candidate
-from rio.coding.skills import is_skill_candidate
 
 TrustDefault = Literal["ask", "always", "never"]
 TrustDecision = Literal["trusted", "untrusted"]
 TrustOverride = Literal["approve", "decline"]
-TrustScope = Literal["exact", "parent", "run"]
 TrustSource = Literal["override", "empty", "extension", "saved", "default", "ui"]
 TrustChoice = Literal["trust-exact", "trust-parent", "trust-run", "decline-exact", "decline-run"]
 
@@ -31,9 +28,7 @@ _RESOURCE_CATEGORIES = (
     "context",
     "extensions",
     "mcp",
-    "prompts",
     "settings",
-    "skills",
     "system-prompts",
     "themes",
 )
@@ -181,21 +176,6 @@ class ProtectedResourceDetector:
         found: dict[str, list[Path]] = {category: [] for category in _RESOURCE_CATEGORIES}
         # Project settings are not supported by a rio loader, so they cannot
         # trigger trust until that loader exists.
-        for namespace in (".rio", ".agents"):
-            self._glob(
-                found,
-                "skills",
-                root / namespace / "skills",
-                "*/SKILL.md",
-                predicate=is_skill_candidate,
-            )
-            self._glob(
-                found,
-                "prompts",
-                root / namespace / "prompts",
-                "*.md",
-                predicate=is_prompt_template_candidate,
-            )
         self._glob(found, "themes", root / ".rio" / "themes", "*.json")
         self._file(found, "system-prompts", root / ".rio" / "SYSTEM.md")
         self._file(found, "system-prompts", root / ".rio" / "APPEND_SYSTEM.md")
@@ -232,8 +212,6 @@ class ProtectedResourceDetector:
         category: str,
         directory: Path,
         pattern: str,
-        *,
-        predicate: Callable[[Path], bool] | None = None,
     ) -> None:
         try:
             entries = tuple(directory.glob(pattern)) if directory.is_dir() else ()
@@ -241,11 +219,7 @@ class ProtectedResourceDetector:
             # An unreadable protected directory is itself a meaningful trigger.
             found[category].append(directory)
             return
-        found[category].extend(
-            path
-            for path in entries
-            if self._is_candidate(path) and (predicate is None or predicate(path))
-        )
+        found[category].extend(path for path in entries if self._is_candidate(path))
 
     def _context(self, found: dict[str, list[Path]], cwd: Path) -> None:
         # Match current rio discovery: nearest project marker through cwd, then
@@ -646,23 +620,6 @@ class ProjectTrustCoordinator:
                     "trusted" if result.trusted else "untrusted",
                 )
         self._cache[cwd.value] = result
-
-
-def format_trust_diagnostic(
-    summary: ProtectedResourceSummary, resolution: ProjectTrustResolution
-) -> str:
-    """Return one bounded, content-free decision diagnostic."""
-    categories = (
-        ", ".join(f"{category}={summary.counts[category]}" for category in summary.categories)
-        or "none"
-    )
-    scope = f" via {resolution.saved_path.value}" if resolution.saved_path is not None else ""
-    outcome = "trusted" if resolution.trusted else "untrusted"
-    return (
-        f"Project inputs for {summary.cwd.value}: {outcome} "
-        f"(source={resolution.source}{scope}; {categories}). "
-        "Project trust is an input-loading guard, not a sandbox."
-    )
 
 
 def _lock(handle: IO[bytes]) -> None:

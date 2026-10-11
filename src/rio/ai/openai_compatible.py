@@ -1037,9 +1037,7 @@ def _openai_input_image(image: ImageContent) -> dict[str, JSONValue]:
 def _tool_to_responses(
     tool: AgentTool, compat: Mapping[str, JSONValue] | None = None
 ) -> dict[str, JSONValue]:
-    parameters, strict, supports_strict_mode = _resolve_strict_tool_parameters(
-        tool, compat or {}
-    )
+    parameters, strict, supports_strict_mode = _resolve_strict_tool_parameters(tool, compat or {})
     return {
         "type": "function",
         "name": tool.name,
@@ -1285,9 +1283,7 @@ def _resolve_strict_tool_parameters(
 def _tool_to_openai(
     tool: AgentTool, compat: Mapping[str, JSONValue] | None = None
 ) -> dict[str, JSONValue]:
-    parameters, strict, supports_strict_mode = _resolve_strict_tool_parameters(
-        tool, compat or {}
-    )
+    parameters, strict, supports_strict_mode = _resolve_strict_tool_parameters(tool, compat or {})
     return {
         "type": "function",
         "function": {

@@ -98,18 +98,6 @@ MessageRenderer = Callable[[CustomMessageView, MessageRenderOptions], str]
 # into the frontend.
 CustomMessageMarkup = Callable[[str, str, "Mapping[str, JSONValue] | None", bool], "str | None"]
 
-# Host-side resolver installed into render paths: given a tool call's name and
-# arguments, return the friendly invocation line from the tool's `render_call`
-# or ``None`` to fall back to generic formatting. Errors are swallowed by the
-# resolver, never raised into the frontend.
-ToolCallMarkup = Callable[[str, "Mapping[str, JSONValue]"], "str | None"]
-
-# Host-side resolver installed into render paths: given the tool name, its
-# result, and whether the row is expanded, return the display markup from the tool's
-# `render_result` or ``None`` to fall back to the generic result block. Errors
-# are swallowed by the resolver, never raised into the frontend.
-ToolResultMarkup = Callable[[str, AgentToolResult, bool], "str | None"]
-
 # --- component seam ---------------------------------------------------------
 # Widget-hosting capability that lets an extension mount its own Textual widgets
 # into host-owned slots and a main-area view, and intercept keys pre-dispatch
@@ -1003,9 +991,7 @@ class ExtensionAPI:
     def add_prompt_section(self, title: str | None, body: str) -> None:
         """Append a free-form, optionally titled section to the skill instructions.
 
-        These sections become part of the fixed instructions built by
-        `rio.coding.system_prompt.build_skill_instructions` -- unlike the
-        context, the model cannot edit them, so they are the right place for
+        Unlike the context, the model cannot edit these sections, so they are the right place for
         structured, always-on extension context such as procedures,
         paragraphs, and code blocks. Use
         :meth:`add_prompt_guideline` for one behavioral bullet instead.

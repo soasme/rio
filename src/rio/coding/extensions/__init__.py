@@ -44,7 +44,6 @@ from rio.coding.extensions.loader import (
     ExtensionSourceMetadata,
     LoadedExtension,
     discover_extensions,
-    extension_dirs,
     load_extensions,
 )
 from rio.coding.extensions.provider_registry import (
@@ -229,7 +228,6 @@ __all__ = [
     "ClosableModelProvider",
     "CredentialReader",
     "discover_extensions",
-    "extension_dirs",
     "load_extensions",
     "resolve_provider_auth",
 ]

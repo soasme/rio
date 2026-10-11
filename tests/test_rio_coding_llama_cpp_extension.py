@@ -130,7 +130,7 @@ def _service(
     credentials: object | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> tuple[LlamaCppService, LlamaCppStateStore, FileCredentialStore]:
-    paths = RioPaths(home=tmp_path / "rio", agents_home=tmp_path / "agents")
+    paths = RioPaths(home=tmp_path / "rio")
     state_store = LlamaCppStateStore(paths=paths)
     credential_store = FileCredentialStore(paths.home / "credentials.json")
     service = LlamaCppService(
@@ -148,7 +148,7 @@ def _runtime(
     client: httpx.AsyncClient | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> tuple[ExtensionRuntime, RioPaths, FileCredentialStore]:
-    paths = RioPaths(home=tmp_path / "rio", agents_home=tmp_path / "agents")
+    paths = RioPaths(home=tmp_path / "rio")
     credentials = FileCredentialStore(paths.home / "credentials.json")
     runtime = ExtensionRuntime(
         paths=paths,
@@ -160,8 +160,6 @@ def _runtime(
     runtime.load(
         RioResourcePaths(
             root=paths.home,
-            agents_root=paths.agents_home,
-            paths=paths,
             cwd=tmp_path / "project",
         ),
         include_resource_dirs=False,
@@ -199,9 +197,7 @@ def test_endpoint_normalization_rejects_unsafe_values(value: str) -> None:
 
 
 def test_endpoint_precedence_is_stored_then_environment_then_default(tmp_path: Path) -> None:
-    state_store = LlamaCppStateStore(
-        paths=RioPaths(home=tmp_path / "rio", agents_home=tmp_path / "agents")
-    )
+    state_store = LlamaCppStateStore(paths=RioPaths(home=tmp_path / "rio"))
     state_store.save(_state(endpoint=f"{SERVER}/saved"))
     stored = LlamaCppService(
         state_store=state_store,
@@ -210,17 +206,13 @@ def test_endpoint_precedence_is_stored_then_environment_then_default(tmp_path: P
     assert stored.endpoint.server_root == f"{SERVER}/saved"
 
     environment = LlamaCppService(
-        state_store=LlamaCppStateStore(
-            paths=RioPaths(home=tmp_path / "other", agents_home=tmp_path / "agents")
-        ),
+        state_store=LlamaCppStateStore(paths=RioPaths(home=tmp_path / "other")),
         environment={LLAMA_CPP_ENDPOINT_ENV: "http://env.test:9000/v1"},
     )
     assert environment.endpoint.server_root == "http://env.test:9000"
 
     dormant = LlamaCppService(
-        state_store=LlamaCppStateStore(
-            paths=RioPaths(home=tmp_path / "empty", agents_home=tmp_path / "agents")
-        ),
+        state_store=LlamaCppStateStore(paths=RioPaths(home=tmp_path / "empty")),
         environment={},
     )
     assert dormant.endpoint.server_root == LLAMA_CPP_DEFAULT_ENDPOINT
@@ -507,7 +499,7 @@ async def test_gpt_and_codex_model_ids_use_local_chat_transport(tmp_path: Path) 
 
 
 def test_state_is_atomic_locked_private_and_recovers_interrupted_writes(tmp_path: Path) -> None:
-    paths = RioPaths(home=tmp_path / "rio", agents_home=tmp_path / "agents")
+    paths = RioPaths(home=tmp_path / "rio")
     store = LlamaCppStateStore(paths=paths)
     store.save(_state())
     assert stat.S_IMODE(store.path.stat().st_mode) == 0o600
@@ -751,7 +743,7 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
 
     isolate_home(monkeypatch, tmp_path)
 
-    paths = RioPaths(home=tmp_path / ".rio", agents_home=tmp_path / ".agents")
+    paths = RioPaths(home=tmp_path / ".rio")
     LlamaCppStateStore(paths=paths).save(_state())
     project = tmp_path / "project"
     project.mkdir()
@@ -846,7 +838,7 @@ async def test_builtin_source_lifecycle_is_generation_local(tmp_path: Path) -> N
     runtime.reset_for_reload()
     assert old_registry.effective("llama.cpp") is None
     runtime.load(
-        RioResourcePaths(root=tmp_path / "rio", agents_root=tmp_path / "agents"),
+        RioResourcePaths(root=tmp_path / "rio"),
         include_resource_dirs=False,
         include_user_dir=False,
     )
@@ -1408,7 +1400,7 @@ def test_hugging_face_token_lookup_matches_standard_environment_paths(tmp_path: 
 
 
 def state_store_text(tmp_path: Path) -> str:
-    path = RioPaths(home=tmp_path / "rio", agents_home=tmp_path / "agents").llama_cpp_state_path
+    path = RioPaths(home=tmp_path / "rio").llama_cpp_state_path
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 

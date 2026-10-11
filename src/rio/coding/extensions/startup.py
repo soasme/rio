@@ -47,7 +47,7 @@ async def resolve_dynamic_startup(
             persist=False,
         )
         runtime.load(
-            RioResourcePaths(root=paths.home, agents_root=paths.agents_home, cwd=cwd, paths=paths),
+            RioResourcePaths(root=paths.home, cwd=cwd),
             include_project_dir=trust.trusted,
             extra_paths=extension_paths,
         )

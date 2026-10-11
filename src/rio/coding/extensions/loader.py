@@ -64,27 +64,6 @@ class ExtensionLoadResult:
     diagnostics: tuple[ResourceDiagnostic, ...]
 
 
-def extension_dirs(
-    paths: RioResourcePaths,
-    *,
-    include_project_dir: bool = False,
-    include_user_dir: bool = True,
-) -> tuple[Path, ...]:
-    """Return extension directories in load order (project first, then user).
-
-    Unlike skills precedence, extension ordering follows Pi's rule: earlier
-    directories win name conflicts, so project extensions shadow user ones.
-    Project extensions are opt-in (`--project-extensions`) until a project
-    trust decision has been made, because they execute at session startup.
-    """
-    dirs: list[Path] = []
-    if include_project_dir and paths.cwd is not None and paths.project_resources_enabled:
-        dirs.append(paths.cwd / ".rio" / "extensions")
-    if include_user_dir:
-        dirs.append(paths.root / "extensions")
-    return tuple(_dedupe(dirs))
-
-
 def discover_extensions(
     paths: RioResourcePaths,
     *,
@@ -124,7 +103,7 @@ def discover_extensions(
 
     if include_resource_dirs:
         directories: list[tuple[Path, ExtensionSource]] = []
-        if include_project_dir and paths.cwd is not None and paths.project_resources_enabled:
+        if include_project_dir and paths.cwd is not None:
             directories.append((paths.cwd / ".rio" / "extensions", "project"))
         if include_user_dir:
             directories.append((paths.root / "extensions", "user"))
@@ -391,15 +370,3 @@ def _error_diagnostic(entry: DiscoveredExtension, message: str) -> ResourceDiagn
 
 def _slugify(name: str) -> str:
     return "".join(char if char.isalnum() else "_" for char in name).lower()
-
-
-def _dedupe(paths: list[Path]) -> list[Path]:
-    seen: set[Path] = set()
-    deduped: list[Path] = []
-    for path in paths:
-        resolved = path.expanduser()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        deduped.append(resolved)
-    return deduped

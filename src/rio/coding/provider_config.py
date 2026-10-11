@@ -489,14 +489,6 @@ def _provider_model_metadata_from_catalog(
     }
 
 
-def default_openai_provider_config() -> OpenAICompatibleProviderConfig:
-    """Return rio's default OpenAI-compatible provider entry."""
-    provider = provider_config_from_catalog_entry(DEFAULT_PROVIDER_NAME)
-    if not isinstance(provider, OpenAICompatibleProviderConfig):
-        raise AssertionError("default OpenAI provider must be OpenAI-compatible")
-    return provider
-
-
 def provider_settings_path(paths: RioPaths | None = None) -> Path:
     """Return the durable provider settings path."""
     return (paths or RioPaths()).home / "providers.json"
@@ -528,89 +520,6 @@ def save_provider_settings(settings: ProviderSettings, paths: RioPaths | None = 
     return path
 
 
-def save_default_provider_model(
-    *,
-    provider_name: str,
-    model: str,
-    paths: RioPaths | None = None,
-    fallback_settings: ProviderSettings | None = None,
-) -> ProviderSettings:
-    """Reload settings, persist one default provider/model change, and return them."""
-    settings = _load_provider_settings_for_write(paths, fallback_settings=fallback_settings)
-    updated = set_default_provider_model(settings, provider_name=provider_name, model=model)
-    save_provider_settings(updated, paths)
-    return updated
-
-
-def save_provider_thinking_level(
-    *,
-    provider_name: str,
-    model: str,
-    thinking_level: ThinkingLevel,
-    paths: RioPaths | None = None,
-    fallback_settings: ProviderSettings | None = None,
-) -> ProviderSettings:
-    """Reload settings, persist one provider/model thinking preference, and return them."""
-    settings = _load_provider_settings_for_write(paths, fallback_settings=fallback_settings)
-    updated = set_provider_thinking_level(
-        settings,
-        provider_name=provider_name,
-        model=model,
-        thinking_level=thinking_level,
-    )
-    save_provider_settings(updated, paths)
-    return updated
-
-
-def toggle_saved_stable_scoped_model(
-    *,
-    provider_name: str,
-    model: str,
-    paths: RioPaths | None = None,
-    fallback_settings: ProviderSettings | None = None,
-) -> ProviderSettings:
-    """Toggle an already-authorized stable reference without saving a definition.
-
-    Callers must restrict this path to trusted built-in dynamic providers. The
-    durable value is only the exact provider/model pair; availability continues
-    to come from the process-local provider snapshot.
-    """
-    settings = _load_provider_settings_for_write(paths, fallback_settings=fallback_settings)
-    target = ScopedModelConfig(provider=provider_name, model=model)
-    existing = list(settings.scoped_models)
-    if target in existing:
-        existing = [item for item in existing if item != target]
-    else:
-        existing.append(target)
-    updated = replace(settings, scoped_models=tuple(existing))
-    save_provider_settings(updated, paths)
-    return updated
-
-
-def toggle_saved_scoped_model(
-    *,
-    provider_name: str,
-    model: str,
-    paths: RioPaths | None = None,
-    fallback_settings: ProviderSettings | None = None,
-) -> ProviderSettings:
-    """Reload settings, toggle one scoped model, persist them, and return them."""
-    settings = _load_provider_settings_for_write(paths, fallback_settings=fallback_settings)
-    provider = settings.get_provider(provider_name)
-    if model not in provider.models:
-        raise ProviderConfigError(f"Model is not configured: {provider_name}:{model}")
-
-    existing = list(settings.scoped_models)
-    target = ScopedModelConfig(provider=provider_name, model=model)
-    if target in existing:
-        existing = [item for item in existing if item != target]
-    else:
-        existing.append(target)
-    updated = replace(settings, scoped_models=tuple(existing))
-    save_provider_settings(updated, paths)
-    return updated
-
-
 def upsert_saved_provider(
     provider: ProviderConfig,
     *,
@@ -637,68 +546,6 @@ def _load_provider_settings_for_write(
     if fallback_settings is not None:
         return fallback_settings
     return load_provider_settings(resolved_paths)
-
-
-def set_default_provider_model(
-    settings: ProviderSettings,
-    *,
-    provider_name: str,
-    model: str,
-) -> ProviderSettings:
-    """Return settings with the default provider/model preference updated."""
-    provider = settings.get_provider(provider_name)
-    validate_provider_model(provider, model)
-    updated_provider = replace(provider, default_model=model)
-    providers = tuple(
-        updated_provider if item.name == provider_name else item for item in settings.providers
-    )
-    return ProviderSettings(
-        default_provider=provider_name,
-        providers=providers,
-        scoped_models=settings.scoped_models,
-    )
-
-
-def set_provider_thinking_level(
-    settings: ProviderSettings,
-    *,
-    provider_name: str,
-    model: str,
-    thinking_level: ThinkingLevel,
-) -> ProviderSettings:
-    """Return settings with a remembered thinking level for one provider/model."""
-    provider = settings.get_provider(provider_name)
-    validate_provider_model(provider, model)
-    normalized = normalize_thinking_level(thinking_level)
-    available = provider_thinking_levels(provider, model=model)
-    if normalized not in available:
-        modes = ", ".join(available) or "none"
-        raise ProviderConfigError(
-            f"Thinking mode {normalized} is not available for "
-            f"{provider_name}:{model}. Available modes: {modes}"
-        )
-    updated_provider = replace(
-        provider,
-        thinking_defaults={**provider.thinking_defaults, model: normalized},
-    )
-    providers = tuple(
-        updated_provider if item.name == provider_name else item for item in settings.providers
-    )
-    return ProviderSettings(
-        default_provider=settings.default_provider,
-        providers=providers,
-        scoped_models=settings.scoped_models,
-    )
-
-
-def upsert_openai_compatible_provider(
-    settings: ProviderSettings,
-    provider: OpenAICompatibleProviderConfig,
-    *,
-    set_default: bool = False,
-) -> ProviderSettings:
-    """Return settings with an OpenAI-compatible provider added or replaced."""
-    return upsert_provider(settings, provider, set_default=set_default)
 
 
 def upsert_provider(
@@ -1412,31 +1259,6 @@ def provider_thinking_levels(
         )
         and (metadata is None or _metadata_supports_thinking_level(metadata, level))
     )
-
-
-def provider_thinking_unavailable_reason(
-    provider: ProviderConfig,
-    *,
-    model: str | None = None,
-) -> str | None:
-    """Explain why a provider/model pair has no configurable thinking modes."""
-    selected_model = model or provider.default_model
-    metadata = _metadata_for_model(provider, selected_model)
-    if metadata is not None and metadata.reasoning is False:
-        return f"{provider.name}:{selected_model} is not a reasoning model"
-    if provider.thinking_levels is None:
-        if metadata is not None and metadata.reasoning is True:
-            return None
-        if isinstance(provider, OpenAICodexProviderConfig):
-            return (
-                "OpenAI Codex subscription can stream reasoning output, but rio does "
-                "not have a validated Codex transport mapping for changing reasoning "
-                "effort yet"
-            )
-        return f"Provider {provider.name} does not declare thinking_levels"
-    if provider.thinking_models and selected_model not in provider.thinking_models:
-        return f"{provider.name}:{selected_model} is not declared in thinking_models"
-    return None
 
 
 def _levels_from_thinking_map(
@@ -2254,15 +2076,6 @@ def _validate_thinking_config(
             "Provider thinking_parameter must be reasoning_effort, reasoning.effort, "
             "or anthropic.thinking"
         )
-
-
-def _reject_unimplemented_thinking_config(
-    *,
-    provider_type: str,
-    thinking_levels: tuple[ThinkingLevel, ...] | None,
-) -> None:
-    if thinking_levels is not None:
-        raise ProviderConfigError(f"{provider_type} thinking controls are not implemented yet")
 
 
 def _optional_provider_api(value: object, field_name: str) -> ProviderApi | None:

@@ -73,7 +73,7 @@ def test_agents_md_flag_reaches_session_runner(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_load_agents_md_resolves_cwd_or_explicit_path(tmp_path: Path) -> None:
-    from rio.coding import load_agents_md
+    from rio.coding.context import load_agents_md
 
     assert load_agents_md(tmp_path) is None
     (tmp_path / "AGENTS.md").write_text("cwd rules")
