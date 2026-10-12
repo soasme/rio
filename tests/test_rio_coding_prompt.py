@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from rio.coding.system_prompt import ProjectContextFile, format_project_context
+from rio.coding.context import project_context
 from rio.coding.thinking import (
     DEFAULT_THINKING_LEVEL,
     THINKING_LEVELS,
@@ -45,12 +45,14 @@ def test_reasoning_effort_maps_off_to_none() -> None:
     assert reasoning_effort_for_level("xhigh") == "xhigh"
 
 
-# --- system_prompt.py --------------------------------------------------------
+# --- context.py --------------------------------------------------------------
 
 
-def test_format_project_context_escapes_path() -> None:
-    text = format_project_context((ProjectContextFile(path="a&b/AGENTS.md", content="rules"),))
+def test_project_context_escapes_path(tmp_path) -> None:
+    rules = tmp_path / "a&b" / "AGENTS.md"
+    rules.parent.mkdir()
+    rules.write_text("rules")
+    text = project_context(tmp_path, rules)
 
-    assert '<project_instructions path="a&amp;b/AGENTS.md">' in text
+    assert f'<project_instructions path="{tmp_path}/a&amp;b/AGENTS.md">' in text
     assert "rules" in text
-    assert format_project_context(()) == ""

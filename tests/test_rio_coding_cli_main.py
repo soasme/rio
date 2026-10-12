@@ -66,18 +66,18 @@ def test_agents_md_flag_reaches_session_runner(monkeypatch: pytest.MonkeyPatch) 
     assert captured["agents_md"] == Path("rules.md")
 
 
-def test_load_agents_md_resolves_cwd_or_explicit_path(tmp_path: Path) -> None:
-    from rio.coding.context import load_agents_md
+def test_project_context_resolves_cwd_or_explicit_path(tmp_path: Path) -> None:
+    from rio.coding.context import project_context
 
-    assert load_agents_md(tmp_path) is None
+    assert project_context(tmp_path) == ""
     (tmp_path / "AGENTS.md").write_text("cwd rules")
-    assert load_agents_md(tmp_path).content == "cwd rules"
+    assert "cwd rules" in project_context(tmp_path)
     explicit = tmp_path / "rules.md"
     explicit.write_text("explicit rules")
-    loaded = load_agents_md(tmp_path, explicit)
-    assert (loaded.path, loaded.content) == (str(explicit.resolve()), "explicit rules")
+    loaded = project_context(tmp_path, explicit)
+    assert f'path="{explicit.resolve()}"' in loaded and "explicit rules" in loaded
     with pytest.raises(ValueError, match="Cannot read AGENTS.md"):
-        load_agents_md(tmp_path, tmp_path / "missing.md")
+        project_context(tmp_path, tmp_path / "missing.md")
 
 
 def test_tools_flag_is_gone() -> None:

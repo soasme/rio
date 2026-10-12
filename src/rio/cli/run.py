@@ -12,7 +12,7 @@ from rio.agent.session import Session
 from rio.agent.store import Store
 from rio.cli.render import PlainEventRenderer
 from rio.coding import cells
-from rio.coding.context import load_agents_md
+from rio.coding.context import project_context
 from rio.coding.paths import RioPaths
 from rio.coding.provider_config import (
     load_provider_settings,
@@ -20,7 +20,6 @@ from rio.coding.provider_config import (
     resolve_startup_thinking_level,
 )
 from rio.coding.provider_runtime import create_model_provider
-from rio.coding.system_prompt import format_project_context
 
 
 async def run_persistent_session(
@@ -125,5 +124,4 @@ def _check_resume(
 
 
 def _instructions(cwd: Path, agents_md: Path | None) -> str:
-    context = load_agents_md(cwd, agents_md)
-    return cells.INSTRUCTIONS + format_project_context((context,) if context else ())
+    return cells.INSTRUCTIONS + project_context(cwd, agents_md)
