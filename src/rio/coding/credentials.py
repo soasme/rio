@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import fcntl
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from json import dumps, loads
 from pathlib import Path
@@ -83,7 +87,7 @@ class FileCredentialStore:
     """Small JSON-backed provider credential store under rio home."""
 
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or credentials_path()
+        self.path = (path or credentials_path()).resolve()
 
     def get(self, name: str) -> str | None:
         """Return a stored API-key credential value by name."""
@@ -100,9 +104,10 @@ class FileCredentialStore:
         value = value.strip()
         if not value:
             raise CredentialStoreError("Credential value must not be empty")
-        data = self._load()
-        data[name] = value
-        self._save(data)
+        with self._write_lock():
+            data = self._load()
+            data[name] = value
+            self._save(data)
 
     def set_api_key(self, name: str, value: str) -> None:
         """Store an API-key credential value by name."""
@@ -119,15 +124,17 @@ class FileCredentialStore:
         """Store a refreshable OAuth credential by name."""
         name = _validate_credential_name(name)
         _validate_oauth_credential(credential)
-        data = self._load()
-        data[name] = credential
-        self._save(data)
+        with self._write_lock():
+            data = self._load()
+            data[name] = credential
+            self._save(data)
 
     def delete(self, name: str) -> None:
         """Delete a stored credential value by name."""
-        data = self._load()
-        data.pop(name, None)
-        self._save(data)
+        with self._write_lock():
+            data = self._load()
+            data.pop(name, None)
+            self._save(data)
 
     def names(self, *, prefix: str | None = None) -> tuple[str, ...]:
         """Return credential names without exposing their values."""
@@ -135,6 +142,36 @@ class FileCredentialStore:
         if prefix is None:
             return names
         return tuple(name for name in names if name.startswith(prefix))
+
+    @contextmanager
+    def _write_lock(self) -> Iterator[None]:
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with self.path.with_suffix(self.path.suffix + ".lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+    @asynccontextmanager
+    async def refresh_lock(self) -> AsyncIterator[None]:
+        """Serialize read/refresh/save across processes without blocking the event loop.
+
+        Separate from the short write lock so ordinary credential writes cannot
+        block an event loop while its refresh task is awaiting the network.
+        """
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with self.path.with_suffix(self.path.suffix + ".refresh.lock").open("a+b") as lock:
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(0.05)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
     def _load(self) -> dict[str, StoredCredential]:
         if not self.path.exists():
@@ -150,7 +187,7 @@ class FileCredentialStore:
         return credentials
 
     def _save(self, data: dict[str, StoredCredential]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         raw = {key: _credential_to_json(value) for key, value in data.items()}
         content = dumps(raw, indent=2, sort_keys=True) + "\n"
         temporary_path: Path | None = None

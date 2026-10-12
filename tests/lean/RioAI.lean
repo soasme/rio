@@ -54,4 +54,14 @@ theorem published_content_prevents_retry (attempt budget : Nat) :
 theorem exhausted_budget_prevents_retry (emittedContent : Bool) (budget : Nat) :
     mayRetry emittedContent budget budget = false := by simp [mayRetry]
 
+-- Adapters must translate clean EOF without completion metadata into an error.
+def adapterEnd (hasFinishReason : Bool) : Event :=
+  if hasFinishReason then .done else .error
+
+theorem missing_finish_reason_cannot_complete (fragments : List String) :
+    collect fragments [adapterEnd false] = .error fragments.reverse := by rfl
+
+theorem finished_adapter_preserves_output (fragments : List String) :
+    collect fragments [adapterEnd true] = .done fragments.reverse := by rfl
+
 end RioAI

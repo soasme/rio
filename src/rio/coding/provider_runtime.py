@@ -270,7 +270,7 @@ class OAuthRuntimeCredentialResolver:
         if credential_name is None:
             raise RuntimeError(f"Provider {self._provider.name} has no credential name")
         oauth_provider = _required_oauth_provider(self._provider.name)
-        async with _refresh_lock(credential_name):
+        async with _refresh_lock(credential_name), self._credential_store.refresh_lock():
             # Read inside the lock: a task that waited here while another
             # refreshed sees the rotated credential and skips its own refresh.
             credential = self._credential_store.get_oauth(credential_name)

@@ -11,7 +11,7 @@ from rio.coding.provider_config import (
     ProviderConfigError,
     load_provider_settings,
     provider_config_from_catalog_entry,
-    upsert_saved_provider,
+    save_default_provider,
 )
 
 
@@ -51,5 +51,5 @@ async def login_provider(name, *, method=None):
         if not secret.strip():
             raise ValueError("API key cannot be empty")
         store.set_api_key(key, secret)
-    upsert_saved_provider(provider, set_default=True)
+    save_default_provider(provider.name)
     return f"Logged in to {name}."

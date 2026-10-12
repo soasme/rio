@@ -201,4 +201,37 @@ theorem omitted_credential_key_uses_provider_name (provider : String) :
 theorem explicit_credential_key_is_preserved (provider key : String) :
     credentialKey provider (some key) = key := rfl
 
+/-- Input validation precedes session creation. -/
+def opensNewStore (cwdValid providerValid : Bool) : Bool := cwdValid && providerValid
+
+theorem invalid_cwd_leaves_no_store (providerValid : Bool) :
+    opensNewStore false providerValid = false := rfl
+
+theorem invalid_provider_leaves_no_store (cwdValid : Bool) :
+    opensNewStore cwdValid false = false := by simp [opensNewStore]
+
+def exitCode : Outcome → Nat
+  | .succeeded => 0
+  | .failed => 1
+  | .interrupted => 130
+
+theorem runtime_failure_exits_one : exitCode .failed = 1 := rfl
+
+theorem interrupt_exits_130 : exitCode .interrupted = 130 := rfl
+
+/-- Login changes a preference without copying or modifying catalog definitions. -/
+structure LoginSettings where
+  defaultProvider : String
+  preferences : List (String × String)
+  catalog : List String
+
+def loginDefault (settings : LoginSettings) (provider : String) : LoginSettings :=
+  { settings with defaultProvider := provider }
+
+theorem login_preserves_catalog (settings : LoginSettings) (provider : String) :
+    (loginDefault settings provider).catalog = settings.catalog := rfl
+
+theorem login_preserves_explicit_preferences (settings : LoginSettings) (provider : String) :
+    (loginDefault settings provider).preferences = settings.preferences := rfl
+
 end RioCli

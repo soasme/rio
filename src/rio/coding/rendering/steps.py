@@ -29,8 +29,11 @@ class PlainEventRenderer:
                     body = cell["source"] if cell["kind"] == "code" else cell["text"]
                 self._message(body)
         elif kind in ("execution_output", "output_truncated", "execution_finished"):
-            for key, execution in changes["executions"].items():
-                self._output(key, execution)
+            chunks = "output_chunks" in changes
+            for key, execution in changes.get(
+                "output_chunks", changes.get("executions", {})
+            ).items():
+                self._output(key, execution, chunks=chunks)
                 if kind == "execution_finished":
                     result = execution["result"]
                     text = result["type"]
@@ -46,13 +49,13 @@ class PlainEventRenderer:
             terminal = changes["meta"]["terminal"]
             self._message(f"{terminal['result'].capitalize()}: {terminal['reason']}")
 
-    def _output(self, key: str, execution: dict) -> None:
+    def _output(self, key: str, execution: dict, *, chunks: bool = False) -> None:
         for name, label in (("output", ""), ("stderr", "stderr: ")):
             stream = (key, name)
             text = execution[name]
             previous = self._displayed.get(stream, 0)
-            self._displayed[stream] = len(text)
-            delta = text[previous:]
+            self._displayed[stream] = previous + len(text) if chunks else len(text)
+            delta = text if chunks else text[previous:]
             remaining = _OUTPUT_CHARS - self._output_chars.get(key, 0)
             visible = delta[:remaining]
             self._output_chars[key] = self._output_chars.get(key, 0) + len(visible)

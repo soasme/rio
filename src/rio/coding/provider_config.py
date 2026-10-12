@@ -239,6 +239,18 @@ def save_provider_settings(settings: ProviderSettings, paths: RioPaths | None = 
     return path
 
 
+def save_default_provider(name: str, paths: RioPaths | None = None) -> None:
+    """Change the login default without serializing resolved catalog values."""
+    resolved_paths = paths or RioPaths()
+    load_provider_settings(resolved_paths).get_provider(name)
+    path = provider_settings_path(resolved_paths)
+    raw = loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    raw["default_provider"] = name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _backup_provider_settings(path, strict=False)
+    atomic_write_text(path, dumps(raw, indent=2, sort_keys=True) + "\n")
+
+
 def upsert_saved_provider(
     provider: ProviderConfig,
     *,
@@ -458,7 +470,7 @@ class _SettingsFile(BaseModel):
 
     schema_version: Literal[2] | None = None
     default_provider: _Text
-    provider_preferences: dict[_Text, _Preference]
+    provider_preferences: dict[_Text, _Preference] = {}
 
 
 def provider_settings_from_json(

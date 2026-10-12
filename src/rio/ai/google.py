@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Mapping
 
 import httpx
 
-from rio.ai._parsing import loads_object, parse_sse_line
+from rio.ai._parsing import int_or_none, int_or_zero, loads_object, parse_sse_line
 from rio.ai._provider_events import (
     ProviderErrorEvent,
     ProviderEvent,
@@ -29,6 +29,7 @@ from rio.ai.messages import (
     TextContent,
     ThinkingContent,
     ToolResultMessage,
+    Usage,
     UserMessage,
     assistant_content,
 )
@@ -97,12 +98,12 @@ class GoogleGenerativeAIProvider:
                 supports_images=self._config.supports_images,
             )
             url = (
-                f"{self._config.base_url.rstrip('/')}/models/"
-                f"{model}:streamGenerateContent?alt=sse&key={self._config.api_key}"
+                f"{self._config.base_url.rstrip('/')}/models/{model}:streamGenerateContent?alt=sse"
             )
             headers = {
                 **dict(self._config.headers or {}),
                 "content-type": "application/json",
+                "x-goog-api-key": self._config.api_key,
             }
 
             async def parse(
@@ -151,6 +152,7 @@ class _GoogleStreamParser:
         self._thinking_parts: list[str] = []
         self._tool_calls: list[ToolCall] = []
         self._finish_reason: str | None = None
+        self._usage = Usage()
 
     @property
     def has_finish_reason(self) -> bool:
@@ -162,6 +164,20 @@ class _GoogleStreamParser:
             self.fatal = True
             return [ProviderErrorEvent(message="Google returned an invalid JSON stream chunk")]
         events: list[ProviderEvent] = []
+        raw_usage = chunk.get("usageMetadata")
+        if isinstance(raw_usage, Mapping):
+            prompt = int_or_zero(raw_usage.get("promptTokenCount"))
+            cached = int_or_zero(raw_usage.get("cachedContentTokenCount"))
+            thinking = int_or_zero(raw_usage.get("thoughtsTokenCount"))
+            output = int_or_zero(raw_usage.get("candidatesTokenCount")) + thinking
+            total = int_or_none(raw_usage.get("totalTokenCount"))
+            self._usage = Usage(
+                input=max(0, prompt - cached),
+                output=output,
+                cache_read=cached,
+                reasoning=thinking,
+                total_tokens=total if total is not None else prompt + output,
+            )
         candidates = chunk.get("candidates")
         if not isinstance(candidates, list) or not candidates:
             return []
@@ -214,10 +230,8 @@ class _GoogleStreamParser:
             content.insert(0, ThinkingContent(thinking="".join(self._thinking_parts)))
         return [
             ProviderResponseEndEvent(
-                message=AssistantMessage(content=content),
-                finish_reason=_normalize_finish_reason(
-                    self._finish_reason, has_tool_calls=bool(self._tool_calls)
-                ),
+                message=AssistantMessage(content=content, usage=self._usage),
+                finish_reason=self._finish_reason,
             )
         ]
 
@@ -421,11 +435,3 @@ def _string_or_default(value: object, default: str) -> str:
 
 def _object_or_empty(value: object) -> dict[str, JSONValue]:
     return value if isinstance(value, dict) else {}
-
-
-def _normalize_finish_reason(reason: str | None, *, has_tool_calls: bool) -> str:
-    if has_tool_calls:
-        return "tool_calls"
-    if reason in {"MAX_TOKENS", "MODEL_ARMOR", "RECITATION"}:
-        return "length"
-    return "stop"

@@ -239,7 +239,7 @@ class Session:
         self.store.commit(
             "turn_prepared",
             {
-                "meta": {"state": state, "usage": {**usage, "rounds": usage["rounds"] + 1}},
+                "meta": {"usage": {**usage, "rounds": usage["rounds"] + 1}},
                 "turns": {turn_id: turn},
             },
         )
@@ -254,12 +254,12 @@ class Session:
         usage = self.meta["usage"]
         if usage["tokens"] >= self.limits.tokens:
             raise ValueError("Token budget exhausted")
-        turn = {**turn, "attempts": turn["attempts"] + 1, "response": None}
+        changes = {"attempts": turn["attempts"] + 1, "response": None}
         # Until a complete response commits, usage for this attempt is unknown.
         self.store.commit(
             "model_attempt",
             {
-                "turns": {turn_id: turn},
+                "turns": {turn_id: changes},
                 "meta": {
                     "usage": {
                         **usage,
@@ -269,15 +269,14 @@ class Session:
                 },
             },
         )
-        return copy.deepcopy(turn)
+        return copy.deepcopy(self.data["turns"][turn_id])
 
     def response(self, turn_id: str, response: dict, tokens: int, *, known: bool = True) -> None:
-        turn = self.data["turns"][turn_id]
         usage = self.meta["usage"]
         self.store.commit(
             "model_response",
             {
-                "turns": {turn_id: {**turn, "response": response}},
+                "turns": {turn_id: {"response": response}},
                 "meta": {
                     "usage": {
                         **usage,
@@ -295,7 +294,6 @@ class Session:
             {
                 "turns": {
                     turn_id: {
-                        **turn,
                         "error": reason,
                         "response": None,
                         "retry_at": time.time() + min(2 ** turn["attempts"], 30),
@@ -377,14 +375,25 @@ class Session:
             "patch_accepted",
             {
                 "meta": {
-                    "state": state,
+                    "state": {
+                        **{
+                            key: value
+                            for key, value in state.items()
+                            if key != "runtime" and value != turn["state"][key]
+                        },
+                        "runtime": {
+                            key: value
+                            for key, value in state["runtime"].items()
+                            if value != turn["state"]["runtime"][key]
+                        },
+                    },
                     "pause": None if pause in messages else pause,
                 },
                 "cells": {str(c["id"]): c for c in new},
                 "executions": executions,
                 "controls": controls,
                 "inbox": messages,
-                "turns": {turn_id: {**turn, "receipt": receipt, "ops": ops}},
+                "turns": {turn_id: {"receipt": receipt, "ops": ops}},
             },
             identity=f"patch:{turn_id}",
         )
@@ -498,13 +507,24 @@ class Session:
         execution = self.data["executions"][key]
         if execution["phase"] != "started":
             raise ValueError("Output requires a started execution")
-        changed = dict(execution)
+        chunks = {}
+        truncated = execution["truncated"]
         for name, text in (("output", stdout), ("stderr", stderr)):
-            combined = changed[name] + text
-            changed[name] = truncate_bytes_tail(combined, self.limits.output_bytes)
-            changed["truncated"] |= changed[name] != combined
-        if changed != execution:
-            self.store.commit("execution_output", {"executions": {key: changed}})
+            chunks[name] = truncate_bytes_tail(text, self.limits.output_bytes)
+            truncated |= len((execution[name] + text).encode()) > self.limits.output_bytes
+        if any(chunks.values()) or truncated != execution["truncated"]:
+            self.store.commit(
+                "execution_output",
+                {
+                    "output_chunks": {
+                        key: {
+                            **chunks,
+                            "truncated": truncated,
+                            "limit": self.limits.output_bytes,
+                        }
+                    }
+                },
+            )
 
     def finish(self, cell_id: int, result: dict) -> None:
         key = str(cell_id)

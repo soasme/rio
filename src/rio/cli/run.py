@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 
 from rio.agent.runner import replay, run
@@ -44,8 +45,9 @@ async def run_persistent_session(
         else:
             renderer.render(event)
 
-    with Store(path) as store:
-        if store.data:
+    with ExitStack() as stack:
+        if resume:
+            store = stack.enter_context(Store(path))
             session = Session(store, cells.KINDS)
             _check_resume(session, prompt, cwd, provider_name, model, agents_md)
             if session.meta["terminal"]:
@@ -71,6 +73,8 @@ async def run_persistent_session(
         )
         try:
             if session is None:
+                instructions = _instructions(cwd, agents_md)
+                store = stack.enter_context(Store(path))
                 session = Session.create(
                     store,
                     prompt,
@@ -81,7 +85,7 @@ async def run_persistent_session(
                         "model": model,
                         "thinking": thinking_level,
                     },
-                    instructions=_instructions(cwd, agents_md),
+                    instructions=instructions,
                 )
             return await run(session, provider, model, publish), session_id
         finally:
