@@ -13,7 +13,7 @@ import pytest
 
 from rio.agent.owner import Owner, RecoveryFailure, stop_worker
 from rio.agent.prompt import CONCLUSION, PROTOCOL
-from rio.agent.runner import run
+from rio.agent.runner import replay, run
 from rio.agent.session import Session
 from rio.agent.state import CellKind, InvalidPatch, Limits
 from rio.agent.store import StorageFailure, Store, reduce_event
@@ -388,6 +388,10 @@ async def test_success_rejected_for_new_input_and_failure_is_terminal(session):
         accept(session, note(role="conclusion", result="failure"))
         await owner.controls()
     assert session.meta["terminal"]["result"] == "failure"
+    ending = session.store.events()[-1]
+    assert ending["type"] == "run_ended"
+    assert all(control["handled"] for control in session.data["controls"].values())
+    assert ending["changes"]["controls"]
     seq = session.store.sequence
     async with Owner(session):
         pass
@@ -927,7 +931,6 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
 
     from rio.cli import run as cli
     from rio.coding.paths import RioPaths
-    from rio.coding.rendering import PrintOutputMode
 
     paths = RioPaths(home=tmp_path / "home")
     monkeypatch.setattr(cli, "RioPaths", lambda: paths)
@@ -956,7 +959,7 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
     ok, session_id = await cli.run_persistent_session(
         "write a file",
         cwd=tmp_path,
-        output_mode=PrintOutputMode(output_mode),
+        output_mode=output_mode,
     )
     assert ok
     assert (tmp_path / "effect").read_text() == "once"
@@ -985,7 +988,7 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
     assert await cli.run_persistent_session(
         "",
         resume=session_id,
-        output_mode=PrintOutputMode(output_mode),
+        output_mode=output_mode,
     ) == (True, session_id)
     assert capsys.readouterr().out == transcript
     assert len(provider.calls) == 2
@@ -1118,7 +1121,6 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
     import rio.agent.owner as owner_module
     from rio.cli import run as cli
     from rio.coding.paths import RioPaths
-    from rio.coding.rendering import PrintOutputMode
 
     paths = RioPaths(home=tmp_path / "home")
     monkeypatch.setattr(cli, "RioPaths", lambda: paths)
@@ -1147,9 +1149,10 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
     project.rmdir()
     stopped = []
     monkeypatch.setattr(owner_module, "stop_worker", lambda identity: stopped.append(identity))
-    assert await cli.run_persistent_session(
-        "", resume=session_id, output_mode=PrintOutputMode(output_mode)
-    ) == (result == "success", session_id)
+    assert await cli.run_persistent_session("", resume=session_id, output_mode=output_mode) == (
+        result == "success",
+        session_id,
+    )
     assert stopped == [{"token": "leftover"}]
     transcript = capsys.readouterr().out
     if output_mode == "json":
@@ -1161,6 +1164,13 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
     with Store(path) as store:
         assert store.data["executions"]["1"]["worker_stopped"]
         assert store.data["meta"]["terminal"]["result"] == result
+
+
+async def test_replay_requires_posix_before_cleanup(session, monkeypatch):
+    session.end("failure", "stopped")
+    monkeypatch.setattr("rio.agent.owner.os.name", "nt")
+    with pytest.raises(RecoveryFailure, match="POSIX"):
+        await replay(session, lambda event: None)
 
 
 async def test_terminal_replay_propagates_cleanup_failure(session, monkeypatch):

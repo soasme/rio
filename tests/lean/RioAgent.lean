@@ -360,4 +360,23 @@ theorem missing_finish_never_succeeds (limited tools : Bool) :
 theorem token_limit_precedes_tool_use (tools : Bool) :
     streamEnd true true tools = .length := rfl
 
+/-- Either conclusion ends the run and marks its note handled in one commit. -/
+inductive Conclusion where
+  | success | failure
+  deriving DecidableEq, Repr
+
+def conclusionCommits (_ : Conclusion) : List (Bool × Bool) :=
+  [(true, true)]  -- (terminal, note handled)
+
+theorem conclusion_is_one_commit (c : Conclusion) :
+    (conclusionCommits c).length = 1 ∧ conclusionCommits c = [(true, true)] := by
+  cases c <;> simp [conclusionCommits]
+
+/-- Recovery, including terminal replay, checks POSIX before stopping any worker. -/
+def recoverStops (posix : Bool) (workers : List Nat) : Option (List Nat) :=
+  if posix then some workers else none
+
+theorem non_posix_recovery_stops_nothing (workers : List Nat) :
+    recoverStops false workers = none := rfl
+
 end RioAgent

@@ -31,6 +31,7 @@ JSON output emits one journal event per line, including `session_id`.
 | --- | --- |
 | [__init__.py](__init__.py) | Parse commands, resolve task text or Markdown files, dispatch handlers and set exit status. |
 | [run.py](run.py) | Create or resume sessions, construct providers and publish results. |
+| [render.py](render.py) | Render committed events as a human transcript. |
 | [status.py](status.py) | Report terminal program status through OSC 7501. |
 
 The installed `rio` entry point calls `main()`. Python callers can use
