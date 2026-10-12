@@ -98,8 +98,6 @@ class Owner:
         self.changed = asyncio.Event()
 
     async def __aenter__(self):
-        if os.name != "posix":
-            raise RecoveryFailure("Durable worker containment currently requires POSIX")
         cells = self.session.data["cells"].values()
         missing = {c["kind"] for c in cells} - {"note", *self.session.kinds}
         if missing:
@@ -139,6 +137,8 @@ class Owner:
 
     async def recover(self) -> None:
         # Cleanup is required even for terminal runs. No dispatch happens before this finishes.
+        if os.name != "posix":
+            raise RecoveryFailure("Durable worker containment currently requires POSIX")
         for execution in list(self.session.data["executions"].values()):
             if execution.get("worker") and not execution.get("worker_stopped"):
                 await asyncio.to_thread(stop_worker, execution["worker"])
@@ -172,7 +172,7 @@ class Owner:
             await self.process.wait()
         self.task = self.process = self.identity = self.active_id = None
 
-    async def fail(self, reason: str) -> None:
+    async def fail(self, reason: str, *, note_id: str | None = None) -> None:
         error = None
         try:
             await self.stop_active()
@@ -186,7 +186,7 @@ class Owner:
                     execution["cell_id"],
                     {"type": "UnknownExecution", "reason": reason, "worker_stopped": error is None},
                 )
-        self.session.end("failure", reason, cleanup_error=error)
+        self.session.end("failure", reason, cleanup_error=error, note_id=note_id)
 
     async def controls(self) -> None:
         controls = sorted(
@@ -202,10 +202,9 @@ class Owner:
                 target = cell["target_cell_id"]
                 execution = self.session.data["executions"][str(target)]
                 if execution["phase"] == "started":
-                    if target == self.active_id:
-                        await self.stop_active()
-                    else:
-                        await asyncio.to_thread(stop_worker, execution["worker"])
+                    # recover() finishes leftover workers, so a started execution is the active one.
+                    assert target == self.active_id
+                    await self.stop_active()
                     self.session.finish(
                         target,
                         {
@@ -220,8 +219,7 @@ class Owner:
             elif role == "resolution":
                 self.session.handled(key, "accepted", resolution=cell["target_cell_id"])
             elif cell["result"] == "failure":
-                await self.fail(cell["text"])
-                self.session.handled(key, "accepted")
+                await self.fail(cell["text"], note_id=key)
             else:
                 reason = await self._success_blocker(key)
                 if reason:

@@ -10,6 +10,7 @@ from pathlib import Path
 from rio.agent.runner import replay, run
 from rio.agent.session import Session
 from rio.agent.store import Store
+from rio.cli.render import PlainEventRenderer
 from rio.coding import cells
 from rio.coding.context import load_agents_md
 from rio.coding.paths import RioPaths
@@ -19,8 +20,6 @@ from rio.coding.provider_config import (
     resolve_startup_thinking_level,
 )
 from rio.coding.provider_runtime import create_model_provider
-from rio.coding.rendering import PrintOutputMode
-from rio.coding.rendering.steps import PlainEventRenderer
 from rio.coding.system_prompt import format_project_context
 
 
@@ -32,7 +31,7 @@ async def run_persistent_session(
     model: str | None = None,
     thinking_level: str | None = None,
     resume: str | None = None,
-    output_mode: PrintOutputMode = PrintOutputMode.human,
+    output_mode: str = "human",
     agents_md: Path | None = None,
 ) -> tuple[bool, str]:
     session_id = resume or uuid.uuid4().hex
@@ -40,7 +39,7 @@ async def run_persistent_session(
     renderer = PlainEventRenderer()
 
     def publish(event):
-        if output_mode == PrintOutputMode.json:
+        if output_mode == "json":
             print(json.dumps({"session_id": session_id, **event}), flush=True)
         else:
             renderer.render(event)

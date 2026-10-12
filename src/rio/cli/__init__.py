@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import functools
-import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -14,7 +13,6 @@ import anyio
 from rio.cli import run as run_module
 from rio.cli import status
 from rio.coding.auth_commands import login_provider
-from rio.coding.rendering import PrintOutputMode
 from rio.coding.thinking import normalize_thinking_level
 from rio.version import current_version
 
@@ -47,8 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("-r", "--resume", help="Session ID to resume.")
     run_parser.add_argument(
         "--output",
-        choices=tuple(PrintOutputMode),
-        default=PrintOutputMode.human,
+        choices=("human", "json"),
+        default="human",
         help="Output format (default: human).",
     )
     run_parser.set_defaults(handler=_run, parser=run_parser)
@@ -81,8 +79,6 @@ def _run(args: argparse.Namespace) -> None:
     status.report("working")
     try:
         level = normalize_thinking_level(args.thinking) if args.thinking else None
-        if os.name != "posix":
-            raise ValueError("Rio execution requires POSIX process supervision")
         succeeded, session_id = anyio.run(
             functools.partial(
                 run_module.run_persistent_session,
@@ -92,7 +88,7 @@ def _run(args: argparse.Namespace) -> None:
                 model=args.model,
                 thinking_level=level,
                 resume=args.resume,
-                output_mode=PrintOutputMode(args.output),
+                output_mode=args.output,
                 agents_md=args.agents_md,
             ),
         )
@@ -107,7 +103,7 @@ def _run(args: argparse.Namespace) -> None:
         status.report("error")
         raise
     status.report("done" if succeeded else "error")
-    if args.output == PrintOutputMode.human:
+    if args.output == "human":
         print(f"\nSession: {session_id}")
     if not succeeded:
         raise SystemExit(1)

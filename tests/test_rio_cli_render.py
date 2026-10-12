@@ -2,7 +2,7 @@
 
 import pytest
 
-from rio.coding.rendering.steps import PlainEventRenderer
+from rio.cli.render import PlainEventRenderer
 
 
 def emit(renderer, kind, **changes):

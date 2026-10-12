@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
@@ -30,7 +31,7 @@ def timer(request_id: str, deadline: float, payload: dict | None = None) -> None
 
 def records(after: int = 0) -> list[Record]:
     """Retrieve committed history as data, without evaluating any historical code."""
-    with sqlite3.connect(os.environ["RIO_SESSION_URI"], uri=True) as db:
+    with contextlib.closing(sqlite3.connect(os.environ["RIO_SESSION_URI"], uri=True)) as db:
         return [
             {"seq": seq, "kind": kind, "changes": json.loads(changes)}
             for seq, kind, changes in db.execute(

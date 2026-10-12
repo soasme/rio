@@ -27,7 +27,6 @@ process supervision, journaling and recovery. See the
 | [provider_runtime.py](provider_runtime.py) | Construct `rio.ai` providers with request settings and authentication. |
 | [credentials.py](credentials.py), [oauth_registry.py](oauth_registry.py) | Store credentials and select login flows. |
 | [context.py](context.py), [system_prompt.py](system_prompt.py) | Load and format project instructions. |
-| [rendering/](rendering/) | Render committed events as a human transcript. |
 
 Runtime provider objects carry request settings. Names, costs, tiers and context
 window sizes remain in the catalog, available through `effective_catalog()`.
