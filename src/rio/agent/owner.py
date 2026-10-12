@@ -17,11 +17,11 @@ from pathlib import Path
 
 import psutil
 
-from rio.agent import worker
+import rio.agent.worker as worker
 from rio.agent.session import Session
 from rio.agent.shapes import ValidatorResult, WorkerIdentity
 from rio.agent.store import StorageFailure
-from rio.truncate import tail_notice, truncate_tail
+from rio.truncate import tail_notice, truncate_bytes_tail, truncate_tail
 
 
 class RecoveryFailure(RuntimeError):
@@ -125,17 +125,9 @@ class Owner:
     async def _timer(self, reader, writer):
         try:
             request = json.loads(await reader.readline())
-            deadline = request["deadline"]
-            if (
-                not isinstance(request["id"], str)
-                or not request["id"]
-                or not isinstance(deadline, (int, float))
-                or not math.isfinite(deadline)
-            ):
-                raise ValueError("Timer requires a stable ID and finite deadline")
-            self.session.register_timer(request["id"], deadline, request["payload"])
+            self.session.register_timer(request["id"], request["deadline"], request["payload"])
             response = {"ok": True}
-        except (ValueError, KeyError) as exc:
+        except (ValueError, KeyError, TypeError) as exc:
             response = {"error": str(exc)}
         except StorageFailure:
             writer.close()
@@ -287,7 +279,11 @@ class Owner:
             self.session.register_validator(key, identity)
             process.stdin.write(b"start\n")
             await process.stdin.drain()
-            output = bytearray()
+            output = ""
+            decoders = {
+                name: codecs.getincrementaldecoder("utf-8")("replace")
+                for name in ("stdout", "stderr")
+            }
             exit_code = None
             async with asyncio.timeout(self.session.limits.execution_seconds):
                 while line := await process.stdout.readline():
@@ -297,12 +293,15 @@ class Owner:
                         break
                     for name in ("stdout", "stderr"):
                         if name in message:
-                            output.extend(
-                                bytes.fromhex(message[name])[
-                                    : max(0, self.session.limits.output_bytes - len(output))
-                                ]
+                            text = decoders[name].decode(bytes.fromhex(message[name]))
+                            output = truncate_bytes_tail(
+                                output + text, self.session.limits.output_bytes
                             )
-            result = {"exit": exit_code, "output": output.decode(errors="replace")}
+            for decoder in decoders.values():
+                output = truncate_bytes_tail(
+                    output + decoder.decode(b"", final=True), self.session.limits.output_bytes
+                )
+            result = {"exit": exit_code, "output": output}
         except TimeoutError:
             result = {
                 "exit": None,
@@ -424,7 +423,9 @@ class Owner:
                                         text = decoders[name].decode(bytes.fromhex(message[name]))
                                         files[name].write(text)
                                         combined = buffers[name] + text
-                                        buffers[name] = combined[: session.limits.output_bytes]
+                                        buffers[name] = truncate_bytes_tail(
+                                            combined, session.limits.output_bytes
+                                        )
                                 line_task = asyncio.create_task(process.stdout.readline())
                             if time.monotonic() >= deadline:
                                 session.output(cell_id, buffers["stdout"], buffers["stderr"])

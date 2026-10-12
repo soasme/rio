@@ -162,14 +162,12 @@ def admit(
     cells = [replaced.get(c["id"], c) for c in state["cells"] if c["id"] not in removed]
     cells += [cell for cell in new if cell["previous_id"] is None]
     candidate = copy.deepcopy({**state, "cells": cells})
-    candidate["runtime"]["inbox"] = []
     candidate["revision"] += 1
-    candidate["runtime"]["next_cell_id"] += len(new)
-    selected = {str(cell["id"]) for cell in candidate["cells"]}
-    candidate["runtime"]["cells"] = {
-        key: value
-        for key, value in candidate["runtime"]["cells"].items()
-        if key in selected or value.get("phase") != "finished" or value.get("uncertain")
+    candidate["runtime"] = {
+        "next_cell_id": next_id + len(new),
+        "cells": {},
+        "inbox": [],
+        "usage": {},
     }
     context = {**candidate, "runtime": {}}
     if len(encode(context).encode()) > limit:

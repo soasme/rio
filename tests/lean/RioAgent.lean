@@ -242,7 +242,8 @@ theorem wake_not_after_timer (retry t : Nat) (timers : List Nat) (h : t ∈ time
     | head => exact Nat.min_le_left _ _
     | tail _ h => exact Nat.le_trans (Nat.min_le_right _ _) (ih h)
 
-/-- Long output keeps its tail; the full output stays in a file. -/
+/-- Worker buffers, committed output, and validators keep byte tails.
+   Finished worker output also applies a line limit and links to the full file. -/
 def keepTail (limit : Nat) (output : List α) : List α := output.drop (output.length - limit)
 
 theorem kept_tail_ends_output (limit : Nat) (output : List α) :
@@ -252,6 +253,40 @@ theorem kept_tail_ends_output (limit : Nat) (output : List α) :
 theorem short_output_is_whole (limit : Nat) (output : List α) (h : output.length ≤ limit) :
     keepTail limit output = output := by
   simp [keepTail, Nat.sub_eq_zero_of_le h]
+
+theorem kept_tail_fits_budget (limit : Nat) (output : List α) :
+    (keepTail limit output).length ≤ limit := by
+  simp only [keepTail, List.length_drop]
+  omega
+
+theorem new_output_replaces_old_tail (limit : Nat) (old fresh : List α)
+    (h : limit ≤ fresh.length) :
+    keepTail limit (old ++ fresh) = keepTail limit fresh := by
+  simp only [keepTail, List.length_append, List.drop_append]
+  have hdrop : old.length ≤ old.length + fresh.length - limit := by omega
+  rw [List.drop_eq_nil_iff.mpr hdrop]
+  simp only [List.nil_append]
+  congr 1
+  omega
+
+/-- Admission retains allocation state; the next turn rebuilds runtime observations. -/
+structure RuntimeSnapshot where
+  nextId : Nat
+  cells : List Nat
+  inbox : List Nat
+  usage : Nat
+  deriving DecidableEq, Repr
+
+def resetRuntime (runtime : RuntimeSnapshot) (added : Nat) : RuntimeSnapshot :=
+  ⟨runtime.nextId + added, [], [], 0⟩
+
+theorem admission_preserves_next_id (runtime : RuntimeSnapshot) (added : Nat) :
+    (resetRuntime runtime added).nextId = runtime.nextId + added := rfl
+
+theorem admission_clears_observations (runtime : RuntimeSnapshot) (added : Nat) :
+    (resetRuntime runtime added).cells = [] ∧
+    (resetRuntime runtime added).inbox = [] ∧
+    (resetRuntime runtime added).usage = 0 := by simp [resetRuntime]
 
 /-- An explicit --agents-md path wins; otherwise the working directory's AGENTS.md. -/
 def resolveAgentsMd (explicit cwdFile : Option String) : Option String :=

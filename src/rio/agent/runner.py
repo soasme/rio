@@ -66,7 +66,7 @@ async def run(
             if action == "invalid":
                 session.invalid_idle()
             try:
-                turn = session.prepare_turn(session.system, session.schema)
+                turn = session.prepare_turn()
                 session.accept(turn["id"], await _model_round(owner, turn, provider, model, flush))
                 session.request_work()
                 await owner.controls()

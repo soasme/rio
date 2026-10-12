@@ -11,11 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from rio.agent import CellKind, InvalidPatch, Limits, Session, StorageFailure, Store
 from rio.agent.owner import Owner, RecoveryFailure, stop_worker
 from rio.agent.prompt import CONCLUSION, PROTOCOL
 from rio.agent.runner import run
-from rio.agent.store import reduce_event
+from rio.agent.session import Session
+from rio.agent.state import CellKind, InvalidPatch, Limits
+from rio.agent.store import StorageFailure, Store, reduce_event
 from rio.ai import FakeProvider
 from rio.ai.messages import AssistantMessage, ToolCall
 from rio.ai.provider_events import AssistantDoneEvent
@@ -46,7 +47,7 @@ def cmd(*argv, **extra):
 
 
 def prepare(session):
-    return session.prepare_turn(session.system, session.schema)
+    return session.prepare_turn()
 
 
 def add(cell):
@@ -209,6 +210,7 @@ def test_busy_replace_rejected_removal_keeps_work(session):
         session.accept(turn["id"], [replace_cell(1, code())])
     session.accept(turn["id"], [remove(1)])
     assert not session.state["cells"]
+    assert session.state["runtime"] == {"next_cell_id": 2, "cells": {}, "inbox": [], "usage": {}}
     assert session.pending()[0]["cell_id"] == 1
     assert "1" in prepare(session)["state"]["runtime"]["cells"]
 
@@ -276,6 +278,39 @@ def test_timer_generation_fires_once_after_restart(tmp_path):
         assert len(session.data["inbox"]) == 1
         with pytest.raises(ValueError, match="Conflicting"):
             session.register_timer("alarm:1", 12, {})
+
+
+@pytest.mark.parametrize(
+    "timer_request",
+    [
+        {"id": "", "deadline": 0, "payload": {}},
+        {"id": 1, "deadline": 0, "payload": {}},
+        {"id": "wake", "deadline": True, "payload": {}},
+        {"id": "wake", "deadline": "0", "payload": {}},
+        {"id": "wake", "deadline": float("inf"), "payload": {}},
+        {"id": "wake", "deadline": float("nan"), "payload": {}},
+        {"id": "wake", "deadline": 0, "payload": []},
+        {},
+        None,
+    ],
+)
+async def test_timer_rejects_invalid_requests_without_committing(session, timer_request):
+    if isinstance(timer_request, dict) and timer_request:
+        with pytest.raises(ValueError):
+            session.register_timer(
+                timer_request["id"], timer_request["deadline"], timer_request["payload"]
+            )
+    async with Owner(session) as owner:
+        sequence = session.store.sequence
+        reader, writer = await asyncio.open_unix_connection(owner.socket_path)
+        writer.write((json.dumps(timer_request) + "\n").encode())
+        await writer.drain()
+        response = json.loads(await asyncio.wait_for(reader.readline(), timeout=2))
+        writer.close()
+        await writer.wait_closed()
+        assert "error" in response
+        assert session.store.sequence == sequence
+        assert not session.data["timers"]
 
 
 async def test_serial_uv_runs_and_independent_variables(session):
@@ -582,10 +617,18 @@ async def test_loop_sleeps_until_timer_instead_of_polling(session, monkeypatch):
 def test_output_limit_is_explicit(session):
     accept(session, code())
     session.authorize(1, {"token": "none"})
-    session.output(1, "x" * (session.limits.output_bytes + 1))
+    session.limits = replace(session.limits, output_bytes=7)
+    session.output(1, "old text", "old error")
+    session.output(1, "é終!", "é終!")
     execution = session.data["executions"]["1"]
+    assert execution["output"] == "té終!"
+    assert execution["stderr"] == "ré終!"
     assert len(execution["output"].encode()) == session.limits.output_bytes
     assert execution["truncated"]
+    session.output(1, "尾", "尾")
+    assert session.data["executions"]["1"]["output"] == "終!尾"
+    session.output(1, "é")
+    assert session.data["executions"]["1"]["output"] == "!尾é"
 
 
 async def test_truncated_output_keeps_tail_and_full_output_file(session):
@@ -600,6 +643,29 @@ async def test_truncated_output_keeps_tail_and_full_output_file(session):
     assert execution["output"].endswith(f"[Showing lines 1001-3000 of 3000. Full output: {path}]")
     assert Path(path).read_text().splitlines() == [str(i) for i in range(3000)]
     assert not session.data["executions"]["2"]["truncated"]
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+async def test_worker_and_validator_output_keep_utf8_tail(session, stream):
+    session.limits = replace(session.limits, output_bytes=7, flush_seconds=60)
+    source = f"import sys; sys.{stream}.write('old text' + 'é終!' * 3000)"
+    accept(session, cmd(sys.executable, "-c", source))
+    async with Owner(session) as owner:
+        await settle(owner)
+        result = await owner._validate("tail", [sys.executable, "-c", source])
+    assert result == {"exit": 0, "output": "!é終!"}
+    key = "output" if stream == "stdout" else "stderr"
+    streamed = [
+        event["changes"]["executions"]["1"][key]
+        for event in session.store.events()
+        if event["type"] == "execution_output"
+    ]
+    assert streamed == ["!é終!"]
+    execution = session.data["executions"]["1"]
+    assert execution[key].startswith("!é終!")
+    path = execution[key].rsplit("Full output: ", 1)[1].rstrip("]")
+    assert Path(path).read_text() == "old text" + "é終!" * 3000
+    Path(path).unlink()
 
 
 async def test_required_validator_blocks_success(tmp_path):
@@ -659,14 +725,15 @@ async def test_process_kill_at_commit_boundaries(tmp_path, boundary):
     source = """
 import asyncio, sys
 from pathlib import Path
-from rio.agent import Session, Store
+from rio.agent.session import Session
+from rio.agent.store import Store
 from rio.agent.owner import Owner
 from rio.coding.cells import KINDS
 async def main():
     root=Path(sys.argv[1]); boundary=sys.argv[2]
     with Store(root/'crash.db') as store:
         s=Session.create(store, 'one effect', root, kinds=KINDS)
-        t=s.prepare_turn(s.system, s.schema)
+        t=s.prepare_turn()
         s.accept(t['id'], [{'op':'add','cell':{'kind':'code','runtime':'python','source':
              "# /// script\\n# dependencies = []\\n# ///\\n"
              "from pathlib import Path\\nimport time\\n"
@@ -711,7 +778,7 @@ asyncio.run(main())
 
 
 async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch):
-    from rio.agent import runner
+    import rio.agent.runner as runner
 
     monkeypatch.setattr(runner.time, "time", lambda: 1e20)
     with Store(tmp_path / "budget.db") as store:
@@ -755,7 +822,7 @@ async def test_saved_complete_response_is_accepted_without_another_provider_call
 
 
 async def test_lost_and_partial_model_responses_are_bounded(session, monkeypatch):
-    from rio.agent import runner
+    import rio.agent.runner as runner
 
     monkeypatch.setattr(runner.time, "time", lambda: 1e20)
     provider = FakeProvider([])
@@ -1057,7 +1124,7 @@ def test_resolution_rejects_missing_events_and_non_observations(session, ref):
 async def test_terminal_cli_resume_needs_no_provider_or_project(
     tmp_path, monkeypatch, capsys, result, output_mode
 ):
-    from rio.agent import owner as owner_module
+    import rio.agent.owner as owner_module
     from rio.cli import run as cli
     from rio.coding.paths import RioPaths
     from rio.coding.rendering import PrintOutputMode
@@ -1106,7 +1173,7 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
 
 
 async def test_terminal_replay_propagates_cleanup_failure(session, monkeypatch):
-    from rio.agent import owner as owner_module
+    import rio.agent.owner as owner_module
     from rio.agent.runner import replay
 
     accept(session, code())
