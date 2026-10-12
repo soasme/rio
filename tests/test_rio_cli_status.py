@@ -73,9 +73,13 @@ def test_run_reports_interrupt_and_failure(monkeypatch, capsys, error, final):
 
     monkeypatch.setenv("RIO_PROGRAM_STATUS", "1")
     monkeypatch.setattr(run_module, "run_persistent_session", fake_run)
-    with pytest.raises(error):
+    with pytest.raises(SystemExit) as raised:
         app(["run", "do it"])
-    assert capsys.readouterr().err == osc("working") + osc(final)
+    assert raised.value.code == (130 if error is KeyboardInterrupt else 1)
+    expected = osc("working") + osc(final)
+    if error is RuntimeError:
+        expected += "rio: error: \n"
+    assert capsys.readouterr().err == expected
 
 
 def test_json_stdout_stays_clean(monkeypatch, capsys):

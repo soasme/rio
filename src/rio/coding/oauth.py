@@ -12,7 +12,7 @@ import webbrowser
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from json import dumps, loads
+from json import loads
 from os import environ
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -364,9 +364,11 @@ async def _post_openai_codex_token(
             await active_client.aclose()
 
     if response.status_code >= 400:
-        raise OAuthError(
-            f"OpenAI Codex token {action} failed ({response.status_code}): {response.text}"
-        )
+        # Local import avoids the shared OAuth helpers' import cycle.
+        from rio.coding.oauth_anthropic import _error_detail
+
+        detail = _error_detail(response, secrets=data.values())
+        raise OAuthError(f"OpenAI Codex token {action} failed ({response.status_code}): {detail}")
 
     raw = response.json()
     if not isinstance(raw, dict):
@@ -377,9 +379,7 @@ async def _post_openai_codex_token(
 def _required_token_field(raw: dict[str, Any], field: str, *, action: str) -> str:
     value = raw.get(field)
     if not isinstance(value, str) or not value:
-        raise OAuthError(
-            f"OpenAI Codex token {action} response missing {field}: {dumps(raw, sort_keys=True)}"
-        )
+        raise OAuthError(f"OpenAI Codex token {action} response missing {field}")
     return value
 
 
@@ -395,16 +395,11 @@ def _token_expiry(raw: dict[str, Any], access_token: str, *, action: str) -> int
     if isinstance(expires_in, int | float) and not isinstance(expires_in, bool):
         return int(time.time() * 1000) + int(expires_in * 1000)
     if expires_in is not None:
-        raise OAuthError(
-            f"OpenAI Codex token {action} response has invalid expires_in: "
-            f"{dumps(raw, sort_keys=True)}"
-        )
+        raise OAuthError(f"OpenAI Codex token {action} response has invalid expires_in")
     expires = _access_token_expiry(access_token)
     if expires is not None:
         return expires
-    raise OAuthError(
-        f"OpenAI Codex token {action} response missing expiry: {dumps(raw, sort_keys=True)}"
-    )
+    raise OAuthError(f"OpenAI Codex token {action} response missing expiry")
 
 
 async def _wait_for_authorization_code(

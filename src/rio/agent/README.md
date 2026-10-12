@@ -15,6 +15,9 @@
   Scripts run in separate processes. A separate lock file protects ownership
   before SQLite opens the database. See [Architecture](../../../docs/explanation/architecture.md).
 
+Each turn journals its prepared context once. Later turn events contain changed
+fields, and output events append new chunks. Replay also accepts older full records.
+
 ## Responsibilities
 
 | Module | Responsibility |

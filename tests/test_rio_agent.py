@@ -251,7 +251,7 @@ def test_rebuild_is_pure_and_preserves_usage(session, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: pytest.fail("reducer spawned work"))
     replay = {}
     for event in events:
-        replay = reduce_event(replay, event["changes"])
+        replay = reduce_event(replay, event["changes"], event["type"])
     assert replay == expected
     assert replay["meta"]["usage"]["unknown_usage"] == 1
 
@@ -647,7 +647,7 @@ async def test_worker_and_validator_output_keep_utf8_tail(session, stream):
     assert result == {"exit": 0, "output": "!é終!"}
     key = "output" if stream == "stdout" else "stderr"
     streamed = [
-        event["changes"]["executions"]["1"][key]
+        event["changes"]["output_chunks"]["1"][key]
         for event in session.store.events()
         if event["type"] == "execution_output"
     ]
@@ -1199,3 +1199,119 @@ async def test_replay_rejects_active_session(session):
 
     with pytest.raises(ValueError, match="terminal"):
         await replay(session)
+
+
+def test_turn_events_store_state_once_and_replay_deltas(session):
+    turn = session.prepare_turn()
+    turn_id = turn["id"]
+    prepared = session.store.events()[-1]
+    assert "state" not in prepared["changes"]["meta"]
+    session.attempt(turn_id)
+    session.response(turn_id, {"text": "first"}, 5)
+    session.reject(turn_id, "retry")
+    session.attempt(turn_id)
+    session.response(turn_id, {"text": "second"}, 7)
+    session.accept(turn_id, [add(note())])
+    for event in session.store.events(after=prepared["seq"]):
+        fields = event["changes"].get("turns", {}).get(turn_id, {})
+        assert not {"state", "system", "tool_schema", "model_config"} & fields.keys()
+        state_delta = event["changes"].get("meta", {}).get("state", {})
+        assert not {"goal", "schema", "id"} & state_delta.keys()
+        assert state_delta.get("runtime", {}).get("usage", {}) == {}
+    expected = copy.deepcopy(session.data)
+    path = session.store.path
+    session.store.close()
+    with Store(path) as reopened:
+        assert reopened.data == expected
+        assert reopened.data["turns"][turn_id]["attempts"] == 2
+        assert reopened.data["meta"]["usage"]["tokens"] == 12
+
+
+def test_output_journal_grows_linearly_and_replays_legacy_records(session):
+    accept(session, cmd("true"))
+    session.authorize(1, {"token": "none"})
+    # Older records contain a full execution snapshot.
+    old = {**session.data["executions"]["1"], "output": "legacy\n"}
+    session.store.commit("execution_output", {"executions": {"1": old}})
+    sizes = []
+    for _ in range(20):
+        before = session.store.journal_bytes
+        session.output(1, "x" * 100, "warning\n")
+        sizes.append(session.store.journal_bytes - before)
+    assert len(set(sizes)) == 1
+    assert max(sizes) < 250
+    expected = copy.deepcopy(session.data)
+    session.store.close()
+    with Store(session.store.path) as reopened:
+        assert reopened.data == expected
+        assert reopened.data["executions"]["1"]["output"] == "legacy\n" + "x" * 2000
+
+
+@pytest.mark.parametrize("failure", ["timeout", "oserror"])
+async def test_worker_failure_flushes_last_output_and_cleans_logs(session, monkeypatch, failure):
+    import tempfile
+
+    logs = Path(session.meta["cwd"]) / "logs"
+    logs.mkdir()
+    original = tempfile.NamedTemporaryFile
+    monkeypatch.setattr(
+        tempfile, "NamedTemporaryFile", lambda *a, **kw: original(*a, dir=logs, **kw)
+    )
+    session.limits = replace(session.limits, execution_seconds=0.5, flush_seconds=10)
+    accept(
+        session,
+        cmd(
+            sys.executable,
+            "-u",
+            "-c",
+            'import time; print("last stdout"); '
+            'import sys; print("last stderr", file=sys.stderr); time.sleep(30)',
+        ),
+    )
+    if failure == "oserror":
+        readline = asyncio.StreamReader.readline
+
+        async def fail_after_output(reader):
+            line = await readline(reader)
+            if b"stderr" in line:
+                # Return this buffered chunk, then fail the next read.
+                monkeypatch.setattr(reader, "readline", fail_read)
+            return line
+
+        async def fail_read():
+            raise OSError("read failed")
+
+        monkeypatch.setattr(asyncio.StreamReader, "readline", fail_after_output)
+    async with Owner(session) as owner:
+        await settle(owner)
+    execution = session.data["executions"]["1"]
+    assert execution["output"] == "last stdout\n"
+    assert execution["stderr"] == "last stderr\n"
+    assert execution["result"]["type"] == "UnknownExecution"
+    assert not list(logs.iterdir())
+
+
+async def test_cells_preserve_existing_pythonpath(session, monkeypatch):
+    module_dir = Path(session.meta["cwd"]) / "modules"
+    module_dir.mkdir()
+    (module_dir / "user_module.py").write_text("value = 42\n")
+    monkeypatch.setenv("PYTHONPATH", str(module_dir))
+    accept(session, cmd(sys.executable, "-c", "import user_module; print(user_module.value)"))
+    async with Owner(session) as owner:
+        await settle(owner)
+    assert session.data["executions"]["1"]["output"] == "42\n"
+
+
+def test_output_chunks_replay_rolling_utf8_tails(session):
+    session.limits = replace(session.limits, output_bytes=7)
+    accept(session, cmd("true"))
+    session.authorize(1, {"token": "none"})
+    for text in ("old text", "é終!", "é終!"):
+        session.output(1, text, text)
+    expected = copy.deepcopy(session.data)
+    assert expected["executions"]["1"]["output"] == "!é終!"
+    assert expected["executions"]["1"]["stderr"] == "!é終!"
+    assert expected["executions"]["1"]["truncated"]
+    session.store.close()
+    with Store(session.store.path) as reopened:
+        assert reopened.data == expected

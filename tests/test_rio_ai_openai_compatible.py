@@ -211,12 +211,13 @@ def test_shared_responses_input_preserves_tool_result_correlation_and_images():
             assert "id" not in items[2]
 
 
-def test_incomplete_responses_with_tools_keep_length_stop_reason():
+def test_incomplete_responses_preserve_raw_reason_with_tools():
     events = _finalize(
         [
             *_function_call_events(0, "read", '{"path":'),
             {"type": "response.incomplete", "response": {"status": "incomplete"}},
         ]
     )
-    assert events[-1].finish_reason == "length"
+    # The shared collector maps the raw reason to length before checking tool use.
+    assert events[-1].finish_reason == "incomplete"
     assert events[-1].message.tool_calls[0].arguments == {"_raw_arguments": '{"path":'}

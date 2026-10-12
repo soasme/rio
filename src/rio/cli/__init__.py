@@ -96,12 +96,13 @@ def _run(args: argparse.Namespace) -> None:
                 agents_md=args.agents_md,
             ),
         )
-    except ValueError as exc:
+    except (ValueError, RuntimeError, OSError) as exc:
         status.report("error")
-        args.parser.error(str(exc))
+        print(f"rio: error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
     except KeyboardInterrupt:
         status.report("idle")
-        raise
+        raise SystemExit(130) from None
     except BaseException:
         status.report("error")
         raise

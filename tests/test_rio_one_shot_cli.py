@@ -181,3 +181,37 @@ async def test_run_uses_catalog_for_local_server(
     assert ok is True
     assert "hello" in capsys.readouterr().out
     assert [request.url.path for request in requests] == ["/v1/chat/completions"]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--cwd", "/rio-does-not-exist"],
+        ["--provider", "rio-missing-provider"],
+    ],
+)
+def test_invalid_new_run_does_not_create_session(tmp_path, monkeypatch, capsys, arguments):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("RIO_PROGRAM_STATUS", "0")
+    with pytest.raises(SystemExit) as error:
+        app(["run", *arguments, "task"])
+    assert error.value.code == 1
+    stderr = capsys.readouterr().err
+    assert stderr.startswith("rio: error: ")
+    assert "usage:" not in stderr
+    assert not list((tmp_path / ".rio" / "sessions").glob("*"))
+
+
+def test_session_owner_error_is_reported_without_usage(monkeypatch, capsys):
+    from rio.agent.store import StorageFailure
+    from rio.cli import run as cli
+
+    async def owned(*args, **kwargs):
+        raise StorageFailure("Session already has an owner")
+
+    monkeypatch.setenv("RIO_PROGRAM_STATUS", "0")
+    monkeypatch.setattr(cli, "run_persistent_session", owned)
+    with pytest.raises(SystemExit) as error:
+        app(["run", "task"])
+    assert error.value.code == 1
+    assert capsys.readouterr().err == "rio: error: Session already has an owner\n"

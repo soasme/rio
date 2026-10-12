@@ -126,3 +126,15 @@ def test_command_arguments_are_quoted_without_cell_metadata(capsys):
         },
     )
     assert capsys.readouterr().out == "• printf %s 'a b' '$HOME' '' '[red]'\n"
+
+
+def test_output_chunks_then_final_snapshot_do_not_repeat(capsys):
+    renderer = PlainEventRenderer()
+    emit(renderer, "execution_output", output_chunks={"2": execution("hel")})
+    emit(renderer, "execution_output", output_chunks={"2": execution("lo\n")})
+    emit(
+        renderer,
+        "execution_finished",
+        executions={"2": execution("hello\n", result={"type": "success", "exit_code": 0})},
+    )
+    assert capsys.readouterr().out == "  └ hello\n  └ success (exit 0)\n"

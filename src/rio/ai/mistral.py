@@ -10,6 +10,7 @@ import httpx
 
 from rio.ai._parsing import first_choice, loads_object, parse_sse_line, tool_arguments
 from rio.ai._provider_events import (
+    ProviderErrorEvent,
     ProviderEvent,
     ProviderResponseEndEvent,
     ProviderTextDeltaEvent,
@@ -29,11 +30,13 @@ from rio.ai.messages import (
     ImageContent,
     ThinkingContent,
     ToolResultMessage,
+    Usage,
     UserMessage,
     assistant_content,
 )
+from rio.ai.openai_compatible import _parse_chunk_usage
 from rio.ai.provider import AssistantMessageEvent, collect_response
-from rio.ai.retry import RetryAttempt
+from rio.ai.retry import RetryableFailure, RetryAttempt
 from rio.ai.tool_call_ids import portable_tool_call_id
 from rio.ai.tools import AgentTool, ToolCall
 from rio.ai.types import JSONValue
@@ -153,6 +156,7 @@ class _MistralStreamParser:
         self._thinking_parts: list[str] = []
         self._tool_call_builders: dict[int, _ToolCallBuilder] = {}
         self._finish_reason: str | None = None
+        self._usage = Usage()
 
     def feed(self, event: str) -> tuple[list[ProviderEvent], bool]:
         if event == "[DONE]":
@@ -160,6 +164,8 @@ class _MistralStreamParser:
         chunk = loads_object(event)
         if chunk is None:
             return [], False
+        if isinstance(chunk.get("usage"), Mapping):
+            self._usage = _parse_chunk_usage(chunk["usage"])
         choice = first_choice(chunk)
         if choice is None:
             return [], False
@@ -186,6 +192,11 @@ class _MistralStreamParser:
         return events, False
 
     def finalize(self) -> list[ProviderEvent]:
+        if self._finish_reason is None:
+            raise RetryableFailure(
+                "stream ended without finish_reason",
+                ProviderErrorEvent(message="Mistral stream ended without finish_reason"),
+            )
         tool_calls = [
             builder.build(index) for index, builder in sorted(self._tool_call_builders.items())
         ]
@@ -197,8 +208,8 @@ class _MistralStreamParser:
             content.insert(0, ThinkingContent(thinking="".join(self._thinking_parts)))
         events.append(
             ProviderResponseEndEvent(
-                message=AssistantMessage(content=content),
-                finish_reason=self._finish_reason or ("tool_calls" if tool_calls else "stop"),
+                message=AssistantMessage(content=content, usage=self._usage),
+                finish_reason=self._finish_reason,
             )
         )
         return events
@@ -247,6 +258,7 @@ def _build_mistral_payload(
     payload: dict[str, JSONValue] = {
         "model": model,
         "stream": True,
+        "stream_options": {"include_usage": True},
         "messages": [
             *_system_messages(system),
             *_messages_to_mistral(messages, supports_images=supports_images),

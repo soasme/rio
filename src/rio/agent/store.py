@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from rio.agent.shapes import EventKind, JournalEvent
+from rio.truncate import truncate_bytes_tail
 
 
 class StorageFailure(RuntimeError):
@@ -21,11 +22,44 @@ def encode(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
-def reduce_event(projection: dict, changes: dict) -> dict:
+def reduce_event(projection: dict, changes: dict, kind: EventKind) -> dict:
     """Fold committed records without files, workers, clocks, or model calls."""
     result = projection.copy()
     for collection, records in changes.items():
-        result[collection] = {**result.get(collection, {}), **copy.deepcopy(records)}
+        if collection == "output_chunks":
+            executions = result["executions"].copy()
+            for key, chunks in records.items():
+                old = executions[key]
+                executions[key] = {
+                    **old,
+                    "output": truncate_bytes_tail(
+                        old["output"] + chunks["output"], chunks["limit"]
+                    ),
+                    "stderr": truncate_bytes_tail(
+                        old["stderr"] + chunks["stderr"], chunks["limit"]
+                    ),
+                    "truncated": chunks["truncated"],
+                }
+            result["executions"] = executions
+        elif collection == "meta" and "state" in records:
+            old = result.get("meta", {}).get("state", {})
+            state = copy.deepcopy(records["state"])
+            state["runtime"] = {**old.get("runtime", {}), **state.get("runtime", {})}
+            result["meta"] = {
+                **result.get("meta", {}),
+                **copy.deepcopy(records),
+                "state": {**old, **state},
+            }
+        elif collection == "turns":
+            turns = result.get("turns", {}).copy()
+            for key, fields in records.items():
+                turns[key] = {**turns.get(key, {}), **copy.deepcopy(fields)}
+            result["turns"] = turns
+        else:
+            result[collection] = {**result.get(collection, {}), **copy.deepcopy(records)}
+    if kind == "turn_prepared":
+        turn = next(iter(changes["turns"].values()))
+        result["meta"] = {**result["meta"], "state": copy.deepcopy(turn["state"])}
     return result
 
 
@@ -71,9 +105,11 @@ class Store:
             )
             self.data: dict = {}
             self.sequence = 0
-            for seq, changes in self.db.execute("SELECT seq, changes FROM events ORDER BY seq"):
+            for seq, kind, changes in self.db.execute(
+                "SELECT seq, kind, changes FROM events ORDER BY seq"
+            ):
                 self.journal_bytes += len(changes.encode())
-                self.data = reduce_event(self.data, json.loads(changes))
+                self.data = reduce_event(self.data, json.loads(changes), kind)
                 self.sequence = seq
         except Exception:
             self.close()
@@ -87,7 +123,7 @@ class Store:
         identity = identity or f"event:{seq}"
         raw = encode(changes)
         # Compute before entering the transaction; publish only after COMMIT returns.
-        candidate = reduce_event(self.data, changes)
+        candidate = reduce_event(self.data, changes, kind)
         started = time.monotonic()
         try:
             self.db.execute("BEGIN IMMEDIATE")

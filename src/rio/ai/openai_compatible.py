@@ -54,7 +54,7 @@ from rio.ai.messages import (
     assistant_content,
 )
 from rio.ai.provider import AssistantMessageEvent, collect_response
-from rio.ai.retry import RetryAttempt
+from rio.ai.retry import RetryableFailure, RetryAttempt
 from rio.ai.tool_call_ids import portable_tool_call_id
 from rio.ai.tools import AgentTool, ToolCall
 from rio.ai.types import JSONValue
@@ -395,6 +395,11 @@ class _ChatStreamParser:
         return events, False
 
     def finalize(self) -> list[ProviderEvent]:
+        if self._finish_reason is None:
+            raise RetryableFailure(
+                "stream ended without finish_reason",
+                ProviderErrorEvent(message="Provider stream ended without finish_reason"),
+            )
         tool_calls = [
             builder.build(index) for index, builder in sorted(self._tool_call_builders.items())
         ]
@@ -614,7 +619,6 @@ class _ResponsesStreamParser:
             for tool_call in tool_calls
             if not self._codex
         ]
-        finish_reason = _normalize_finish_reason(self._status, has_tool_calls=bool(tool_calls))
         content = assistant_content("".join(self._content_parts), tool_calls)
         if self._thinking_parts:
             content.insert(
@@ -634,7 +638,7 @@ class _ResponsesStreamParser:
                     content=content,
                     usage=self._usage or Usage(),
                 ),
-                finish_reason=finish_reason,
+                finish_reason=self._status,
             )
         )
         return events
@@ -1018,15 +1022,6 @@ def _responses_finish_reason(chunk: Mapping[str, Any]) -> str | None:
         if isinstance(status, str):
             return status
     return None
-
-
-def _normalize_finish_reason(status: str | None, *, has_tool_calls: bool) -> str:
-    """Map a Responses-API status to chat-completions-style finish reasons."""
-    if status == "incomplete":
-        return "length"
-    if has_tool_calls:
-        return "tool_calls"
-    return "stop"
 
 
 def _responses_failure_event(chunk: Mapping[str, Any]) -> ProviderErrorEvent:

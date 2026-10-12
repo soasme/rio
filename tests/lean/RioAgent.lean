@@ -304,4 +304,60 @@ def systemPrompt (protocol instructions : String) : String := protocol ++ instru
 theorem no_instructions_keeps_protocol (protocol : String) :
     systemPrompt protocol "" = protocol := by simp [systemPrompt]
 
+/-- Prepared context is immutable; later journal events replace only mutable turn fields. -/
+structure JournalTurn where
+  state : List Nat
+  attempts : Nat
+  response : Option String
+  receipt : Option Nat
+  deriving DecidableEq, Repr
+
+inductive TurnDelta where
+  | attempt
+  | response (text : String)
+  | reject
+  | accept (receipt : Nat)
+
+def applyTurnDelta (turn : JournalTurn) : TurnDelta → JournalTurn
+  | .attempt => { turn with attempts := turn.attempts + 1, response := none }
+  | .response text => { turn with response := some text }
+  | .reject => { turn with response := none }
+  | .accept receipt => { turn with receipt := some receipt }
+
+theorem turn_delta_preserves_prepared_context (turn : JournalTurn) (delta : TurnDelta) :
+    (applyTurnDelta turn delta).state = turn.state := by cases delta <;> rfl
+
+/-- Chunk concatenation before applying the output retention limit. -/
+inductive OutputRecord where
+  | snapshot (text : List Char)
+  | chunk (text : List Char)
+
+def applyOutput (old : List Char) : OutputRecord → List Char
+  | .snapshot text => text
+  | .chunk text => old ++ text
+
+theorem chunks_equal_one_snapshot (old first second : List Char) :
+    applyOutput (applyOutput old (.chunk first)) (.chunk second) =
+      applyOutput old (.snapshot (old ++ first ++ second)) := rfl
+
+theorem chunk_storage_is_linear (chunks : List (List Char)) :
+    chunks.flatten.length = (chunks.map List.length).sum := by
+  induction chunks with
+  | nil => rfl
+  | cons chunk rest ih => simp [ih]
+
+/-- Missing completion metadata is an error; token limits precede tool use. -/
+inductive StreamEnd where
+  | error | length | toolUse | stop
+  deriving DecidableEq, Repr
+
+def streamEnd (finished limited tools : Bool) : StreamEnd :=
+  if !finished then .error else if limited then .length else if tools then .toolUse else .stop
+
+theorem missing_finish_never_succeeds (limited tools : Bool) :
+    streamEnd false limited tools = .error := rfl
+
+theorem token_limit_precedes_tool_use (tools : Bool) :
+    streamEnd true true tools = .length := rfl
+
 end RioAgent
