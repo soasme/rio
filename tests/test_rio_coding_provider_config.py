@@ -27,9 +27,7 @@ from rio.coding.oauth_types import OAuthLoginCallbacks, OAuthProvider, OAuthRunt
 from rio.coding.paths import RioPaths
 from rio.coding.provider_config import (
     DEFAULT_MODEL,
-    AnthropicProviderConfig,
-    OpenAICodexProviderConfig,
-    OpenAICompatibleProviderConfig,
+    ProviderConfig,
     ProviderConfigError,
     ProviderModelMetadata,
     ProviderSettings,
@@ -109,7 +107,7 @@ def test_load_provider_settings_accepts_huggingface_inference_provider_preferenc
 
     provider = load_provider_settings(RioPaths(home=rio_home)).get_provider("huggingface")
 
-    assert isinstance(provider, OpenAICompatibleProviderConfig)
+    assert isinstance(provider, ProviderConfig)
     assert provider.inference_providers == {"zai-org/GLM-5.2": "deepinfra"}
 
 
@@ -387,10 +385,10 @@ docs_url = "https://example.test/legacy-llama-cpp"
         model="legacy-model",
     )
 
-    assert isinstance(dotted.provider, OpenAICompatibleProviderConfig)
+    assert isinstance(dotted.provider, ProviderConfig)
     assert dotted.provider.name == "llama.cpp"
     assert dotted.provider.base_url == "http://127.0.0.1:8080/v1"
-    assert isinstance(dashed.provider, OpenAICompatibleProviderConfig)
+    assert isinstance(dashed.provider, ProviderConfig)
     assert dashed.provider.name == "llama-cpp"
     assert dashed.provider.base_url == "http://127.0.0.1:8081/v1"
 
@@ -399,7 +397,7 @@ def test_save_provider_settings_writes_backup_when_replacing(tmp_path: Path) -> 
     paths = RioPaths(home=tmp_path / ".rio")
     initial = ProviderSettings(
         providers=(
-            OpenAICompatibleProviderConfig(
+            ProviderConfig(
                 name="openai",
                 models=("gpt-5",),
                 default_model="gpt-5",
@@ -408,7 +406,7 @@ def test_save_provider_settings_writes_backup_when_replacing(tmp_path: Path) -> 
     )
     updated = ProviderSettings(
         providers=(
-            OpenAICompatibleProviderConfig(
+            ProviderConfig(
                 name="openai",
                 models=("gpt-5-mini",),
                 default_model="gpt-5-mini",
@@ -440,11 +438,18 @@ def test_save_and_load_provider_settings_round_trip(
     monkeypatch.setattr(provider_config, "environ", {})
 
     paths = RioPaths(home=tmp_path / ".rio")
+    paths.home.mkdir()
+    (paths.home / "catalog.toml").write_text(
+        'schema_version = 1\n[[providers]]\nname = "local"\n'
+        'base_url = "http://localhost:11434/v1"\napi_key_env = "LOCAL_API_KEY"\n'
+        'models = ["qwen", "llama"]\n'
+    )
     settings = ProviderSettings(
         default_provider="local",
         providers=(
-            OpenAICompatibleProviderConfig(
+            ProviderConfig(
                 name="local",
+                credential_name="local",
                 base_url="http://localhost:11434/v1",
                 api_key_env="LOCAL_API_KEY",
                 models=("qwen", "llama"),
@@ -488,7 +493,7 @@ def test_provider_settings_ignores_legacy_scoped_models(scopes) -> None:
 
 def test_upsert_provider_replaces_and_sets_default() -> None:
     settings = ProviderSettings()
-    provider = OpenAICompatibleProviderConfig(
+    provider = ProviderConfig(
         name="local",
         base_url="http://localhost:11434/v1",
         api_key_env="LOCAL_API_KEY",
@@ -499,7 +504,7 @@ def test_upsert_provider_replaces_and_sets_default() -> None:
     updated = upsert_provider(settings, provider, set_default=True)
     replaced = upsert_provider(
         updated,
-        OpenAICompatibleProviderConfig(
+        ProviderConfig(
             name="local",
             base_url="http://localhost:11434/v1",
             api_key_env="LOCAL_API_KEY",
@@ -525,7 +530,7 @@ def test_resolve_provider_selection_uses_configured_defaults() -> None:
     settings = ProviderSettings(
         default_provider="local",
         providers=(
-            OpenAICompatibleProviderConfig(
+            ProviderConfig(
                 name="local",
                 base_url="http://localhost:11434/v1",
                 api_key_env="LOCAL_API_KEY",
@@ -546,10 +551,10 @@ def test_resolve_provider_selection_rejects_unknown_provider() -> None:
         resolve_provider_selection(ProviderSettings(), provider_name="missing")
 
 
-def _kimi_code_like_provider() -> OpenAICompatibleProviderConfig:
+def _kimi_code_like_provider() -> ProviderConfig:
     # Mirrors the catalog kimi-code entry: k3 supports low, high, and xhigh
     # mapped to "low", "high", "max" respectively.
-    return OpenAICompatibleProviderConfig(
+    return ProviderConfig(
         name="kimi-code",
         models=("k3", "kimi-for-coding"),
         default_model="k3",
@@ -592,7 +597,7 @@ def test_resolve_startup_thinking_level_uses_k3_max_default() -> None:
 
 def test_resolve_startup_thinking_level_prefers_remembered_model_default() -> None:
     provider = _kimi_code_like_provider()
-    remembered = OpenAICompatibleProviderConfig(
+    remembered = ProviderConfig(
         name=provider.name,
         models=provider.models,
         default_model=provider.default_model,
@@ -615,7 +620,7 @@ def test_resolve_startup_thinking_level_keeps_supported_default() -> None:
 
 
 def test_resolve_startup_thinking_level_returns_none_without_levels() -> None:
-    provider = OpenAICompatibleProviderConfig(
+    provider = ProviderConfig(
         name="local",
         models=("qwen",),
         default_model="qwen",
@@ -626,7 +631,7 @@ def test_resolve_startup_thinking_level_returns_none_without_levels() -> None:
 
 def test_resolve_startup_thinking_level_cli_override_wins_over_remembered() -> None:
     provider = _kimi_code_like_provider()
-    remembered = OpenAICompatibleProviderConfig(
+    remembered = ProviderConfig(
         name=provider.name,
         models=provider.models,
         default_model=provider.default_model,
@@ -652,7 +657,7 @@ def test_resolve_startup_thinking_level_cli_override_errors_for_unsupported() ->
 
 
 def test_resolve_startup_thinking_level_cli_override_errors_without_levels() -> None:
-    provider = OpenAICompatibleProviderConfig(
+    provider = ProviderConfig(
         name="local",
         models=("qwen",),
         default_model="qwen",
@@ -667,7 +672,7 @@ def test_resolve_startup_thinking_level_cli_override_errors_without_levels() -> 
 
 def test_resolve_startup_thinking_level_cli_override_none_preserves_behavior() -> None:
     provider = _kimi_code_like_provider()
-    remembered = OpenAICompatibleProviderConfig(
+    remembered = ProviderConfig(
         name=provider.name,
         models=provider.models,
         default_model=provider.default_model,
@@ -685,7 +690,7 @@ def test_resolve_provider_selection_rejects_model_not_declared_for_provider() ->
     settings = ProviderSettings(
         default_provider="local",
         providers=(
-            OpenAICompatibleProviderConfig(
+            ProviderConfig(
                 name="local",
                 base_url="http://localhost:11434/v1",
                 api_key_env="LOCAL_API_KEY",
@@ -711,7 +716,7 @@ def test_runtime_config_uses_selected_model_image_capability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("CUSTOM_API_KEY", "secret")
-    provider = OpenAICompatibleProviderConfig(
+    provider = ProviderConfig(
         name="custom",
         api_key_env="CUSTOM_API_KEY",
         models=("text", "vision"),
@@ -730,7 +735,7 @@ def test_openai_compatible_config_from_provider_uses_configured_env_var(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
-    provider = OpenAICompatibleProviderConfig(
+    provider = ProviderConfig(
         name="local",
         base_url="http://localhost:11434/v1/",
         api_key_env="LOCAL_API_KEY",
@@ -755,7 +760,7 @@ def test_openai_compatible_config_allows_missing_api_key(
     monkeypatch: pytest.MonkeyPatch, api_key_env: str
 ) -> None:
     monkeypatch.delenv("UNSET_LOCAL_API_KEY", raising=False)
-    provider = OpenAICompatibleProviderConfig(name="local", api_key_env=api_key_env)
+    provider = ProviderConfig(name="local", api_key_env=api_key_env)
 
     assert openai_compatible_config_from_provider(provider).api_key == ""
 
@@ -764,7 +769,7 @@ def test_huggingface_runtime_config_captures_inference_provider_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("HF_TEST_TOKEN", "test-key")
-    provider = OpenAICompatibleProviderConfig(
+    provider = ProviderConfig(
         name="huggingface",
         base_url="https://router.huggingface.co/v1",
         api_key_env="HF_TEST_TOKEN",
@@ -787,7 +792,7 @@ def test_openai_compatible_config_from_provider_preserves_openai_base_url_env(
             return "stored-key" if name == "openai" else None
 
     config = openai_compatible_config_from_provider(
-        OpenAICompatibleProviderConfig(name="openai", credential_name="openai"),
+        ProviderConfig(name="openai", credential_name="openai"),
         credential_reader=FakeCredentials(),
     )
 
@@ -799,7 +804,7 @@ def test_openai_compatible_config_from_provider_uses_configured_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
-    provider = OpenAICompatibleProviderConfig(
+    provider = ProviderConfig(
         name="local",
         base_url="http://localhost:11434/v1/",
         api_key_env="LOCAL_API_KEY",
@@ -821,7 +826,7 @@ def test_openai_compatible_config_from_provider_uses_configured_headers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
-    provider = OpenAICompatibleProviderConfig(
+    provider = ProviderConfig(
         name="local",
         base_url="http://localhost:11434/v1/",
         api_key_env="LOCAL_API_KEY",
@@ -839,7 +844,7 @@ def test_openai_compatible_config_from_provider_sets_reasoning_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
-    provider = OpenAICompatibleProviderConfig(
+    provider = ProviderConfig(
         name="local",
         base_url="http://localhost:11434/v1/",
         api_key_env="LOCAL_API_KEY",
@@ -967,7 +972,7 @@ def test_openai_compatible_config_from_provider_rejects_unsupported_thinking_lev
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
-    provider = OpenAICompatibleProviderConfig(
+    provider = ProviderConfig(
         name="local",
         base_url="http://localhost:11434/v1/",
         api_key_env="LOCAL_API_KEY",
@@ -989,7 +994,7 @@ def test_openai_compatible_config_from_provider_uses_stored_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
-    provider = OpenAICompatibleProviderConfig(
+    provider = ProviderConfig(
         name="openrouter",
         base_url="https://openrouter.ai/api/v1",
         api_key_env="OPENROUTER_API_KEY",
@@ -1014,7 +1019,7 @@ def test_openai_compatible_config_from_provider_falls_back_to_env_when_stored_mi
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
-    provider = OpenAICompatibleProviderConfig(
+    provider = ProviderConfig(
         name="openrouter",
         base_url="https://openrouter.ai/api/v1",
         api_key_env="OPENROUTER_API_KEY",
@@ -1036,7 +1041,7 @@ def test_provider_has_usable_credentials_checks_stored_key_and_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    provider = OpenAICompatibleProviderConfig(
+    provider = ProviderConfig(
         name="openrouter",
         api_key_env="OPENROUTER_API_KEY",
         credential_name="openrouter",
@@ -1062,7 +1067,7 @@ def test_anthropic_config_from_provider_uses_stored_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    provider = AnthropicProviderConfig(credential_name="anthropic")
+    provider = replace(provider_config_from_catalog_entry("anthropic"), credential_name="anthropic")
 
     class FakeCredentials:
         def get(self, name: str) -> str | None:
@@ -1078,7 +1083,9 @@ def test_anthropic_config_from_provider_sets_thinking_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    provider = AnthropicProviderConfig(
+    provider = replace(
+        provider_config_from_catalog_entry("anthropic"),
+        model_metadata={},
         thinking_levels=("off", "low", "high"),
         thinking_default="low",
         thinking_parameter="anthropic.thinking",
@@ -1096,7 +1103,7 @@ def test_anthropic_config_from_provider_maps_opus_5_adaptive_thinking(
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     provider = ProviderSettings().get_provider("anthropic")
-    assert isinstance(provider, AnthropicProviderConfig)
+    assert provider.kind == "anthropic"
 
     off_config = anthropic_config_from_provider(
         provider, model="claude-opus-5", thinking_level="off"
@@ -1121,7 +1128,7 @@ def test_anthropic_config_from_provider_sets_model_max_tokens(
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     provider = ProviderSettings().get_provider("anthropic")
-    assert isinstance(provider, AnthropicProviderConfig)
+    assert provider.kind == "anthropic"
 
     opus_config = anthropic_config_from_provider(provider, model="claude-opus-5")
     haiku_config = anthropic_config_from_provider(provider, model="claude-haiku-4-5")
@@ -1134,7 +1141,7 @@ def test_anthropic_config_from_provider_omits_unknown_model_max_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    provider = AnthropicProviderConfig()
+    provider = replace(provider_config_from_catalog_entry("anthropic"), model_metadata={})
 
     config = anthropic_config_from_provider(provider)
 
@@ -1142,7 +1149,8 @@ def test_anthropic_config_from_provider_omits_unknown_model_max_tokens(
 
 
 def test_provider_model_max_tokens_reads_model_metadata() -> None:
-    provider = AnthropicProviderConfig(
+    provider = replace(
+        provider_config_from_catalog_entry("anthropic"),
         models=("capped", "uncapped"),
         default_model="capped",
         model_metadata={
@@ -1169,7 +1177,7 @@ def test_openai_compatible_config_from_provider_sets_reasoning_parameter(
     expected: str,
 ) -> None:
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
-    provider = OpenAICompatibleProviderConfig(
+    provider = ProviderConfig(
         name="local",
         base_url="http://localhost:11434/v1/",
         api_key_env="LOCAL_API_KEY",
@@ -1259,18 +1267,6 @@ def test_provider_settings_from_json_points_legacy_providers_to_catalog() -> Non
         provider_settings_from_json({"default_provider": "local", "providers": [{"name": "local"}]})
 
 
-def test_openai_compatible_provider_config_rejects_invalid_timeout() -> None:
-    with pytest.raises(ProviderConfigError, match="greater than 0"):
-        OpenAICompatibleProviderConfig(name="local", timeout_seconds=0)
-
-
-def test_openai_compatible_provider_config_rejects_invalid_retries() -> None:
-    with pytest.raises(ProviderConfigError, match="0 or greater"):
-        OpenAICompatibleProviderConfig(name="local", max_retries=-1)
-    with pytest.raises(ProviderConfigError, match="0 or greater"):
-        OpenAICompatibleProviderConfig(name="local", max_retry_delay_seconds=-1)
-
-
 # ---------------------------------------------------------------------------
 # create_model_provider (runtime provider construction)
 # ---------------------------------------------------------------------------
@@ -1280,7 +1276,7 @@ def test_create_model_provider_returns_openai_codex_provider(tmp_path: Path) -> 
     store = FileCredentialStore(tmp_path / "credentials.json")
 
     provider = create_model_provider(
-        OpenAICodexProviderConfig(),
+        provider_config_from_catalog_entry("openai-codex"),
         credential_store=store,
     )
 
@@ -1312,7 +1308,7 @@ def test_anthropic_config_from_provider_includes_compat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    provider = AnthropicProviderConfig()
+    provider = provider_config_from_catalog_entry("anthropic")
 
     config = anthropic_config_from_provider(provider)
 
@@ -1359,7 +1355,9 @@ def test_create_model_provider_uses_anthropic_oauth_runtime_auth(tmp_path: Path)
         ),
     )
 
-    provider = create_model_provider(AnthropicProviderConfig(), credential_store=store)
+    provider = create_model_provider(
+        provider_config_from_catalog_entry("anthropic"), credential_store=store
+    )
 
     assert isinstance(provider, AnthropicProvider)
     assert provider._config.bearer_auth is True
@@ -1376,7 +1374,9 @@ def test_anthropic_api_key_auth_keeps_the_default_cache_retention(tmp_path: Path
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_api_key("anthropic", "sk-test")
 
-    provider = create_model_provider(AnthropicProviderConfig(), credential_store=store)
+    provider = create_model_provider(
+        provider_config_from_catalog_entry("anthropic"), credential_store=store
+    )
 
     assert isinstance(provider, AnthropicProvider)
     assert provider._config.cache_retention == "short"
@@ -1422,7 +1422,10 @@ def test_provider_compat_can_clamp_the_one_hour_ttl_on_oauth(tmp_path: Path) -> 
         "anthropic",
         OAuthCredential(access="a", refresh="r", expires=9999999999999),
     )
-    config = replace(AnthropicProviderConfig(), compat={"supportsLongCacheRetention": False})
+    config = replace(
+        provider_config_from_catalog_entry("anthropic"),
+        compat={"supportsLongCacheRetention": False},
+    )
 
     provider = create_model_provider(config, credential_store=store)
 
@@ -1434,7 +1437,10 @@ def test_provider_compat_can_suppress_only_the_tools_breakpoint(tmp_path: Path) 
     """Some gateways accept cache_control everywhere except inside tool objects."""
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_api_key("anthropic", "sk-test")
-    config = replace(AnthropicProviderConfig(), compat={"supportsCacheControlOnTools": False})
+    config = replace(
+        provider_config_from_catalog_entry("anthropic"),
+        compat={"supportsCacheControlOnTools": False},
+    )
 
     provider = create_model_provider(config, credential_store=store)
 
@@ -1507,7 +1513,7 @@ def test_create_model_provider_uses_model_max_tokens_for_anthropic_protocol_mode
         ),
     )
     catalog_config = provider_config_from_catalog_entry("github-copilot")
-    assert isinstance(catalog_config, OpenAICompatibleProviderConfig)
+    assert isinstance(catalog_config, ProviderConfig)
     metadata = dict(catalog_config.model_metadata)
     metadata["claude-haiku-4.5"] = replace(metadata["claude-haiku-4.5"], max_tokens=64_000)
     provider_config_value = replace(catalog_config, model_metadata=metadata)
@@ -1544,7 +1550,7 @@ def test_create_model_provider_uses_copilot_token_base_url(tmp_path: Path) -> No
 
 def test_create_model_provider_rejects_model_not_declared_for_provider(tmp_path: Path) -> None:
     store = FileCredentialStore(tmp_path / "credentials.json")
-    provider_config_value = OpenAICompatibleProviderConfig(
+    provider_config_value = ProviderConfig(
         name="local",
         models=("qwen",),
         default_model="qwen",
@@ -1559,7 +1565,8 @@ def test_create_model_provider_rejects_model_not_declared_for_provider(tmp_path:
 
 def test_create_model_provider_maps_codex_reasoning_effort_like_pi(tmp_path: Path) -> None:
     store = FileCredentialStore(tmp_path / "credentials.json")
-    provider_config_value = OpenAICodexProviderConfig(
+    provider_config_value = replace(
+        provider_config_from_catalog_entry("openai-codex"),
         thinking_levels=("off", "minimal", "low", "medium", "high", "xhigh"),
         thinking_models=("gpt-5.5",),
         thinking_parameter="reasoning.effort",
@@ -1601,7 +1608,7 @@ def test_create_model_provider_coerces_unsupported_startup_thinking_level(
     # that only support xhigh. Now k3 also supports low and high.
     monkeypatch.setenv("RIO_TEST_KIMI_CODE_API_KEY", "test-key")
     store = FileCredentialStore(tmp_path / "credentials.json")
-    provider_config_value = OpenAICompatibleProviderConfig(
+    provider_config_value = ProviderConfig(
         name="kimi-code",
         api_key_env="RIO_TEST_KIMI_CODE_API_KEY",
         models=("k3",),
@@ -1661,7 +1668,11 @@ async def test_openai_codex_credential_resolver_refreshes_expired_credentials(
         ),
     )
 
+    refresh_calls = []
+
     async def fake_refresh(refresh_token: str) -> OAuthCredential:
+        refresh_calls.append(refresh_token)
+        await asyncio.sleep(0)
         assert refresh_token == "old-refresh"
         return OAuthCredential(
             access="new-access",
@@ -1670,16 +1681,16 @@ async def test_openai_codex_credential_resolver_refreshes_expired_credentials(
             account_id="new-account",
         )
 
-    import rio.coding.provider_runtime as provider_runtime
-
-    monkeypatch.setattr(provider_runtime, "refresh_openai_codex_token", fake_refresh)
+    monkeypatch.setattr("rio.coding.oauth.refresh_openai_codex_token", fake_refresh)
 
     resolver = OpenAICodexCredentialResolver(
-        OpenAICodexProviderConfig(),
+        provider_config_from_catalog_entry("openai-codex"),
         credential_store=store,
     )
 
-    credentials = await resolver()
+    credentials, concurrent = await asyncio.gather(resolver(), resolver())
+    assert credentials == concurrent
+    assert refresh_calls == ["old-refresh"]
 
     assert credentials.access_token == "new-access"
     assert credentials.account_id == "new-account"
@@ -1702,7 +1713,6 @@ async def test_runtime_oauth_resolver_refreshes_and_persists_atomically(
     class FakeOAuthProvider:
         id = "github-copilot"
         name = "Fake GitHub Copilot"
-        flow_kinds = ("device_code",)
 
         async def login(self, _callbacks: OAuthLoginCallbacks) -> OAuthCredential:
             raise AssertionError("not used")
@@ -1749,7 +1759,6 @@ async def test_runtime_oauth_resolver_spends_a_refresh_token_once(
     class RotatingOAuthProvider:
         id = "github-copilot"
         name = "Rotating"
-        flow_kinds = ("device_code",)
 
         async def login(self, _callbacks: OAuthLoginCallbacks) -> OAuthCredential:
             raise AssertionError("not used")
@@ -1829,7 +1838,6 @@ def test_builtin_oauth_registry_matches_supported_subscription_providers() -> No
 
 
 def test_catalog_descriptive_metadata_survives_runtime_preference_save(tmp_path, monkeypatch):
-    from rio.coding.catalog_loader import effective_catalog
 
     monkeypatch.setattr(provider_config, "environ", {})
     paths = RioPaths(home=tmp_path / ".rio")
@@ -1857,22 +1865,52 @@ output = 2.0
 cacheRead = 0.1
 cacheWrite = 0.2
 """)
-    before = next(e for e in effective_catalog(paths) if e.name == "local")
+    catalog_path = paths.home / "catalog.toml"
+    catalog_path.write_text("# Keep my comments and formatting.\n" + catalog_path.read_text())
+    before = catalog_path.read_bytes()
     provider = load_provider_settings(paths).get_provider("local")
-    serialized = provider.to_json()
-    assert "context_windows" not in serialized
-    assert (
-        not {"name", "cost", "cost_tiers", "context_window"}
-        & serialized["model_metadata"]["qwen"].keys()
-    )
     assert provider_model_max_tokens(provider, "qwen") == 4096
     assert provider_model_supports_images(provider, "qwen")
-    # Changing a request field rewrites the catalog, preserving its descriptive fields.
-    changed = replace(provider, base_url="http://localhost:9000/v1")
+    changed = replace(provider, headers={"X-Custom": "value"}, timeout_seconds=42)
     save_provider_settings(ProviderSettings(default_provider="local", providers=(changed,)), paths)
-    after = next(e for e in effective_catalog(paths) if e.name == "local")
-    assert after.base_url == changed.base_url
-    assert after.context_windows == before.context_windows
-    assert after.model_metadata == before.model_metadata
-    assert after.auth_methods == before.auth_methods
+    assert catalog_path.read_bytes() == before
     assert load_provider_settings(paths).get_provider("local") == changed
+
+
+@pytest.mark.parametrize("credential_name", [None, "shared-local-key"])
+async def test_login_custom_provider_preserves_catalog_and_reloads_key(
+    tmp_path, monkeypatch, credential_name
+):
+    from rio.coding.auth_commands import login_provider
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    paths = RioPaths()
+    paths.home.mkdir()
+    catalog = paths.home / "catalog.toml"
+    text = '# My local server\nschema_version = 1\n[[providers]]\nname = "local"\nbase_url = "http://localhost:8080/v1"\n'
+    if credential_name:
+        text += f'credential_name = "{credential_name}"\n'
+    catalog.write_text(text)
+
+    monkeypatch.setattr("rio.coding.auth_commands.getpass", lambda prompt: "secret-local-key")
+    await login_provider("local")
+
+    assert catalog.read_text() == text
+    settings = load_provider_settings(paths)
+    assert settings.default_provider == "local"
+    provider = settings.get_provider("local")
+    assert provider.credential_name == (credential_name or "local")
+    config = openai_compatible_config_from_provider(
+        provider, credential_reader=FileCredentialStore()
+    )
+    assert config.api_key == "secret-local-key"
+
+
+async def test_builtin_login_does_not_create_catalog(tmp_path, monkeypatch):
+    from rio.coding.auth_commands import login_provider
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("rio.coding.auth_commands.getpass", lambda prompt: "secret-openai-key")
+    await login_provider("openai")
+    assert not (RioPaths().home / "catalog.toml").exists()
+    assert load_provider_settings().default_provider == "openai"

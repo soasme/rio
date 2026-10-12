@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import re
 from contextlib import suppress
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field, replace
 from json import JSONDecodeError, dumps, loads
 from os import environ
 from pathlib import Path
 from shutil import copy2
-from typing import Annotated, Any, ClassVar, Literal, cast
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -35,8 +35,7 @@ from rio.ai.env import (
     CacheRetention,
     OpenAICompatibleConfig,
 )
-from rio.ai.openai_codex import DEFAULT_OPENAI_CODEX_BASE_URL
-from rio.coding.catalog_loader import builtin_catalog, effective_catalog, save_user_catalog_entries
+from rio.coding.catalog_loader import builtin_catalog, effective_catalog
 from rio.coding.credentials import CredentialReader, FileCredentialStore, credentials_path
 from rio.coding.oauth_registry import get_oauth_provider
 from rio.coding.paths import RioPaths, atomic_write_text
@@ -53,7 +52,6 @@ from rio.coding.thinking import (
     ThinkingParameter,
     anthropic_thinking_budget_for_level,
     normalize_thinking_level,
-    normalize_thinking_levels,
     reasoning_effort_for_level,
 )
 
@@ -81,72 +79,13 @@ class ProviderModelMetadata:
     compat: dict[str, Any] = field(default_factory=dict)
     thinking_level_map: dict[ThinkingLevel, str | None] = field(default_factory=dict)
 
-    def to_json(self) -> dict[str, Any]:
-        """Serialize this model metadata to JSON-compatible data."""
-        return {
-            "api": self.api,
-            "base_url": self.base_url,
-            "reasoning": self.reasoning,
-            "input": list(self.input),
-            "max_tokens": self.max_tokens,
-            "headers": dict(self.headers),
-            "compat": dict(self.compat),
-            "thinking_level_map": dict(self.thinking_level_map),
-        }
-
-
-class _ProviderConfigBase:
-    """Validation and serialization shared by every durable provider config."""
-
-    __slots__ = ()
-    json_type: ClassVar[str]
-
-    def __post_init__(self) -> None:
-        provider = cast(ProviderConfig, self)
-        _validate_provider_numbers(
-            timeout_seconds=provider.timeout_seconds,
-            max_retries=provider.max_retries,
-            max_retry_delay_seconds=provider.max_retry_delay_seconds,
-        )
-        _validate_model_metadata(provider.models, provider.model_metadata)
-        compat = getattr(provider, "compat", None)
-        if compat is not None:
-            _validate_json_object(compat, "Provider compat")
-        _validate_thinking_config(
-            thinking_levels=provider.thinking_levels,
-            thinking_models=provider.thinking_models,
-            thinking_default=provider.thinking_default,
-            thinking_parameter=provider.thinking_parameter,
-        )
-        _validate_thinking_defaults(provider.thinking_defaults)
-        inference_providers = getattr(provider, "inference_providers", None)
-        if inference_providers is not None:
-            _validate_inference_providers(provider.name, provider.models, inference_providers)
-
-    def to_json(self) -> dict[str, Any]:
-        """Serialize this provider config to JSON-compatible data."""
-        data: dict[str, Any] = {}
-        for item in fields(cast(Any, self)):
-            value = getattr(self, item.name)
-            if item.name == "model_metadata":
-                value = {model: metadata.to_json() for model, metadata in value.items()}
-            elif isinstance(value, tuple):
-                value = list(value)
-            elif isinstance(value, dict):
-                value = dict(value)
-            data[item.name] = value
-            if item.name == "name":
-                data["type"] = self.json_type
-        return data
-
 
 @dataclass(frozen=True, slots=True)
-class OpenAICompatibleProviderConfig(_ProviderConfigBase):
-    """Durable settings for one OpenAI-compatible provider."""
-
-    json_type: ClassVar[str] = "openai-compatible"
+class ProviderConfig:
+    """Provider definition validated by the catalog, with saved runtime preferences."""
 
     name: str
+    kind: ProviderKind = "openai-compatible"
     base_url: str = DEFAULT_OPENAI_COMPATIBLE_BASE_URL
     api: ProviderApi = "openai-completions"
     api_key_env: str = "OPENAI_API_KEY"
@@ -165,68 +104,6 @@ class OpenAICompatibleProviderConfig(_ProviderConfigBase):
     thinking_parameter: ThinkingParameter | None = None
     thinking_defaults: dict[str, ThinkingLevel] = field(default_factory=dict)
     inference_providers: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class AnthropicProviderConfig(_ProviderConfigBase):
-    """Durable settings for Anthropic's Messages API."""
-
-    json_type: ClassVar[str] = "anthropic"
-
-    name: str = "anthropic"
-    base_url: str = DEFAULT_ANTHROPIC_BASE_URL
-    api: ProviderApi = "anthropic-messages"
-    api_key_env: str = "ANTHROPIC_API_KEY"
-    credential_name: str | None = "anthropic"
-    models: tuple[str, ...] = ("claude-sonnet-4-6",)
-    default_model: str = "claude-sonnet-4-6"
-    headers: dict[str, str] = field(default_factory=dict)
-    compat: dict[str, Any] = field(default_factory=dict)
-    model_metadata: dict[str, ProviderModelMetadata] = field(default_factory=dict)
-    timeout_seconds: float = DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS
-    max_retries: int = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES
-    max_retry_delay_seconds: float = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS
-    thinking_levels: tuple[ThinkingLevel, ...] | None = None
-    thinking_models: tuple[str, ...] = ()
-    thinking_default: ThinkingLevel | None = None
-    thinking_parameter: ThinkingParameter | None = None
-    thinking_defaults: dict[str, ThinkingLevel] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class OpenAICodexProviderConfig(_ProviderConfigBase):
-    """Durable settings for OpenAI Codex subscription OAuth."""
-
-    json_type: ClassVar[str] = "openai-codex"
-
-    name: str = "openai-codex"
-    base_url: str = DEFAULT_OPENAI_CODEX_BASE_URL
-    api_key_env: str = "OPENAI_CODEX_ACCESS_TOKEN"
-    credential_name: str | None = "openai-codex"
-    models: tuple[str, ...] = (
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.3-codex",
-        "gpt-5.3-codex-spark",
-        "gpt-5.2",
-    )
-    default_model: str = "gpt-5.5"
-    headers: dict[str, str] = field(default_factory=dict)
-    model_metadata: dict[str, ProviderModelMetadata] = field(default_factory=dict)
-    timeout_seconds: float = DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS
-    max_retries: int = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES
-    max_retry_delay_seconds: float = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS
-    thinking_levels: tuple[ThinkingLevel, ...] | None = None
-    thinking_models: tuple[str, ...] = ()
-    thinking_default: ThinkingLevel | None = None
-    thinking_parameter: ThinkingParameter | None = None
-    thinking_defaults: dict[str, ThinkingLevel] = field(default_factory=dict)
-
-
-type ProviderConfig = (
-    OpenAICompatibleProviderConfig | AnthropicProviderConfig | OpenAICodexProviderConfig
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,15 +157,17 @@ def provider_config_from_catalog_entry(name: str) -> ProviderConfig:
 
 def provider_config_from_entry(entry: ProviderCatalogEntry) -> ProviderConfig:
     """Create a durable provider config from a catalog entry."""
-    return _new_provider_config(
-        entry.kind,
+    return ProviderConfig(
+        kind=entry.kind,
         # Catalog anthropic entries always speak the Messages API.
-        api=None if entry.kind == "anthropic" else entry.api,
+        api="anthropic-messages"
+        if entry.kind == "anthropic"
+        else entry.api or _default_api_for_kind(entry.kind),
         compat=dict(entry.compat),
         name=entry.name,
         base_url=entry.base_url,
         api_key_env=entry.api_key_env,
-        credential_name=entry.credential_name,
+        credential_name=entry.credential_name or entry.name,
         models=entry.models,
         default_model=entry.default_model,
         headers=dict(entry.headers),
@@ -298,22 +177,6 @@ def provider_config_from_entry(entry: ProviderCatalogEntry) -> ProviderConfig:
         thinking_default=entry.thinking_default,
         thinking_parameter=entry.thinking_parameter,
     )
-
-
-def _new_provider_config(
-    kind: str,
-    *,
-    api: ProviderApi | None,
-    compat: dict[str, Any],
-    **values: Any,
-) -> ProviderConfig:
-    """Build the config class for ``kind``; Codex has no api or compat fields."""
-    if kind == "openai-codex":
-        return OpenAICodexProviderConfig(**values)
-    api = api or _default_api_for_kind(kind)
-    if kind == "anthropic":
-        return AnthropicProviderConfig(api=api, compat=compat, **values)
-    return OpenAICompatibleProviderConfig(api=api, compat=compat, **values)
 
 
 def _default_api_for_kind(kind: str) -> ProviderApi:
@@ -370,7 +233,6 @@ def load_provider_settings(paths: RioPaths | None = None) -> ProviderSettings:
 def save_provider_settings(settings: ProviderSettings, paths: RioPaths | None = None) -> Path:
     """Write durable provider preferences and return the path."""
     resolved_paths = paths or RioPaths()
-    _save_provider_definitions_to_catalog(settings, paths=resolved_paths)
     path = provider_settings_path(resolved_paths)
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_provider_settings(settings, path=path, backup=True)
@@ -502,9 +364,9 @@ def _merge_provider_config(existing: ProviderConfig, incoming: ProviderConfig) -
     preferences, extra headers/compat/metadata, and (as one group) thinking setup.
     Codex keeps the incoming model list; other kinds union both lists.
     """
-    if type(existing) is not type(incoming):
+    if existing.kind != incoming.kind:
         return incoming
-    if isinstance(incoming, OpenAICodexProviderConfig):
+    if incoming.kind == "openai-codex":
         models = incoming.models
     else:
         models = _unique_strings((*incoming.models, *existing.models))
@@ -528,10 +390,8 @@ def _merge_provider_config(existing: ProviderConfig, incoming: ProviderConfig) -
         "thinking_parameter": thinking.thinking_parameter,
         "thinking_defaults": existing.thinking_defaults,
     }
-    if not isinstance(incoming, OpenAICodexProviderConfig):
-        changes["compat"] = {**incoming.compat, **cast(Any, existing).compat}
-    if isinstance(existing, OpenAICompatibleProviderConfig):
-        changes["inference_providers"] = existing.inference_providers
+    changes["compat"] = {**incoming.compat, **existing.compat}
+    changes["inference_providers"] = existing.inference_providers
     return replace(incoming, **changes)
 
 
@@ -574,121 +434,9 @@ def _provider_preference_to_json(provider: ProviderConfig) -> dict[str, Any]:
         "max_retry_delay_seconds": provider.max_retry_delay_seconds,
         "thinking_defaults": dict(provider.thinking_defaults),
     }
-    if isinstance(provider, OpenAICompatibleProviderConfig) and provider.inference_providers:
+    if provider.inference_providers:
         preference["inference_providers"] = dict(provider.inference_providers)
     return preference
-
-
-def _save_provider_definitions_to_catalog(
-    settings: ProviderSettings,
-    *,
-    paths: RioPaths | None,
-) -> None:
-    """Persist provider definitions that are not already represented by the catalog."""
-    catalog_by_name = {entry.name: entry for entry in effective_catalog(paths)}
-    entries_to_save = []
-    for provider in settings.providers:
-        entry = catalog_by_name.get(provider.name)
-        if entry is None or _provider_definition_differs_from_catalog(provider, entry):
-            entries_to_save.append(_catalog_entry_from_provider(provider, existing=entry))
-    if entries_to_save:
-        save_user_catalog_entries(entries_to_save, paths=paths)
-
-
-def _provider_definition_differs_from_catalog(
-    provider: ProviderConfig,
-    entry: ProviderCatalogEntry,
-) -> bool:
-    """Return whether provider metadata changed enough to belong in catalog.toml."""
-    if provider_kind(provider) != entry.kind:
-        return True
-    if provider.base_url != entry.base_url:
-        return True
-    if provider.api_key_env != entry.api_key_env:
-        return True
-    if provider.credential_name != entry.credential_name:
-        return True
-    if provider.models != entry.models:
-        return True
-    if getattr(provider, "api", None) != entry.api and entry.api is not None:
-        return True
-    if provider.headers != dict(entry.headers):
-        return True
-    if getattr(provider, "compat", {}) != dict(entry.compat):
-        return True
-    if provider.model_metadata != _provider_model_metadata_from_catalog(entry.model_metadata):
-        return True
-    if provider.thinking_levels != entry.thinking_levels:
-        return True
-    if provider.thinking_models != entry.thinking_models:
-        return True
-    if provider.thinking_default != entry.thinking_default:
-        return True
-    return provider.thinking_parameter != entry.thinking_parameter
-
-
-def _catalog_entry_from_provider(
-    provider: ProviderConfig,
-    *,
-    existing: ProviderCatalogEntry | None = None,
-) -> ProviderCatalogEntry:
-    """Create catalog metadata from a runtime provider config."""
-    windows = (existing.context_windows or {}) if existing else {}
-    return ProviderCatalogEntry(
-        name=provider.name,
-        display_name=existing.display_name if existing is not None else provider.name,
-        kind=provider_kind(provider),
-        base_url=provider.base_url,
-        api_key_env=provider.api_key_env,
-        api=getattr(provider, "api", None),
-        credential_name=provider.credential_name,
-        models=provider.models,
-        default_model=(
-            existing.default_model
-            if existing is not None and existing.default_model in provider.models
-            else provider.default_model
-        ),
-        docs_url=existing.docs_url if existing is not None else provider.base_url,
-        auth_methods=existing.auth_methods if existing else ("api_key",),
-        removed_models=existing.removed_models if existing else (),
-        context_windows={model: size for model, size in windows.items() if model in provider.models}
-        or None,
-        headers=dict(provider.headers),
-        compat=dict(getattr(provider, "compat", {})),
-        model_metadata=_catalog_model_metadata_from_provider(provider, existing=existing),
-        thinking_levels=provider.thinking_levels,
-        thinking_models=provider.thinking_models,
-        thinking_default=provider.thinking_default,
-        thinking_parameter=provider.thinking_parameter,
-    )
-
-
-def _catalog_model_metadata_from_provider(
-    provider: ProviderConfig,
-    *,
-    existing: ProviderCatalogEntry | None = None,
-) -> dict[str, ModelCatalogMetadata]:
-    metadata_by_model = dict(provider.model_metadata)
-    if existing:
-        for model in existing.model_metadata:
-            if model in provider.models:
-                metadata_by_model.setdefault(model, ProviderModelMetadata())
-    return {
-        model: replace(
-            existing.model_metadata.get(model, ModelCatalogMetadata())
-            if existing
-            else ModelCatalogMetadata(),
-            api=metadata.api,
-            base_url=metadata.base_url,
-            reasoning=metadata.reasoning,
-            input=tuple(item for item in metadata.input if item in {"text", "image"}),
-            max_tokens=metadata.max_tokens,
-            headers=dict(metadata.headers),
-            compat=dict(metadata.compat),
-            thinking_level_map=dict(metadata.thinking_level_map),
-        )
-        for model, metadata in metadata_by_model.items()
-    }
 
 
 class _Preference(BaseModel):
@@ -752,7 +500,7 @@ def _apply_provider_preference(provider: ProviderConfig, preference: _Preference
             provider, changes["thinking_defaults"]
         )
     routes = changes.pop("inference_providers", None)
-    if routes is not None and isinstance(provider, OpenAICompatibleProviderConfig):
+    if routes is not None:
         routes = {model: route for model, route in routes.items() if model in provider.models}
         _validate_inference_providers(provider.name, provider.models, routes)
         changes["inference_providers"] = routes
@@ -857,7 +605,7 @@ def _thinking_level_map_supports(
 
 
 def _metadata_for_model(provider: ProviderConfig, model: str) -> ProviderModelMetadata | None:
-    return getattr(provider, "model_metadata", {}).get(model)
+    return provider.model_metadata.get(model)
 
 
 def _provider_api(provider: ProviderConfig, model: str | None = None) -> ProviderApi | str:
@@ -865,9 +613,9 @@ def _provider_api(provider: ProviderConfig, model: str | None = None) -> Provide
     metadata = _metadata_for_model(provider, selected_model)
     if metadata is not None and metadata.api is not None:
         return metadata.api
-    if isinstance(provider, OpenAICodexProviderConfig):
+    if provider.kind == "openai-codex":
         return "openai-codex-responses"
-    return getattr(provider, "api", "openai-completions")
+    return provider.api
 
 
 def _model_base_url(provider: ProviderConfig, model: str | None = None) -> str:
@@ -887,7 +635,7 @@ def _model_compat(provider: ProviderConfig, model: str | None = None) -> dict[st
     metadata = _metadata_for_model(provider, selected_model)
     return {
         **_detected_compat(provider, selected_model),
-        **getattr(provider, "compat", {}),
+        **provider.compat,
         **(metadata.compat if metadata is not None else {}),
     }
 
@@ -1009,7 +757,7 @@ def resolve_startup_thinking_level(
 
 
 def openai_compatible_config_from_provider(
-    provider: OpenAICompatibleProviderConfig,
+    provider: ProviderConfig,
     *,
     credential_reader: CredentialReader | None = None,
     model: str | None = None,
@@ -1021,7 +769,7 @@ def openai_compatible_config_from_provider(
     base_url = _model_base_url(provider, selected_model)
     if provider.name == DEFAULT_PROVIDER_NAME and provider.api_key_env == "OPENAI_API_KEY":
         base_url = environ.get("OPENAI_BASE_URL", base_url)
-    reasoning_effort = _reasoning_effort_from_provider(
+    reasoning_effort = reasoning_effort_from_provider(
         provider,
         model=selected_model,
         thinking_level=thinking_level,
@@ -1053,7 +801,7 @@ def openai_compatible_config_from_provider(
 
 
 def anthropic_config_from_provider(
-    provider: AnthropicProviderConfig,
+    provider: ProviderConfig,
     *,
     credential_reader: CredentialReader | None = None,
     model: str | None = None,
@@ -1094,20 +842,6 @@ def anthropic_config_from_provider(
     )
 
 
-def provider_kind(provider: ProviderConfig) -> ProviderKind:
-    """Return the durable provider kind."""
-    if isinstance(provider, AnthropicProviderConfig):
-        return "anthropic"
-    if isinstance(provider, OpenAICodexProviderConfig):
-        return "openai-codex"
-    if isinstance(provider, OpenAICompatibleProviderConfig):
-        if provider.api == "google-generative-ai":
-            return "google-generative-ai"
-        if provider.api == "mistral-conversations":
-            return "mistral-conversations"
-    return "openai-compatible"
-
-
 def provider_has_usable_credentials(
     provider: ProviderConfig,
     *,
@@ -1127,8 +861,8 @@ def provider_has_usable_credentials(
     return bool(environ.get(provider.api_key_env))
 
 
-def _reasoning_effort_from_provider(
-    provider: OpenAICompatibleProviderConfig,
+def reasoning_effort_from_provider(
+    provider: ProviderConfig,
     *,
     model: str | None,
     thinking_level: ThinkingLevel | None,
@@ -1151,6 +885,11 @@ def _reasoning_effort_from_provider(
             f"Thinking mode {normalized} is not available for "
             f"{provider.name}:{selected_model}. Available modes: {available}"
         )
+    if provider.kind == "openai-codex":
+        if normalized == "off":
+            return None
+        if normalized == "minimal":
+            return "low"
     mapped = _metadata_thinking_value(provider, selected_model, normalized)
     if mapped is not None:
         return mapped
@@ -1162,7 +901,7 @@ def _reasoning_effort_from_provider(
 
 
 def _anthropic_thinking_budget_from_provider(
-    provider: AnthropicProviderConfig,
+    provider: ProviderConfig,
     *,
     model: str | None,
     thinking_level: ThinkingLevel | None,
@@ -1235,7 +974,7 @@ def _include_reasoning_effort_none(
 
 
 def _reasoning_effort_from_anthropic_provider(
-    provider: AnthropicProviderConfig,
+    provider: ProviderConfig,
     *,
     model: str,
     thinking_level: ThinkingLevel | None,
@@ -1251,7 +990,7 @@ def _reasoning_effort_from_anthropic_provider(
 
 
 def _anthropic_thinking_mode(
-    provider: AnthropicProviderConfig,
+    provider: ProviderConfig,
     model: str,
     *,
     thinking_level: ThinkingLevel | None = None,
@@ -1314,77 +1053,6 @@ def _api_key_from_provider(
     return environ.get(provider.api_key_env, "") if provider.api_key_env else ""
 
 
-def _validate_provider_numbers(
-    *,
-    timeout_seconds: float,
-    max_retries: int,
-    max_retry_delay_seconds: float,
-) -> None:
-    if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
-        raise ProviderConfigError("Provider timeout_seconds must be greater than 0")
-    if not isinstance(max_retries, int) or isinstance(max_retries, bool) or max_retries < 0:
-        raise ProviderConfigError("Provider max_retries must be 0 or greater")
-    if (
-        not isinstance(max_retry_delay_seconds, int | float)
-        or isinstance(max_retry_delay_seconds, bool)
-        or max_retry_delay_seconds < 0
-    ):
-        raise ProviderConfigError("Provider max_retry_delay_seconds must be 0 or greater")
-
-
-def _validate_model_metadata(
-    models: tuple[str, ...],
-    model_metadata: dict[str, ProviderModelMetadata],
-) -> None:
-    model_names = set(models)
-    for model, metadata in model_metadata.items():
-        if model not in model_names:
-            raise ProviderConfigError(f"Provider model_metadata key is not in models: {model}")
-        if metadata.max_tokens is not None and metadata.max_tokens <= 0:
-            raise ProviderConfigError("Provider model_metadata max_tokens must be positive")
-        if any(item not in {"text", "image"} for item in metadata.input):
-            raise ProviderConfigError("Provider model_metadata input must contain text or image")
-        _validate_json_object(metadata.compat, "Provider model_metadata compat")
-        _validate_string_dict(metadata.headers, "Provider model_metadata headers")
-        for level, value in metadata.thinking_level_map.items():
-            normalize_thinking_level(level)
-            if value is not None and (not isinstance(value, str) or not value.strip()):
-                raise ProviderConfigError(
-                    "Provider model_metadata thinking_level_map values must be strings or null"
-                )
-
-
-def _validate_string_dict(value: dict[str, str], field_name: str) -> None:
-    for key, item in value.items():
-        if not isinstance(key, str) or not key.strip():
-            raise ProviderConfigError(f"{field_name} keys must be non-empty strings")
-        if not isinstance(item, str) or not item.strip():
-            raise ProviderConfigError(f"{field_name} values must be non-empty strings")
-
-
-def _validate_json_object(value: dict[str, Any], field_name: str) -> None:
-    for key, item in value.items():
-        if not isinstance(key, str) or not key.strip():
-            raise ProviderConfigError(f"{field_name} keys must be non-empty strings")
-        _validate_json_value(item, f"{field_name}.{key}")
-
-
-def _validate_json_value(value: object, field_name: str) -> None:
-    if value is None or isinstance(value, str | int | float | bool):
-        return
-    if isinstance(value, list):
-        for item in value:
-            _validate_json_value(item, field_name)
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise ProviderConfigError(f"{field_name} object keys must be strings")
-            _validate_json_value(item, f"{field_name}.{key}")
-        return
-    raise ProviderConfigError(f"{field_name} must be JSON-compatible")
-
-
 _HF_INFERENCE_PROVIDER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -1417,48 +1085,3 @@ def _validate_inference_providers(
                 f"Inference-provider preference references unknown model: {model}"
             )
         validate_huggingface_inference_provider(route)
-
-
-def _validate_thinking_defaults(thinking_defaults: dict[str, ThinkingLevel]) -> None:
-    for model, thinking_level in thinking_defaults.items():
-        if not isinstance(model, str) or not model.strip():
-            raise ProviderConfigError("Provider thinking_defaults keys must be non-empty strings")
-        try:
-            normalize_thinking_level(thinking_level)
-        except ValueError as exc:
-            raise ProviderConfigError(str(exc)) from exc
-
-
-def _validate_thinking_config(
-    *,
-    thinking_levels: tuple[ThinkingLevel, ...] | None,
-    thinking_models: tuple[str, ...],
-    thinking_default: ThinkingLevel | None,
-    thinking_parameter: ThinkingParameter | None,
-) -> None:
-    if thinking_levels is None:
-        if thinking_models or thinking_default is not None or thinking_parameter is not None:
-            raise ProviderConfigError(
-                "Provider thinking_levels must be set before thinking metadata"
-            )
-        return
-    try:
-        normalized = normalize_thinking_levels(thinking_levels)
-    except ValueError as exc:
-        raise ProviderConfigError(str(exc)) from exc
-    if normalized != thinking_levels:
-        raise ProviderConfigError("Provider thinking_levels must be normalized")
-    if any(not isinstance(model, str) or not model.strip() for model in thinking_models):
-        raise ProviderConfigError("Provider thinking_models must contain non-empty strings")
-    if thinking_default is not None and thinking_default not in thinking_levels:
-        raise ProviderConfigError("Provider thinking_default must be in thinking_levels")
-    if thinking_parameter not in {
-        None,
-        "reasoning_effort",
-        "reasoning.effort",
-        "anthropic.thinking",
-    }:
-        raise ProviderConfigError(
-            "Provider thinking_parameter must be reasoning_effort, reasoning.effort, "
-            "or anthropic.thinking"
-        )

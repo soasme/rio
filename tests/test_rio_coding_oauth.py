@@ -51,7 +51,6 @@ from rio.coding.oauth_types import (
     OAuthDeviceCodeInfo,
     OAuthLoginCallbacks,
     OAuthPrompt,
-    OAuthSelectPrompt,
 )
 
 
@@ -63,14 +62,10 @@ def _callbacks(
     async def on_prompt(_prompt: OAuthPrompt) -> str:
         return prompt
 
-    async def on_select(_prompt: OAuthSelectPrompt) -> str | None:
-        return None
-
     return OAuthLoginCallbacks(
         on_auth=lambda _info: None,
         on_device_code=lambda info: device_codes.append(info) if device_codes is not None else None,
         on_prompt=on_prompt,
-        on_select=on_select,
     )
 
 
@@ -452,7 +447,7 @@ async def test_refresh_github_copilot_preserves_enterprise_metadata() -> None:
 # -- oauth_device.py ---------------------------------------------------
 
 
-async def test_device_poll_slow_down_and_cancel() -> None:
+async def test_device_poll_slow_down() -> None:
     sleeps: list[float] = []
     results = iter(
         [
@@ -477,11 +472,6 @@ async def test_device_poll_slow_down_and_cancel() -> None:
         == "done"
     )
     assert sleeps == [6]
-
-    cancel_event = asyncio.Event()
-    cancel_event.set()
-    with pytest.raises(OAuthError, match="Login cancelled"):
-        await poll_oauth_device_code(fake_poll, cancel_event=cancel_event)
 
 
 # -- oauth_registry.py ---------------------------------------------------
@@ -511,45 +501,48 @@ def test_credentials_path_is_rooted_under_rio_home(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
-async def test_cancelling_login_cleans_up_callback_and_manual_waiters(provider):
-    from rio.coding.oauth import _wait_for_authorization_code
-    from rio.coding.oauth_anthropic import _wait_for_input
+async def test_cancelling_login_closes_callback_server(provider, monkeypatch):
+    from rio.coding import oauth, oauth_anthropic
 
     started = asyncio.Event()
-    stopped = []
 
     class Server:
-        cancelled = False
+        closed = False
 
         async def wait_for_code(self):
-            try:
-                await asyncio.Future()
-            finally:
-                stopped.append("server")
-
-        def cancel_wait(self):
-            self.cancelled = True
-
-    async def manual():
-        started.set()
-        try:
+            started.set()
             await asyncio.Future()
-        finally:
-            stopped.append("manual")
+
+        def close(self):
+            self.closed = True
 
     server = Server()
-    if provider == "openai":
-        waiter = _wait_for_authorization_code(
-            flow=create_openai_codex_authorization_flow(),
-            server=server,
-            on_manual_code_input=manual,
-        )
-    else:
-        waiter = _wait_for_input(server, manual)
-    task = asyncio.create_task(waiter)
+
+    async def start_server(*args, **kwargs):
+        return server
+
+    module = oauth if provider == "openai" else oauth_anthropic
+    monkeypatch.setattr(module, "_start_local_oauth_server", start_server)
+    monkeypatch.setattr(module.webbrowser, "open", lambda url: None)
+    login = oauth.login_openai_codex if provider == "openai" else oauth_anthropic.login_anthropic
+    callbacks = _callbacks()
+    task = asyncio.create_task(login(on_auth=callbacks.on_auth, on_prompt=callbacks.on_prompt))
     await started.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert sorted(stopped) == ["manual", "server"]
-    assert server.cancelled
+    assert server.closed
+
+
+async def test_device_poll_supports_task_cancellation():
+    started = asyncio.Event()
+
+    async def poll():
+        started.set()
+        return DevicePollResult(status="pending")
+
+    task = asyncio.create_task(poll_oauth_device_code(poll))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task

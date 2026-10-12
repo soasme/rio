@@ -1,6 +1,5 @@
 """Terminal commands for provider authentication."""
 
-from dataclasses import replace
 from getpass import getpass
 
 import anyio
@@ -27,15 +26,10 @@ def terminal_callbacks(method=None):
     async def prompt(value):
         return await anyio.to_thread.run_sync(lambda: input(f"{value.message}: "))
 
-    async def select(value):
-        choices = ", ".join(f"{item.id}: {item.label}" for item in value.options)
-        return await anyio.to_thread.run_sync(lambda: input(f"{value.message} ({choices}): "))
-
     return OAuthLoginCallbacks(
         on_auth=lambda info: print(f"{info.url}\n{info.instructions or ''}"),
         on_device_code=lambda info: print(f"{info.verification_uri}\nCode: {info.user_code}"),
         on_prompt=prompt,
-        on_select=select,
         on_progress=print,
         method=method,
     )
@@ -57,5 +51,5 @@ async def login_provider(name, *, method=None):
         if not secret.strip():
             raise ValueError("API key cannot be empty")
         store.set_api_key(key, secret)
-    upsert_saved_provider(replace(provider, credential_name=key), set_default=True)
+    upsert_saved_provider(provider, set_default=True)
     return f"Logged in to {name}."

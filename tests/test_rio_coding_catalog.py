@@ -1,9 +1,4 @@
-"""Tests for rio.coding's model/provider catalog stack.
-
-Ported from tau's test_models_dev.py, test_models_dev_store.py, and
-test_provider_catalog.py. Tests that depend on tau_coding.provider_config
-(a sibling slice not owned here) are intentionally not ported.
-"""
+"""Tests for rio.coding model and provider catalogs."""
 
 from __future__ import annotations
 
@@ -14,7 +9,6 @@ from typing import get_args
 
 import pytest
 
-import rio.coding.models_dev_store as store
 from rio.coding import models_dev
 from rio.coding.catalog_loader import (
     CatalogError,
@@ -22,7 +16,6 @@ from rio.coding.catalog_loader import (
     builtin_catalog_resource_text,
     builtin_source_catalog,
     effective_catalog,
-    save_user_catalog_entries,
     user_catalog_path,
 )
 from rio.coding.models_dev import (
@@ -31,12 +24,10 @@ from rio.coding.models_dev import (
     models_dev_catalog_overlay,
     thinking_level_map_from_reasoning_options,
 )
-from rio.coding.models_dev_store import cached_models_dev_catalog_document
 from rio.coding.paths import RioPaths
 from rio.coding.provider_catalog import (
     BUILTIN_PROVIDER_CATALOG,
     ModelCatalogMetadata,
-    ModelCostTier,
     ModelInput,
     ProviderApi,
 )
@@ -86,7 +77,6 @@ FIXTURE: dict[str, object] = {
             },
             "example/new-tool-model": {
                 "id": "example/new-tool-model",
-                "name": "New Tool Model",
                 "reasoning": False,
                 "reasoning_options": [],
                 "tool_call": True,
@@ -200,11 +190,8 @@ def test_generation_adds_new_tool_models_and_provider_aliases() -> None:
     huggingface = document["providers"]["huggingface"]
     assert "example/new-tool-model" in huggingface["models"]
     assert huggingface["model_metadata"]["example/new-tool-model"] == {
-        "name": "New Tool Model",
         "reasoning": False,
         "input": ["text"],
-        "cost": {"input": 0.1, "output": 0.2, "cacheRead": 0.0, "cacheWrite": 0.0},
-        "context_window": 65536,
         "max_tokens": 8192,
     }
     together = document["providers"]["together"]
@@ -228,37 +215,6 @@ def test_missing_bundled_catalog_falls_back_silently(
     monkeypatch.setattr(models_dev, "files", missing_files)
 
     assert bundled_models_dev_catalog_overlay() is None
-
-
-# ---------------------------------------------------------------------------
-# models_dev_store
-# ---------------------------------------------------------------------------
-
-
-def test_effective_catalog_uses_newer_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    paths = RioPaths(home=tmp_path / ".rio")
-    document = models_dev_catalog_document(
-        _fixture(), builtin_source_catalog(), generated_at=1_000_000
-    )
-    paths.models_store_path.parent.mkdir(parents=True)
-    paths.models_store_path.write_text(
-        json.dumps({"schema_version": 1, "checked_at": 1000.0, "catalog": document}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        store,
-        "bundled_models_dev_catalog_document",
-        lambda: {"generated_at": 2_000_000},
-    )
-    assert cached_models_dev_catalog_document(paths) is None
-    monkeypatch.setattr(store, "bundled_models_dev_catalog_document", lambda: {"generated_at": 0})
-    assert cached_models_dev_catalog_document(paths) is not None
-    huggingface = next(
-        provider for provider in effective_catalog(paths) if provider.name == "huggingface"
-    )
-    assert "example/new-tool-model" in huggingface.models
 
 
 # ---------------------------------------------------------------------------
@@ -301,11 +257,6 @@ def test_builtin_catalog_with_bundled_models_matches_schema(
         assert all(isinstance(model, str) and model for model in entry.models), entry.name
         assert entry.default_model in entry.models, entry.name
         assert set(entry.model_metadata) <= set(entry.models), entry.name
-        if entry.context_windows is not None:
-            assert set(entry.context_windows) <= set(entry.models), entry.name
-            assert all(
-                isinstance(window, int) and window > 0 for window in entry.context_windows.values()
-            ), entry.name
         for model, metadata in entry.model_metadata.items():
             assert_model_metadata_schema(f"{entry.name}/{model}", metadata)
 
@@ -347,7 +298,6 @@ def test_builtin_catalog_matches_expected_providers() -> None:
 def test_builtin_catalog_golden_anthropic_entry() -> None:
     entry = builtin_provider_entry("anthropic")
     assert entry is not None
-    assert entry.display_name == "Anthropic"
     assert entry.kind == "anthropic"
     assert entry.base_url == "https://api.anthropic.com"
     assert entry.api_key_env == "ANTHROPIC_API_KEY"
@@ -369,27 +319,14 @@ def test_builtin_catalog_golden_anthropic_entry() -> None:
         "claude-sonnet-5",
     } <= set(entry.models)
     assert entry.default_model == "claude-sonnet-4-6"
-    assert entry.docs_url == "https://docs.anthropic.com"
-    assert entry.context_windows is not None
-    assert entry.context_windows["claude-haiku-4-5"] == 200_000
-    assert entry.context_windows["claude-opus-5"] == 1_000_000
-    assert entry.context_windows["claude-sonnet-4-6"] == 1_000_000
-    assert set(entry.context_windows) == set(entry.models)
     opus_5 = entry.model_metadata["claude-opus-5"]
-    assert opus_5.context_window == 1_000_000
     assert opus_5.max_tokens == 128_000
     assert opus_5.input == ("text", "image")
-    assert opus_5.cost is not None
-    assert opus_5.cost["input"] == 5
-    assert opus_5.cost["output"] == 25
-    assert opus_5.cost["cacheWrite"] == 6.25
-    assert opus_5.cost["cacheWrite1h"] == 10
     assert opus_5.compat == {"forceAdaptiveThinking": True}
     assert entry.thinking_levels == ("off", "minimal", "low", "medium", "high", "xhigh")
     assert entry.thinking_models == ()
     assert entry.thinking_default == "medium"
     assert entry.thinking_parameter == "anthropic.thinking"
-    assert entry.auth_methods == ("api_key", "oauth")
 
 
 def test_builtin_catalog_separates_openai_api_and_codex_context_limits() -> None:
@@ -398,18 +335,10 @@ def test_builtin_catalog_separates_openai_api_and_codex_context_limits() -> None
 
     assert openai is not None
     assert codex is not None
-    assert openai.context_windows is not None
-    assert codex.context_windows is not None
     assert "gpt-5.6" in openai.models
     assert "gpt-5.6" not in codex.models
-    assert "gpt-5.6" not in codex.context_windows
     assert "gpt-5.6" not in codex.model_metadata
     assert codex.removed_models == ("gpt-5.6",)
-    assert openai.context_windows["gpt-5.6-sol"] == 1_050_000
-    assert codex.context_windows["gpt-5.6-sol"] == 272_000
-    assert codex.context_windows["gpt-5.6-terra"] == 272_000
-    assert codex.context_windows["gpt-5.6-luna"] == 272_000
-    assert codex.model_metadata["gpt-5.6-sol"].context_window == 272_000
 
 
 @pytest.mark.parametrize(
@@ -506,20 +435,6 @@ def test_sparse_provider_catalogs_declare_model_input_modalities(
     assert vision_models <= actual_vision_models
 
 
-def test_builtin_catalog_oauth_and_opencode_auth_methods() -> None:
-    codex = builtin_provider_entry("openai-codex")
-    copilot = builtin_provider_entry("github-copilot")
-    opencode_go = builtin_provider_entry("opencode-go")
-    opencode = builtin_provider_entry("opencode")
-
-    assert codex is not None and codex.auth_methods == ("oauth",)
-    assert copilot is not None and copilot.auth_methods == ("oauth",)
-    assert opencode_go is not None and opencode_go.auth_methods == ("api_key",)
-    assert opencode is not None and opencode.auth_methods == ("api_key",)
-    assert opencode_go.api_key_env == "OPENCODE_API_KEY"
-    assert opencode.api_key_env == "OPENCODE_API_KEY"
-
-
 def test_builtin_catalog_copilot_claude_max_tokens() -> None:
     entry = builtin_provider_entry("github-copilot")
     assert entry is not None
@@ -545,23 +460,11 @@ def test_builtin_catalog_copilot_claude_max_tokens() -> None:
 def assert_model_metadata_schema(model: str, metadata: ModelCatalogMetadata) -> None:
     """Check one catalog metadata record's shape without pinning upstream values."""
     assert isinstance(metadata, ModelCatalogMetadata), model
-    assert metadata.name is None or isinstance(metadata.name, str), model
     assert metadata.api is None or metadata.api in get_args(ProviderApi), model
     assert metadata.base_url is None or isinstance(metadata.base_url, str), model
     assert metadata.reasoning is None or isinstance(metadata.reasoning, bool), model
     assert isinstance(metadata.input, tuple), model
     assert all(value in get_args(ModelInput) for value in metadata.input), model
-    if metadata.cost is not None:
-        assert isinstance(metadata.cost, dict), model
-        assert all(isinstance(key, str) for key in metadata.cost), model
-        assert all(isinstance(value, (int, float)) for value in metadata.cost.values()), model
-    assert isinstance(metadata.cost_tiers, tuple), model
-    for tier in metadata.cost_tiers:
-        assert isinstance(tier, ModelCostTier), model
-        assert isinstance(tier.cost, dict), model
-        assert all(isinstance(value, (int, float)) for value in tier.cost.values()), model
-        assert tier.max_input_tokens is None or isinstance(tier.max_input_tokens, int), model
-    assert metadata.context_window is None or isinstance(metadata.context_window, int), model
     assert metadata.max_tokens is None or isinstance(metadata.max_tokens, int), model
     assert isinstance(metadata.headers, dict), model
     assert all(isinstance(value, str) for value in metadata.headers.values()), model
@@ -575,12 +478,10 @@ def assert_model_metadata_schema(model: str, metadata: ModelCatalogMetadata) -> 
 def test_builtin_catalog_golden_nvidia_entry() -> None:
     entry = builtin_provider_entry("nvidia")
     assert entry is not None
-    assert entry.display_name == "NVIDIA NIM"
     assert entry.kind == "openai-compatible"
     assert entry.base_url == "https://integrate.api.nvidia.com/v1"
     assert entry.api_key_env == "NVIDIA_API_KEY"
     assert entry.credential_name == "nvidia"
-    assert entry.docs_url == "https://docs.api.nvidia.com/nim"
     assert entry.api == "openai-completions"
     assert entry.thinking_levels == ("off", "minimal", "low", "medium", "high")
     assert entry.thinking_models == ()
@@ -592,9 +493,6 @@ def test_builtin_catalog_golden_nvidia_entry() -> None:
     assert entry.models
     assert all(isinstance(model, str) for model in entry.models)
     assert entry.default_model in entry.models
-    assert entry.context_windows is not None
-    assert set(entry.context_windows) == set(entry.models)
-    assert all(isinstance(window, int) for window in entry.context_windows.values())
     assert set(entry.model_metadata) == set(entry.models)
     for model, metadata in entry.model_metadata.items():
         assert_model_metadata_schema(model, metadata)
@@ -606,9 +504,6 @@ def test_builtin_catalog_huggingface_model_expansion() -> None:
     assert entry.models
     assert all(isinstance(model, str) for model in entry.models)
     assert entry.default_model in entry.models
-    assert entry.context_windows is not None
-    assert set(entry.context_windows) == set(entry.models)
-    assert all(isinstance(window, int) for window in entry.context_windows.values())
     assert set(entry.model_metadata) == set(entry.models)
     for model, metadata in entry.model_metadata.items():
         assert_model_metadata_schema(model, metadata)
@@ -617,24 +512,17 @@ def test_builtin_catalog_huggingface_model_expansion() -> None:
 def test_builtin_catalog_golden_kimi_entries() -> None:
     moonshot = builtin_provider_entry("moonshotai")
     assert moonshot is not None
-    assert moonshot.display_name == "Moonshot AI (Kimi)"
     assert moonshot.default_model == "kimi-k2.7-code"
     assert "kimi-k2.7-code" in moonshot.models
-    assert moonshot.context_windows is not None
-    assert moonshot.context_windows["kimi-k2.7-code"] == 262_144
 
     moonshot_cn = builtin_provider_entry("moonshotai-cn")
     assert moonshot_cn is not None
     assert moonshot_cn.default_model == "kimi-k2.7-code"
     assert "kimi-k2.7-code" in moonshot_cn.models
-    assert moonshot_cn.context_windows is not None
-    assert moonshot_cn.context_windows["kimi-k2.7-code"] == 262_144
 
     k2_7 = moonshot.model_metadata["kimi-k2.7-code"]
-    assert k2_7.name == "Kimi K2.7 Code"
     assert k2_7.reasoning is True
     assert k2_7.input == ("text", "image")
-    assert k2_7.context_window == 262_144
     assert k2_7.max_tokens == 32_768
     assert k2_7.thinking_level_map == {
         "off": None,
@@ -645,56 +533,25 @@ def test_builtin_catalog_golden_kimi_entries() -> None:
 
     coding = builtin_provider_entry("kimi-code")
     assert coding is not None
-    assert coding.display_name == "Kimi Code subscription"
     assert coding.base_url == "https://api.kimi.com/coding/v1"
     assert coding.api_key_env == "KIMI_CODE_API_KEY"
     assert coding.credential_name == "kimi-code"
     assert {"k3", "kimi-for-coding"} <= set(coding.models)
     assert coding.default_model == "kimi-for-coding"
     assert coding.thinking_default == "max"
-    assert coding.context_windows is not None
-    assert coding.context_windows["k3"] == 1_048_576
-    assert coding.context_windows["kimi-for-coding"] == 262_144
-    assert set(coding.context_windows) == set(coding.models)
 
     k3 = coding.model_metadata["k3"]
-    assert k3.name == "Kimi K3"
     assert k3.reasoning is True
     assert k3.input == ("text", "image")
-    assert k3.context_window == 1_048_576
 
     latest = coding.model_metadata["kimi-for-coding"]
-    assert latest.name == "Kimi for Coding (latest)"
     assert latest.reasoning is True
-    assert latest.context_window == 262_144
-
-
-def test_builtin_minimax_m3_has_tiered_pricing() -> None:
-    base_cost = {"input": 0.3, "output": 1.2, "cacheRead": 0.06, "cacheWrite": 0}
-    long_context_cost = {
-        "input": 0.6,
-        "output": 2.4,
-        "cacheRead": 0.12,
-        "cacheWrite": 0,
-    }
-
-    for provider_name in ("minimax", "minimax-cn"):
-        entry = builtin_provider_entry(provider_name)
-        assert entry is not None
-        metadata = entry.model_metadata["MiniMax-M3"]
-        assert metadata.input == ("text", "image")
-        assert metadata.cost == base_cost
-        assert metadata.cost_tiers[0].max_input_tokens == 512_000
-        assert metadata.cost_tiers[0].cost == base_cost
-        assert metadata.cost_tiers[1].max_input_tokens is None
-        assert metadata.cost_tiers[1].cost == long_context_cost
 
 
 def test_builtin_catalog_entries_are_internally_consistent() -> None:
     for entry in builtin_catalog():
         assert entry.default_model in entry.models
         assert set(entry.thinking_models) <= set(entry.models)
-        assert set(entry.context_windows or {}) <= set(entry.models)
         if entry.thinking_default is not None:
             assert entry.thinking_levels is not None
             assert entry.thinking_default in entry.thinking_levels
@@ -716,7 +573,6 @@ def test_user_catalog_adds_new_provider(tmp_path: Path) -> None:
     entry = catalog[-1]
     assert entry.name == "nebius"
     assert entry.default_model == "deepseek-ai/DeepSeek-V4-Pro"
-    assert entry.context_windows == {"deepseek-ai/DeepSeek-V4-Pro": 163_840}
     assert entry.thinking_levels == ("off", "low", "medium", "high")
 
 
@@ -726,10 +582,8 @@ def test_user_catalog_accepts_minimal_provider(tmp_path: Path) -> None:
         '[[providers]]\nname = "local-llama"\nbase_url = "http://localhost:8080/v1"\n',
     )
     entry = effective_catalog(paths)[-1]
-    assert entry.display_name == "local-llama"
     assert entry.kind == "openai-compatible"
     assert entry.api_key_env == ""
-    assert entry.docs_url == ""
     assert entry.models == ("local-llama",)
     assert entry.default_model == "local-llama"
     provider = provider_config_from_entry(entry)
@@ -764,9 +618,6 @@ default_model = "claude-next-1"
     assert entry.models[0] == "claude-next-1"
     assert "claude-sonnet-4-6" in entry.models
     assert entry.default_model == "claude-next-1"
-    assert entry.context_windows is not None
-    assert entry.context_windows["claude-next-1"] == 500_000
-    assert entry.context_windows["claude-opus-4-7"] == 1_000_000
     # Untouched fields come from the builtin entry.
     assert entry.base_url == "https://api.anthropic.com"
     assert entry.thinking_parameter == "anthropic.thinking"
@@ -795,8 +646,6 @@ name = "GPT-5.6"
     assert entry.default_model == "gpt-5.5"
     assert "gpt-5.6" not in entry.models
     assert "gpt-5.6" not in entry.thinking_models
-    assert entry.context_windows is not None
-    assert "gpt-5.6" not in entry.context_windows
     assert "gpt-5.6" not in entry.model_metadata
     assert entry.removed_models == ("gpt-5.6",)
 
@@ -818,90 +667,6 @@ thinking_default = "high"
     assert entry.thinking_parameter is None
 
 
-def test_user_catalog_overlays_and_serializes_cost_tiers(tmp_path: Path) -> None:
-    paths = _write_user_catalog(
-        tmp_path / ".rio",
-        """
-[[providers]]
-name = "minimax"
-
-[providers.model_metadata."MiniMax-M3"]
-cost_tiers = [
-  { max_input_tokens = 400000, input = 0.2, output = 1.0, cacheRead = 0.04, cacheWrite = 0 },
-  { input = 0.5, output = 2.0, cacheRead = 0.1, cacheWrite = 0 },
-]
-""",
-    )
-    entry = next(e for e in effective_catalog(paths) if e.name == "minimax")
-    metadata = entry.model_metadata["MiniMax-M3"]
-    assert metadata.cost_tiers[0].cost == {
-        "input": 0.2,
-        "output": 1.0,
-        "cacheRead": 0.04,
-        "cacheWrite": 0,
-    }
-    long_context_cost = {
-        "input": 0.5,
-        "output": 2.0,
-        "cacheRead": 0.1,
-        "cacheWrite": 0,
-    }
-    assert metadata.cost_tiers[1].cost == long_context_cost
-
-    save_user_catalog_entries([entry], paths)
-    reloaded = next(e for e in effective_catalog(paths) if e.name == "minimax")
-    assert reloaded.model_metadata["MiniMax-M3"].cost_tiers[1].cost == long_context_cost
-
-
-def test_user_catalog_cost_tier_accepts_one_hour_cache_write_rate(tmp_path: Path) -> None:
-    paths = _write_user_catalog(
-        tmp_path / ".rio",
-        """
-[[providers]]
-name = "minimax"
-
-[providers.model_metadata."MiniMax-M3"]
-cost_tiers = [
-  { max_input_tokens = 400000, input = 0.2, output = 1.0, cacheRead = 0.04, cacheWrite = 0.25 },
-  { input = 0.5, output = 2.0, cacheRead = 0.1, cacheWrite = 0.6, cacheWrite1h = 1.0 },
-]
-""",
-    )
-    entry = next(e for e in effective_catalog(paths) if e.name == "minimax")
-    metadata = entry.model_metadata["MiniMax-M3"]
-    assert metadata.cost_tiers[1].cost == {
-        "input": 0.5,
-        "output": 2.0,
-        "cacheRead": 0.1,
-        "cacheWrite": 0.6,
-        "cacheWrite1h": 1.0,
-    }
-    # Tiers without the key omit it, so billing can fall back to cacheWrite.
-    assert metadata.cost_tiers[0].cost == {
-        "input": 0.2,
-        "output": 1.0,
-        "cacheRead": 0.04,
-        "cacheWrite": 0.25,
-    }
-
-
-def test_user_catalog_rejects_bounded_final_cost_tier(tmp_path: Path) -> None:
-    paths = _write_user_catalog(
-        tmp_path / ".rio",
-        """
-[[providers]]
-name = "minimax"
-
-[providers.model_metadata."MiniMax-M3"]
-cost_tiers = [
-  { max_input_tokens = 512000, input = 0.3, output = 1.2, cacheRead = 0.06, cacheWrite = 0 },
-]
-""",
-    )
-    with pytest.raises(CatalogError, match="final tier must omit max_input_tokens"):
-        effective_catalog(paths)
-
-
 def test_user_catalog_rejects_unknown_keys(tmp_path: Path) -> None:
     paths = _write_user_catalog(tmp_path / ".rio", VALID_PROVIDER.replace("docs_url", "docs_ur1"))
     with pytest.raises(CatalogError, match=r"providers\.nebius"):
@@ -919,64 +684,6 @@ def test_user_catalog_rejects_default_model_not_in_models(tmp_path: Path) -> Non
         effective_catalog(paths)
 
 
-@pytest.mark.parametrize(
-    ("body", "match"),
-    [
-        (
-            VALID_PROVIDER.replace('display_name = "Nebius AI Studio"', 'display_name = ""'),
-            r"providers\.nebius\.display_name",
-        ),
-        (
-            VALID_PROVIDER.replace(
-                'models = ["deepseek-ai/DeepSeek-V4-Pro", "Qwen/Qwen3-Coder-480B-A35B-Instruct"]',
-                'models = [""]',
-            ),
-            r"providers\.nebius\.models",
-        ),
-        (
-            VALID_PROVIDER.replace('"deepseek-ai/DeepSeek-V4-Pro" = 163840', '"" = 163840'),
-            r"providers\.nebius\.context_windows",
-        ),
-        (
-            VALID_PROVIDER.replace(
-                '"deepseek-ai/DeepSeek-V4-Pro" = 163840',
-                '"deepseek-ai/DeepSeek-V4-Pro" = 0',
-            ),
-            r"providers\.nebius\.context_windows",
-        ),
-        (
-            VALID_PROVIDER.replace(
-                '"deepseek-ai/DeepSeek-V4-Pro" = 163840',
-                '"deepseek-ai/DeepSeek-V4-Pro" = -1',
-            ),
-            r"providers\.nebius\.context_windows",
-        ),
-        (
-            VALID_PROVIDER.replace(
-                '"deepseek-ai/DeepSeek-V4-Pro" = 163840',
-                '"deepseek-ai/DeepSeek-V4-Pro" = true',
-            ),
-            r"providers\.nebius\.context_windows",
-        ),
-        (
-            VALID_PROVIDER.replace(
-                '"deepseek-ai/DeepSeek-V4-Pro" = 163840',
-                '"deepseek-ai/DeepSeek-V4-Pro" = "163840"',
-            ),
-            r"providers\.nebius\.context_windows",
-        ),
-    ],
-)
-def test_user_catalog_rejects_empty_and_coerced_values(
-    tmp_path: Path,
-    body: str,
-    match: str,
-) -> None:
-    paths = _write_user_catalog(tmp_path / ".rio", body)
-    with pytest.raises(CatalogError, match=match):
-        effective_catalog(paths)
-
-
 def test_user_catalog_rejects_bad_kind(tmp_path: Path) -> None:
     paths = _write_user_catalog(
         tmp_path / ".rio", VALID_PROVIDER.replace("openai-compatible", "grpc")
@@ -989,3 +696,40 @@ def test_user_catalog_rejects_malformed_toml(tmp_path: Path) -> None:
     paths = _write_user_catalog(tmp_path / ".rio", "[[providers]\nname =")
     with pytest.raises(CatalogError, match="invalid TOML"):
         effective_catalog(paths)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        "thinking_levels = []",
+        'thinking_levels = ["low", "low"]',
+        'thinking_parameter = "reasoning_effort"',
+        'models = [""]',
+        "[providers.model_metadata.local]\nmax_tokens = 0",
+        "[providers.model_metadata.local]\nmax_tokens = true",
+    ],
+)
+def test_user_catalog_validates_runtime_fields(tmp_path, fields):
+    paths = _write_user_catalog(
+        tmp_path / ".rio",
+        '[[providers]]\nname = "local"\nbase_url = "http://localhost"\n' + fields,
+    )
+    with pytest.raises(CatalogError):
+        effective_catalog(paths)
+
+
+def test_obsolete_cache_does_not_override_catalog(tmp_path):
+    paths = RioPaths(home=tmp_path)
+    document = models_dev_catalog_document(
+        _fixture(), builtin_source_catalog(), generated_at=10**15
+    )
+    (tmp_path / "models-store.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "checked_at": 10**15,
+                "catalog": document,
+            }
+        )
+    )
+    assert effective_catalog(paths) == builtin_catalog()

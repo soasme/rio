@@ -240,24 +240,14 @@ def _model_metadata(
 ) -> dict[str, Any]:
     modalities = model.get("modalities")
     inputs = modalities.get("input") if isinstance(modalities, Mapping) else None
-    cost = model.get("cost")
     limits = model.get("limit")
     metadata: dict[str, Any] = {
-        "name": _string_or(model.get("name"), model_id),
         "reasoning": model.get("reasoning") is True,
         "input": ["text", "image"] if isinstance(inputs, list) and "image" in inputs else ["text"],
-        "cost": _cost_rates(cost),
-        "context_window": _positive_int_or(
-            limits.get("context") if isinstance(limits, Mapping) else None, 4096
-        ),
         "max_tokens": _positive_int_or(
             limits.get("output") if isinstance(limits, Mapping) else None, 4096
         ),
     }
-    cost_tiers = _cost_tiers(cost)
-    if cost_tiers:
-        metadata["cost_tiers"] = cost_tiers
-
     existing = provider.model_metadata.get(model_id)
     supports_direct_effort = (
         provider.kind == "openai-compatible"
@@ -276,57 +266,6 @@ def _model_metadata(
             if unsupported:
                 metadata["unsupported_thinking_levels"] = unsupported
     return metadata
-
-
-def _cost_rates(value: object) -> dict[str, float]:
-    cost = value if isinstance(value, Mapping) else {}
-    return {
-        "input": _number_or_zero(cost.get("input")),
-        "output": _number_or_zero(cost.get("output")),
-        "cacheRead": _number_or_zero(cost.get("cache_read")),
-        "cacheWrite": _number_or_zero(cost.get("cache_write")),
-    }
-
-
-def _cost_tiers(value: object) -> list[dict[str, Any]]:
-    if not isinstance(value, Mapping):
-        return []
-    raw_tiers = value.get("tiers")
-    if not isinstance(raw_tiers, list):
-        return []
-    tiers: list[tuple[int, dict[str, float]]] = []
-    for raw_tier in raw_tiers:
-        if not isinstance(raw_tier, Mapping):
-            continue
-        tier = raw_tier.get("tier")
-        if not isinstance(tier, Mapping) or tier.get("type") != "context":
-            continue
-        size = tier.get("size")
-        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
-            continue
-        tiers.append((size, _cost_rates(raw_tier)))
-    tiers.sort(key=lambda item: item[0])
-    if not tiers:
-        return []
-
-    output: list[dict[str, Any]] = [{"max_input_tokens": tiers[0][0], **_cost_rates(value)}]
-    for index, (_, rates) in enumerate(tiers):
-        next_limit = tiers[index + 1][0] if index + 1 < len(tiers) else None
-        output.append(
-            {
-                **({"max_input_tokens": next_limit} if next_limit is not None else {}),
-                **rates,
-            }
-        )
-    return output
-
-
-def _string_or(value: object, fallback: str) -> str:
-    return value if isinstance(value, str) and value else fallback
-
-
-def _number_or_zero(value: object) -> float:
-    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else 0.0
 
 
 def _positive_int_or(value: object, fallback: int) -> int:

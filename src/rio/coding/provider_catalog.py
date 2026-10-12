@@ -25,29 +25,16 @@ ProviderApi = Literal[
 ]
 ModelInput = Literal["text", "image"]
 ThinkingLevelMap = dict[ThinkingLevel, str | None]
-AuthMethod = Literal["api_key", "oauth"]
-
-
-@dataclass(frozen=True, slots=True)
-class ModelCostTier:
-    """Model rates that apply up to an optional input-token limit."""
-
-    cost: dict[str, float]
-    max_input_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ModelCatalogMetadata:
     """Provider-catalog metadata for a single model."""
 
-    name: str | None = None
     api: ProviderApi | None = None
     base_url: str | None = None
     reasoning: bool | None = None
     input: tuple[ModelInput, ...] = ()
-    cost: dict[str, float] | None = None
-    cost_tiers: tuple[ModelCostTier, ...] = ()
-    context_window: int | None = None
     max_tokens: int | None = None
     headers: dict[str, str] = field(default_factory=dict)
     compat: dict[str, JSONValue] = field(default_factory=dict)
@@ -59,16 +46,13 @@ class ProviderCatalogEntry:
     """A built-in provider rio can present during login."""
 
     name: str
-    display_name: str
     kind: ProviderKind
     base_url: str
     api_key_env: str
     credential_name: str | None
     models: tuple[str, ...]
     default_model: str
-    docs_url: str
     api: ProviderApi | None = None
-    context_windows: dict[str, int] | None = None
     headers: dict[str, str] = field(default_factory=dict)
     compat: dict[str, JSONValue] = field(default_factory=dict)
     model_metadata: dict[str, ModelCatalogMetadata] = field(default_factory=dict)
@@ -77,7 +61,6 @@ class ProviderCatalogEntry:
     thinking_default: ThinkingLevel | None = None
     thinking_parameter: ThinkingParameter | None = None
     removed_models: tuple[str, ...] = ()
-    auth_methods: tuple[AuthMethod, ...] = ("api_key",)
 
 
 def __getattr__(name: str) -> tuple[ProviderCatalogEntry, ...]:
