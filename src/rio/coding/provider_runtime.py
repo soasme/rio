@@ -23,15 +23,10 @@ from rio.ai.provider import ClosableModelProvider
 from rio.coding.credentials import FileCredentialStore, OAuthCredential
 from rio.coding.oauth import (
     account_id_from_access_token,
-    oauth_credential_is_expired,
-    refresh_openai_codex_token,
 )
 from rio.coding.oauth_registry import get_oauth_provider
 from rio.coding.oauth_types import OAuthProvider
 from rio.coding.provider_config import (
-    AnthropicProviderConfig,
-    OpenAICodexProviderConfig,
-    OpenAICompatibleProviderConfig,
     ProviderConfig,
     ProviderConfigError,
     anthropic_cache_settings,
@@ -39,11 +34,11 @@ from rio.coding.provider_config import (
     openai_compatible_config_from_provider,
     provider_model_max_tokens,
     provider_model_supports_images,
-    provider_thinking_levels,
+    reasoning_effort_from_provider,
     validate_huggingface_inference_provider,
     validate_provider_model,
 )
-from rio.coding.thinking import ThinkingLevel, normalize_thinking_level, reasoning_effort_for_level
+from rio.coding.thinking import ThinkingLevel
 
 
 def create_model_provider(
@@ -65,7 +60,7 @@ def create_model_provider(
             )
         inference_provider = validate_huggingface_inference_provider(inference_provider)
     credentials = credential_store or FileCredentialStore()
-    if isinstance(provider, AnthropicProviderConfig):
+    if provider.kind == "anthropic":
         credential = _oauth_credential(provider, credentials)
         config = anthropic_config_from_provider(
             provider,
@@ -89,7 +84,7 @@ def create_model_provider(
                 ),
             )
         return AnthropicProvider(config)
-    if isinstance(provider, OpenAICodexProviderConfig):
+    if provider.kind == "openai-codex":
         return OpenAICodexProvider(
             OpenAICodexConfig(
                 credential_resolver=OpenAICodexCredentialResolver(
@@ -102,7 +97,7 @@ def create_model_provider(
                 timeout_seconds=provider.timeout_seconds,
                 max_retries=provider.max_retries,
                 max_retry_delay_seconds=provider.max_retry_delay_seconds,
-                reasoning_effort=_codex_reasoning_effort(
+                reasoning_effort=reasoning_effort_from_provider(
                     provider,
                     model=model,
                     thinking_level=thinking_level,
@@ -110,7 +105,7 @@ def create_model_provider(
                 supports_images=provider_model_supports_images(provider, model),
             )
         )
-    if isinstance(provider, OpenAICompatibleProviderConfig):
+    if provider.kind in {"openai-compatible", "google-generative-ai", "mistral-conversations"}:
         credential = _oauth_credential(provider, credentials)
         compatible_config = openai_compatible_config_from_provider(
             provider,
@@ -179,38 +174,12 @@ def create_model_provider(
     raise ProviderConfigError(f"Unsupported provider config: {provider.name}")
 
 
-def _codex_reasoning_effort(
-    provider: OpenAICodexProviderConfig,
-    *,
-    model: str | None,
-    thinking_level: ThinkingLevel | None,
-) -> str | None:
-    if thinking_level is None or provider.thinking_parameter != "reasoning.effort":
-        return None
-    levels = provider_thinking_levels(provider, model=model)
-    if not levels:
-        return None
-    normalized = normalize_thinking_level(thinking_level)
-    if normalized not in levels:
-        selected_model = model or provider.default_model
-        available = ", ".join(levels)
-        raise ProviderConfigError(
-            f"Thinking mode {normalized} is not available for "
-            f"{provider.name}:{selected_model}. Available modes: {available}"
-        )
-    if normalized == "off":
-        return None
-    if normalized == "minimal":
-        return "low"
-    return reasoning_effort_for_level(normalized)
-
-
 class OpenAICodexCredentialResolver:
     """Resolve and refresh OpenAI Codex OAuth credentials for one request."""
 
     def __init__(
         self,
-        provider: OpenAICodexProviderConfig,
+        provider: ProviderConfig,
         *,
         credential_store: FileCredentialStore,
     ) -> None:
@@ -223,7 +192,9 @@ class OpenAICodexCredentialResolver:
         if credential_name:
             credential = self._credential_store.get_oauth(credential_name)
             if credential is not None:
-                credential = await self._refresh_if_needed(credential_name, credential)
+                credential = await OAuthRuntimeCredentialResolver(
+                    self._provider, credential_store=self._credential_store
+                ).credential()
                 if credential.account_id is None:
                     raise RuntimeError("OpenAI Codex OAuth credential is missing account_id")
                 return OpenAICodexCredentials(
@@ -242,22 +213,6 @@ class OpenAICodexCredentialResolver:
 
         credential_hint = f"Run /login {self._provider.name}."
         raise RuntimeError(f"Missing OpenAI Codex OAuth credentials. {credential_hint}")
-
-    async def _refresh_if_needed(
-        self,
-        credential_name: str,
-        credential: OAuthCredential,
-    ) -> OAuthCredential:
-        if not oauth_credential_is_expired(credential):
-            return credential
-        async with _refresh_lock(credential_name), self._credential_store.refresh_lock():
-            stored = self._credential_store.get_oauth(credential_name) or credential
-            if not oauth_credential_is_expired(stored):
-                return stored
-            refreshed = await refresh_openai_codex_token(stored.refresh)
-            if refreshed != stored:
-                self._credential_store.set_oauth(credential_name, refreshed)
-        return refreshed
 
 
 _REFRESH_LOCKS: MutableMapping[AbstractEventLoop, dict[str, asyncio.Lock]] = WeakKeyDictionary()
@@ -309,7 +264,8 @@ class OAuthRuntimeCredentialResolver:
         self._provider = provider
         self._credential_store = credential_store
 
-    async def __call__(self) -> RuntimeProviderAuth:
+    async def credential(self) -> OAuthCredential:
+        """Read and refresh stored credentials under the shared rotation lock."""
         credential_name = self._provider.credential_name
         if credential_name is None:
             raise RuntimeError(f"Provider {self._provider.name} has no credential name")
@@ -326,7 +282,11 @@ class OAuthRuntimeCredentialResolver:
             refreshed = await oauth_provider.refresh(credential)
             if refreshed != credential:
                 self._credential_store.set_oauth(credential_name, refreshed)
-        auth = oauth_provider.runtime_auth(refreshed)
+        return refreshed
+
+    async def __call__(self) -> RuntimeProviderAuth:
+        credential = await self.credential()
+        auth = _required_oauth_provider(self._provider.name).runtime_auth(credential)
         return RuntimeProviderAuth(
             api_key=auth.api_key,
             base_url=auth.base_url,

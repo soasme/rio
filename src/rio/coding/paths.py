@@ -22,11 +22,6 @@ class RioPaths:
         """Return the user-level session directory."""
         return self.home / "sessions"
 
-    @property
-    def models_store_path(self) -> Path:
-        """Return the persisted remote model-catalog cache path."""
-        return self.home / "models-store.json"
-
 
 def atomic_write_text(path: Path, text: str) -> None:
     """Write text through a sibling temp file and atomically replace the target."""

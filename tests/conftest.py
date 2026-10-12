@@ -5,7 +5,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from rio.coding import catalog_loader, models_dev, models_dev_store
+from rio.coding import catalog_loader, models_dev
 
 _REAL_BUNDLED_LOADER = models_dev.bundled_models_dev_catalog_document
 
@@ -19,8 +19,7 @@ def _clear_catalog_caches() -> None:
 def _bundled_models_dev_catalog(enabled: bool) -> Iterator[None]:
     loader = _REAL_BUNDLED_LOADER if enabled else lambda: None
     with pytest.MonkeyPatch.context() as monkeypatch:
-        for module in (models_dev, models_dev_store):
-            monkeypatch.setattr(module, "bundled_models_dev_catalog_document", loader)
+        monkeypatch.setattr(models_dev, "bundled_models_dev_catalog_document", loader)
         _clear_catalog_caches()
         try:
             yield

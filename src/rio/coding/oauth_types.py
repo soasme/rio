@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -36,23 +36,6 @@ class OAuthPrompt:
 
     message: str
     placeholder: str | None = None
-    allow_empty: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class OAuthSelectOption:
-    """One choice in a provider-defined OAuth selection prompt."""
-
-    id: str
-    label: str
-
-
-@dataclass(frozen=True, slots=True)
-class OAuthSelectPrompt:
-    """Selection input requested by an OAuth provider."""
-
-    message: str
-    options: tuple[OAuthSelectOption, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,8 +50,6 @@ class OAuthRuntimeAuth:
 AuthCallback = Callable[[OAuthAuthInfo], None]
 DeviceCodeCallback = Callable[[OAuthDeviceCodeInfo], None]
 PromptCallback = Callable[[OAuthPrompt], Awaitable[str]]
-SelectCallback = Callable[[OAuthSelectPrompt], Awaitable[str | None]]
-ManualCodeCallback = Callable[[], Awaitable[str]]
 ProgressCallback = Callable[[str], None]
 
 
@@ -79,9 +60,7 @@ class OAuthLoginCallbacks:
     on_auth: AuthCallback
     on_device_code: DeviceCodeCallback
     on_prompt: PromptCallback
-    on_select: SelectCallback
     on_progress: ProgressCallback | None = None
-    on_manual_code_input: ManualCodeCallback | None = None
     method: OAuthFlowKind | None = None
 
 
@@ -96,11 +75,6 @@ class OAuthProvider(Protocol):
     @property
     def name(self) -> str:
         """User-facing provider name."""
-        ...
-
-    @property
-    def flow_kinds(self) -> Sequence[OAuthFlowKind]:
-        """Interactive flow families supported by this provider."""
         ...
 
     async def login(self, callbacks: OAuthLoginCallbacks) -> OAuthCredential:

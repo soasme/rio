@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -15,7 +14,6 @@ from rio.coding.oauth import OAuthError, oauth_credential_is_expired
 from rio.coding.oauth_device import DevicePollResult, poll_oauth_device_code
 from rio.coding.oauth_types import (
     OAuthDeviceCodeInfo,
-    OAuthFlowKind,
     OAuthLoginCallbacks,
     OAuthPrompt,
     OAuthRuntimeAuth,
@@ -72,18 +70,14 @@ async def login_github_copilot(
     callbacks: OAuthLoginCallbacks,
     *,
     client: httpx.AsyncClient | None = None,
-    cancel_event: asyncio.Event | None = None,
 ) -> OAuthCredential:
     """Run GitHub's device flow and exchange its token for Copilot auth."""
     domain_input = await callbacks.on_prompt(
         OAuthPrompt(
             message="GitHub Enterprise URL/domain (blank for github.com)",
             placeholder="company.ghe.com",
-            allow_empty=True,
         )
     )
-    if cancel_event is not None and cancel_event.is_set():
-        raise OAuthError("Login cancelled")
     enterprise_domain = normalize_github_domain(domain_input)
     if domain_input.strip() and enterprise_domain is None:
         raise OAuthError("Invalid GitHub Enterprise URL/domain")
@@ -105,7 +99,6 @@ async def login_github_copilot(
             domain,
             device,
             active_client,
-            cancel_event=cancel_event,
         )
         if callbacks.on_progress:
             callbacks.on_progress("Exchanging GitHub token for Copilot access...")
@@ -193,8 +186,6 @@ async def _poll_github_access_token(
     domain: str,
     device: GitHubDeviceCode,
     client: httpx.AsyncClient,
-    *,
-    cancel_event: asyncio.Event | None,
 ) -> str:
     async def poll() -> DevicePollResult[str]:
         response = await client.post(
@@ -232,7 +223,6 @@ async def _poll_github_access_token(
         interval_seconds=device.interval_seconds,
         expires_in_seconds=device.expires_in_seconds,
         wait_before_first_poll=True,
-        cancel_event=cancel_event,
     )
 
 
@@ -265,7 +255,6 @@ class GitHubCopilotOAuthProvider:
 
     id = GITHUB_COPILOT_OAUTH_PROVIDER
     name = "GitHub Copilot"
-    flow_kinds: tuple[OAuthFlowKind, ...] = ("device_code",)
 
     async def login(self, callbacks: OAuthLoginCallbacks) -> OAuthCredential:
         return await login_github_copilot(callbacks)

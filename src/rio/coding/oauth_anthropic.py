@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 import webbrowser
 from collections.abc import Awaitable, Callable, Iterable
@@ -22,7 +21,6 @@ from rio.coding.oauth import (
 )
 from rio.coding.oauth_types import (
     OAuthAuthInfo,
-    OAuthFlowKind,
     OAuthLoginCallbacks,
     OAuthPrompt,
     OAuthRuntimeAuth,
@@ -47,9 +45,7 @@ async def login_anthropic(
     *,
     on_auth: Callable[[OAuthAuthInfo], None],
     on_prompt: Callable[[OAuthPrompt], Awaitable[str]],
-    on_manual_code_input: Callable[[], Awaitable[str]] | None = None,
     on_progress: Callable[[str], None] | None = None,
-    open_browser: bool = True,
     client: httpx.AsyncClient | None = None,
 ) -> OAuthCredential:
     """Run Anthropic's authorization-code + PKCE login flow."""
@@ -80,11 +76,10 @@ async def login_anthropic(
             ),
         )
     )
-    if open_browser:
-        webbrowser.open(url)
+    webbrowser.open(url)
 
     try:
-        value = await _wait_for_input(server, on_manual_code_input)
+        value = await server.wait_for_code() if server is not None else None
         if value is None:
             value = await on_prompt(
                 OAuthPrompt(
@@ -218,32 +213,6 @@ def _error_fields(raw: dict[str, Any]) -> str | None:
     return None
 
 
-async def _wait_for_input(
-    server: Any,
-    manual_callback: Callable[[], Awaitable[str]] | None,
-) -> str | None:
-    tasks: list[asyncio.Task[str | None]] = []
-    if server is not None:
-        tasks.append(asyncio.create_task(server.wait_for_code()))
-    if manual_callback is not None:
-        tasks.append(asyncio.create_task(_manual_value(manual_callback)))
-    if not tasks:
-        return None
-    try:
-        done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        return next(iter(done)).result()
-    finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        if server is not None:
-            server.cancel_wait()
-
-
-async def _manual_value(callback: Callable[[], Awaitable[str]]) -> str:
-    return await callback()
-
-
 def _required_string(raw: dict[str, Any], name: str, *, action: str) -> str:
     value = raw.get(name)
     if not isinstance(value, str) or not value:
@@ -261,13 +230,11 @@ class AnthropicOAuthProvider:
 
     id = ANTHROPIC_OAUTH_PROVIDER
     name = "Anthropic (Claude Pro/Max)"
-    flow_kinds: tuple[OAuthFlowKind, ...] = ("browser",)
 
     async def login(self, callbacks: OAuthLoginCallbacks) -> OAuthCredential:
         return await login_anthropic(
             on_auth=callbacks.on_auth,
             on_prompt=callbacks.on_prompt,
-            on_manual_code_input=callbacks.on_manual_code_input,
             on_progress=callbacks.on_progress,
         )
 

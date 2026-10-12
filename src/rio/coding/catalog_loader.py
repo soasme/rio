@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import tomllib
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from functools import cache
 from importlib.resources import files
 from pathlib import Path
@@ -18,20 +17,19 @@ from pydantic import (
     StrictInt,
     StringConstraints,
     ValidationError,
+    model_validator,
 )
 
 from rio.ai.types import JSONValue
-from rio.coding.paths import RioPaths, atomic_write_text
+from rio.coding.paths import RioPaths
 from rio.coding.provider_catalog import (
-    AuthMethod,
     ModelCatalogMetadata,
-    ModelCostTier,
     ModelInput,
     ProviderApi,
     ProviderCatalogEntry,
     ProviderKind,
 )
-from rio.coding.thinking import ThinkingLevel, ThinkingParameter
+from rio.coding.thinking import ThinkingLevel, ThinkingParameter, normalize_thinking_levels
 
 CATALOG_SCHEMA_VERSION = 1
 USER_CATALOG_FILENAME = "catalog.toml"
@@ -46,43 +44,35 @@ _NonEmptyString = Annotated[
 ]
 _NonEmptyStringTuple = Annotated[tuple[_NonEmptyString, ...], Field(min_length=1)]
 _PositiveInt = Annotated[StrictInt, Field(gt=0)]
-_NonNegativeFloat = Annotated[float, Field(ge=0)]
 
 
 class CatalogError(ValueError):
     """Raised when a rio catalog file is invalid."""
 
 
-class _CatalogCostTier(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    max_input_tokens: _PositiveInt | None = None
-    input: _NonNegativeFloat
-    output: _NonNegativeFloat
-    cacheRead: _NonNegativeFloat
-    cacheWrite: _NonNegativeFloat
-    # Optional 1-hour TTL cache-write rate (Anthropic bills those above the
-    # 5-minute cacheWrite rate). Omitted from the cost dict when unset so
-    # consumers can fall back to cacheWrite.
-    cacheWrite1h: _NonNegativeFloat | None = None
-
-
 class _CatalogModelMetadata(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    name: _NonEmptyString | None = None
     api: ProviderApi | None = None
     base_url: _NonEmptyString | None = None
     reasoning: StrictBool | None = None
     input: tuple[ModelInput, ...] = ()
-    cost: dict[_NonEmptyString, _NonNegativeFloat] | None = None
-    cost_tiers: tuple[_CatalogCostTier, ...] = ()
-    context_window: _PositiveInt | None = None
     max_tokens: _PositiveInt | None = None
     headers: dict[_NonEmptyString, _NonEmptyString] = {}
     compat: dict[_NonEmptyString, Any] = {}
     thinking_level_map: dict[ThinkingLevel, _NonEmptyString] = {}
     unsupported_thinking_levels: tuple[ThinkingLevel, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def ignore_informational_fields(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: item
+                for key, item in value.items()
+                if key not in ("name", "cost", "cost_tiers", "context_window")
+            }
+        return value
 
 
 class _CatalogProvider(BaseModel):
@@ -90,15 +80,12 @@ class _CatalogProvider(BaseModel):
 
     name: _NonEmptyString
     base_url: _NonEmptyString
-    display_name: _NonEmptyString | None = None
     kind: ProviderKind = "openai-compatible"
     api_key_env: _NonEmptyString | None = None
     credential_name: _NonEmptyString | None = None
     models: _NonEmptyStringTuple | None = None
     default_model: _NonEmptyString | None = None
-    docs_url: _NonEmptyString | None = None
     api: ProviderApi | None = None
-    context_windows: dict[_NonEmptyString, _PositiveInt] | None = None
     headers: dict[_NonEmptyString, _NonEmptyString] = {}
     compat: dict[_NonEmptyString, Any] = {}
     model_metadata: dict[_NonEmptyString, _CatalogModelMetadata] = {}
@@ -107,7 +94,17 @@ class _CatalogProvider(BaseModel):
     thinking_default: ThinkingLevel | None = None
     thinking_parameter: ThinkingParameter | None = None
     removed_models: tuple[_NonEmptyString, ...] = ()
-    auth_methods: tuple[AuthMethod, ...] = ("api_key",)
+
+    @model_validator(mode="before")
+    @classmethod
+    def ignore_informational_fields(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: item
+                for key, item in value.items()
+                if key not in ("display_name", "docs_url", "context_windows", "auth_methods")
+            }
+        return value
 
 
 class _CatalogFile(BaseModel):
@@ -144,8 +141,8 @@ def user_catalog_path(paths: RioPaths | None = None) -> Path:
 
 
 def effective_catalog(paths: RioPaths | None = None) -> tuple[ProviderCatalogEntry, ...]:
-    """Return bundled, refreshed, then user-overlaid provider model data."""
-    builtin_raw = _builtin_raw_with_cached_models(paths)
+    """Return bundled and user-overlaid provider model data."""
+    builtin_raw = _builtin_raw_with_generated_models()
     path = user_catalog_path(paths)
     if not path.exists():
         filtered = _apply_model_tombstones(builtin_raw, base=_builtin_raw())
@@ -157,60 +154,9 @@ def effective_catalog(paths: RioPaths | None = None) -> tuple[ProviderCatalogEnt
     return _entries_from_raw(filtered, source=str(path))
 
 
-def save_user_catalog_entries(
-    entries: Iterable[ProviderCatalogEntry],
-    paths: RioPaths | None = None,
-) -> Path:
-    """Upsert full provider definitions into the user-level catalog file."""
-    path = user_catalog_path(paths)
-    if path.exists():
-        raw = _parse_catalog_text(path.read_text(encoding="utf-8"), source=str(path))
-        _validate_catalog_root(raw, source=str(path))
-    else:
-        raw = {"schema_version": CATALOG_SCHEMA_VERSION, "providers": []}
-
-    providers = list(_raw_providers(raw))
-    provider_indexes = {
-        _raw_provider_name(provider): index for index, provider in enumerate(providers)
-    }
-    for entry in entries:
-        raw_provider = _raw_provider_from_entry(entry)
-        if entry.name in provider_indexes:
-            providers[provider_indexes[entry.name]] = raw_provider
-        else:
-            provider_indexes[entry.name] = len(providers)
-            providers.append(raw_provider)
-
-    updated = {
-        "schema_version": raw.get("schema_version", CATALOG_SCHEMA_VERSION),
-        "providers": providers,
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(path, _catalog_to_toml(updated))
-    return path
-
-
 @cache
 def _builtin_raw() -> dict[str, Any]:
     return _parse_catalog_text(builtin_catalog_resource_text(), source="built-in catalog.toml")
-
-
-def _builtin_raw_with_cached_models(paths: RioPaths | None) -> dict[str, Any]:
-    from rio.coding.models_dev_store import cached_models_dev_catalog_overlay
-
-    raw = _builtin_raw_with_generated_models()
-    overlay = cached_models_dev_catalog_overlay(paths)
-    if overlay is None:
-        return raw
-    merged = _merge_generated_catalog(raw, overlay)
-    try:
-        _entries_from_raw(
-            _apply_model_tombstones(merged, base=_builtin_raw()),
-            source="cached models.dev catalog",
-        )
-    except CatalogError:
-        return raw
-    return merged
 
 
 @cache
@@ -295,12 +241,11 @@ def _merge_generated_catalog(base: dict[str, Any], generated: dict[str, Any]) ->
             continue
         merged["models"] = list(models)
         allowed = set(models)
-        for field in ("context_windows", "model_metadata"):
-            values = merged.get(field)
-            if isinstance(values, dict):
-                merged[field] = {
-                    model: value for model, value in values.items() if model in allowed
-                }
+        values = merged.get("model_metadata")
+        if isinstance(values, dict):
+            merged["model_metadata"] = {
+                model: value for model, value in values.items() if model in allowed
+            }
         thinking_models = merged.get("thinking_models")
         if isinstance(thinking_models, list):
             merged["thinking_models"] = [model for model in thinking_models if model in allowed]
@@ -320,7 +265,7 @@ def _merge_raw_provider(base: dict[str, Any], overlay: dict[str, Any]) -> dict[s
     overlay_removed = overlay.get("removed_models", [])
     if isinstance(base_removed, list) and isinstance(overlay_removed, list):
         merged["removed_models"] = list(dict.fromkeys([*base_removed, *overlay_removed]))
-    for key in ("context_windows", "headers", "compat"):
+    for key in ("headers", "compat"):
         base_mapping = base.get(key)
         overlay_mapping = overlay.get(key)
         if isinstance(base_mapping, dict) and isinstance(overlay_mapping, dict):
@@ -356,12 +301,11 @@ def _apply_model_tombstones(
             values = filtered.get(field)
             if isinstance(values, list):
                 filtered[field] = [model for model in values if model not in removed]
-        for field in ("context_windows", "model_metadata"):
-            values = filtered.get(field)
-            if isinstance(values, dict):
-                filtered[field] = {
-                    model: value for model, value in values.items() if model not in removed
-                }
+        values = filtered.get("model_metadata")
+        if isinstance(values, dict):
+            filtered["model_metadata"] = {
+                model: value for model, value in values.items() if model not in removed
+            }
         if filtered.get("default_model") in removed:
             name = _raw_provider_name(provider)
             base_default = base_by_name.get(name, {}).get("default_model")
@@ -383,7 +327,7 @@ def _merge_model_metadata(base: dict[str, Any], overlay: dict[str, Any]) -> dict
         base_metadata = merged.get(model)
         if isinstance(base_metadata, dict) and isinstance(overlay_metadata, dict):
             next_metadata = {**base_metadata, **overlay_metadata}
-            for key in ("cost", "headers", "compat", "thinking_level_map"):
+            for key in ("headers", "compat", "thinking_level_map"):
                 base_mapping = base_metadata.get(key)
                 overlay_mapping = overlay_metadata.get(key)
                 if isinstance(base_mapping, dict) and isinstance(overlay_mapping, dict):
@@ -427,12 +371,17 @@ def _entry_from_provider(provider: _CatalogProvider, *, source: str) -> Provider
     default_model = provider.default_model or models[0]
     if default_model not in models:
         raise CatalogError(f"{prefix}.default_model: {provider.default_model!r} is not in models")
+    if provider.thinking_levels is None:
+        if provider.thinking_models or provider.thinking_parameter is not None:
+            raise CatalogError(f"{prefix}.thinking_levels: required for thinking metadata")
+    else:
+        try:
+            normalize_thinking_levels(provider.thinking_levels)
+        except ValueError as error:
+            raise CatalogError(f"{prefix}.thinking_levels: {error}") from error
     for model in provider.thinking_models:
         if model not in models:
             raise CatalogError(f"{prefix}.thinking_models: {model!r} is not in models")
-    for model in provider.context_windows or {}:
-        if model not in models:
-            raise CatalogError(f"{prefix}.context_windows: {model!r} is not in models")
     for model in provider.model_metadata:
         if model not in models:
             raise CatalogError(f"{prefix}.model_metadata: {model!r} is not in models")
@@ -444,33 +393,19 @@ def _entry_from_provider(provider: _CatalogProvider, *, source: str) -> Provider
             f"{prefix}.thinking_default: {provider.thinking_default!r} is not in thinking_levels"
         )
 
-    for model, catalog_metadata in provider.model_metadata.items():
-        _validate_cost_tiers(
-            catalog_metadata.cost_tiers,
-            field_name=f"{prefix}.model_metadata.{model}",
-        )
-
     model_metadata = {
         model: _model_metadata_from_provider(metadata)
         for model, metadata in provider.model_metadata.items()
     }
-    context_windows = dict(provider.context_windows or {})
-    for model, metadata in model_metadata.items():
-        if metadata.context_window is not None and model not in context_windows:
-            context_windows[model] = metadata.context_window
-
     return ProviderCatalogEntry(
         name=provider.name,
-        display_name=provider.display_name or provider.name,
         kind=provider.kind,
         base_url=provider.base_url,
         api_key_env=provider.api_key_env or "",
         credential_name=provider.credential_name,
         models=models,
         default_model=default_model,
-        docs_url=provider.docs_url or "",
         api=provider.api,
-        context_windows=context_windows or None,
         headers=dict(provider.headers),
         compat=_json_object(provider.compat, f"{prefix}.compat"),
         model_metadata=model_metadata,
@@ -479,28 +414,7 @@ def _entry_from_provider(provider: _CatalogProvider, *, source: str) -> Provider
         thinking_default=provider.thinking_default,
         thinking_parameter=provider.thinking_parameter,
         removed_models=provider.removed_models,
-        auth_methods=provider.auth_methods,
     )
-
-
-def _validate_cost_tiers(
-    tiers: tuple[_CatalogCostTier, ...],
-    *,
-    field_name: str,
-) -> None:
-    if not tiers:
-        return
-    if tiers[-1].max_input_tokens is not None:
-        raise CatalogError(f"{field_name}.cost_tiers: final tier must omit max_input_tokens")
-    previous_limit = 0
-    for index, tier in enumerate(tiers[:-1]):
-        limit = tier.max_input_tokens
-        if limit is None or limit <= previous_limit:
-            raise CatalogError(
-                f"{field_name}.cost_tiers.{index}.max_input_tokens: "
-                "limits must be strictly increasing"
-            )
-        previous_limit = limit
 
 
 def _model_metadata_from_provider(metadata: _CatalogModelMetadata) -> ModelCatalogMetadata:
@@ -508,37 +422,15 @@ def _model_metadata_from_provider(metadata: _CatalogModelMetadata) -> ModelCatal
     for level in metadata.unsupported_thinking_levels:
         thinking_level_map[level] = None
     return ModelCatalogMetadata(
-        name=metadata.name,
         api=metadata.api,
         base_url=metadata.base_url,
         reasoning=metadata.reasoning,
         input=metadata.input,
-        cost=dict(metadata.cost) if metadata.cost else None,
-        cost_tiers=tuple(
-            ModelCostTier(
-                max_input_tokens=tier.max_input_tokens,
-                cost=_cost_tier_rates(tier),
-            )
-            for tier in metadata.cost_tiers
-        ),
-        context_window=metadata.context_window,
         max_tokens=metadata.max_tokens,
         headers=dict(metadata.headers),
         compat=_json_object(metadata.compat, "model_metadata.compat"),
         thinking_level_map=thinking_level_map,
     )
-
-
-def _cost_tier_rates(tier: _CatalogCostTier) -> dict[str, float]:
-    rates = {
-        "input": tier.input,
-        "output": tier.output,
-        "cacheRead": tier.cacheRead,
-        "cacheWrite": tier.cacheWrite,
-    }
-    if tier.cacheWrite1h is not None:
-        rates["cacheWrite1h"] = tier.cacheWrite1h
-    return rates
 
 
 def _json_object(value: Mapping[str, Any], field_name: str) -> dict[str, JSONValue]:
@@ -582,162 +474,3 @@ def _dotted_location(raw: dict[str, Any], location: tuple[int | str, ...]) -> li
         else:
             parts.append(str(part))
     return parts
-
-
-def _raw_provider_from_entry(entry: ProviderCatalogEntry) -> dict[str, Any]:
-    raw: dict[str, Any] = {
-        "name": entry.name,
-        "display_name": entry.display_name,
-        "kind": entry.kind,
-        "base_url": entry.base_url,
-        "models": list(entry.models),
-        "default_model": entry.default_model,
-    }
-    if entry.api_key_env:
-        raw["api_key_env"] = entry.api_key_env
-    if entry.docs_url:
-        raw["docs_url"] = entry.docs_url
-    if entry.api is not None:
-        raw["api"] = entry.api
-    if entry.credential_name is not None:
-        raw["credential_name"] = entry.credential_name
-    if entry.context_windows:
-        raw["context_windows"] = dict(entry.context_windows)
-    if entry.headers:
-        raw["headers"] = dict(entry.headers)
-    if entry.compat:
-        raw["compat"] = dict(entry.compat)
-    if entry.model_metadata:
-        raw["model_metadata"] = {
-            model: _raw_model_metadata_from_entry(metadata)
-            for model, metadata in entry.model_metadata.items()
-        }
-    if entry.thinking_levels is not None:
-        raw["thinking_levels"] = list(entry.thinking_levels)
-    if entry.thinking_models:
-        raw["thinking_models"] = list(entry.thinking_models)
-    if entry.thinking_default is not None:
-        raw["thinking_default"] = entry.thinking_default
-    if entry.thinking_parameter is not None:
-        raw["thinking_parameter"] = entry.thinking_parameter
-    if entry.removed_models:
-        raw["removed_models"] = list(entry.removed_models)
-    if entry.auth_methods != ("api_key",):
-        raw["auth_methods"] = list(entry.auth_methods)
-    return raw
-
-
-def _raw_model_metadata_from_entry(metadata: ModelCatalogMetadata) -> dict[str, Any]:
-    raw: dict[str, Any] = {}
-    if metadata.name is not None:
-        raw["name"] = metadata.name
-    if metadata.api is not None:
-        raw["api"] = metadata.api
-    if metadata.base_url is not None:
-        raw["base_url"] = metadata.base_url
-    if metadata.reasoning is not None:
-        raw["reasoning"] = metadata.reasoning
-    if metadata.input:
-        raw["input"] = list(metadata.input)
-    if metadata.cost:
-        raw["cost"] = dict(metadata.cost)
-    if metadata.cost_tiers:
-        raw["cost_tiers"] = [
-            {
-                **(
-                    {"max_input_tokens": tier.max_input_tokens}
-                    if tier.max_input_tokens is not None
-                    else {}
-                ),
-                **tier.cost,
-            }
-            for tier in metadata.cost_tiers
-        ]
-    if metadata.context_window is not None:
-        raw["context_window"] = metadata.context_window
-    if metadata.max_tokens is not None:
-        raw["max_tokens"] = metadata.max_tokens
-    if metadata.headers:
-        raw["headers"] = dict(metadata.headers)
-    if metadata.compat:
-        raw["compat"] = dict(metadata.compat)
-    thinking_level_map = {
-        level: value for level, value in metadata.thinking_level_map.items() if value is not None
-    }
-    unsupported = [level for level, value in metadata.thinking_level_map.items() if value is None]
-    if thinking_level_map:
-        raw["thinking_level_map"] = thinking_level_map
-    if unsupported:
-        raw["unsupported_thinking_levels"] = unsupported
-    return raw
-
-
-def _catalog_to_toml(raw: dict[str, Any]) -> str:
-    lines = [f"schema_version = {raw.get('schema_version', CATALOG_SCHEMA_VERSION)}", ""]
-    for provider in _raw_providers(raw):
-        lines.append("[[providers]]")
-        for key in (
-            "name",
-            "display_name",
-            "kind",
-            "base_url",
-            "api_key_env",
-            "credential_name",
-            "models",
-            "default_model",
-            "docs_url",
-            "api",
-            "headers",
-            "compat",
-            "thinking_levels",
-            "thinking_models",
-            "thinking_default",
-            "thinking_parameter",
-            "removed_models",
-            "auth_methods",
-        ):
-            if key in provider:
-                lines.append(f"{key} = {_toml_value(provider[key])}")
-        context_windows = provider.get("context_windows")
-        if isinstance(context_windows, dict) and context_windows:
-            lines.append("")
-            lines.append("[providers.context_windows]")
-            for model, context_window in context_windows.items():
-                lines.append(f"{_toml_key(model)} = {_toml_value(context_window)}")
-        model_metadata = provider.get("model_metadata")
-        if isinstance(model_metadata, dict) and model_metadata:
-            for model, metadata in model_metadata.items():
-                if not isinstance(metadata, dict):
-                    continue
-                lines.append("")
-                lines.append(f"[providers.model_metadata.{_toml_key(model)}]")
-                for key, value in metadata.items():
-                    lines.append(f"{key} = {_toml_value(value)}")
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def _toml_key(value: str) -> str:
-    if value.replace("_", "").replace("-", "").isalnum() and not value[0].isdigit():
-        return value
-    return json.dumps(value)
-
-
-def _toml_value(value: object) -> str:
-    if isinstance(value, str):
-        return json.dumps(value)
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return str(value)
-    if isinstance(value, list | tuple):
-        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
-    if isinstance(value, dict):
-        return (
-            "{ "
-            + ", ".join(
-                f"{_toml_key(str(key))} = {_toml_value(item)}" for key, item in value.items()
-            )
-            + " }"
-        )
-    raise TypeError(f"Unsupported TOML value: {value!r}")

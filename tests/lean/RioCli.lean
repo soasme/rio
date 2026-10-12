@@ -179,6 +179,28 @@ theorem loaded_providers_are_catalog_providers (catalog names loaded : List Stri
 theorem legacy_provider_definitions_are_rejected (catalog : List String) :
     loadProviders catalog .legacyProviders = .error "move providers[] to catalog.toml" := rfl
 
+/-- Saving preferences leaves the original catalog bytes, including comments, untouched. -/
+structure ProviderFiles where
+  catalog : String
+  preferences : List String
+  deriving DecidableEq, Repr
+
+def savePreferences (files : ProviderFiles) (names : List String) : ProviderFiles :=
+  { files with preferences := names }
+
+theorem preference_save_preserves_catalog (files : ProviderFiles) (names : List String) :
+    (savePreferences files names).catalog = files.catalog := rfl
+
+/-- Login and subsequent requests use the same credential key without editing definitions. -/
+def credentialKey (provider : String) (configured : Option String) : String :=
+  configured.getD provider
+
+theorem omitted_credential_key_uses_provider_name (provider : String) :
+    credentialKey provider none = provider := rfl
+
+theorem explicit_credential_key_is_preserved (provider key : String) :
+    credentialKey provider (some key) = key := rfl
+
 /-- Input validation precedes session creation. -/
 def opensNewStore (cwdValid providerValid : Bool) : Bool := cwdValid && providerValid
 

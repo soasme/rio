@@ -116,7 +116,7 @@ import asyncio, os, sys
 from pathlib import Path
 from rio.coding.credentials import FileCredentialStore, OAuthCredential
 from rio.coding.provider_config import provider_config_from_catalog_entry
-from rio.coding import provider_runtime as runtime
+from rio.coding import oauth, provider_runtime as runtime
 root = Path(sys.argv[1])
 store = FileCredentialStore(root / "credentials.json")
 async def refresh(token):
@@ -125,7 +125,7 @@ async def refresh(token):
     await asyncio.sleep(0.2)
     return OAuthCredential(access="new-access", refresh="new-refresh", expires=9999999999999,
                            account_id="account")
-runtime.refresh_openai_codex_token = refresh
+oauth.refresh_openai_codex_token = refresh
 async def main():
     (root / (str(os.getpid()) + ".ready")).touch()
     async with asyncio.timeout(10):

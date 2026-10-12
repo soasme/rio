@@ -67,7 +67,7 @@ async def test_provider_errors_do_not_load_extensions(
 ):
     from rio.cli import run as cli
     from rio.coding.provider_config import (
-        OpenAICompatibleProviderConfig,
+        ProviderConfig,
         ProviderConfigError,
         ProviderSettings,
     )
@@ -80,7 +80,7 @@ async def test_provider_errors_do_not_load_extensions(
     settings = ProviderSettings(
         default_provider="configured",
         providers=(
-            OpenAICompatibleProviderConfig(
+            ProviderConfig(
                 name="configured",
                 base_url="http://localhost:8000/v1",
                 models=("model",),

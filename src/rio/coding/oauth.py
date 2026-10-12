@@ -23,7 +23,6 @@ from rio.ai.http import create_async_client
 from rio.coding.credentials import OAuthCredential
 from rio.coding.oauth_types import (
     OAuthAuthInfo,
-    OAuthFlowKind,
     OAuthLoginCallbacks,
     OAuthPrompt,
     OAuthRuntimeAuth,
@@ -41,7 +40,6 @@ TOKEN_REFRESH_SKEW_MS = 60_000
 
 type AuthCallback = Callable[["OAuthAuthInfo"], None]
 type PromptCallback = Callable[["OAuthPrompt"], Awaitable[str]]
-type ManualCodeCallback = Callable[[], Awaitable[str]]
 type ProgressCallback = Callable[[str], None]
 
 
@@ -80,7 +78,6 @@ class OpenAICodexOAuthProvider:
 
     id = OPENAI_CODEX_OAUTH_PROVIDER
     name = "OpenAI Codex (ChatGPT subscription)"
-    flow_kinds: tuple[OAuthFlowKind, ...] = ("browser",)
 
     async def login(self, callbacks: OAuthLoginCallbacks) -> OAuthCredential:
         if callbacks.method == "device_code":
@@ -88,7 +85,6 @@ class OpenAICodexOAuthProvider:
         return await login_openai_codex(
             on_auth=callbacks.on_auth,
             on_prompt=callbacks.on_prompt,
-            on_manual_code_input=callbacks.on_manual_code_input,
             on_progress=callbacks.on_progress,
         )
 
@@ -115,11 +111,6 @@ class _LocalOAuthServer:
     async def wait_for_code(self) -> str | None:
         """Wait for the local callback server to receive a code."""
         return await self._future
-
-    def cancel_wait(self) -> None:
-        """Resolve the pending wait without an authorization code."""
-        if not self._future.done():
-            self._future.set_result(None)
 
     def close(self) -> None:
         """Stop the local callback server."""
@@ -199,9 +190,7 @@ async def login_openai_codex(
     *,
     on_auth: AuthCallback,
     on_prompt: PromptCallback,
-    on_manual_code_input: ManualCodeCallback | None = None,
     on_progress: ProgressCallback | None = None,
-    open_browser: bool = True,
     originator: str = "rio",
     client: httpx.AsyncClient | None = None,
 ) -> OAuthCredential:
@@ -216,14 +205,9 @@ async def login_openai_codex(
                 instructions="Complete login in your browser, or paste the redirect URL below.",
             )
         )
-        if open_browser:
-            await asyncio.to_thread(webbrowser.open, flow.url)
+        await asyncio.to_thread(webbrowser.open, flow.url)
 
-        code = await _wait_for_authorization_code(
-            flow=flow,
-            server=server,
-            on_manual_code_input=on_manual_code_input,
-        )
+        code = await server.wait_for_code() if server is not None else None
         if code is None:
             manual_input = await on_prompt(
                 OAuthPrompt(message="Paste the authorization code or full redirect URL:")
@@ -400,41 +384,6 @@ def _token_expiry(raw: dict[str, Any], access_token: str, *, action: str) -> int
     if expires is not None:
         return expires
     raise OAuthError(f"OpenAI Codex token {action} response missing expiry")
-
-
-async def _wait_for_authorization_code(
-    *,
-    flow: AuthorizationFlow,
-    server: _LocalOAuthServer | None,
-    on_manual_code_input: ManualCodeCallback | None,
-) -> str | None:
-    tasks: list[asyncio.Task[str | None]] = []
-    if server is not None:
-        tasks.append(asyncio.create_task(server.wait_for_code()))
-    if on_manual_code_input is not None:
-        tasks.append(asyncio.create_task(_await_manual_code(on_manual_code_input)))
-    if not tasks:
-        return None
-
-    try:
-        done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        result = next(iter(done)).result()
-    finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        if server is not None:
-            server.cancel_wait()
-
-    if result is None:
-        return None
-    parsed = parse_authorization_input(result)
-    _validate_state(parsed.state, flow.state)
-    return parsed.code
-
-
-async def _await_manual_code(callback: ManualCodeCallback) -> str | None:
-    return await callback()
 
 
 def _validate_state(state: str | None, expected_state: str) -> None:
