@@ -21,9 +21,10 @@ import pytest
 import rio.coding.oauth_registry as oauth_registry
 import rio.coding.provider_config as provider_config
 from rio.ai import AnthropicProvider, OpenAICodexProvider, OpenAICompatibleProvider
+from rio.ai.env import RuntimeProviderAuth
 from rio.coding.credentials import FileCredentialStore, OAuthCredential
+from rio.coding.oauth import OAuthLoginCallbacks, OAuthProvider
 from rio.coding.oauth_registry import get_oauth_provider
-from rio.coding.oauth_types import OAuthLoginCallbacks, OAuthProvider, OAuthRuntimeAuth
 from rio.coding.paths import RioPaths
 from rio.coding.provider_config import (
     DEFAULT_MODEL,
@@ -791,6 +792,9 @@ def test_openai_compatible_config_from_provider_preserves_openai_base_url_env(
         def get(self, name: str) -> str | None:
             return "stored-key" if name == "openai" else None
 
+        def get_oauth(self, name: str) -> None:
+            return None
+
     config = openai_compatible_config_from_provider(
         ProviderConfig(name="openai", credential_name="openai"),
         credential_reader=FakeCredentials(),
@@ -1007,6 +1011,9 @@ def test_openai_compatible_config_from_provider_uses_stored_credential(
         def get(self, name: str) -> str | None:
             return "stored-key" if name == "openrouter" else None
 
+        def get_oauth(self, name: str) -> None:
+            return None
+
     config = openai_compatible_config_from_provider(
         provider,
         credential_reader=FakeCredentials(),
@@ -1032,6 +1039,9 @@ def test_openai_compatible_config_from_provider_falls_back_to_env_when_stored_mi
         def get(self, name: str) -> str | None:
             return None
 
+        def get_oauth(self, name: str) -> None:
+            return None
+
     config = openai_compatible_config_from_provider(provider, credential_reader=FakeCredentials())
 
     assert config.api_key == "env-key"
@@ -1051,9 +1061,15 @@ def test_provider_has_usable_credentials_checks_stored_key_and_env(
         def get(self, name: str) -> str | None:
             return None
 
+        def get_oauth(self, name: str) -> None:
+            return None
+
     class StoredCredentials:
         def get(self, name: str) -> str | None:
             return "stored-key" if name == "openrouter" else None
+
+        def get_oauth(self, name: str) -> None:
+            return None
 
     assert not provider_has_usable_credentials(provider, credential_reader=EmptyCredentials())
     assert provider_has_usable_credentials(provider, credential_reader=StoredCredentials())
@@ -1072,6 +1088,9 @@ def test_anthropic_config_from_provider_uses_stored_credential(
     class FakeCredentials:
         def get(self, name: str) -> str | None:
             return "stored-anthropic-key" if name == "anthropic" else None
+
+        def get_oauth(self, name: str) -> None:
+            return None
 
     config = anthropic_config_from_provider(provider, credential_reader=FakeCredentials())
 
@@ -1317,7 +1336,7 @@ def test_anthropic_config_from_provider_includes_compat(
 
 def test_huggingface_runtime_pins_backing_provider_with_model_alias(tmp_path: Path) -> None:
     store = FileCredentialStore(tmp_path / "credentials.json")
-    store.set_api_key("huggingface", "hf-test")
+    store.set("huggingface", "hf-test")
     config = provider_config_from_catalog_entry("huggingface")
 
     provider = create_model_provider(
@@ -1333,7 +1352,7 @@ def test_huggingface_runtime_pins_backing_provider_with_model_alias(tmp_path: Pa
 
 def test_huggingface_runtime_rejects_policy_suffix(tmp_path: Path) -> None:
     store = FileCredentialStore(tmp_path / "credentials.json")
-    store.set_api_key("huggingface", "hf-test")
+    store.set("huggingface", "hf-test")
 
     with pytest.raises(ProviderConfigError, match="explicit"):
         create_model_provider(
@@ -1372,7 +1391,7 @@ def test_create_model_provider_uses_anthropic_oauth_runtime_auth(tmp_path: Path)
 def test_anthropic_api_key_auth_keeps_the_default_cache_retention(tmp_path: Path) -> None:
     """1h cache writes cost 2x base, so an API-key user must not get them silently."""
     store = FileCredentialStore(tmp_path / "credentials.json")
-    store.set_api_key("anthropic", "sk-test")
+    store.set("anthropic", "sk-test")
 
     provider = create_model_provider(
         provider_config_from_catalog_entry("anthropic"), credential_store=store
@@ -1392,7 +1411,7 @@ def test_anthropic_protocol_gateways_disable_cache_breakpoints(
 ) -> None:
     """Gateways speaking the Anthropic protocol may reject cache_control blocks."""
     store = FileCredentialStore(tmp_path / "credentials.json")
-    store.set_api_key(provider_name, "gateway-key")
+    store.set(provider_name, "gateway-key")
     config = provider_config_from_catalog_entry(provider_name)
 
     provider = create_model_provider(config, credential_store=store)
@@ -1404,7 +1423,7 @@ def test_anthropic_protocol_gateways_disable_cache_breakpoints(
 def test_provider_compat_can_re_enable_cache_breakpoints_on_a_gateway(tmp_path: Path) -> None:
     """A gateway proxying real Claude must be able to opt back in without a source edit."""
     store = FileCredentialStore(tmp_path / "credentials.json")
-    store.set_api_key("minimax", "gateway-key")
+    store.set("minimax", "gateway-key")
     config = provider_config_from_catalog_entry("minimax")
     config = replace(config, compat={**config.compat, "supportsCacheControl": True})
 
@@ -1436,7 +1455,7 @@ def test_provider_compat_can_clamp_the_one_hour_ttl_on_oauth(tmp_path: Path) -> 
 def test_provider_compat_can_suppress_only_the_tools_breakpoint(tmp_path: Path) -> None:
     """Some gateways accept cache_control everywhere except inside tool objects."""
     store = FileCredentialStore(tmp_path / "credentials.json")
-    store.set_api_key("anthropic", "sk-test")
+    store.set("anthropic", "sk-test")
     config = replace(
         provider_config_from_catalog_entry("anthropic"),
         compat={"supportsCacheControlOnTools": False},
@@ -1681,7 +1700,7 @@ async def test_openai_codex_credential_resolver_refreshes_expired_credentials(
             account_id="new-account",
         )
 
-    monkeypatch.setattr("rio.coding.oauth.refresh_openai_codex_token", fake_refresh)
+    monkeypatch.setattr("rio.coding.oauth_openai_codex.refresh_openai_codex_token", fake_refresh)
 
     resolver = OpenAICodexCredentialResolver(
         provider_config_from_catalog_entry("openai-codex"),
@@ -1725,8 +1744,8 @@ async def test_runtime_oauth_resolver_refreshes_and_persists_atomically(
                 metadata=dict(credential.metadata),
             )
 
-        def runtime_auth(self, credential: OAuthCredential) -> OAuthRuntimeAuth:
-            return OAuthRuntimeAuth(
+        def runtime_auth(self, credential: OAuthCredential) -> RuntimeProviderAuth:
+            return RuntimeProviderAuth(
                 api_key=credential.access,
                 base_url="https://api.business.githubcopilot.com",
             )
@@ -1766,8 +1785,6 @@ async def test_runtime_oauth_resolver_spends_a_refresh_token_once(
         async def refresh(self, credential: OAuthCredential) -> OAuthCredential:
             from rio.coding.oauth import OAuthError
 
-            if not _is_expired(credential):
-                return credential
             if credential.refresh in refreshes:
                 raise OAuthError("invalid_grant: Refresh token not found or invalid")
             refreshes.append(credential.refresh)
@@ -1778,8 +1795,8 @@ async def test_runtime_oauth_resolver_spends_a_refresh_token_once(
                 expires=9999999999999,
             )
 
-        def runtime_auth(self, credential: OAuthCredential) -> OAuthRuntimeAuth:
-            return OAuthRuntimeAuth(api_key=credential.access)
+        def runtime_auth(self, credential: OAuthCredential) -> RuntimeProviderAuth:
+            return RuntimeProviderAuth(api_key=credential.access)
 
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_oauth(
@@ -1801,10 +1818,34 @@ async def test_runtime_oauth_resolver_spends_a_refresh_token_once(
     assert saved.refresh == "refresh-2"
 
 
-def _is_expired(credential: OAuthCredential) -> bool:
-    from rio.coding.oauth import oauth_credential_is_expired
+async def test_runtime_oauth_resolver_skips_refresh_for_unexpired_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class NoRefreshProvider:
+        id = "github-copilot"
+        name = "No refresh"
 
-    return oauth_credential_is_expired(credential)
+        async def login(self, _callbacks: OAuthLoginCallbacks) -> OAuthCredential:
+            raise AssertionError("not used")
+
+        async def refresh(self, credential: OAuthCredential) -> OAuthCredential:
+            raise AssertionError("unexpired credential was refreshed")
+
+        def runtime_auth(self, credential: OAuthCredential) -> RuntimeProviderAuth:
+            return RuntimeProviderAuth(api_key=credential.access)
+
+    store = FileCredentialStore(tmp_path / "credentials.json")
+    store.set_oauth(
+        "github-copilot",
+        OAuthCredential(access="current", refresh="refresh", expires=9999999999999),
+    )
+    monkeypatch.setitem(
+        oauth_registry._registry, "github-copilot", cast(OAuthProvider, NoRefreshProvider())
+    )
+    provider = provider_config_from_catalog_entry("github-copilot")
+    auth = await OAuthRuntimeCredentialResolver(provider, credential_store=store)()
+
+    assert auth.api_key == "current"
 
 
 def test_refresh_locks_are_not_shared_between_event_loops() -> None:

@@ -21,11 +21,9 @@ from rio.ai.openai_codex import (
 from rio.ai.openai_compatible import OpenAICompatibleProvider
 from rio.ai.provider import ClosableModelProvider
 from rio.coding.credentials import FileCredentialStore, OAuthCredential
-from rio.coding.oauth import (
-    account_id_from_access_token,
-)
+from rio.coding.oauth import OAuthProvider, oauth_credential_is_expired
+from rio.coding.oauth_openai_codex import account_id_from_access_token
 from rio.coding.oauth_registry import get_oauth_provider
-from rio.coding.oauth_types import OAuthProvider
 from rio.coding.provider_config import (
     ProviderConfig,
     ProviderConfigError,
@@ -279,19 +277,14 @@ class OAuthRuntimeCredentialResolver:
                     f"Missing OAuth credentials for {self._provider.name}. "
                     f"Run /login {self._provider.name}."
                 )
-            refreshed = await oauth_provider.refresh(credential)
-            if refreshed != credential:
-                self._credential_store.set_oauth(credential_name, refreshed)
-        return refreshed
+            if oauth_credential_is_expired(credential):
+                credential = await oauth_provider.refresh(credential)
+                self._credential_store.set_oauth(credential_name, credential)
+        return credential
 
     async def __call__(self) -> RuntimeProviderAuth:
         credential = await self.credential()
-        auth = _required_oauth_provider(self._provider.name).runtime_auth(credential)
-        return RuntimeProviderAuth(
-            api_key=auth.api_key,
-            base_url=auth.base_url,
-            headers=auth.headers,
-        )
+        return _required_oauth_provider(self._provider.name).runtime_auth(credential)
 
 
 def _required_oauth_provider(provider_name: str) -> OAuthProvider:

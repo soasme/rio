@@ -14,6 +14,8 @@ or hardware durability. Python tests cover the implementation and its failure pa
 
 `RioCli.lean` also models required subcommands: a missing command exits with status 2,
 and a selected command proceeds to dispatch (`rio.cli`).
+It also models OAuth refresh: the runtime resolver refreshes only expired credentials
+(`rio.coding.provider_runtime`).
 
 The current user-facing contracts are described in the
 [CLI reference](../../docs/reference/cli.md) and

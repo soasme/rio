@@ -191,6 +191,16 @@ def savePreferences (files : ProviderFiles) (names : List String) : ProviderFile
 theorem preference_save_preserves_catalog (files : ProviderFiles) (names : List String) :
     (savePreferences files names).catalog = files.catalog := rfl
 
+/-- The resolver alone decides when to refresh: only an expired credential is refreshed. -/
+def resolveCredential (expired : Bool) (stored refreshed : Nat) : Nat :=
+  if expired then refreshed else stored
+
+theorem unexpired_credential_is_not_refreshed (stored refreshed : Nat) :
+    resolveCredential false stored refreshed = stored := rfl
+
+theorem expired_credential_is_refreshed (stored refreshed : Nat) :
+    resolveCredential true stored refreshed = refreshed := rfl
+
 /-- Login and subsequent requests use the same credential key without editing definitions. -/
 def credentialKey (provider : String) (configured : Option String) : String :=
   configured.getD provider

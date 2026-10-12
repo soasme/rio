@@ -25,6 +25,8 @@ process supervision, journaling and recovery. See the
 | [catalog_loader.py](catalog_loader.py), [provider_catalog.py](provider_catalog.py) | Built-in catalog and user overrides in `~/.rio/catalog.toml`. |
 | [provider_config.py](provider_config.py), [thinking.py](thinking.py) | Select provider, model and supported reasoning settings. |
 | [provider_runtime.py](provider_runtime.py) | Construct `rio.ai` providers with request settings and authentication. |
+| [oauth.py](oauth.py) | Shared OAuth contracts: callbacks, PKCE, callback server, device polling, error redaction. |
+| [oauth_anthropic.py](oauth_anthropic.py), [oauth_github_copilot.py](oauth_github_copilot.py), [oauth_openai_codex.py](oauth_openai_codex.py) | Provider login and token refresh. |
 | [credentials.py](credentials.py), [oauth_registry.py](oauth_registry.py) | Store credentials and select login flows. |
 | [context.py](context.py), [system_prompt.py](system_prompt.py) | Load and format project instructions. |
 

@@ -5,8 +5,8 @@ from getpass import getpass
 import anyio
 
 from rio.coding.credentials import FileCredentialStore
+from rio.coding.oauth import OAuthLoginCallbacks
 from rio.coding.oauth_registry import get_oauth_provider
-from rio.coding.oauth_types import OAuthLoginCallbacks
 from rio.coding.provider_config import (
     ProviderConfigError,
     load_provider_settings,
@@ -50,6 +50,6 @@ async def login_provider(name, *, method=None):
         secret = await anyio.to_thread.run_sync(lambda: getpass(f"API key for {name}: "))
         if not secret.strip():
             raise ValueError("API key cannot be empty")
-        store.set_api_key(key, secret)
+        store.set(key, secret)
     save_default_provider(provider.name)
     return f"Logged in to {name}."
