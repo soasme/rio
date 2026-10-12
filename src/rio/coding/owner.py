@@ -165,28 +165,32 @@ class ProcessOwner(Owner):
         self.session.authorize(cell_id, self.identity)
         return self._execute(cell_id)
 
-    async def validate(self, key: str, command: list[str]) -> ValidatorResult:
-        previous = self.session.data.get("validation_workers", {}).get(key)
-        if previous:
-            return previous["result"]
-        identity: WorkerIdentity = {"token": uuid.uuid4().hex}
-        self.session.start_validator(key, identity)
+    async def _spawn(
+        self, identity: WorkerIdentity, command: list[str], env: dict | None = None
+    ) -> tuple[asyncio.subprocess.Process, WorkerIdentity]:
+        """Start a gated worker in its own process group; it waits for "start" on stdin."""
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             str(Path(worker.__file__)),
             identity["token"],
             *command,
             cwd=self.session.meta["cwd"],
+            env=env,
+            start_new_session=True,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
         )
-        identity = {
-            **identity,
-            "pid": process.pid,
-            "birth": psutil.Process(process.pid).create_time(),
-        }
+        birth = psutil.Process(process.pid).create_time()
+        return process, {**identity, "pid": process.pid, "birth": birth}
+
+    async def validate(self, key: str, command: list[str]) -> ValidatorResult:
+        previous = self.session.data.get("validation_workers", {}).get(key)
+        if previous:
+            return previous["result"]
+        identity: WorkerIdentity = {"token": uuid.uuid4().hex}
+        self.session.start_validator(key, identity)
+        process, identity = await self._spawn(identity, command)
         try:
             self.session.register_validator(key, identity)
             process.stdin.write(b"start\n")
@@ -239,24 +243,8 @@ class ProcessOwner(Owner):
         }
         try:
             command = session.kinds[cell["kind"]].command(cell, Path(self.temporary.name))
-            process = await asyncio.create_subprocess_exec(
-                sys.executable,
-                str(Path(worker.__file__)),
-                self.identity["token"],
-                *command,
-                cwd=session.meta["cwd"],
-                env=env,
-                start_new_session=True,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            process, self.identity = await self._spawn(self.identity, command, env)
             self.process = process
-            self.identity = {
-                **self.identity,
-                "pid": process.pid,
-                "birth": psutil.Process(process.pid).create_time(),
-            }
             session.register_worker(cell_id, self.identity)
             process.stdin.write(b"start\n")
             await process.stdin.drain()

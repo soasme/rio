@@ -191,8 +191,8 @@ class Owner:
         pending = self.session.pending()
         if pending:
             cell_id = pending[0]["cell_id"]
-            self.active_id = cell_id
             self.task = asyncio.create_task(self.launch(cell_id))
+            self.active_id = cell_id
             self.task.add_done_callback(lambda _: self.changed.set())
 
 
