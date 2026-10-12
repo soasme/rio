@@ -13,7 +13,7 @@ import anyio
 
 from rio.cli import run as run_module
 from rio.cli import status
-from rio.cli.login import login
+from rio.coding.auth_commands import login_provider
 from rio.coding.rendering import PrintOutputMode
 from rio.coding.thinking import normalize_thinking_level
 from rio.version import current_version
@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run autonomous coding tasks.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    commands = parser.add_subparsers(title="commands", metavar="COMMAND")
+    commands = parser.add_subparsers(title="commands", metavar="COMMAND", required=True)
 
     run_parser = commands.add_parser(
         "run", help="execute a task", description="Execute a task in a durable session."
@@ -51,7 +51,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=PrintOutputMode.human,
         help="Output format (default: human).",
     )
-    run_parser.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     run_parser.set_defaults(handler=_run, parser=run_parser)
 
     login_parser = commands.add_parser(
@@ -72,9 +71,6 @@ def app(argv: Sequence[str] | None = None) -> None:
     """Run the command-line application."""
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not hasattr(args, "handler"):
-        parser.print_help()
-        return
     args.handler(args)
 
 
@@ -82,8 +78,6 @@ def _run(args: argparse.Namespace) -> None:
     prompt = _resolve_task(args.task)
     if not prompt and not args.resume:
         args.parser.error("a task or Markdown task file is required")
-    if args.no_color:
-        os.environ["NO_COLOR"] = "1"
     status.report("working")
     try:
         level = normalize_thinking_level(args.thinking) if args.thinking else None
@@ -120,7 +114,7 @@ def _run(args: argparse.Namespace) -> None:
 
 def _login(args: argparse.Namespace) -> None:
     try:
-        print(login(args.provider, args.method))
+        print(anyio.run(functools.partial(login_provider, args.provider, method=args.method)))
     except ValueError as exc:
         args.parser.error(str(exc))
 

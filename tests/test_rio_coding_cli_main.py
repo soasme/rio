@@ -98,6 +98,60 @@ def test_help_lists_commands(capsys: pytest.CaptureFixture[str]) -> None:
     assert "mcp" not in help_text.lower()
 
 
+def test_bare_rio_requires_a_command(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as error:
+        app([])
+
+    assert error.value.code == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "usage: rio" in output.err
+    assert "required: COMMAND" in output.err
+
+
+def test_no_color_flag_is_rejected(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as error:
+        app(["run", "--no-color", "do it"])
+
+    assert error.value.code == 2
+    assert "unrecognized arguments: --no-color" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("method", [None, "browser", "device_code", "api-key"])
+def test_login_dispatches_provider_and_method(
+    method: str | None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def fake_login(name: str, *, method: str | None = None) -> str:
+        assert name == "anthropic"
+        assert method == expected_method
+        return "Logged in to anthropic."
+
+    expected_method = method
+    monkeypatch.setattr("rio.cli.login_provider", fake_login)
+
+    app(["login", "anthropic", *(["--method", method] if method else [])])
+
+    assert capsys.readouterr().out == "Logged in to anthropic.\n"
+
+
+def test_login_error_prints_usage(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def fake_login(name: str, *, method: str | None = None) -> str:
+        raise ValueError("Unknown provider: missing")
+
+    monkeypatch.setattr("rio.cli.login_provider", fake_login)
+
+    with pytest.raises(SystemExit) as error:
+        app(["login", "missing"])
+
+    assert error.value.code == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "usage: rio login" in output.err
+    assert "Unknown provider: missing" in output.err
+
+
 @pytest.mark.parametrize("command", ["add", "remove", "list", "login", "logout"])
 def test_mcp_commands_are_rejected(command: str, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as error:
