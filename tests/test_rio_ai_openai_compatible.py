@@ -12,35 +12,24 @@ from rio.ai.tools import AgentTool
 _opaque_ids = count()
 
 
-async def _noop_execute(tool_call_id, arguments, signal=None, on_update=None):
-    raise NotImplementedError
-
-
 def _read_like_tool() -> AgentTool:
     return AgentTool(
         name="read",
-        label="read",
         description="Read a file",
         parameters={
             "type": "object",
             "properties": {"path": {"type": "string"}, "offset": {"type": "integer"}},
             "required": ["path"],
         },
-        execute_fn=_noop_execute,
-        constrained_sampling={"type": "json_schema", "strict": "prefer"},
     )
 
 
-def test_tool_to_openai_uses_strict_schema_when_compat_allows_it():
+def test_tool_to_openai_keeps_the_supplied_schema():
     payload = _tool_to_openai(_read_like_tool(), {})
 
     function = payload["function"]
-    assert function["strict"] is True
-    assert function["parameters"]["additionalProperties"] is False
-    assert function["parameters"]["required"] == ["path", "offset"]
-    assert function["parameters"]["properties"]["offset"] == {
-        "anyOf": [{"type": "integer"}, {"type": "null"}]
-    }
+    assert function["strict"] is False
+    assert function["parameters"] == _read_like_tool().parameters
 
 
 def test_tool_to_openai_omits_strict_field_when_compat_opts_out():
@@ -49,21 +38,21 @@ def test_tool_to_openai_omits_strict_field_when_compat_opts_out():
     function = payload["function"]
     assert "strict" not in function
     # Falls back to the plain schema, unchanged.
-    assert function["parameters"] == _read_like_tool().input_schema
+    assert function["parameters"] == _read_like_tool().parameters
 
 
-def test_tool_to_responses_uses_strict_schema_when_compat_allows_it():
+def test_tool_to_responses_keeps_the_supplied_schema():
     payload = _tool_to_responses(_read_like_tool(), {})
 
-    assert payload["strict"] is True
-    assert payload["parameters"]["additionalProperties"] is False
+    assert payload["strict"] is False
+    assert payload["parameters"] == _read_like_tool().parameters
 
 
 def test_tool_to_responses_omits_strict_field_when_compat_opts_out():
     payload = _tool_to_responses(_read_like_tool(), {"supportsStrictMode": False})
 
     assert "strict" not in payload
-    assert payload["parameters"] == _read_like_tool().input_schema
+    assert payload["parameters"] == _read_like_tool().parameters
 
 
 def _opaque() -> str:
@@ -182,3 +171,52 @@ def test_tool_call_without_done_event_ends_with_error():
     assert len(events) == 1
     assert isinstance(events[0], ProviderErrorEvent)
     assert "unfinished tool call: read (call-0)" in events[0].message
+
+
+def test_shared_responses_input_preserves_tool_result_correlation_and_images():
+    from rio.ai.messages import (
+        AssistantMessage,
+        ImageContent,
+        TextContent,
+        ToolCall,
+        ToolResultMessage,
+        UserMessage,
+    )
+    from rio.ai.openai_compatible import _messages_to_responses_input
+    from rio.ai.tool_call_ids import portable_tool_call_id
+
+    image = ImageContent(data="aGVsbG8=", mime_type="image/png")
+    messages = [
+        UserMessage(content=[TextContent(text="look"), image]),
+        AssistantMessage(
+            content=[
+                TextContent(text="answer", text_signature="msg_1"),
+                ToolCall(id="call_1|fc_1", name="read", arguments={}),
+            ]
+        ),
+        ToolResultMessage(tool_call_id="call_1|fc_1", tool_name="read", content=[image]),
+    ]
+    for preserve_ids in (False, True):
+        items = _messages_to_responses_input(
+            messages, supports_images=True, preserve_ids=preserve_ids
+        )
+        assert items[0]["content"][1]["image_url"] == "data:image/png;base64,aGVsbG8="
+        expected = "call_1" if preserve_ids else portable_tool_call_id("call_1|fc_1")
+        assert items[2]["call_id"] == items[3]["call_id"] == expected
+        assert items[3]["output"][0]["type"] == "input_image"
+        if preserve_ids:
+            assert items[1]["id"] == "msg_1"
+            assert items[2]["id"] == "fc_1"
+        else:
+            assert "id" not in items[2]
+
+
+def test_incomplete_responses_with_tools_keep_length_stop_reason():
+    events = _finalize(
+        [
+            *_function_call_events(0, "read", '{"path":'),
+            {"type": "response.incomplete", "response": {"status": "incomplete"}},
+        ]
+    )
+    assert events[-1].finish_reason == "length"
+    assert events[-1].message.tool_calls[0].arguments == {"_raw_arguments": '{"path":'}

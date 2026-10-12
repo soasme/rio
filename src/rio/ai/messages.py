@@ -143,7 +143,7 @@ class AssistantMessageDiagnostic(WireModel):
     details: dict[str, JSONValue] | None = None
 
 
-StopReason = Literal["stop", "length", "toolUse", "error", "aborted"]
+StopReason = Literal["stop", "length", "toolUse", "error"]
 
 
 class AssistantMessage(WireModel):
@@ -225,53 +225,8 @@ class ToolResultMessage(WireModel):
         return content_text(self.content)
 
 
-class BashExecutionMessage(WireModel):
-    role: Literal["bashExecution"] = "bashExecution"
-    command: str
-    output: str
-    exit_code: int | None = None
-    cancelled: bool = False
-    truncated: bool = False
-    full_output_path: str | None = None
-    timestamp: int = Field(default_factory=current_timestamp_ms)
-    exclude_from_context: bool = False
-
-
-class CustomMessage(WireModel):
-    role: Literal["custom"] = "custom"
-    custom_type: str
-    content: UserContent
-    display: bool = True
-    details: JSONValue = None
-    timestamp: int = Field(default_factory=current_timestamp_ms)
-
-    @property
-    def text(self) -> str:
-        return content_text(self.content)
-
-
-class BranchSummaryMessage(WireModel):
-    role: Literal["branchSummary"] = "branchSummary"
-    summary: str
-    from_id: str
-    timestamp: int = Field(default_factory=current_timestamp_ms)
-
-
-class CompactionSummaryMessage(WireModel):
-    role: Literal["compactionSummary"] = "compactionSummary"
-    summary: str
-    tokens_before: int
-    timestamp: int = Field(default_factory=current_timestamp_ms)
-
-
 type AgentMessage = Annotated[
-    UserMessage
-    | AssistantMessage
-    | ToolResultMessage
-    | BashExecutionMessage
-    | CustomMessage
-    | BranchSummaryMessage
-    | CompactionSummaryMessage,
+    UserMessage | AssistantMessage | ToolResultMessage,
     Field(discriminator="role"),
 ]
 
@@ -293,17 +248,6 @@ def content_text(content: str | list[Any]) -> str:
     return "".join(block.text for block in content if isinstance(block, TextContent))
 
 
-def message_to_user(message: AgentMessage) -> UserMessage:
-    """Convert custom/session-only messages to provider-compatible user context."""
-    return UserMessage(content=message_text(message), timestamp=message.timestamp)
-
-
 def message_text(message: AgentMessage) -> str:
     """Return the user-visible text represented by an agent message."""
-    if isinstance(message, (UserMessage, AssistantMessage, ToolResultMessage, CustomMessage)):
-        return message.text
-    if isinstance(message, (BranchSummaryMessage, CompactionSummaryMessage)):
-        return message.summary
-    if isinstance(message, BashExecutionMessage):
-        return message.output
-    return ""
+    return message.text

@@ -12,10 +12,8 @@ from email.utils import parsedate_to_datetime
 import httpx
 
 from rio.ai._provider_events import ProviderErrorEvent, ProviderEvent, ProviderRetryEvent
-from rio.ai.provider import CancellationToken
 from rio.ai.types import JSONValue
 
-RETRY_POLL_SECONDS = 0.05
 RETRY_BASE_DELAY_SECONDS = 0.25
 
 
@@ -55,7 +53,6 @@ async def stream_with_retries(
     *,
     max_retries: int,
     max_retry_delay_seconds: float,
-    signal: CancellationToken | None,
 ) -> AsyncIterator[ProviderEvent]:
     """Run ``stream_attempt`` until it finishes, retrying transient failures.
 
@@ -95,8 +92,7 @@ async def stream_with_retries(
             reason=reason,
             data=data,
         )
-        if not await wait_for_retry(delay, signal=signal):
-            return
+        await sleep(delay)
         attempt = RetryAttempt(number=attempt.number + 1)
 
 
@@ -183,22 +179,3 @@ def provider_retry_event(
         ),
         data=data,
     )
-
-
-async def wait_for_retry(
-    delay_seconds: float,
-    *,
-    signal: CancellationToken | None,
-) -> bool:
-    """Sleep before a retry while allowing cancellation to interrupt backoff."""
-    if delay_seconds <= 0:
-        return signal is None or not signal.is_cancelled()
-
-    remaining = delay_seconds
-    while remaining > 0:
-        if signal is not None and signal.is_cancelled():
-            return False
-        step = min(RETRY_POLL_SECONDS, remaining)
-        await sleep(step)
-        remaining -= step
-    return signal is None or not signal.is_cancelled()
