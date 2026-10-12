@@ -3,62 +3,39 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
-from json import dumps, loads
+from dataclasses import dataclass
 from platform import machine, release, system
-from typing import Any
 
 import httpx
 
-from rio.ai._parsing import int_or_zero, loads_object, tool_arguments
 from rio.ai._provider_events import (
     ProviderErrorEvent,
     ProviderEvent,
-    ProviderResponseEndEvent,
-    ProviderResponseStartEvent,
     ProviderTextDeltaEvent,
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
-)
-from rio.ai.constrained_sampling import (
-    get_json_schema_tool_parameters,
-    resolve_json_schema_strict_sampling,
-)
-from rio.ai.content import (
-    NON_VISION_TOOL_IMAGE_PLACEHOLDER,
-    NON_VISION_USER_IMAGE_PLACEHOLDER,
-    text_and_images,
 )
 from rio.ai.env import (
     DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES,
     DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS,
     DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS,
 )
-from rio.ai.events import AssistantMessageEvent
-from rio.ai.http import create_async_client
-from rio.ai.http_errors import provider_http_error_message
+from rio.ai.http import create_async_client, request_with_retries
 from rio.ai.messages import (
     AgentMessage,
-    AssistantMessage,
-    ImageContent,
-    TextContent,
-    ThinkingContent,
-    ToolResultMessage,
-    Usage,
-    UserMessage,
-    assistant_content,
 )
-from rio.ai.openai_cache import openai_prompt_cache_key
-from rio.ai.provider import CancellationToken
+from rio.ai.openai_compatible import (
+    _messages_to_responses_input,
+    _ResponsesStreamParser,
+    _stream_error_details,
+)
+from rio.ai.provider import AssistantMessageEvent, collect_response
 from rio.ai.retry import (
     RetryableFailure,
     RetryAttempt,
-    check_response_status,
     is_transient_status,
-    stream_with_retries,
 )
-from rio.ai.stream import canonicalize_provider_stream
-from rio.ai.tools import AgentTool, ToolCall
+from rio.ai.tools import AgentTool
 from rio.ai.types import JSONValue
 
 DEFAULT_OPENAI_CODEX_BASE_URL = "https://chatgpt.com/backend-api"
@@ -89,7 +66,6 @@ class OpenAICodexConfig:
     reasoning_effort: str | None = None
     reasoning_summary: str = "auto"
     supports_images: bool = False
-    compat: Mapping[str, JSONValue] = field(default_factory=dict)
     provider_name: str = "OpenAI Codex"
 
 
@@ -119,19 +95,15 @@ class OpenAICodexProvider:
         system: str,
         messages: list[AgentMessage],
         tools: list[AgentTool],
-        signal: CancellationToken | None = None,
-        session_id: str | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
-        """Stream one response as Pi-compatible assistant message events."""
+        """Collect one response as a final assistant message or error."""
         raw = self._stream_provider_events(
             model=model,
             system=system,
             messages=messages,
             tools=tools,
-            signal=signal,
-            session_id=session_id,
         )
-        return canonicalize_provider_stream(
+        return collect_response(
             raw, api="openai-codex-responses", provider="openai-codex", model=model
         )
 
@@ -142,14 +114,11 @@ class OpenAICodexProvider:
         system: str,
         messages: list[AgentMessage],
         tools: list[AgentTool],
-        signal: CancellationToken | None = None,
-        session_id: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one Codex Responses request as provider-neutral events."""
 
         async def iterator() -> AsyncIterator[ProviderEvent]:
             client = self._get_client()
-            cache_key = openai_prompt_cache_key(session_id)
             payload = _build_codex_payload(
                 model=model,
                 system=system,
@@ -158,83 +127,56 @@ class OpenAICodexProvider:
                 reasoning_effort=self._config.reasoning_effort,
                 reasoning_summary=self._config.reasoning_summary,
                 supports_images=self._config.supports_images,
-                prompt_cache_key=cache_key,
-                compat=self._config.compat,
             )
             url = _resolve_codex_url(self._config.base_url)
 
-            async def stream_attempt(attempt: RetryAttempt) -> AsyncIterator[ProviderEvent]:
-                try:
-                    credentials = await self._config.credential_resolver()
-                    headers = _build_codex_headers(
-                        self._config.headers,
-                        access_token=credentials.access_token,
-                        account_id=credentials.account_id,
-                        originator=self._config.originator,
-                        session_id=cache_key,
-                    )
-                    async with client.stream(
-                        "POST",
-                        url,
-                        json=payload,
-                        headers=headers,
-                    ) as response:
-                        error = await check_response_status(
-                            response,
-                            lambda body: ProviderErrorEvent(
-                                message=provider_http_error_message(
-                                    provider_name=self._config.provider_name,
-                                    status_code=response.status_code,
-                                    body=body,
-                                    model=model,
-                                ),
-                                data={
-                                    "status_code": response.status_code,
-                                    "body": body,
-                                    "attempts": attempt.number + 1,
-                                },
-                            ),
-                            is_retryable=_is_retryable_status,
+            async def headers() -> Mapping[str, str]:
+                credentials = await self._config.credential_resolver()
+                return _build_codex_headers(
+                    self._config.headers,
+                    access_token=credentials.access_token,
+                    account_id=credentials.account_id,
+                    originator=self._config.originator,
+                )
+
+            async def parse(
+                response: httpx.Response, attempt: RetryAttempt
+            ) -> AsyncIterator[ProviderEvent]:
+                # Thinking alone still allows a network retry, not a stream-error retry.
+                emitted_thinking = False
+                async for event in _codex_provider_events(response):
+                    if isinstance(event, ProviderTextDeltaEvent | ProviderToolCallEvent):
+                        attempt.emitted_content = True
+                    elif isinstance(event, ProviderThinkingDeltaEvent):
+                        emitted_thinking = True
+                    if (
+                        isinstance(event, ProviderErrorEvent)
+                        and not emitted_thinking
+                        and _retryable_stream_error_event(event)
+                    ):
+                        raw = _stream_error_event_data(event) or {}
+                        code, _message = _stream_error_details(raw)
+                        raise RetryableFailure(
+                            f"stream error ({code or 'unknown'})",
+                            event,
+                            data={"event": raw},
                         )
-                        if error is not None:
-                            yield error
-                            return
+                    yield event
 
-                        yield ProviderResponseStartEvent(model=model)
-                        # Thinking alone still allows a network retry, not a stream-error retry.
-                        emitted_thinking = False
-                        async for event in _codex_provider_events(response, signal=signal):
-                            if isinstance(event, ProviderTextDeltaEvent | ProviderToolCallEvent):
-                                attempt.emitted_content = True
-                            elif isinstance(event, ProviderThinkingDeltaEvent):
-                                emitted_thinking = True
-                            if (
-                                isinstance(event, ProviderErrorEvent)
-                                and not emitted_thinking
-                                and _retryable_stream_error_event(event)
-                            ):
-                                raw = _stream_error_event_data(event) or {}
-                                code, _message = _stream_error_details(raw)
-                                raise RetryableFailure(
-                                    f"stream error ({code or 'unknown'})",
-                                    event,
-                                    data={"event": raw},
-                                )
-                            yield event
-                except (httpx.HTTPError, RetryableFailure):
-                    raise
-                except Exception as exc:  # noqa: BLE001 - provider errors are surfaced as events
-                    yield ProviderErrorEvent(
-                        message=str(exc), data={"attempts": attempt.number + 1}
-                    )
-
-            async for event in stream_with_retries(
-                stream_attempt,
-                max_retries=self._config.max_retries,
-                max_retry_delay_seconds=self._config.max_retry_delay_seconds,
-                signal=signal,
-            ):
-                yield event
+            try:
+                async for event in request_with_retries(
+                    client,
+                    url=url,
+                    payload=payload,
+                    headers=headers,
+                    model=model,
+                    config=self._config,
+                    parse=parse,
+                    is_retryable=_is_retryable_status,
+                ):
+                    yield event
+            except Exception as exc:
+                yield ProviderErrorEvent(message=str(exc))
 
         return iterator()
 
@@ -242,43 +184,6 @@ class OpenAICodexProvider:
         if self._client is None:
             self._client = create_async_client(timeout=self._config.timeout_seconds)
         return self._client
-
-
-class _ToolCallBuilder:
-    def __init__(self, *, call_id: str, item_id: str | None, name: str) -> None:
-        self.call_id = call_id
-        self.item_id = item_id
-        self.name = name
-        self.arguments_parts: list[str] = []
-
-    def add_delta(self, delta: str) -> None:
-        """Append a streamed tool-argument fragment."""
-        self.arguments_parts.append(delta)
-
-    def set_arguments(self, arguments: str) -> None:
-        """Replace streamed tool arguments with final provider arguments."""
-        self.arguments_parts = [arguments]
-
-    def update_from_item(self, item: Mapping[str, Any]) -> None:
-        """Fill in metadata from a completed function-call item."""
-        call_id = item.get("call_id")
-        if isinstance(call_id, str) and call_id:
-            self.call_id = call_id
-        item_id = item.get("id")
-        if isinstance(item_id, str) and item_id:
-            self.item_id = item_id
-        name = item.get("name")
-        if isinstance(name, str):
-            self.name = name
-
-    def build(self) -> ToolCall:
-        """Build a complete Rio tool call."""
-        item_id = self.item_id or f"fc_{self.call_id}"
-        return ToolCall(
-            id=f"{self.call_id}|{item_id}",
-            name=self.name,
-            arguments=tool_arguments("".join(self.arguments_parts)),
-        )
 
 
 def _build_codex_payload(
@@ -290,332 +195,54 @@ def _build_codex_payload(
     reasoning_effort: str | None = None,
     reasoning_summary: str = "auto",
     supports_images: bool = False,
-    prompt_cache_key: str | None = None,
-    compat: Mapping[str, JSONValue] | None = None,
 ) -> dict[str, JSONValue]:
     payload: dict[str, JSONValue] = {
         "model": model,
         "store": False,
         "stream": True,
         "instructions": system or "You are a helpful assistant.",
-        "input": _messages_to_responses_input(messages, supports_images=supports_images),
+        "input": _messages_to_responses_input(
+            messages, supports_images=supports_images, preserve_ids=True
+        ),
         "text": {"verbosity": "low"},
         "include": ["reasoning.encrypted_content"],
         "tool_choice": "auto",
         "parallel_tool_calls": True,
     }
-    if prompt_cache_key is not None:
-        payload["prompt_cache_key"] = prompt_cache_key
     if reasoning_effort is not None:
         payload["reasoning"] = {
             "effort": reasoning_effort,
             "summary": reasoning_summary,
         }
     if tools:
-        payload["tools"] = [_tool_to_codex(tool, compat) for tool in tools]
+        payload["tools"] = [_tool_to_codex(tool) for tool in tools]
     return payload
 
 
-def _messages_to_responses_input(
-    messages: list[AgentMessage], *, supports_images: bool = False
-) -> list[JSONValue]:
-    items: list[JSONValue] = []
-    assistant_index = 0
-    for message in messages:
-        if isinstance(message, UserMessage):
-            text, images = text_and_images(
-                message.content,
-                supports_images=supports_images,
-                image_placeholder=NON_VISION_USER_IMAGE_PLACEHOLDER,
-            )
-            content: list[JSONValue] = []
-            if text:
-                content.append({"type": "input_text", "text": text})
-            content.extend(_codex_input_image(image) for image in images)
-            items.append({"role": "user", "content": content})
-        elif isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, ThinkingContent) and block.thinking_signature:
-                    try:
-                        reasoning_item = loads(block.thinking_signature)
-                    except (TypeError, ValueError):
-                        reasoning_item = None
-                    if isinstance(reasoning_item, dict):
-                        items.append(reasoning_item)
-                elif isinstance(block, TextContent):
-                    items.append(
-                        {
-                            "type": "message",
-                            "role": "assistant",
-                            "content": [
-                                {
-                                    "type": "output_text",
-                                    "text": block.text,
-                                    "annotations": [],
-                                }
-                            ],
-                            "status": "completed",
-                            "id": block.text_signature or f"msg_{assistant_index}",
-                        }
-                    )
-                    assistant_index += 1
-            for tool_call in message.tool_calls:
-                call_id, item_id = _split_tool_call_id(tool_call.id)
-                item: dict[str, JSONValue] = {
-                    "type": "function_call",
-                    "call_id": call_id,
-                    "name": tool_call.name,
-                    "arguments": dumps(tool_call.arguments),
-                }
-                if item_id:
-                    item["id"] = item_id
-                items.append(item)
-        elif isinstance(message, ToolResultMessage):
-            call_id, _item_id = _split_tool_call_id(message.tool_call_id)
-            text, images = text_and_images(
-                message.content,
-                supports_images=supports_images,
-                image_placeholder=NON_VISION_TOOL_IMAGE_PLACEHOLDER,
-            )
-            output: JSONValue
-            if images:
-                output_parts: list[JSONValue] = []
-                if text:
-                    output_parts.append({"type": "input_text", "text": text})
-                output_parts.extend(_codex_input_image(image) for image in images)
-                output = output_parts
-            else:
-                output = text or "(no tool output)"
-            items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": output,
-                }
-            )
-    return items
-
-
-def _codex_input_image(image: ImageContent) -> dict[str, JSONValue]:
-    return {
-        "type": "input_image",
-        "detail": "auto",
-        "image_url": f"data:{image.mime_type};base64,{image.data}",
-    }
-
-
-def _tool_to_codex(
-    tool: AgentTool, compat: Mapping[str, JSONValue] | None = None
-) -> dict[str, JSONValue]:
-    resolved_compat = compat or {}
-    supports_strict_mode = resolved_compat.get("supportsStrictMode") is not False
-    strict = resolve_json_schema_strict_sampling(tool, supports_strict_mode)
-    parameters = get_json_schema_tool_parameters(tool.input_schema, strict)
+def _tool_to_codex(tool: AgentTool) -> dict[str, JSONValue]:
     return {
         "type": "function",
         "name": tool.name,
         "description": tool.description,
-        "parameters": parameters,
-        "strict": strict if strict is not None else False,
+        "parameters": dict(tool.parameters),
+        "strict": False,
     }
 
 
-async def _codex_provider_events(
-    response: httpx.Response,
-    *,
-    signal: CancellationToken | None,
-) -> AsyncIterator[ProviderEvent]:
-    content_parts: list[str] = []
-    thinking_parts: list[str] = []
-    reasoning_items: dict[str, dict[str, JSONValue]] = {}
-    tool_calls: list[ToolCall] = []
-    active_tools: list[_ToolCallBuilder] = []
-    tools_by_item_id: dict[str, _ToolCallBuilder] = {}
-    tools_by_call_id: dict[str, _ToolCallBuilder] = {}
-    tools_by_output_index: dict[int, _ToolCallBuilder] = {}
-    finish_reason: str | None = None
-    usage: Usage | None = None
-    saw_terminal_event = False
-
-    async for event in _iter_sse_objects(response):
-        if signal is not None and signal.is_cancelled():
-            return
-        event_type = event.get("type")
-        if not isinstance(event_type, str):
-            continue
-
-        if event_type == "error":
-            yield ProviderErrorEvent(
-                message=_error_message(event, fallback="OpenAI Codex returned an error"),
-                data={"event": event},
-            )
-            return
-
-        if event_type == "response.failed":
-            yield ProviderErrorEvent(
-                message=_response_error_message(event),
-                data={"event": event},
-            )
-            return
-
-        if event_type == "response.output_item.added":
-            item = event.get("item")
-            if isinstance(item, Mapping) and item.get("type") == "reasoning":
-                item_id = item.get("id")
-                if isinstance(item_id, str):
-                    reasoning_items[item_id] = dict(item)
-            elif isinstance(item, Mapping) and item.get("type") == "function_call":
-                _track_tool_builder(
-                    _tool_builder_from_item(item),
-                    event,
-                    active_tools=active_tools,
-                    by_item_id=tools_by_item_id,
-                    by_call_id=tools_by_call_id,
-                    by_output_index=tools_by_output_index,
-                )
-
-        elif event_type == "response.function_call_arguments.delta":
-            delta = event.get("delta")
-            tool_builder = _tool_builder_for_event(
-                event,
-                active_tools=active_tools,
-                by_item_id=tools_by_item_id,
-                by_call_id=tools_by_call_id,
-                by_output_index=tools_by_output_index,
-            )
-            if tool_builder is not None and isinstance(delta, str):
-                tool_builder.add_delta(delta)
-
-        elif event_type == "response.function_call_arguments.done":
-            arguments = event.get("arguments")
-            tool_builder = _tool_builder_for_event(
-                event,
-                active_tools=active_tools,
-                by_item_id=tools_by_item_id,
-                by_call_id=tools_by_call_id,
-                by_output_index=tools_by_output_index,
-            )
-            if tool_builder is not None and isinstance(arguments, str):
-                tool_builder.set_arguments(arguments)
-
-        elif event_type == "response.output_text.delta":
-            delta = event.get("delta")
-            if isinstance(delta, str) and delta:
-                content_parts.append(delta)
-                yield ProviderTextDeltaEvent(delta=delta)
-
-        elif event_type in {
-            "response.reasoning.delta",
-            "response.reasoning_summary_text.delta",
-            "response.reasoning_text.delta",
-        }:
-            delta = event.get("delta")
-            if isinstance(delta, str) and delta:
-                thinking_parts.append(delta)
-                yield ProviderThinkingDeltaEvent(delta=delta)
-
-        elif event_type == "response.reasoning_summary_part.done":
-            if thinking_parts:
-                separator = "\n\n"
-                thinking_parts.append(separator)
-                yield ProviderThinkingDeltaEvent(delta=separator)
-
-        elif event_type in {
-            "response.output_item.done",
-            "response.output_item.completed",
-        }:
-            item = event.get("item")
-            if isinstance(item, Mapping) and item.get("type") == "reasoning":
-                item_id = item.get("id")
-                if isinstance(item_id, str):
-                    reasoning_items[item_id] = dict(item)
-            elif isinstance(item, Mapping) and item.get("type") == "function_call":
-                tool_builder = _tool_builder_for_event(
-                    event,
-                    active_tools=active_tools,
-                    by_item_id=tools_by_item_id,
-                    by_call_id=tools_by_call_id,
-                    by_output_index=tools_by_output_index,
-                )
-                if tool_builder is None:
-                    tool_builder = _tool_builder_from_item(item)
-                    _track_tool_builder(
-                        tool_builder,
-                        event,
-                        active_tools=active_tools,
-                        by_item_id=tools_by_item_id,
-                        by_call_id=tools_by_call_id,
-                        by_output_index=tools_by_output_index,
-                    )
-                else:
-                    tool_builder.update_from_item(item)
-                arguments = item.get("arguments")
-                if isinstance(arguments, str):
-                    tool_builder.set_arguments(arguments)
-                tool_call = tool_builder.build()
-                tool_calls.append(tool_call)
-                _untrack_tool_builder(
-                    tool_builder,
-                    active_tools=active_tools,
-                    by_item_id=tools_by_item_id,
-                    by_call_id=tools_by_call_id,
-                    by_output_index=tools_by_output_index,
-                )
-                yield ProviderToolCallEvent(tool_call=tool_call)
-            elif isinstance(item, Mapping) and item.get("type") == "message" and not content_parts:
-                text = _text_from_done_message(item)
-                if text:
-                    content_parts.append(text)
-                    yield ProviderTextDeltaEvent(delta=text)
-
-        elif event_type in {
-            "response.done",
-            "response.completed",
-            "response.incomplete",
-        }:
-            saw_terminal_event = True
-            finish_reason = _finish_reason_from_response(event)
-            usage = _usage_from_response(event) or usage
+async def _codex_provider_events(response: httpx.Response) -> AsyncIterator[ProviderEvent]:
+    parser = _ResponsesStreamParser(codex=True)
+    async for chunk in _iter_sse_data(response):
+        events, stop = parser.feed(chunk)
+        for event in events:
+            yield event
+        if stop:
             break
-
-    if not saw_terminal_event:
-        yield ProviderErrorEvent(
-            message="OpenAI Codex stream ended before a terminal response event"
-        )
-        return
-    # The agent runs every tool call in the final message. Refuse calls whose
-    # output_item.done never arrived: their arguments may be cut off or mixed up.
-    if active_tools:
-        unfinished = active_tools[0]
-        yield ProviderErrorEvent(
-            message=(
-                "OpenAI Codex stream completed with an unfinished tool call: "
-                f"{unfinished.name} ({unfinished.call_id})"
-            )
-        )
-        return
-
-    content = assistant_content("".join(content_parts), tool_calls)
-    if thinking_parts:
-        content.insert(
-            0,
-            ThinkingContent(
-                thinking="".join(thinking_parts),
-                thinking_signature=(
-                    dumps(next(iter(reasoning_items.values()))) if reasoning_items else None
-                ),
-            ),
-        )
-    yield ProviderResponseEndEvent(
-        message=AssistantMessage(
-            content=content,
-            usage=usage or Usage(),
-        ),
-        finish_reason=finish_reason,
-    )
+    if not parser.fatal:
+        for event in parser.finalize():
+            yield event
 
 
-async def _iter_sse_objects(response: httpx.Response) -> AsyncIterator[dict[str, JSONValue]]:
+async def _iter_sse_data(response: httpx.Response) -> AsyncIterator[str]:
     data_lines: list[str] = []
     async for line in response.aiter_lines():
         stripped = line.strip()
@@ -623,9 +250,7 @@ async def _iter_sse_objects(response: httpx.Response) -> AsyncIterator[dict[str,
             if data_lines:
                 data = "\n".join(data_lines).strip()
                 data_lines = []
-                parsed = loads_object(data)
-                if parsed is not None:
-                    yield parsed
+                yield data
             continue
         if not stripped.startswith("data:"):
             continue
@@ -635,235 +260,7 @@ async def _iter_sse_objects(response: httpx.Response) -> AsyncIterator[dict[str,
         data_lines.append(value)
 
     if data_lines:
-        parsed = loads_object("\n".join(data_lines).strip())
-        if parsed is not None:
-            yield parsed
-
-
-def _tool_builder_from_item(item: Mapping[str, Any]) -> _ToolCallBuilder:
-    call_id = item.get("call_id")
-    name = item.get("name")
-    item_id = item.get("id")
-    return _ToolCallBuilder(
-        call_id=call_id if isinstance(call_id, str) and call_id else "call_0",
-        item_id=item_id if isinstance(item_id, str) and item_id else None,
-        name=name if isinstance(name, str) else "",
-    )
-
-
-def _track_tool_builder(
-    builder: _ToolCallBuilder,
-    event: Mapping[str, Any],
-    *,
-    active_tools: list[_ToolCallBuilder],
-    by_item_id: dict[str, _ToolCallBuilder],
-    by_call_id: dict[str, _ToolCallBuilder],
-    by_output_index: dict[int, _ToolCallBuilder],
-) -> None:
-    if builder not in active_tools:
-        active_tools.append(builder)
-    if builder.item_id:
-        by_item_id[builder.item_id] = builder
-    if builder.call_id:
-        by_call_id[builder.call_id] = builder
-    output_index = _event_output_index(event)
-    if output_index is not None:
-        by_output_index[output_index] = builder
-
-
-def _untrack_tool_builder(
-    builder: _ToolCallBuilder,
-    *,
-    active_tools: list[_ToolCallBuilder],
-    by_item_id: dict[str, _ToolCallBuilder],
-    by_call_id: dict[str, _ToolCallBuilder],
-    by_output_index: dict[int, _ToolCallBuilder],
-) -> None:
-    if builder in active_tools:
-        active_tools.remove(builder)
-    if builder.item_id and by_item_id.get(builder.item_id) is builder:
-        del by_item_id[builder.item_id]
-    if builder.call_id and by_call_id.get(builder.call_id) is builder:
-        del by_call_id[builder.call_id]
-    for output_index, tracked_builder in tuple(by_output_index.items()):
-        if tracked_builder is builder:
-            del by_output_index[output_index]
-
-
-def _tool_builder_for_event(
-    event: Mapping[str, Any],
-    *,
-    active_tools: list[_ToolCallBuilder],
-    by_item_id: dict[str, _ToolCallBuilder],
-    by_call_id: dict[str, _ToolCallBuilder],
-    by_output_index: dict[int, _ToolCallBuilder],
-) -> _ToolCallBuilder | None:
-    item_id = _event_item_id(event)
-    if item_id is not None and item_id in by_item_id:
-        return by_item_id[item_id]
-    call_id = _event_call_id(event)
-    if call_id is not None and call_id in by_call_id:
-        return by_call_id[call_id]
-    output_index = _event_output_index(event)
-    if output_index is not None and output_index in by_output_index:
-        return by_output_index[output_index]
-    if len(active_tools) == 1:
-        return active_tools[0]
-    return None
-
-
-def _event_item_id(event: Mapping[str, Any]) -> str | None:
-    item_id = event.get("item_id")
-    if isinstance(item_id, str) and item_id:
-        return item_id
-    item = event.get("item")
-    if isinstance(item, Mapping):
-        item_id = item.get("id")
-        if isinstance(item_id, str) and item_id:
-            return item_id
-    return None
-
-
-def _event_call_id(event: Mapping[str, Any]) -> str | None:
-    call_id = event.get("call_id")
-    if isinstance(call_id, str) and call_id:
-        return call_id
-    item = event.get("item")
-    if isinstance(item, Mapping):
-        call_id = item.get("call_id")
-        if isinstance(call_id, str) and call_id:
-            return call_id
-    return None
-
-
-def _event_output_index(event: Mapping[str, Any]) -> int | None:
-    output_index = event.get("output_index")
-    if isinstance(output_index, int) and not isinstance(output_index, bool):
-        return output_index
-    return None
-
-
-def _text_from_done_message(item: Mapping[str, Any]) -> str:
-    content = item.get("content")
-    if not isinstance(content, list):
-        return ""
-    parts: list[str] = []
-    for part in content:
-        if not isinstance(part, Mapping):
-            continue
-        if part.get("type") == "output_text":
-            text = part.get("text")
-            if isinstance(text, str):
-                parts.append(text)
-        elif part.get("type") == "refusal":
-            refusal = part.get("refusal")
-            if isinstance(refusal, str):
-                parts.append(refusal)
-    return "".join(parts)
-
-
-def _finish_reason_from_response(event: Mapping[str, Any]) -> str | None:
-    response = event.get("response")
-    if not isinstance(response, Mapping):
-        return None
-    status = response.get("status")
-    if isinstance(status, str):
-        return status
-    return None
-
-
-def _usage_from_response(event: Mapping[str, Any]) -> Usage | None:
-    """Parse billed usage from a Responses ``response.completed``-style event.
-
-    Cache reads and writes are subtracted from ``input_tokens`` to leave fresh
-    input. Cost is left unset (None) because Rio has no per-model pricing table.
-    """
-    response = event.get("response")
-    if not isinstance(response, Mapping):
-        return None
-    raw = response.get("usage")
-    if not isinstance(raw, Mapping):
-        return None
-    input_details = raw.get("input_tokens_details")
-    cache_read = (
-        int_or_zero(input_details.get("cached_tokens")) if isinstance(input_details, Mapping) else 0
-    )
-    cache_write = (
-        int_or_zero(input_details.get("cache_write_tokens"))
-        if isinstance(input_details, Mapping)
-        else 0
-    )
-    output_details = raw.get("output_tokens_details")
-    # Leave reasoning None (not 0) when the provider reports no breakdown,
-    # honoring the "None = not reported" contract on Usage.
-    reasoning = (
-        int_or_zero(output_details.get("reasoning_tokens"))
-        if isinstance(output_details, Mapping)
-        else None
-    )
-    return Usage(
-        input=max(0, int_or_zero(raw.get("input_tokens")) - cache_read - cache_write),
-        output=int_or_zero(raw.get("output_tokens")),
-        cache_read=cache_read,
-        cache_write=cache_write,
-        reasoning=reasoning,
-        total_tokens=int_or_zero(raw.get("total_tokens")),
-    )
-
-
-def _response_error_message(event: Mapping[str, Any]) -> str:
-    code, message = _stream_error_details(event)
-    if message:
-        return message
-    if code:
-        return f"OpenAI Codex response failed: {code}"
-    return "OpenAI Codex response failed"
-
-
-def _error_message(event: Mapping[str, Any], *, fallback: str) -> str:
-    code, message = _stream_error_details(event)
-    if message:
-        return message
-    if code:
-        return code
-    return fallback
-
-
-def _stream_error_details(event: Mapping[str, Any]) -> tuple[str | None, str | None]:
-    """Extract the machine code and human message from a Codex stream error.
-
-    Codex reports failures either as a top-level ``error`` SSE event with a
-    nested ``error`` object (``{"type":"error","error":{"code":...}}``) or
-    as ``response.failed`` with the failure under ``response.error``. Looking
-    only at top-level fields hides details such as ``server_is_overloaded``
-    behind a generic fallback message.
-    """
-    sources: list[Mapping[str, Any]] = [event]
-    nested = event.get("error")
-    if isinstance(nested, Mapping):
-        sources.append(nested)
-    response = event.get("response")
-    if isinstance(response, Mapping):
-        response_error = response.get("error")
-        if isinstance(response_error, Mapping):
-            sources.append(response_error)
-
-    message: str | None = None
-    code: str | None = None
-    for source in sources:
-        if message is None:
-            raw_message = source.get("message")
-            if isinstance(raw_message, str) and raw_message:
-                message = raw_message
-        if code is None:
-            raw_code = source.get("code")
-            if isinstance(raw_code, str) and raw_code:
-                code = raw_code
-    if code is None and isinstance(nested, Mapping):
-        nested_type = nested.get("type")
-        if isinstance(nested_type, str) and nested_type:
-            code = nested_type
-    return code, message
+        yield "\n".join(data_lines).strip()
 
 
 _TRANSIENT_STREAM_ERROR_MARKERS = (
@@ -906,7 +303,6 @@ def _build_codex_headers(
     access_token: str,
     account_id: str,
     originator: str,
-    session_id: str | None = None,
 ) -> dict[str, str]:
     headers = {
         **dict(configured_headers or {}),
@@ -918,8 +314,6 @@ def _build_codex_headers(
         "accept": "text/event-stream",
         "content-type": "application/json",
     }
-    if session_id is not None:
-        headers["session-id"] = session_id
     return headers
 
 
@@ -930,13 +324,6 @@ def _resolve_codex_url(base_url: str) -> str:
     if normalized.endswith("/codex"):
         return f"{normalized}/responses"
     return f"{normalized}/codex/responses"
-
-
-def _split_tool_call_id(value: str) -> tuple[str, str | None]:
-    if "|" not in value:
-        return value, None
-    call_id, item_id = value.split("|", 1)
-    return call_id, item_id or None
 
 
 def _is_retryable_status(status_code: int, body: str) -> bool:

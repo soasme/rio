@@ -79,14 +79,8 @@ def schema(kinds: Iterable[CellKind]) -> dict:
     }
 
 
-async def _unavailable(*args, **kwargs):
-    raise RuntimeError("step is applied transactionally by the owner")
-
-
 STEP = AgentTool(
     name="step",
-    label="Step",
     description="Add, replace, or remove State Cells by id and request Cell runs.",
     parameters=schema(()),
-    execute_fn=_unavailable,
 )

@@ -11,7 +11,6 @@ from rio.ai._provider_events import (
     ProviderErrorEvent,
     ProviderEvent,
     ProviderResponseEndEvent,
-    ProviderResponseStartEvent,
     ProviderTextDeltaEvent,
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
@@ -22,9 +21,7 @@ from rio.ai.content import (
     text_and_images,
 )
 from rio.ai.env import OpenAICompatibleConfig
-from rio.ai.events import AssistantMessageEvent
-from rio.ai.http import create_async_client
-from rio.ai.http_errors import provider_http_error_message
+from rio.ai.http import create_async_client, request_with_retries
 from rio.ai.messages import (
     AgentMessage,
     AssistantMessage,
@@ -35,16 +32,12 @@ from rio.ai.messages import (
     Usage,
     UserMessage,
     assistant_content,
-    message_to_user,
 )
-from rio.ai.provider import CancellationToken
+from rio.ai.provider import AssistantMessageEvent, collect_response
 from rio.ai.retry import (
     RetryableFailure,
     RetryAttempt,
-    check_response_status,
-    stream_with_retries,
 )
-from rio.ai.stream import canonicalize_provider_stream
 from rio.ai.tool_call_ids import portable_tool_call_id
 from rio.ai.tools import AgentTool, ToolCall
 from rio.ai.types import JSONValue
@@ -76,17 +69,12 @@ class GoogleGenerativeAIProvider:
         system: str,
         messages: list[AgentMessage],
         tools: list[AgentTool],
-        signal: CancellationToken | None = None,
-        session_id: str | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
-        """Stream one response as Pi-compatible assistant message events."""
-        del session_id
+        """Collect one response as a final assistant message or error."""
         raw = self._stream_provider_events(
-            model=model, system=system, messages=messages, tools=tools, signal=signal
+            model=model, system=system, messages=messages, tools=tools
         )
-        return canonicalize_provider_stream(
-            raw, api="google-generative-ai", provider="google", model=model
-        )
+        return collect_response(raw, api="google-generative-ai", provider="google", model=model)
 
     def _stream_provider_events(
         self,
@@ -95,7 +83,6 @@ class GoogleGenerativeAIProvider:
         system: str,
         messages: list[AgentMessage],
         tools: list[AgentTool],
-        signal: CancellationToken | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one Gemini response as provider-neutral events."""
 
@@ -119,48 +106,33 @@ class GoogleGenerativeAIProvider:
                 "x-goog-api-key": self._config.api_key,
             }
 
-            async def stream_attempt(attempt: RetryAttempt) -> AsyncIterator[ProviderEvent]:
+            async def parse(
+                response: httpx.Response, attempt: RetryAttempt
+            ) -> AsyncIterator[ProviderEvent]:
                 parser = _GoogleStreamParser()
-                async with client.stream("POST", url, json=payload, headers=headers) as response:
-                    error = await check_response_status(
-                        response,
-                        lambda body: ProviderErrorEvent(
-                            message=provider_http_error_message(
-                                provider_name=self._config.provider_name,
-                                status_code=response.status_code,
-                                body=body,
-                                model=model,
-                            ),
-                            data={"status_code": response.status_code, "body": body},
-                        ),
-                    )
-                    if error is not None:
-                        yield error
-                        return
-
-                    yield ProviderResponseStartEvent(model=model)
-                    async for line in response.aiter_lines():
-                        if signal is not None and signal.is_cancelled():
-                            return
-                        event = parse_sse_line(line)
-                        if event is None:
-                            continue
-                        for parser_event in parser.feed(event):
-                            yield parser_event
-                        attempt.emitted_content = parser.emitted_content
-                        if parser.fatal:
-                            return
-                    final_events = parser.finalize()
-                    if not parser.has_finish_reason:
-                        raise RetryableFailure("stream ended without finishReason", final_events[0])
-                    for parser_event in final_events:
+                async for line in response.aiter_lines():
+                    event = parse_sse_line(line)
+                    if event is None:
+                        continue
+                    for parser_event in parser.feed(event):
                         yield parser_event
+                    attempt.emitted_content = parser.emitted_content
+                    if parser.fatal:
+                        return
+                final_events = parser.finalize()
+                if not parser.has_finish_reason:
+                    raise RetryableFailure("stream ended without finishReason", final_events[0])
+                for parser_event in final_events:
+                    yield parser_event
 
-            async for event in stream_with_retries(
-                stream_attempt,
-                max_retries=self._config.max_retries,
-                max_retry_delay_seconds=self._config.max_retry_delay_seconds,
-                signal=signal,
+            async for event in request_with_retries(
+                client,
+                url=url,
+                payload=payload,
+                headers=headers,
+                model=model,
+                config=self._config,
+                parse=parse,
             ):
                 yield event
 
@@ -421,9 +393,7 @@ def _messages_to_google(
             ]
             converted.append({"role": "user", "parts": separate_image_parts})
         return converted
-    return _messages_to_google(
-        message_to_user(message), model=model, supports_images=supports_images
-    )
+    raise TypeError(f"Unsupported message: {type(message).__name__}")
 
 
 def _google_image(image: ImageContent) -> dict[str, JSONValue]:
@@ -439,7 +409,7 @@ def _tool_to_google(tool: AgentTool) -> dict[str, JSONValue]:
     return {
         "name": tool.name,
         "description": tool.description,
-        "parameters": _sanitize_google_schema(dict(tool.input_schema)),
+        "parameters": _sanitize_google_schema(dict(tool.parameters)),
     }
 
 

@@ -17,23 +17,13 @@ from rio.ai.openai_compatible import OpenAICompatibleProvider
 from rio.ai.retry import RetryableFailure, RetryAttempt, parse_retry_after, stream_with_retries
 
 
-class _CancelAfter:
-    def __init__(self, checks: int) -> None:
-        self.checks = checks
-
-    def is_cancelled(self) -> bool:
-        self.checks -= 1
-        return self.checks < 0
-
-
-async def _collect(stream_attempt, *, max_retries=2, max_delay=0.0, signal=None):
+async def _collect(stream_attempt, *, max_retries=2, max_delay=0.0):
     return [
         event
         async for event in stream_with_retries(
             stream_attempt,
             max_retries=max_retries,
             max_retry_delay_seconds=max_delay,
-            signal=signal,
         )
     ]
 
@@ -126,15 +116,6 @@ async def test_network_error_after_content_is_not_retried():
 
     assert attempts == [0]
     assert events[-1] == ProviderErrorEvent(message="boom", data={"attempts": 1})
-
-
-async def test_cancellation_during_backoff_stops_retrying():
-    stream_attempt, attempts = _failing_attempts([_failure()])
-
-    events = await _collect(stream_attempt, max_delay=1.0, signal=_CancelAfter(1))
-
-    assert attempts == [0]
-    assert [event.type for event in events] == ["retry"]
 
 
 def _sse_response(status_code: int, body: str, headers=None) -> httpx.Response:

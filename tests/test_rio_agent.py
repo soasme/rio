@@ -19,7 +19,7 @@ from rio.agent.state import CellKind, InvalidPatch, Limits
 from rio.agent.store import StorageFailure, Store, reduce_event
 from rio.ai import FakeProvider
 from rio.ai.messages import AssistantMessage, ToolCall
-from rio.ai.provider_events import AssistantDoneEvent
+from rio.ai.provider import AssistantDoneEvent
 from rio.coding.cells import KINDS
 
 
@@ -138,15 +138,6 @@ def test_restricted_ops(session, operation):
 
 
 def test_null_fields_from_strict_providers_are_omitted(session):
-    from rio.ai.constrained_sampling import make_strict_json_schema
-
-    strict = make_strict_json_schema(session.schema)["properties"]["ops"]["items"]
-    assert strict["required"] == ["op", "id", "cell"]
-    assert strict["properties"]["cell"]["anyOf"][0]["properties"]["kind"]["enum"] == [
-        "note",
-        "code",
-        "cmd",
-    ]
     turn = prepare(session)
     session.accept(turn["id"], [{"op": "add", "id": None, "cell": note(role=None)}])
     assert session.state["cells"] == [{"id": 1, "previous_id": None, **note()}]

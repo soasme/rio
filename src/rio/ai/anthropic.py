@@ -12,14 +12,9 @@ from rio.ai._provider_events import (
     ProviderErrorEvent,
     ProviderEvent,
     ProviderResponseEndEvent,
-    ProviderResponseStartEvent,
     ProviderTextDeltaEvent,
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
-)
-from rio.ai.constrained_sampling import (
-    get_json_schema_tool_parameters,
-    resolve_json_schema_strict_sampling,
 )
 from rio.ai.content import (
     NON_VISION_TOOL_IMAGE_PLACEHOLDER,
@@ -34,9 +29,7 @@ from rio.ai.env import (
     AnthropicConfig,
     CacheRetention,
 )
-from rio.ai.events import AssistantMessageEvent
-from rio.ai.http import create_async_client
-from rio.ai.http_errors import provider_http_error_message
+from rio.ai.http import create_async_client, request_with_retries
 from rio.ai.messages import (
     AgentMessage,
     AssistantMessage,
@@ -47,16 +40,12 @@ from rio.ai.messages import (
     Usage,
     UserMessage,
     assistant_content,
-    message_to_user,
 )
-from rio.ai.provider import CancellationToken
+from rio.ai.provider import AssistantMessageEvent, collect_response
 from rio.ai.retry import (
     RetryableFailure,
     RetryAttempt,
-    check_response_status,
-    stream_with_retries,
 )
-from rio.ai.stream import canonicalize_provider_stream
 from rio.ai.tool_call_ids import portable_tool_call_id
 from rio.ai.tools import AgentTool, ToolCall
 from rio.ai.types import JSONValue
@@ -105,17 +94,12 @@ class AnthropicProvider:
         system: str,
         messages: list[AgentMessage],
         tools: list[AgentTool],
-        signal: CancellationToken | None = None,
-        session_id: str | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
-        """Stream one response as Pi-compatible assistant message events."""
-        del session_id
+        """Collect one response as a final assistant message or error."""
         raw = self._stream_provider_events(
-            model=model, system=system, messages=messages, tools=tools, signal=signal
+            model=model, system=system, messages=messages, tools=tools
         )
-        return canonicalize_provider_stream(
-            raw, api="anthropic-messages", provider="anthropic", model=model
-        )
+        return collect_response(raw, api="anthropic-messages", provider="anthropic", model=model)
 
     def _stream_provider_events(
         self,
@@ -124,7 +108,6 @@ class AnthropicProvider:
         system: str,
         messages: list[AgentMessage],
         tools: list[AgentTool],
-        signal: CancellationToken | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one Anthropic response as provider-neutral events."""
 
@@ -154,7 +137,6 @@ class AnthropicProvider:
                 supports_images=self._config.supports_images,
                 cache_retention=self._config.cache_retention,
                 cache_control_on_tools=self._config.cache_control_on_tools,
-                compat=self._config.compat,
             )
             headers = {
                 "anthropic-version": ANTHROPIC_VERSION,
@@ -174,143 +156,121 @@ class AnthropicProvider:
                 headers["x-api-key"] = api_key
             url = f"{base_url.rstrip('/')}/messages"
 
-            async def stream_attempt(attempt: RetryAttempt) -> AsyncIterator[ProviderEvent]:
-                async with client.stream("POST", url, json=payload, headers=headers) as response:
-                    error = await check_response_status(
-                        response,
-                        lambda body: ProviderErrorEvent(
-                            message=provider_http_error_message(
-                                provider_name=self._config.provider_name,
-                                status_code=response.status_code,
-                                body=body,
-                                model=model,
-                            ),
-                            data={
-                                "status_code": response.status_code,
-                                "body": body,
-                                "attempts": attempt.number + 1,
-                            },
-                        ),
-                    )
-                    if error is not None:
-                        yield error
+            async def parse(
+                response: httpx.Response, attempt: RetryAttempt
+            ) -> AsyncIterator[ProviderEvent]:
+                content_parts: list[str] = []
+                thinking_parts: list[str] = []
+                thinking_signature: str | None = None
+                tool_builders: dict[int, _AnthropicToolBuilder] = {}
+                finish_reason: str | None = None
+                usage: Usage | None = None
+
+                async for line in response.aiter_lines():
+                    event = parse_sse_line(line)
+                    if event is None:
+                        continue
+                    chunk = loads_object(event)
+                    if chunk is None:
+                        yield ProviderErrorEvent(message="Provider returned invalid JSON chunk")
                         return
 
-                    yield ProviderResponseStartEvent(model=model)
-                    content_parts: list[str] = []
-                    thinking_parts: list[str] = []
-                    thinking_signature: str | None = None
-                    tool_builders: dict[int, _AnthropicToolBuilder] = {}
-                    finish_reason: str | None = None
-                    usage: Usage | None = None
-
-                    async for line in response.aiter_lines():
-                        if signal is not None and signal.is_cancelled():
-                            return
-
-                        event = parse_sse_line(line)
-                        if event is None:
+                    event_type = chunk.get("type")
+                    if event_type == "message_start":
+                        message = chunk.get("message")
+                        if isinstance(message, Mapping):
+                            usage = _usage_from_message_start(message.get("usage"))
+                    elif event_type == "content_block_start":
+                        block = chunk.get("content_block")
+                        if isinstance(block, Mapping) and block.get("type") == "tool_use":
+                            index = int(chunk.get("index", 0))
+                            builder = tool_builders.setdefault(index, _AnthropicToolBuilder())
+                            builder.id = _string_or_empty(block.get("id"))
+                            builder.name = _string_or_empty(block.get("name"))
+                            attempt.emitted_content = True
+                    elif event_type == "content_block_delta":
+                        delta = chunk.get("delta")
+                        if not isinstance(delta, Mapping):
                             continue
-                        chunk = loads_object(event)
-                        if chunk is None:
-                            yield ProviderErrorEvent(message="Provider returned invalid JSON chunk")
-                            return
-
-                        event_type = chunk.get("type")
-                        if event_type == "message_start":
-                            message = chunk.get("message")
-                            if isinstance(message, Mapping):
-                                usage = _usage_from_message_start(message.get("usage"))
-                        elif event_type == "content_block_start":
-                            block = chunk.get("content_block")
-                            if isinstance(block, Mapping) and block.get("type") == "tool_use":
-                                index = int(chunk.get("index", 0))
-                                builder = tool_builders.setdefault(index, _AnthropicToolBuilder())
-                                builder.id = _string_or_empty(block.get("id"))
-                                builder.name = _string_or_empty(block.get("name"))
+                        delta_type = delta.get("type")
+                        if delta_type == "text_delta":
+                            text = _string_or_empty(delta.get("text"))
+                            if text:
                                 attempt.emitted_content = True
-                        elif event_type == "content_block_delta":
-                            delta = chunk.get("delta")
-                            if not isinstance(delta, Mapping):
-                                continue
-                            delta_type = delta.get("type")
-                            if delta_type == "text_delta":
-                                text = _string_or_empty(delta.get("text"))
-                                if text:
-                                    attempt.emitted_content = True
-                                    content_parts.append(text)
-                                    yield ProviderTextDeltaEvent(delta=text)
-                            elif delta_type == "thinking_delta":
-                                thinking = _string_or_empty(delta.get("thinking"))
-                                if thinking:
-                                    attempt.emitted_content = True
-                                    thinking_parts.append(thinking)
-                                    yield ProviderThinkingDeltaEvent(delta=thinking)
-                            elif delta_type == "signature_delta":
-                                signature = _string_or_empty(delta.get("signature"))
-                                if signature:
-                                    thinking_signature = f"{thinking_signature or ''}{signature}"
-                            elif delta_type == "input_json_delta":
-                                index = int(chunk.get("index", 0))
-                                builder = tool_builders.setdefault(index, _AnthropicToolBuilder())
-                                builder.arguments_parts.append(
-                                    _string_or_empty(delta.get("partial_json"))
-                                )
+                                content_parts.append(text)
+                                yield ProviderTextDeltaEvent(delta=text)
+                        elif delta_type == "thinking_delta":
+                            thinking = _string_or_empty(delta.get("thinking"))
+                            if thinking:
                                 attempt.emitted_content = True
-                        elif event_type == "message_delta":
-                            delta = chunk.get("delta")
-                            if isinstance(delta, Mapping):
-                                finish_reason = (
-                                    _string_or_empty(delta.get("stop_reason")) or finish_reason
-                                )
-                            usage = _apply_message_delta_usage(usage, chunk.get("usage"))
-                        elif event_type == "error":
-                            error_type, message = _anthropic_stream_error_details(chunk)
-                            stream_error = ProviderErrorEvent(
-                                message=message,
-                                data={"event": chunk, "attempts": attempt.number + 1},
+                                thinking_parts.append(thinking)
+                                yield ProviderThinkingDeltaEvent(delta=thinking)
+                        elif delta_type == "signature_delta":
+                            signature = _string_or_empty(delta.get("signature"))
+                            if signature:
+                                thinking_signature = f"{thinking_signature or ''}{signature}"
+                        elif delta_type == "input_json_delta":
+                            index = int(chunk.get("index", 0))
+                            builder = tool_builders.setdefault(index, _AnthropicToolBuilder())
+                            builder.arguments_parts.append(
+                                _string_or_empty(delta.get("partial_json"))
                             )
-                            if _retryable_anthropic_stream_error(error_type):
-                                raise RetryableFailure(
-                                    f"stream error ({error_type or 'unknown'})",
-                                    stream_error,
-                                    data={"event": chunk},
-                                )
-                            yield stream_error
-                            return
-
-                    if finish_reason is None:
-                        raise RetryableFailure(
-                            "stream ended without stop_reason",
-                            ProviderErrorEvent(
-                                message="Anthropic stream ended without stop_reason"
-                            ),
+                            attempt.emitted_content = True
+                    elif event_type == "message_delta":
+                        delta = chunk.get("delta")
+                        if isinstance(delta, Mapping):
+                            finish_reason = (
+                                _string_or_empty(delta.get("stop_reason")) or finish_reason
+                            )
+                        usage = _apply_message_delta_usage(usage, chunk.get("usage"))
+                    elif event_type == "error":
+                        error_type, message = _anthropic_stream_error_details(chunk)
+                        stream_error = ProviderErrorEvent(
+                            message=message,
+                            data={"event": chunk, "attempts": attempt.number + 1},
                         )
-                    tool_calls = [
-                        builder.build(index) for index, builder in sorted(tool_builders.items())
-                    ]
-                    for tool_call in tool_calls:
-                        yield ProviderToolCallEvent(tool_call=tool_call)
+                        if _retryable_anthropic_stream_error(error_type):
+                            raise RetryableFailure(
+                                f"stream error ({error_type or 'unknown'})",
+                                stream_error,
+                                data={"event": chunk},
+                            )
+                        yield stream_error
+                        return
 
-                    content = assistant_content("".join(content_parts), tool_calls)
-                    if thinking_parts:
-                        content.insert(
-                            0,
-                            ThinkingContent(
-                                thinking="".join(thinking_parts),
-                                thinking_signature=thinking_signature,
-                            ),
-                        )
-                    yield ProviderResponseEndEvent(
-                        message=AssistantMessage(content=content, usage=usage or Usage()),
-                        finish_reason=finish_reason,
+                if finish_reason is None:
+                    raise RetryableFailure(
+                        "stream ended without stop_reason",
+                        ProviderErrorEvent(message="Anthropic stream ended without stop_reason"),
                     )
+                tool_calls = [
+                    builder.build(index) for index, builder in sorted(tool_builders.items())
+                ]
+                for tool_call in tool_calls:
+                    yield ProviderToolCallEvent(tool_call=tool_call)
 
-            async for event in stream_with_retries(
-                stream_attempt,
-                max_retries=self._config.max_retries,
-                max_retry_delay_seconds=self._config.max_retry_delay_seconds,
-                signal=signal,
+                content = assistant_content("".join(content_parts), tool_calls)
+                if thinking_parts:
+                    content.insert(
+                        0,
+                        ThinkingContent(
+                            thinking="".join(thinking_parts),
+                            thinking_signature=thinking_signature,
+                        ),
+                    )
+                yield ProviderResponseEndEvent(
+                    message=AssistantMessage(content=content, usage=usage or Usage()),
+                    finish_reason=finish_reason,
+                )
+
+            async for event in request_with_retries(
+                client,
+                url=url,
+                payload=payload,
+                headers=headers,
+                model=model,
+                config=self._config,
+                parse=parse,
             ):
                 yield event
 
@@ -374,7 +334,6 @@ def _build_messages_payload(
     supports_images: bool = False,
     cache_retention: CacheRetention = CACHE_RETENTION_SHORT,
     cache_control_on_tools: bool = True,
-    compat: Mapping[str, JSONValue] | None = None,
 ) -> dict[str, JSONValue]:
     resolved_max_tokens = max_tokens or DEFAULT_MAX_TOKENS
     if thinking_budget_tokens is not None:
@@ -415,7 +374,6 @@ def _build_messages_payload(
             _anthropic_tool(
                 tool,
                 cache_control=tools_cache_control if index == last_index else None,
-                compat=compat,
             )
             for index, tool in enumerate(tools)
         ]
@@ -611,7 +569,7 @@ def _anthropic_message(message: AgentMessage, *, supports_images: bool) -> dict[
                 }
             ],
         }
-    return _anthropic_message(message_to_user(message), supports_images=supports_images)
+    raise TypeError(f"Unsupported message: {type(message).__name__}")
 
 
 def _anthropic_image(image: ImageContent) -> dict[str, JSONValue]:
@@ -625,67 +583,15 @@ def _anthropic_image(image: ImageContent) -> dict[str, JSONValue]:
     }
 
 
-# Keywords Anthropic strict tool use rejects with a 400 for the whole request.
-# https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations
-_ANTHROPIC_STRICT_UNSUPPORTED_KEYWORDS = frozenset(
-    {
-        "minimum",
-        "maximum",
-        "exclusiveMinimum",
-        "exclusiveMaximum",
-        "multipleOf",
-        "maxItems",
-        "uniqueItems",
-        "minContains",
-        "maxContains",
-        "minProperties",
-        "maxProperties",
-    }
-)
-_ANTHROPIC_STRICT_STRING_FORMATS = frozenset(
-    {"date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"}
-)
-
-
-def _is_anthropic_strict_unsupported_keyword(key: str, value: object) -> bool:
-    if key in _ANTHROPIC_STRICT_UNSUPPORTED_KEYWORDS:
-        return True
-    if key == "minItems":
-        return value not in (0, 1)
-    if key == "format":
-        return not isinstance(value, str) or value not in _ANTHROPIC_STRICT_STRING_FORMATS
-    return False
-
-
 def _anthropic_tool(
     tool: AgentTool,
     *,
     cache_control: dict[str, JSONValue] | None = None,
-    compat: Mapping[str, JSONValue] | None = None,
 ) -> dict[str, JSONValue]:
-    supports_strict_mode = (compat or {}).get("supportsStrictMode") is not False
-    strict = resolve_json_schema_strict_sampling(
-        tool, supports_strict_mode, _is_anthropic_strict_unsupported_keyword
-    )
-    parameters = get_json_schema_tool_parameters(tool.input_schema, strict)
-    if strict is True:
-        # Anthropic's classic input_schema is just {type, properties, required}. Send
-        # both: the strict-shaped schema (additionalProperties: false, every property
-        # required) merged with the classic view derived from it, so a gateway that
-        # only understands the classic shape still gets a coherent schema.
-        legacy_input_schema: dict[str, JSONValue] = {
-            "type": "object",
-            "properties": parameters.get("properties") or {},
-            "required": parameters.get("required") or [],
-        }
-        input_schema: dict[str, JSONValue] = {**parameters, **legacy_input_schema}
-    else:
-        input_schema = parameters
     payload: dict[str, JSONValue] = {
         "name": tool.name,
         "description": tool.description,
-        **({"strict": True} if strict is True else {}),
-        "input_schema": input_schema,
+        "input_schema": dict(tool.parameters),
     }
     if cache_control is not None:
         payload["cache_control"] = dict(cache_control)

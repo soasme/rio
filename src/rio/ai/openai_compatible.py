@@ -29,14 +29,9 @@ from rio.ai._provider_events import (
     ProviderErrorEvent,
     ProviderEvent,
     ProviderResponseEndEvent,
-    ProviderResponseStartEvent,
     ProviderTextDeltaEvent,
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
-)
-from rio.ai.constrained_sampling import (
-    get_json_schema_tool_parameters,
-    resolve_json_schema_strict_sampling,
 )
 from rio.ai.content import (
     NON_VISION_TOOL_IMAGE_PLACEHOLDER,
@@ -45,25 +40,21 @@ from rio.ai.content import (
     text_and_images,
 )
 from rio.ai.env import OpenAICompatibleConfig
-from rio.ai.events import AssistantMessageEvent
-from rio.ai.http import create_async_client
-from rio.ai.http_errors import provider_http_error_message
+from rio.ai.http import create_async_client, request_with_retries
 from rio.ai.messages import (
     AgentMessage,
     AssistantMessage,
     AssistantMessageDiagnostic,
     ImageContent,
+    TextContent,
     ThinkingContent,
     ToolResultMessage,
     Usage,
     UserMessage,
     assistant_content,
-    message_to_user,
 )
-from rio.ai.openai_cache import is_direct_openai_url, openai_prompt_cache_key
-from rio.ai.provider import CancellationToken
-from rio.ai.retry import RetryableFailure, RetryAttempt, check_response_status, stream_with_retries
-from rio.ai.stream import canonicalize_provider_stream
+from rio.ai.provider import AssistantMessageEvent, collect_response
+from rio.ai.retry import RetryableFailure, RetryAttempt
 from rio.ai.tool_call_ids import portable_tool_call_id
 from rio.ai.tools import AgentTool, ToolCall
 from rio.ai.types import JSONValue
@@ -110,19 +101,15 @@ class OpenAICompatibleProvider:
         system: str,
         messages: list[AgentMessage],
         tools: list[AgentTool],
-        signal: CancellationToken | None = None,
-        session_id: str | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
-        """Stream one response as Pi-compatible assistant message events."""
+        """Collect one response as a final assistant message or error."""
         raw = self._stream_provider_events(
             model=model,
             system=system,
             messages=messages,
             tools=tools,
-            signal=signal,
-            session_id=session_id,
         )
-        return canonicalize_provider_stream(
+        return collect_response(
             raw,
             api=self._config.api,
             provider=getattr(self._config, "provider_name", "openai-compatible"),
@@ -136,8 +123,6 @@ class OpenAICompatibleProvider:
         system: str,
         messages: list[AgentMessage],
         tools: list[AgentTool],
-        signal: CancellationToken | None = None,
-        session_id: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one model response as provider-neutral events."""
         if self._config.api == "openai-responses" or (
@@ -148,16 +133,12 @@ class OpenAICompatibleProvider:
                 system=system,
                 messages=messages,
                 tools=tools,
-                signal=signal,
-                session_id=session_id,
             )
         return self._stream_chat_completions(
             model=model,
             system=system,
             messages=messages,
             tools=tools,
-            signal=signal,
-            session_id=session_id,
         )
 
     def _stream_chat_completions(
@@ -167,12 +148,8 @@ class OpenAICompatibleProvider:
         system: str,
         messages: list[AgentMessage],
         tools: list[AgentTool],
-        signal: CancellationToken | None = None,
-        session_id: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one chat completion response as provider-neutral events."""
-        affinity_id = openai_prompt_cache_key(session_id)
-        cache_key = self._prompt_cache_key(affinity_id)
         payload = _build_chat_payload(
             model=self._config.model_aliases.get(model, model),
             system=system,
@@ -185,17 +162,13 @@ class OpenAICompatibleProvider:
             max_tokens=self._config.max_tokens,
             include_reasoning_effort_none=self._config.include_reasoning_effort_none,
             supports_images=self._config.supports_images,
-            prompt_cache_key=cache_key,
         )
         return self._stream(
             model=model,
             url=f"{self._config.base_url.rstrip('/')}/chat/completions",
             payload=payload,
             parser_factory=_ChatStreamParser,
-            session_id=affinity_id,
-            session_affinity_format=self._session_affinity_format(responses=False),
             has_images=(self._config.supports_images and messages_have_images(messages)),
-            signal=signal,
         )
 
     def _stream_responses(
@@ -205,12 +178,8 @@ class OpenAICompatibleProvider:
         system: str,
         messages: list[AgentMessage],
         tools: list[AgentTool],
-        signal: CancellationToken | None = None,
-        session_id: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one `/v1/responses` response as provider-neutral events."""
-        affinity_id = openai_prompt_cache_key(session_id)
-        cache_key = self._prompt_cache_key(affinity_id)
         payload = _build_responses_payload(
             model=self._config.model_aliases.get(model, model),
             system=system,
@@ -219,7 +188,6 @@ class OpenAICompatibleProvider:
             reasoning_effort=self._config.reasoning_effort,
             max_tokens=self._config.max_tokens,
             supports_images=self._config.supports_images,
-            prompt_cache_key=cache_key,
             compat=self._config.compat,
         )
         return self._stream(
@@ -227,10 +195,7 @@ class OpenAICompatibleProvider:
             url=f"{self._config.base_url.rstrip('/')}/responses",
             payload=payload,
             parser_factory=_ResponsesStreamParser,
-            session_id=affinity_id,
-            session_affinity_format=self._session_affinity_format(responses=True),
             has_images=(self._config.supports_images and messages_have_images(messages)),
-            signal=signal,
         )
 
     def _stream(
@@ -240,16 +205,13 @@ class OpenAICompatibleProvider:
         url: str,
         payload: Mapping[str, JSONValue],
         parser_factory: Callable[[], _StreamParser],
-        session_id: str | None = None,
-        session_affinity_format: str | None = None,
         has_images: bool = False,
-        signal: CancellationToken | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         """Run the shared streaming POST + retry envelope for a given endpoint.
 
         The per-endpoint differences (SSE chunk handling and final-message
         assembly) live in the ``_StreamParser`` produced by ``parser_factory``;
-        everything else — HTTP, status/network retries, cancellation, the
+        everything else — HTTP, status/network retries, the
         opening ``response_start`` event — is identical across endpoints.
         """
 
@@ -275,129 +237,55 @@ class OpenAICompatibleProvider:
                 has_authorization = any(key.casefold() == "authorization" for key in headers)
                 if not has_authorization and api_key is not None:
                     headers["Authorization"] = f"Bearer {api_key}"
-            _apply_session_affinity_headers(headers, session_id, session_affinity_format)
 
-            async def stream_attempt(attempt: RetryAttempt) -> AsyncIterator[ProviderEvent]:
+            async def parse(
+                response: httpx.Response, attempt: RetryAttempt
+            ) -> AsyncIterator[ProviderEvent]:
                 parser = parser_factory()
-                async with client.stream(
-                    "POST", request_url, json=payload, headers=headers
-                ) as response:
-                    response_provider = _response_header_value(
-                        response,
-                        self._config.response_provider_header,
-                    )
-                    error = await check_response_status(
-                        response,
-                        lambda body: ProviderErrorEvent(
-                            message=provider_http_error_message(
-                                provider_name=self._config.provider_name,
-                                status_code=response.status_code,
-                                body=body,
-                                model=model,
-                            ),
-                            data={
-                                "status_code": response.status_code,
-                                "body": body,
-                                "attempts": attempt.number + 1,
-                            },
-                            response_provider=response_provider,
-                        ),
-                    )
-                    if error is not None:
-                        yield error
-                        return
+                async for line in response.aiter_lines():
+                    event = parse_sse_line(line)
+                    if event is None:
+                        continue
 
-                    yield ProviderResponseStartEvent(
-                        model=model,
-                        response_provider=response_provider,
-                    )
-
-                    async for line in response.aiter_lines():
-                        if signal is not None and signal.is_cancelled():
-                            return
-
-                        event = parse_sse_line(line)
-                        if event is None:
-                            continue
-
-                        events, stop = parser.feed(event)
-                        for parser_event in events:
-                            yield parser_event
-                        attempt.emitted_content = parser.emitted_content
-                        if stop:
-                            break
-
-                    if parser.fatal:
-                        return
-                    final_events = parser.finalize()
-                    observer = self._config.response_headers_observer
-                    if observer is not None:
-                        try:
-                            observer(dict(response.headers))
-                        except Exception as exc:
-                            # Observer reporting is also best-effort; response
-                            # completion must never depend on metadata hooks.
-                            with suppress(Exception):
-                                _append_response_observer_diagnostic(final_events, exc)
-                    for parser_event in final_events:
+                    events, stop = parser.feed(event)
+                    for parser_event in events:
                         yield parser_event
+                    attempt.emitted_content = parser.emitted_content
+                    if stop:
+                        break
 
-            async for event in stream_with_retries(
-                stream_attempt,
-                max_retries=self._config.max_retries,
-                max_retry_delay_seconds=self._config.max_retry_delay_seconds,
-                signal=signal,
+                if parser.fatal:
+                    return
+                final_events = parser.finalize()
+                observer = self._config.response_headers_observer
+                if observer is not None:
+                    try:
+                        observer(dict(response.headers))
+                    except Exception as exc:
+                        # Observer reporting is also best-effort; response
+                        # completion must never depend on metadata hooks.
+                        with suppress(Exception):
+                            _append_response_observer_diagnostic(final_events, exc)
+                for parser_event in final_events:
+                    yield parser_event
+
+            async for event in request_with_retries(
+                client,
+                url=request_url,
+                payload=payload,
+                headers=headers,
+                model=model,
+                config=self._config,
+                parse=parse,
             ):
                 yield event
 
         return iterator()
 
-    def _prompt_cache_key(self, affinity_id: str | None) -> str | None:
-        supports = self._config.compat.get("supportsPromptCacheKey")
-        if supports is not True and not (
-            supports is None and is_direct_openai_url(self._config.base_url)
-        ):
-            return None
-        return affinity_id
-
-    def _session_affinity_format(self, *, responses: bool) -> str | None:
-        sends_headers = self._config.compat.get("sendSessionAffinityHeaders")
-        if sends_headers is not True and not (
-            sends_headers is None and responses and is_direct_openai_url(self._config.base_url)
-        ):
-            return None
-        value = self._config.compat.get("sessionAffinityFormat")
-        return value if isinstance(value, str) else "openai"
-
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = create_async_client(timeout=self._config.timeout_seconds)
         return self._client
-
-
-def _response_header_value(response: httpx.Response, header_name: str | None) -> str | None:
-    """Return one normalized response metadata header when configured."""
-    if header_name is None:
-        return None
-    value = response.headers.get(header_name)
-    if value is None:
-        return None
-    normalized = value.strip()
-    return normalized or None
-
-
-def _apply_session_affinity_headers(
-    headers: dict[str, str],
-    session_id: str | None,
-    affinity_format: str | None,
-) -> None:
-    if session_id is None or affinity_format is None:
-        return
-    if affinity_format == "openrouter":
-        headers["x-session-id"] = session_id
-        return
-    if affinity_format == "openai":
-        headers["session_id"] = session_id
 
 
 def _append_response_observer_diagnostic(
@@ -542,7 +430,8 @@ class _ChatStreamParser:
 class _ResponsesStreamParser:
     """Parser for OpenAI `/v1/responses` SSE events."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, codex: bool = False) -> None:
+        self._codex = codex
         self.emitted_content = False
         self.fatal = False
         self._content_parts: list[str] = []
@@ -575,6 +464,7 @@ class _ResponsesStreamParser:
                 return [ProviderTextDeltaEvent(delta=delta)], False
 
         elif chunk_type in (
+            "response.reasoning.delta",
             "response.reasoning_summary_text.delta",
             "response.reasoning_text.delta",
         ):
@@ -591,45 +481,60 @@ class _ResponsesStreamParser:
                 return [ProviderThinkingDeltaEvent(delta=separator)], False
 
         elif chunk_type == "response.output_item.added":
-            item = chunk.get("item")
-            _register_reasoning_item(self._reasoning_items, item)
-            _register_responses_item(
-                self._tool_call_builders,
-                item,
-                output_index=chunk.get("output_index"),
-            )
+            _register_reasoning_item(self._reasoning_items, chunk.get("item"))
+            self._tool_builder(chunk)
 
         elif chunk_type == "response.function_call_arguments.delta":
-            key = _responses_item_key(chunk.get("output_index"), chunk.get("item_id"))
-            if key is not None:
-                builder = self._tool_call_builders.setdefault(key, _ResponsesToolCallBuilder())
+            builder = self._tool_builder(chunk)
+            if builder is not None:
                 builder.add_arguments_delta(chunk.get("delta"))
-                builder.set_final(output_index=int_or_none(chunk.get("output_index")))
                 self.emitted_content = True
 
         elif chunk_type == "response.function_call_arguments.done":
-            key = _responses_item_key(chunk.get("output_index"), chunk.get("item_id"))
-            if key is not None:
-                builder = self._tool_call_builders.setdefault(key, _ResponsesToolCallBuilder())
+            builder = self._tool_builder(chunk)
+            if builder is not None:
                 builder.set_final(
-                    name=_str_or_none(chunk.get("name")),
-                    arguments=chunk.get("arguments"),
-                    output_index=int_or_none(chunk.get("output_index")),
+                    name=_str_or_none(chunk.get("name")), arguments=chunk.get("arguments")
                 )
-                builder.done = True
+                builder.done = not self._codex
 
-        elif chunk_type == "response.output_item.done":
+        elif chunk_type in ("response.output_item.done", "response.output_item.completed"):
             item = chunk.get("item")
             _register_reasoning_item(self._reasoning_items, item)
-            _finalize_responses_item(
-                self._tool_call_builders,
-                item,
-                output_index=chunk.get("output_index"),
-            )
+            builder = self._tool_builder(chunk)
+            if builder is not None:
+                builder.done = True
+                if self._codex:
+                    return [
+                        ProviderToolCallEvent(tool_call=builder.build(0, preserve_id=True))
+                    ], False
+            if (
+                isinstance(item, Mapping)
+                and item.get("type") == "message"
+                and not self._content_parts
+            ):
+                content = item.get("content")
+                text = "".join(
+                    value
+                    for part in (content if isinstance(content, list) else [])
+                    if isinstance(part, Mapping)
+                    for value in [
+                        part.get("text")
+                        if part.get("type") == "output_text"
+                        else part.get("refusal")
+                    ]
+                    if isinstance(value, str)
+                )
+                if text:
+                    self.emitted_content = True
+                    self._content_parts.append(text)
+                    return [ProviderTextDeltaEvent(delta=text)], False
 
-        elif chunk_type in ("response.completed", "response.incomplete"):
+        elif chunk_type in ("response.done", "response.completed", "response.incomplete"):
             self._saw_terminal_event = True
             self._status = _responses_finish_reason(chunk)
+            if chunk_type == "response.incomplete":
+                self._status = "incomplete"
             self._usage = _usage_from_responses_event(chunk) or self._usage
             return [], True
 
@@ -644,6 +549,46 @@ class _ResponsesStreamParser:
             ], True
 
         return [], False
+
+    def _tool_builder(self, chunk: Mapping[str, Any]) -> _ResponsesToolCallBuilder | None:
+        item = chunk.get("item")
+        if (item is not None or chunk["type"].startswith("response.output_item.")) and (
+            not isinstance(item, Mapping) or item.get("type") != "function_call"
+        ):
+            return None
+        fields = item if isinstance(item, Mapping) else chunk
+        item_id = fields.get("id") if item is not None else chunk.get("item_id")
+        key = _responses_item_key(chunk.get("output_index"), item_id)
+        if self._codex and key not in self._tool_call_builders:
+            for known_key, builder in self._tool_call_builders.items():
+                if (item_id and item_id == builder.item_id) or (
+                    fields.get("call_id") and fields["call_id"] == builder.call_id
+                ):
+                    key = known_key
+                    break
+            else:
+                active = [
+                    (key, builder)
+                    for key, builder in self._tool_call_builders.items()
+                    if not builder.done
+                ]
+                if item is None:
+                    # Codex argument fragments must belong to an announced call.
+                    return active[0][1] if len(active) == 1 else None
+                key = key or f"call:{fields.get('call_id') or len(self._tool_call_builders)}"
+        if key is None:
+            return None
+        builder = self._tool_call_builders.setdefault(key, _ResponsesToolCallBuilder())
+        builder.set_final(
+            call_id=_str_or_none(fields.get("call_id")),
+            item_id=_str_or_none(item_id),
+            name=_str_or_none(fields.get("name")),
+            arguments=(fields.get("arguments") or None)
+            if chunk.get("type") == "response.output_item.added"
+            else fields.get("arguments"),
+            output_index=int_or_none(chunk.get("output_index")),
+        )
+        return builder
 
     def finalize(self) -> list[ProviderEvent]:
         if not self._saw_terminal_event:
@@ -666,9 +611,13 @@ class _ResponsesStreamParser:
                         )
                     )
                 ]
-        tool_calls = [builder.build(index) for index, builder in enumerate(builders)]
+        tool_calls = [
+            builder.build(index, preserve_id=self._codex) for index, builder in enumerate(builders)
+        ]
         events: list[ProviderEvent] = [
-            ProviderToolCallEvent(tool_call=tool_call) for tool_call in tool_calls
+            ProviderToolCallEvent(tool_call=tool_call)
+            for tool_call in tool_calls
+            if not self._codex
         ]
         content = assistant_content("".join(self._content_parts), tool_calls)
         if self._thinking_parts:
@@ -736,6 +685,7 @@ class _ResponsesToolCallBuilder:
         name: str = "",
         output_index: int = 0,
     ) -> None:
+        self.item_id: str | None = None
         self.call_id = call_id
         self.name = name
         self.output_index = output_index
@@ -751,10 +701,13 @@ class _ResponsesToolCallBuilder:
         self,
         *,
         call_id: str | None = None,
+        item_id: str | None = None,
         name: str | None = None,
         arguments: object = None,
         output_index: int | None = None,
     ) -> None:
+        if item_id:
+            self.item_id = item_id
         if call_id:
             self.call_id = call_id
         if name:
@@ -764,14 +717,15 @@ class _ResponsesToolCallBuilder:
         if output_index is not None:
             self.output_index = output_index
 
-    def build(self, index: int) -> ToolCall:
+    def build(self, index: int, *, preserve_id: bool = False) -> ToolCall:
         arguments_text = (
             self.arguments_final
             if self.arguments_final is not None
             else "".join(self.arguments_parts)
         )
         return ToolCall(
-            id=self.call_id or f"tool-call-{index}",
+            id=(self.call_id or f"tool-call-{index}")
+            + (f"|{self.item_id}" if preserve_id and self.item_id else ""),
             name=self.name,
             arguments=tool_arguments(arguments_text),
         )
@@ -790,7 +744,6 @@ def _build_chat_payload(
     max_tokens: int | None = None,
     include_reasoning_effort_none: bool = False,
     supports_images: bool = False,
-    prompt_cache_key: str | None = None,
 ) -> dict[str, JSONValue]:
     resolved_compat = dict(compat or {})
     supports_store = bool(resolved_compat.get("supportsStore", True))
@@ -807,8 +760,6 @@ def _build_chat_payload(
             *_messages_to_openai_chat(messages, supports_images=supports_images),
         ],
     }
-    if prompt_cache_key is not None:
-        payload["prompt_cache_key"] = prompt_cache_key
     if supports_usage:
         payload["stream_options"] = {"include_usage": True}
     if supports_store:
@@ -885,7 +836,6 @@ def _build_responses_payload(
     reasoning_effort: str | None = None,
     max_tokens: int | None = None,
     supports_images: bool = False,
-    prompt_cache_key: str | None = None,
     compat: Mapping[str, JSONValue] | None = None,
 ) -> dict[str, JSONValue]:
     payload: dict[str, JSONValue] = {
@@ -898,8 +848,6 @@ def _build_responses_payload(
         "instructions": system,
         "input": _messages_to_responses_input(messages, supports_images=supports_images),
     }
-    if prompt_cache_key is not None:
-        payload["prompt_cache_key"] = prompt_cache_key
     if max_tokens is not None:
         payload["max_output_tokens"] = max_tokens
     effort = _normalize_responses_effort(reasoning_effort)
@@ -924,9 +872,10 @@ def _normalize_responses_effort(reasoning_effort: str | None) -> str | None:
 
 
 def _messages_to_responses_input(
-    messages: list[AgentMessage], *, supports_images: bool = False
+    messages: list[AgentMessage], *, supports_images: bool = False, preserve_ids: bool = False
 ) -> list[JSONValue]:
     items: list[JSONValue] = []
+    assistant_index = 0
     for message in messages:
         if isinstance(message, UserMessage):
             text, images = text_and_images(
@@ -934,14 +883,11 @@ def _messages_to_responses_input(
                 supports_images=supports_images,
                 image_placeholder=NON_VISION_USER_IMAGE_PLACEHOLDER,
             )
-            if images:
-                content: list[JSONValue] = []
-                if text:
-                    content.append({"type": "input_text", "text": text})
-                content.extend(_openai_input_image(image) for image in images)
-                items.append({"role": "user", "content": content})
-            else:
-                items.append({"role": "user", "content": text})
+            content: list[JSONValue] = []
+            if text:
+                content.append({"type": "input_text", "text": text})
+            content.extend(_openai_input_image(image) for image in images)
+            items.append({"role": "user", "content": content if images or preserve_ids else text})
         elif isinstance(message, AssistantMessage):
             for block in message.content:
                 if isinstance(block, ThinkingContent) and block.thinking_signature:
@@ -951,18 +897,44 @@ def _messages_to_responses_input(
                         reasoning_item = None
                     if isinstance(reasoning_item, dict):
                         items.append(reasoning_item)
-            if message.text:
+                elif isinstance(block, TextContent) and preserve_ids:
+                    items.append(
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": block.text,
+                                    "annotations": [],
+                                }
+                            ],
+                            "status": "completed",
+                            "id": block.text_signature or f"msg_{assistant_index}",
+                        }
+                    )
+                    assistant_index += 1
+            if message.text and not preserve_ids:
                 items.append({"role": "assistant", "content": message.text})
             for tool_call in message.tool_calls:
-                items.append(
-                    {
-                        "type": "function_call",
-                        "call_id": portable_tool_call_id(tool_call.id),
-                        "name": tool_call.name,
-                        "arguments": dumps(tool_call.arguments),
-                    }
-                )
+                call_id, _, item_id = tool_call.id.partition("|")
+                if not preserve_ids:
+                    call_id = portable_tool_call_id(tool_call.id)
+                item: dict[str, JSONValue] = {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": tool_call.name,
+                    "arguments": dumps(tool_call.arguments),
+                }
+                if item_id and preserve_ids:
+                    item["id"] = item_id
+                items.append(item)
         elif isinstance(message, ToolResultMessage):
+            call_id = (
+                message.tool_call_id.partition("|")[0]
+                if preserve_ids
+                else portable_tool_call_id(message.tool_call_id)
+            )
             text, images = text_and_images(
                 message.content,
                 supports_images=supports_images,
@@ -980,7 +952,7 @@ def _messages_to_responses_input(
             items.append(
                 {
                     "type": "function_call_output",
-                    "call_id": portable_tool_call_id(message.tool_call_id),
+                    "call_id": call_id,
                     "output": output,
                 }
             )
@@ -998,13 +970,13 @@ def _openai_input_image(image: ImageContent) -> dict[str, JSONValue]:
 def _tool_to_responses(
     tool: AgentTool, compat: Mapping[str, JSONValue] | None = None
 ) -> dict[str, JSONValue]:
-    parameters, strict, supports_strict_mode = _resolve_strict_tool_parameters(tool, compat or {})
+    supports_strict_mode = (compat or {}).get("supportsStrictMode") is not False
     return {
         "type": "function",
         "name": tool.name,
         "description": tool.description,
-        "parameters": parameters,
-        **({"strict": strict if strict is not None else False} if supports_strict_mode else {}),
+        "parameters": dict(tool.parameters),
+        **({"strict": False} if supports_strict_mode else {}),
     }
 
 
@@ -1035,48 +1007,6 @@ def _responses_item_key(output_index: object, item_id: object) -> str | None:
     return None
 
 
-def _register_responses_item(
-    builders: dict[str, _ResponsesToolCallBuilder],
-    item: object,
-    *,
-    output_index: object,
-) -> None:
-    if not isinstance(item, Mapping) or item.get("type") != "function_call":
-        return
-    key = _responses_item_key(output_index, item.get("id"))
-    if key is None:
-        return
-    raw_arguments = item.get("arguments")
-    builder = builders.setdefault(key, _ResponsesToolCallBuilder())
-    builder.set_final(
-        call_id=_str_or_none(item.get("call_id")),
-        name=_str_or_none(item.get("name")),
-        arguments=raw_arguments if isinstance(raw_arguments, str) and raw_arguments else None,
-        output_index=int_or_none(output_index),
-    )
-
-
-def _finalize_responses_item(
-    builders: dict[str, _ResponsesToolCallBuilder],
-    item: object,
-    *,
-    output_index: object,
-) -> None:
-    if not isinstance(item, Mapping) or item.get("type") != "function_call":
-        return
-    key = _responses_item_key(output_index, item.get("id"))
-    if key is None:
-        return
-    builder = builders.setdefault(key, _ResponsesToolCallBuilder())
-    builder.set_final(
-        call_id=_str_or_none(item.get("call_id")),
-        name=_str_or_none(item.get("name")),
-        arguments=item.get("arguments"),
-        output_index=int_or_none(output_index),
-    )
-    builder.done = True
-
-
 def _ordered_builders(
     builders: dict[str, _ResponsesToolCallBuilder],
 ) -> list[_ResponsesToolCallBuilder]:
@@ -1095,27 +1025,49 @@ def _responses_finish_reason(chunk: Mapping[str, Any]) -> str | None:
 
 
 def _responses_failure_event(chunk: Mapping[str, Any]) -> ProviderErrorEvent:
-    message = "Provider response failed"
-    response = chunk.get("response")
-    if isinstance(response, Mapping):
-        error = response.get("error")
-        if isinstance(error, Mapping):
-            error_message = error.get("message")
-            if isinstance(error_message, str) and error_message:
-                message = error_message
-    return ProviderErrorEvent(message=message, data={"event": dict(chunk)})
+    return ProviderErrorEvent(message=_responses_error_message(chunk), data={"event": dict(chunk)})
 
 
 def _responses_error_message(chunk: Mapping[str, Any]) -> str:
-    message = chunk.get("message")
-    if isinstance(message, str) and message:
-        return message
-    error = chunk.get("error")
-    if isinstance(error, Mapping):
-        nested = error.get("message")
-        if isinstance(nested, str) and nested:
-            return nested
-    return "Provider stream error"
+    code, message = _stream_error_details(chunk)
+    return message or code or "Provider response failed"
+
+
+def _stream_error_details(event: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    """Extract the machine code and human message from a Codex stream error.
+
+    Codex reports failures either as a top-level ``error`` SSE event with a
+    nested ``error`` object (``{"type":"error","error":{"code":...}}``) or
+    as ``response.failed`` with the failure under ``response.error``. Looking
+    only at top-level fields hides details such as ``server_is_overloaded``
+    behind a generic fallback message.
+    """
+    sources: list[Mapping[str, Any]] = [event]
+    nested = event.get("error")
+    if isinstance(nested, Mapping):
+        sources.append(nested)
+    response = event.get("response")
+    if isinstance(response, Mapping):
+        response_error = response.get("error")
+        if isinstance(response_error, Mapping):
+            sources.append(response_error)
+
+    message: str | None = None
+    code: str | None = None
+    for source in sources:
+        if message is None:
+            raw_message = source.get("message")
+            if isinstance(raw_message, str) and raw_message:
+                message = raw_message
+        if code is None:
+            raw_code = source.get("code")
+            if isinstance(raw_code, str) and raw_code:
+                code = raw_code
+    if code is None and isinstance(nested, Mapping):
+        nested_type = nested.get("type")
+        if isinstance(nested_type, str) and nested_type:
+            code = nested_type
+    return code, message
 
 
 def _str_or_none(value: object) -> str | None:
@@ -1214,35 +1166,20 @@ def _message_to_openai(message: AgentMessage) -> dict[str, JSONValue]:
             "name": message.tool_name,
             "content": message.text,
         }
-    return _message_to_openai(message_to_user(message))
-
-
-def _resolve_strict_tool_parameters(
-    tool: AgentTool, compat: Mapping[str, JSONValue]
-) -> tuple[dict[str, JSONValue], bool | None, bool]:
-    """Return `(parameters, strict, supports_strict_mode)` for one tool.
-
-    `supports_strict_mode` gates whether the `strict` field is sent at all: some
-    OpenAI-compatible endpoints reject unknown request fields, so it is only included
-    when the endpoint hasn't explicitly opted out via `compat["supportsStrictMode"]`.
-    """
-    supports_strict_mode = compat.get("supportsStrictMode") is not False
-    strict = resolve_json_schema_strict_sampling(tool, supports_strict_mode)
-    parameters = get_json_schema_tool_parameters(tool.input_schema, strict)
-    return parameters, strict, supports_strict_mode
+    raise TypeError(f"Unsupported message: {type(message).__name__}")
 
 
 def _tool_to_openai(
     tool: AgentTool, compat: Mapping[str, JSONValue] | None = None
 ) -> dict[str, JSONValue]:
-    parameters, strict, supports_strict_mode = _resolve_strict_tool_parameters(tool, compat or {})
+    supports_strict_mode = (compat or {}).get("supportsStrictMode") is not False
     return {
         "type": "function",
         "function": {
             "name": tool.name,
             "description": tool.description,
-            "parameters": parameters,
-            **({"strict": strict if strict is not None else False} if supports_strict_mode else {}),
+            "parameters": dict(tool.parameters),
+            **({"strict": False} if supports_strict_mode else {}),
         },
     }
 
@@ -1298,9 +1235,7 @@ def _parse_chunk_usage(raw: Mapping[str, Any]) -> Usage:
 def _usage_from_responses_event(chunk: Mapping[str, Any]) -> Usage | None:
     """Parse billed usage from a `/v1/responses` terminal event.
 
-    Mirrors the Codex adapter's ``_usage_from_response``: cache reads and
-    writes are subtracted from ``input_tokens`` to leave fresh input. Cost is
-    left unset because Rio has no per-model pricing table.
+    Cache reads and writes are subtracted from input_tokens to leave fresh input.
     """
     response = chunk.get("response")
     if not isinstance(response, Mapping):
