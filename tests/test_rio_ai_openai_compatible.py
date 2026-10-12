@@ -181,9 +181,9 @@ def test_shared_responses_input_preserves_tool_result_correlation_and_images():
         ToolCall,
         ToolResultMessage,
         UserMessage,
+        portable_tool_call_id,
     )
     from rio.ai.openai_compatible import _messages_to_responses_input
-    from rio.ai.tool_call_ids import portable_tool_call_id
 
     image = ImageContent(data="aGVsbG8=", mime_type="image/png")
     messages = [

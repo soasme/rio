@@ -52,10 +52,10 @@ from rio.ai.messages import (
     Usage,
     UserMessage,
     assistant_content,
+    portable_tool_call_id,
 )
 from rio.ai.provider import AssistantMessageEvent, collect_response
 from rio.ai.retry import RetryableFailure, RetryAttempt
-from rio.ai.tool_call_ids import portable_tool_call_id
 from rio.ai.tools import AgentTool, ToolCall
 from rio.ai.types import JSONValue
 
@@ -125,9 +125,7 @@ class OpenAICompatibleProvider:
         tools: list[AgentTool],
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one model response as provider-neutral events."""
-        if self._config.api == "openai-responses" or (
-            self._config.infer_api_from_model and _use_responses_api(model)
-        ):
+        if self._config.api == "openai-responses" or _use_responses_api(model):
             return self._stream_responses(
                 model=model,
                 system=system,
@@ -233,10 +231,9 @@ class OpenAICompatibleProvider:
                         else "/chat/completions"
                     )
                     request_url = f"{auth.base_url.rstrip('/')}{endpoint}"
-            if not self._config.omit_authorization_header:
-                has_authorization = any(key.casefold() == "authorization" for key in headers)
-                if not has_authorization and api_key is not None:
-                    headers["Authorization"] = f"Bearer {api_key}"
+            has_authorization = any(key.casefold() == "authorization" for key in headers)
+            if not has_authorization and api_key is not None:
+                headers["Authorization"] = f"Bearer {api_key}"
 
             async def parse(
                 response: httpx.Response, attempt: RetryAttempt

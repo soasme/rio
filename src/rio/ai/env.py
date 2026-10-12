@@ -10,9 +10,9 @@ from rio.ai.types import JSONValue
 
 DEFAULT_OPENAI_COMPATIBLE_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
-DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS = 60.0
-DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES = 2
-DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS = 1.0
+DEFAULT_TIMEOUT_SECONDS = 60.0
+DEFAULT_MAX_RETRIES = 2
+DEFAULT_MAX_RETRY_DELAY_SECONDS = 1.0
 
 # Prompt-cache retention preferences. "short" uses the provider default TTL
 # (5 minutes on Anthropic), "long" requests the 1 hour TTL, and "none" disables
@@ -44,9 +44,9 @@ class OpenAICompatibleConfig:
     api_key: str = field(repr=False)
     base_url: str = DEFAULT_OPENAI_COMPATIBLE_BASE_URL
     headers: Mapping[str, str] | None = field(default=None, repr=False)
-    timeout_seconds: float = DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS
-    max_retries: int = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES
-    max_retry_delay_seconds: float = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    max_retries: int = DEFAULT_MAX_RETRIES
+    max_retry_delay_seconds: float = DEFAULT_MAX_RETRY_DELAY_SECONDS
     api: str = "openai-completions"
     max_tokens: int | None = None
     supports_images: bool = False
@@ -58,10 +58,8 @@ class OpenAICompatibleConfig:
     include_reasoning_effort_none: bool = False
     provider_name: str = "OpenAI-compatible provider"
     response_provider_header: str | None = None
-    omit_authorization_header: bool = False
     credential_resolver: RuntimeProviderAuthResolver | None = None
     response_headers_observer: RuntimeResponseHeadersObserver | None = None
-    infer_api_from_model: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,9 +70,9 @@ class AnthropicConfig:
     bearer_auth: bool = False
     base_url: str = DEFAULT_ANTHROPIC_BASE_URL
     headers: Mapping[str, str] | None = None
-    timeout_seconds: float = DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS
-    max_retries: int = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES
-    max_retry_delay_seconds: float = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    max_retries: int = DEFAULT_MAX_RETRIES
+    max_retry_delay_seconds: float = DEFAULT_MAX_RETRY_DELAY_SECONDS
     max_tokens: int | None = None
     supports_images: bool = False
     thinking_budget_tokens: int | None = None

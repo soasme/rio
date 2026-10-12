@@ -14,9 +14,9 @@ See ``NOTICE`` at the repository root for the original license text.
 from rio.ai.anthropic import AnthropicProvider
 from rio.ai.env import (
     DEFAULT_ANTHROPIC_BASE_URL,
-    DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES,
-    DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS,
-    DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_MAX_RETRY_DELAY_SECONDS,
+    DEFAULT_TIMEOUT_SECONDS,
     AnthropicConfig,
     OpenAICompatibleConfig,
     RuntimeProviderAuth,

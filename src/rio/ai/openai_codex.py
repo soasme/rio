@@ -16,9 +16,9 @@ from rio.ai._provider_events import (
     ProviderToolCallEvent,
 )
 from rio.ai.env import (
-    DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES,
-    DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS,
-    DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_MAX_RETRY_DELAY_SECONDS,
+    DEFAULT_TIMEOUT_SECONDS,
 )
 from rio.ai.http import create_async_client, request_with_retries
 from rio.ai.messages import (
@@ -59,12 +59,11 @@ class OpenAICodexConfig:
     credential_resolver: OpenAICodexCredentialResolver
     base_url: str = DEFAULT_OPENAI_CODEX_BASE_URL
     headers: Mapping[str, str] | None = None
-    timeout_seconds: float = DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS
-    max_retries: int = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES
-    max_retry_delay_seconds: float = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    max_retries: int = DEFAULT_MAX_RETRIES
+    max_retry_delay_seconds: float = DEFAULT_MAX_RETRY_DELAY_SECONDS
     originator: str = "tau"
     reasoning_effort: str | None = None
-    reasoning_summary: str = "auto"
     supports_images: bool = False
     provider_name: str = "OpenAI Codex"
 
@@ -125,7 +124,6 @@ class OpenAICodexProvider:
                 messages=messages,
                 tools=tools,
                 reasoning_effort=self._config.reasoning_effort,
-                reasoning_summary=self._config.reasoning_summary,
                 supports_images=self._config.supports_images,
             )
             url = _resolve_codex_url(self._config.base_url)
@@ -193,7 +191,6 @@ def _build_codex_payload(
     messages: list[AgentMessage],
     tools: list[AgentTool],
     reasoning_effort: str | None = None,
-    reasoning_summary: str = "auto",
     supports_images: bool = False,
 ) -> dict[str, JSONValue]:
     payload: dict[str, JSONValue] = {
@@ -212,7 +209,7 @@ def _build_codex_payload(
     if reasoning_effort is not None:
         payload["reasoning"] = {
             "effort": reasoning_effort,
-            "summary": reasoning_summary,
+            "summary": "auto",
         }
     if tools:
         payload["tools"] = [_tool_to_codex(tool) for tool in tools]
