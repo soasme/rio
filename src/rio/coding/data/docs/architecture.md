@@ -8,8 +8,8 @@ Rio saves each accepted change in SQLite and runs code in separate Python proces
 | Package | Job |
 | --- | --- |
 | `rio.ai` | Send requests to model providers and read their responses. |
-| `rio.agent` | Own state, check steps, run cells, and recover sessions. |
-| `rio.coding` | Define code and cmd cells; configure providers and credentials. |
+| `rio.agent` | Own state, check steps, schedule cells, and recover sessions. No OS dependencies. |
+| `rio.coding` | Define code and cmd cells, run them in processes; configure providers and credentials. |
 | `rio.cli` | Start or resume a task and print committed results. |
 
 ## One step
@@ -42,7 +42,8 @@ use bounded retries; missing token usage stays unknown.
 
 ## Running code
 
-One owner runs runnable cells in order, each in its own supervised process. A
+One owner runs runnable cells in order. `rio.agent.runner.Owner` schedules them;
+`rio.coding.owner.ProcessOwner` runs each in its own supervised process. A
 `code` cell runs with `uv run --script`. Each script has PEP 723
 metadata and its own process. Files can pass data between scripts; variables do
 not carry over. For example:
@@ -52,6 +53,7 @@ not carry over. For example:
 # dependencies = []
 # ///
 from pathlib import Path
+
 print(Path("README.md").read_text())
 ```
 
@@ -100,7 +102,7 @@ observations that can wake an idle session; the default is `False`.
 `Session.receive` saves an external observation before acknowledging it. Stable
 IDs make duplicate delivery harmless; conflicting IDs are rejected. The prefixes
 `execution:`, `control:`, `timer:`, and `idle:` are reserved for runtime records.
-Scripts can read committed history with `rio.agent.api.records(after=...)` and
+Scripts can read committed history with `rio.coding.api.records(after=...)` and
 schedule a timer with `timer(request_id, deadline, payload)`. A timer uses an
 absolute Unix deadline and produces one event per request ID.
 

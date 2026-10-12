@@ -15,8 +15,16 @@ are started separately and configured as HTTP endpoints.
 
 Pass `cells.KINDS` when creating or opening a coding session and
 `cells.INSTRUCTIONS` when creating it. The agent runtime handles admission,
-process supervision, journaling and recovery. See the
+journaling and recovery. See the
 [library guide](../../../docs/guides/library-usage.md).
+
+## Execution
+
+| Module | Responsibility |
+| --- | --- |
+| [owner.py](owner.py) | `ProcessOwner` runs cells and validators in supervised process groups and stops leftover workers on recovery. |
+| [worker.py](worker.py) | Gated POSIX worker that starts user code only after the owner commits its identity. |
+| [api.py](api.py) | Let uv scripts read committed history and schedule timers. |
 
 ## Configuration and services
 

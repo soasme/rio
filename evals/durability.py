@@ -12,10 +12,10 @@ from pathlib import Path
 
 import psutil
 
-from rio.agent.owner import Owner
 from rio.agent.session import Session
 from rio.agent.store import Store
 from rio.coding.cells import KINDS
+from rio.coding.owner import ProcessOwner
 
 
 async def measure(samples: int) -> dict:
@@ -25,7 +25,7 @@ async def measure(samples: int) -> dict:
         startup, script, inbox = [], [], []
         with Store(path) as store:
             session = Session.create(store, "measure startup", root, kinds=KINDS)
-            async with Owner(session) as owner:
+            async with ProcessOwner(session) as owner:
                 for _ in range(samples):
                     turn = session.prepare_turn()
                     session.accept(
@@ -79,7 +79,7 @@ async def measure(samples: int) -> dict:
         with Store(path) as store:
             recovered = Session(store, KINDS)
             start = time.perf_counter()
-            async with Owner(recovered):
+            async with ProcessOwner(recovered):
                 result = recovered.data["executions"][str(samples + 1)]
                 assert result["result"]["type"] == "UnknownExecution"
                 assert recovered.meta["pause"] is not None

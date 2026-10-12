@@ -4,7 +4,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from rio.agent.runner import run
+from rio.agent.runner import Owner, run
 from rio.agent.session import Session
 from rio.agent.store import Store
 from rio.ai import AssistantDoneEvent, AssistantMessage, FakeProvider, ToolCall
@@ -39,7 +39,7 @@ async def main() -> None:
         Store(Path(directory) / "session.sqlite3") as store,
     ):
         session = Session.create(store, "Say hello", Path.cwd())
-        assert await run(session, provider, "offline", print)
+        assert await run(Owner(session), provider, "offline", print)
 
 
 if __name__ == "__main__":

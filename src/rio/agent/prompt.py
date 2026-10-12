@@ -26,9 +26,6 @@ UnknownExecution means the process may have performed effects. Never assume it r
 Investigate current state with a NEW runnable Cell before deciding whether to retry.
 Resolve uncertainty with a note: role:"resolution", target_cell_id:N, evidence_refs containing
 recorded "session:event:N" references, and text explaining the decision. History is retained.
-Python processes can use `from rio.agent.api import timer, records`. timer(request_id,
-unix_deadline, payload) durably registers one timer generation; it does not suspend or rerun
-the process. records(after=0) retrieves journal events as data.
 Files and package caches are not durable State.
 """
 

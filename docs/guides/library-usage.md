@@ -11,6 +11,7 @@ from rio.agent.runner import replay, run
 from rio.agent.session import Session
 from rio.agent.store import Store
 from rio.coding import cells
+from rio.coding.owner import ProcessOwner
 from rio.coding.provider_config import load_provider_settings, resolve_provider_selection
 from rio.coding.provider_runtime import create_model_provider
 
@@ -28,12 +29,12 @@ async def main():
             )
         )
         if session.meta["terminal"]:
-            succeeded = await replay(session, print)
+            succeeded = await replay(ProcessOwner(session), print)
         else:
             selection = resolve_provider_selection(load_provider_settings())
             provider = create_model_provider(selection.provider, model=selection.model)
             try:
-                succeeded = await run(session, provider, selection.model, print)
+                succeeded = await run(ProcessOwner(session), provider, selection.model, print)
             finally:
                 await provider.aclose()
         print("success:", succeeded)
