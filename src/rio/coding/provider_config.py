@@ -27,10 +27,10 @@ from rio.ai.env import (
     CACHE_RETENTION_NONE,
     CACHE_RETENTION_SHORT,
     DEFAULT_ANTHROPIC_BASE_URL,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_MAX_RETRY_DELAY_SECONDS,
     DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
-    DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES,
-    DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS,
-    DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS,
+    DEFAULT_TIMEOUT_SECONDS,
     AnthropicConfig,
     CacheRetention,
     OpenAICompatibleConfig,
@@ -95,9 +95,9 @@ class ProviderConfig:
     headers: dict[str, str] = field(default_factory=dict)
     compat: dict[str, Any] = field(default_factory=dict)
     model_metadata: dict[str, ProviderModelMetadata] = field(default_factory=dict)
-    timeout_seconds: float = DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS
-    max_retries: int = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES
-    max_retry_delay_seconds: float = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    max_retries: int = DEFAULT_MAX_RETRIES
+    max_retry_delay_seconds: float = DEFAULT_MAX_RETRY_DELAY_SECONDS
     thinking_levels: tuple[ThinkingLevel, ...] | None = None
     thinking_models: tuple[str, ...] = ()
     thinking_default: ThinkingLevel | None = None

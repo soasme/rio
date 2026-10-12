@@ -33,11 +33,11 @@ from rio.ai.messages import (
     Usage,
     UserMessage,
     assistant_content,
+    portable_tool_call_id,
 )
 from rio.ai.openai_compatible import _parse_chunk_usage
 from rio.ai.provider import AssistantMessageEvent, collect_response
 from rio.ai.retry import RetryableFailure, RetryAttempt
-from rio.ai.tool_call_ids import portable_tool_call_id
 from rio.ai.tools import AgentTool, ToolCall
 from rio.ai.types import JSONValue
 
