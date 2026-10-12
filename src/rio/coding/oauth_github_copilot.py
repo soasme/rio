@@ -8,16 +8,18 @@ from urllib.parse import urlparse
 
 import httpx
 
-from rio.ai.http import create_async_client
+from rio.ai.env import RuntimeProviderAuth
 from rio.coding.credentials import OAuthCredential
-from rio.coding.oauth import OAuthError, oauth_credential_is_expired
-from rio.coding.oauth_device import DevicePollResult, poll_oauth_device_code
-from rio.coding.oauth_types import (
+from rio.coding.oauth import (
+    DevicePollResult,
     OAuthDeviceCodeInfo,
+    OAuthError,
     OAuthLoginCallbacks,
     OAuthPrompt,
-    OAuthRuntimeAuth,
+    oauth_client,
     oauth_metadata_string,
+    poll_oauth_device_code,
+    required_string,
 )
 
 GITHUB_COPILOT_OAUTH_PROVIDER = "github-copilot"
@@ -83,9 +85,7 @@ async def login_github_copilot(
         raise OAuthError("Invalid GitHub Enterprise URL/domain")
     domain = enterprise_domain or "github.com"
 
-    owns_client = client is None
-    active_client = client or create_async_client(timeout=30)
-    try:
+    async with oauth_client(client) as active_client:
         device = await _start_device_flow(domain, active_client)
         callbacks.on_device_code(
             OAuthDeviceCodeInfo(
@@ -111,9 +111,6 @@ async def login_github_copilot(
             ),
             client=active_client,
         )
-    finally:
-        if owns_client:
-            await active_client.aclose()
 
 
 async def refresh_github_copilot_token(
@@ -124,9 +121,7 @@ async def refresh_github_copilot_token(
     """Exchange a long-lived GitHub token for a short-lived Copilot token."""
     enterprise_domain = oauth_metadata_string(credential.metadata, "enterprise_domain")
     domain = enterprise_domain or "github.com"
-    owns_client = client is None
-    active_client = client or create_async_client(timeout=30)
-    try:
+    async with oauth_client(client) as active_client:
         response = await active_client.get(
             f"https://api.{domain}/copilot_internal/v2/token",
             headers={
@@ -135,11 +130,8 @@ async def refresh_github_copilot_token(
                 **GITHUB_COPILOT_HEADERS,
             },
         )
-    finally:
-        if owns_client:
-            await active_client.aclose()
     raw = _response_object(response, "Copilot token")
-    token = _required_string(raw, "token", "Copilot token")
+    token = required_string(raw, "token", "Copilot token")
     expires_at = raw.get("expires_at")
     if not isinstance(expires_at, int | float) or isinstance(expires_at, bool):
         raise OAuthError("Copilot token response missing expires_at")
@@ -163,7 +155,7 @@ async def _start_device_flow(domain: str, client: httpx.AsyncClient) -> GitHubDe
         },
     )
     raw = _response_object(response, "GitHub device code")
-    uri = _required_string(raw, "verification_uri", "GitHub device code")
+    uri = required_string(raw, "verification_uri", "GitHub device code")
     parsed_uri = urlparse(uri)
     if parsed_uri.scheme not in {"http", "https"} or not parsed_uri.netloc:
         raise OAuthError("Untrusted verification_uri in device code response")
@@ -174,8 +166,8 @@ async def _start_device_flow(domain: str, client: httpx.AsyncClient) -> GitHubDe
     if not isinstance(expires_in, int | float) or isinstance(expires_in, bool):
         raise OAuthError("GitHub device code response missing expires_in")
     return GitHubDeviceCode(
-        device_code=_required_string(raw, "device_code", "GitHub device code"),
-        user_code=_required_string(raw, "user_code", "GitHub device code"),
+        device_code=required_string(raw, "device_code", "GitHub device code"),
+        user_code=required_string(raw, "user_code", "GitHub device code"),
         verification_uri=uri,
         interval_seconds=float(interval),
         expires_in_seconds=float(expires_in),
@@ -243,13 +235,6 @@ def _response_object(
     return raw
 
 
-def _required_string(raw: dict[str, Any], name: str, label: str) -> str:
-    value = raw.get(name)
-    if not isinstance(value, str) or not value:
-        raise OAuthError(f"{label} response missing {name}")
-    return value
-
-
 class GitHubCopilotOAuthProvider:
     """Registered GitHub Copilot OAuth behavior."""
 
@@ -260,13 +245,11 @@ class GitHubCopilotOAuthProvider:
         return await login_github_copilot(callbacks)
 
     async def refresh(self, credential: OAuthCredential) -> OAuthCredential:
-        if not oauth_credential_is_expired(credential):
-            return credential
         return await refresh_github_copilot_token(credential)
 
-    def runtime_auth(self, credential: OAuthCredential) -> OAuthRuntimeAuth:
+    def runtime_auth(self, credential: OAuthCredential) -> RuntimeProviderAuth:
         enterprise_domain = oauth_metadata_string(credential.metadata, "enterprise_domain")
-        return OAuthRuntimeAuth(
+        return RuntimeProviderAuth(
             api_key=credential.access,
             base_url=github_copilot_base_url(credential.access, enterprise_domain),
             headers=GITHUB_COPILOT_HEADERS,

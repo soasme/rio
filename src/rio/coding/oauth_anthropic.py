@@ -4,26 +4,28 @@ from __future__ import annotations
 
 import time
 import webbrowser
-from collections.abc import Awaitable, Callable, Iterable
-from typing import Any
 from urllib.parse import urlencode
 
 import httpx
 
-from rio.ai.http import create_async_client
+from rio.ai.env import RuntimeProviderAuth
 from rio.coding.credentials import OAuthCredential
 from rio.coding.oauth import (
-    OAuthError,
-    _start_local_oauth_server,
-    create_pkce_pair,
-    oauth_credential_is_expired,
-    parse_authorization_input,
-)
-from rio.coding.oauth_types import (
+    AuthCallback,
     OAuthAuthInfo,
+    OAuthError,
     OAuthLoginCallbacks,
     OAuthPrompt,
-    OAuthRuntimeAuth,
+    ProgressCallback,
+    PromptCallback,
+    create_pkce_pair,
+    error_detail,
+    oauth_client,
+    optional_string,
+    parse_authorization_input,
+    required_string,
+    start_local_oauth_server,
+    validate_state,
 )
 
 ANTHROPIC_OAUTH_PROVIDER = "anthropic"
@@ -43,9 +45,9 @@ _SECRET_REQUEST_FIELDS = ("refresh_token", "code", "code_verifier")
 
 async def login_anthropic(
     *,
-    on_auth: Callable[[OAuthAuthInfo], None],
-    on_prompt: Callable[[OAuthPrompt], Awaitable[str]],
-    on_progress: Callable[[str], None] | None = None,
+    on_auth: AuthCallback,
+    on_prompt: PromptCallback,
+    on_progress: ProgressCallback | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> OAuthCredential:
     """Run Anthropic's authorization-code + PKCE login flow."""
@@ -61,7 +63,7 @@ async def login_anthropic(
         "state": verifier,
     }
     url = f"{ANTHROPIC_AUTHORIZE_URL}?{urlencode(params)}"
-    server = await _start_local_oauth_server(
+    server = await start_local_oauth_server(
         verifier,
         callback_port=ANTHROPIC_CALLBACK_PORT,
         callback_path="/callback",
@@ -88,8 +90,7 @@ async def login_anthropic(
                 )
             )
         parsed = parse_authorization_input(value)
-        if parsed.state is not None and parsed.state != verifier:
-            raise OAuthError("OAuth state mismatch")
+        validate_state(parsed.state, verifier)
         if not parsed.code:
             raise OAuthError("Missing authorization code")
         on_progress and on_progress("Exchanging authorization code for tokens...")
@@ -135,19 +136,14 @@ async def _anthropic_token_request(
     action: str,
     previous_refresh: str | None = None,
 ) -> OAuthCredential:
-    owns_client = client is None
-    active_client = client or create_async_client(timeout=30)
-    try:
+    async with oauth_client(client) as active_client:
         response = await active_client.post(
             ANTHROPIC_TOKEN_URL,
             json=data,
             headers={"Accept": "application/json", "Content-Type": "application/json"},
         )
-    finally:
-        if owns_client:
-            await active_client.aclose()
     if response.status_code >= 400:
-        detail = _error_detail(
+        detail = error_detail(
             response,
             secrets=[data[field] for field in _SECRET_REQUEST_FIELDS if field in data],
         )
@@ -155,8 +151,8 @@ async def _anthropic_token_request(
     raw = response.json()
     if not isinstance(raw, dict):
         raise OAuthError(f"Anthropic token {action} response must be an object")
-    access = _required_string(raw, "access_token", action=action)
-    refresh = _optional_string(raw, "refresh_token") or previous_refresh
+    access = required_string(raw, "access_token", f"Anthropic token {action}")
+    refresh = optional_string(raw, "refresh_token") or previous_refresh
     expires_in = raw.get("expires_in")
     if refresh is None:
         raise OAuthError(f"Anthropic token {action} response missing refresh_token")
@@ -167,62 +163,6 @@ async def _anthropic_token_request(
         refresh=refresh,
         expires=int(time.time() * 1000 + expires_in * 1000 - ANTHROPIC_TOKEN_SKEW_MS),
     )
-
-
-def _error_detail(response: httpx.Response, *, secrets: Iterable[str] = ()) -> str:
-    """Summarize a token-endpoint failure body.
-
-    The endpoint explains itself ("invalid_grant: Refresh token not found or
-    invalid"); reporting only the status code turns a self-describing failure
-    into a guessing game. Only the structured OAuth error fields are surfaced —
-    the raw body stays out of the message because a failing request can echo
-    the token it was sent. Those fields are server-controlled too, so anything
-    we sent is scrubbed back out and the result is truncated before it reaches
-    a log or the TUI.
-    """
-    try:
-        raw = response.json()
-    except ValueError:
-        raw = None
-    detail = _error_fields(raw) if isinstance(raw, dict) else None
-    if detail is None:
-        return "no error detail"
-    for secret in secrets:
-        if len(secret) >= 8:
-            detail = detail.replace(secret, "<redacted>")
-    return detail[:200]
-
-
-def _error_fields(raw: dict[str, Any]) -> str | None:
-    """Pull the error code and message out of either error envelope.
-
-    OAuth failures arrive as flat ``error``/``error_description``, while the
-    Anthropic API's own shape nests them under ``error`` as ``type``/``message``.
-    """
-    error = raw.get("error")
-    description = raw.get("error_description") or raw.get("message")
-    if isinstance(error, dict):
-        description = description or error.get("message")
-        error = error.get("type")
-    if isinstance(error, str) and isinstance(description, str):
-        return f"{error}: {description}"
-    if isinstance(error, str):
-        return error
-    if isinstance(description, str):
-        return description
-    return None
-
-
-def _required_string(raw: dict[str, Any], name: str, *, action: str) -> str:
-    value = raw.get(name)
-    if not isinstance(value, str) or not value:
-        raise OAuthError(f"Anthropic token {action} response missing {name}")
-    return value
-
-
-def _optional_string(raw: dict[str, Any], name: str) -> str | None:
-    value = raw.get(name)
-    return value if isinstance(value, str) and value else None
 
 
 class AnthropicOAuthProvider:
@@ -239,12 +179,10 @@ class AnthropicOAuthProvider:
         )
 
     async def refresh(self, credential: OAuthCredential) -> OAuthCredential:
-        if not oauth_credential_is_expired(credential):
-            return credential
         return await refresh_anthropic_token(credential.refresh)
 
-    def runtime_auth(self, credential: OAuthCredential) -> OAuthRuntimeAuth:
-        return OAuthRuntimeAuth(
+    def runtime_auth(self, credential: OAuthCredential) -> RuntimeProviderAuth:
+        return RuntimeProviderAuth(
             api_key=credential.access,
             headers={
                 "Authorization": f"Bearer {credential.access}",

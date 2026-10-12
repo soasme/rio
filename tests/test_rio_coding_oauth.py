@@ -25,20 +25,19 @@ import pytest
 
 from rio.coding.credentials import CredentialStoreError, FileCredentialStore, OAuthCredential
 from rio.coding.oauth import (
-    OPENAI_CODEX_ACCOUNT_CLAIM,
-    OPENAI_CODEX_CLIENT_ID,
+    DevicePollResult,
+    OAuthDeviceCodeInfo,
     OAuthError,
-    account_id_from_access_token,
-    create_openai_codex_authorization_flow,
+    OAuthLoginCallbacks,
+    OAuthPrompt,
     parse_authorization_input,
-    refresh_openai_codex_token,
+    poll_oauth_device_code,
 )
 from rio.coding.oauth_anthropic import (
     ANTHROPIC_CLIENT_ID,
     ANTHROPIC_TOKEN_URL,
     refresh_anthropic_token,
 )
-from rio.coding.oauth_device import DevicePollResult, poll_oauth_device_code
 from rio.coding.oauth_github_copilot import (
     GITHUB_COPILOT_CLIENT_ID,
     github_copilot_base_url,
@@ -46,12 +45,14 @@ from rio.coding.oauth_github_copilot import (
     normalize_github_domain,
     refresh_github_copilot_token,
 )
-from rio.coding.oauth_registry import get_oauth_provider
-from rio.coding.oauth_types import (
-    OAuthDeviceCodeInfo,
-    OAuthLoginCallbacks,
-    OAuthPrompt,
+from rio.coding.oauth_openai_codex import (
+    OPENAI_CODEX_ACCOUNT_CLAIM,
+    OPENAI_CODEX_CLIENT_ID,
+    account_id_from_access_token,
+    create_openai_codex_authorization_flow,
+    refresh_openai_codex_token,
 )
+from rio.coding.oauth_registry import get_oauth_provider
 
 
 def _callbacks(
@@ -97,15 +98,6 @@ def test_file_credential_store_round_trips_and_sets_private_permissions(tmp_path
 
     assert store.get("openai") == "test-key"
     assert S_IMODE(path.stat().st_mode) == 0o600
-
-
-def test_file_credential_store_deletes_key(tmp_path) -> None:
-    store = FileCredentialStore(tmp_path / "credentials.json")
-    store.set("openai", "test-key")
-
-    store.delete("openai")
-
-    assert store.get("openai") is None
 
 
 def test_file_credential_store_rejects_empty_values(tmp_path) -> None:
@@ -170,7 +162,7 @@ def test_file_credential_store_loads_legacy_codex_oauth_shape(tmp_path) -> None:
     )
 
 
-# -- oauth.py (OpenAI Codex) ---------------------------------------------
+# -- oauth_openai_codex.py ---------------------------------------------
 
 
 def test_create_openai_codex_authorization_flow_includes_pkce_and_codex_params() -> None:
@@ -444,7 +436,7 @@ async def test_refresh_github_copilot_preserves_enterprise_metadata() -> None:
     )
 
 
-# -- oauth_device.py ---------------------------------------------------
+# -- oauth.py device polling ---------------------------------------------------
 
 
 async def test_device_poll_slow_down() -> None:
@@ -502,7 +494,8 @@ def test_credentials_path_is_rooted_under_rio_home(tmp_path) -> None:
 
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 async def test_cancelling_login_closes_callback_server(provider, monkeypatch):
-    from rio.coding import oauth, oauth_anthropic
+    from rio.coding import oauth_anthropic
+    from rio.coding import oauth_openai_codex as oauth
 
     started = asyncio.Event()
 
@@ -522,7 +515,7 @@ async def test_cancelling_login_closes_callback_server(provider, monkeypatch):
         return server
 
     module = oauth if provider == "openai" else oauth_anthropic
-    monkeypatch.setattr(module, "_start_local_oauth_server", start_server)
+    monkeypatch.setattr(module, "start_local_oauth_server", start_server)
     monkeypatch.setattr(module.webbrowser, "open", lambda url: None)
     login = oauth.login_openai_codex if provider == "openai" else oauth_anthropic.login_anthropic
     callbacks = _callbacks()

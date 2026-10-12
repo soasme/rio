@@ -36,7 +36,7 @@ from rio.ai.env import (
     OpenAICompatibleConfig,
 )
 from rio.coding.catalog_loader import builtin_catalog, effective_catalog
-from rio.coding.credentials import CredentialReader, FileCredentialStore, credentials_path
+from rio.coding.credentials import FileCredentialStore, credentials_path
 from rio.coding.oauth_registry import get_oauth_provider
 from rio.coding.paths import RioPaths, atomic_write_text
 from rio.coding.provider_catalog import (
@@ -704,11 +704,6 @@ def provider_model_supports_images(provider: ProviderConfig, model: str | None =
     return metadata is not None and "image" in metadata.input
 
 
-def provider_model_compat(provider: ProviderConfig, model: str | None = None) -> dict[str, Any]:
-    """Return the detected/overridden compat flags for a model (e.g. supportsStrictMode)."""
-    return _model_compat(provider, model)
-
-
 def provider_default_thinking_level(
     provider: ProviderConfig,
     *,
@@ -771,7 +766,7 @@ def resolve_startup_thinking_level(
 def openai_compatible_config_from_provider(
     provider: ProviderConfig,
     *,
-    credential_reader: CredentialReader | None = None,
+    credential_reader: FileCredentialStore | None = None,
     model: str | None = None,
     thinking_level: ThinkingLevel | None = None,
 ) -> OpenAICompatibleConfig:
@@ -786,7 +781,7 @@ def openai_compatible_config_from_provider(
         model=selected_model,
         thinking_level=thinking_level,
     )
-    compat = provider_model_compat(provider, selected_model)
+    compat = _model_compat(provider, selected_model)
     return OpenAICompatibleConfig(
         api_key=api_key,
         provider_name=provider.name,
@@ -815,7 +810,7 @@ def openai_compatible_config_from_provider(
 def anthropic_config_from_provider(
     provider: ProviderConfig,
     *,
-    credential_reader: CredentialReader | None = None,
+    credential_reader: FileCredentialStore | None = None,
     model: str | None = None,
     thinking_level: ThinkingLevel | None = None,
 ) -> AnthropicConfig:
@@ -850,22 +845,20 @@ def anthropic_config_from_provider(
         thinking_mode=_anthropic_thinking_mode(
             provider, selected_model, thinking_level=thinking_level
         ),
-        compat=provider_model_compat(provider, selected_model),
+        compat=_model_compat(provider, selected_model),
     )
 
 
 def provider_has_usable_credentials(
     provider: ProviderConfig,
     *,
-    credential_reader: CredentialReader | None = None,
+    credential_reader: FileCredentialStore | None = None,
 ) -> bool:
     """Return whether rio can attempt calls for this provider without prompting setup."""
     if provider.credential_name and credential_reader is not None:
-        get_oauth = getattr(credential_reader, "get_oauth", None)
         if (
             get_oauth_provider(provider.name) is not None
-            and get_oauth is not None
-            and get_oauth(provider.credential_name) is not None
+            and credential_reader.get_oauth(provider.credential_name) is not None
         ):
             return True
         if credential_reader.get(provider.credential_name):
@@ -952,20 +945,10 @@ def _metadata_thinking_value(
 
 
 def _thinking_format(provider: ProviderConfig, model: str) -> str:
-    compat = _model_compat(provider, model)
-    value = compat.get("thinkingFormat")
+    value = _model_compat(provider, model).get("thinkingFormat")
     if isinstance(value, str) and value:
         return value
-    base_url = _model_base_url(provider, model)
-    if provider.name == "deepseek" or "deepseek.com" in base_url:
-        return "deepseek"
-    if provider.name == "zai" or "api.z.ai" in base_url:
-        return "zai"
-    if provider.name == "together" or "api.together.ai" in base_url:
-        return "together"
-    if provider.name == "openrouter" or "openrouter.ai" in base_url:
-        return "openrouter"
-    return "openai"
+    return _detected_compat(provider, model)["thinkingFormat"]
 
 
 def _include_reasoning_effort_none(
@@ -1048,19 +1031,16 @@ def anthropic_cache_settings(
 def _api_key_from_provider(
     provider: ProviderConfig,
     *,
-    credential_reader: CredentialReader | None,
+    credential_reader: FileCredentialStore | None,
 ) -> str:
     if provider.credential_name and credential_reader is not None:
         credential = credential_reader.get(provider.credential_name)
         if credential:
             return credential
-        get_oauth = getattr(credential_reader, "get_oauth", None)
-        if get_oauth_provider(provider.name) is not None and get_oauth is not None:
-            oauth_credential = get_oauth(provider.credential_name)
+        if get_oauth_provider(provider.name) is not None:
+            oauth_credential = credential_reader.get_oauth(provider.credential_name)
             if oauth_credential is not None:
-                access = getattr(oauth_credential, "access", None)
-                if isinstance(access, str) and access:
-                    return access
+                return oauth_credential.access
 
     return environ.get(provider.api_key_env, "") if provider.api_key_env else ""
 

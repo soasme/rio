@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from rio.coding.oauth import OpenAICodexOAuthProvider
+from rio.coding.oauth import OAuthProvider
 from rio.coding.oauth_anthropic import AnthropicOAuthProvider
 from rio.coding.oauth_github_copilot import GitHubCopilotOAuthProvider
-from rio.coding.oauth_types import OAuthProvider
+from rio.coding.oauth_openai_codex import OpenAICodexOAuthProvider
 
 _registry: dict[str, OAuthProvider] = {
     provider.id: provider

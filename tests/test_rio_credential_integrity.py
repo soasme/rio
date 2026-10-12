@@ -9,12 +9,8 @@ import pytest
 
 from rio.coding.auth_commands import login_provider
 from rio.coding.credentials import FileCredentialStore, OAuthCredential
-from rio.coding.oauth import (
-    OAuthError,
-    _post_openai_codex_token,
-    _required_token_field,
-    _token_expiry,
-)
+from rio.coding.oauth import OAuthError, required_string
+from rio.coding.oauth_openai_codex import _post_openai_codex_token, _token_expiry
 
 
 @pytest.mark.parametrize("existing", [False, True])
@@ -89,7 +85,7 @@ def test_missing_token_errors_do_not_include_other_tokens(field):
     raw = {"access_token": "access-secret", "refresh_token": "refresh-secret"}
     raw.pop(field)
     with pytest.raises(OAuthError) as error:
-        _required_token_field(raw, field, action="exchange")
+        required_string(raw, field, "OpenAI Codex token exchange")
     assert "secret" not in str(error.value)
 
 
@@ -116,7 +112,7 @@ import asyncio, os, sys
 from pathlib import Path
 from rio.coding.credentials import FileCredentialStore, OAuthCredential
 from rio.coding.provider_config import provider_config_from_catalog_entry
-from rio.coding import oauth, provider_runtime as runtime
+from rio.coding import oauth_openai_codex as oauth, provider_runtime as runtime
 root = Path(sys.argv[1])
 store = FileCredentialStore(root / "credentials.json")
 async def refresh(token):
@@ -185,5 +181,5 @@ store.set(sys.argv[2], "secret")
             if process.poll() is None:
                 process.kill()
                 process.wait()
-    assert FileCredentialStore(path).names() == ("one", "two")
+    assert sorted(json.loads(path.read_text())) == ["one", "two"]
     assert path.stat().st_mode & 0o777 == 0o600

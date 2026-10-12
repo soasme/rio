@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from json import dumps, loads
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 from rio.ai.types import JSONValue
 from rio.coding.paths import RioPaths
@@ -65,24 +65,6 @@ type StoredCredential = str | ApiKeyCredential | OAuthCredential
 type StoredCredentialKind = Literal["api_key", "oauth"]
 
 
-class CredentialReader(Protocol):
-    """Read-only credential lookup used to resolve provider auth."""
-
-    def get(self, name: str) -> str | None: ...
-
-
-class CredentialStore(Protocol):
-    """Mutable credential-store operations used by setup integrations."""
-
-    def get(self, name: str) -> str | None: ...
-
-    def set(self, name: str, value: str) -> None: ...
-
-    def delete(self, name: str) -> None: ...
-
-    def names(self, *, prefix: str | None = None) -> tuple[str, ...]: ...
-
-
 class FileCredentialStore:
     """Small JSON-backed provider credential store under rio home."""
 
@@ -109,10 +91,6 @@ class FileCredentialStore:
             data[name] = value
             self._save(data)
 
-    def set_api_key(self, name: str, value: str) -> None:
-        """Store an API-key credential value by name."""
-        self.set(name, value)
-
     def get_oauth(self, name: str) -> OAuthCredential | None:
         """Return a stored OAuth credential by name."""
         credential = self._load().get(name)
@@ -128,20 +106,6 @@ class FileCredentialStore:
             data = self._load()
             data[name] = credential
             self._save(data)
-
-    def delete(self, name: str) -> None:
-        """Delete a stored credential value by name."""
-        with self._write_lock():
-            data = self._load()
-            data.pop(name, None)
-            self._save(data)
-
-    def names(self, *, prefix: str | None = None) -> tuple[str, ...]:
-        """Return credential names without exposing their values."""
-        names = tuple(sorted(self._load()))
-        if prefix is None:
-            return names
-        return tuple(name for name in names if name.startswith(prefix))
 
     @contextmanager
     def _write_lock(self) -> Iterator[None]:

@@ -1,122 +1,191 @@
-"""OAuth helpers for subscription-backed coding providers."""
+"""Provider-neutral OAuth contracts and helpers shared by rio's login flows."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
 import hashlib
+import math
 import secrets
 import threading
 import time
-import webbrowser
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from json import loads
 from os import environ
-from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse
+from typing import Any, Literal, Protocol
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
+from rio.ai.env import RuntimeProviderAuth
 from rio.ai.http import create_async_client
+from rio.ai.types import JSONValue
 from rio.coding.credentials import OAuthCredential
-from rio.coding.oauth_types import (
-    OAuthAuthInfo,
-    OAuthLoginCallbacks,
-    OAuthPrompt,
-    OAuthRuntimeAuth,
-)
 
-OPENAI_CODEX_OAUTH_PROVIDER = "openai-codex"
-OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-OPENAI_CODEX_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
-OPENAI_CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token"
-OPENAI_CODEX_REDIRECT_URI = "http://localhost:1455/auth/callback"
-OPENAI_CODEX_SCOPE = "openid profile email offline_access"
-OPENAI_CODEX_ACCOUNT_CLAIM = "https://api.openai.com/auth"
-OPENAI_CODEX_CALLBACK_PORT = 1455
 TOKEN_REFRESH_SKEW_MS = 60_000
 
-type AuthCallback = Callable[["OAuthAuthInfo"], None]
-type PromptCallback = Callable[["OAuthPrompt"], Awaitable[str]]
-type ProgressCallback = Callable[[str], None]
+OAuthFlowKind = Literal["browser", "device_code"]
 
 
 @dataclass(frozen=True, slots=True)
-class AuthorizationCode:
-    """Parsed OAuth authorization callback data."""
+class OAuthAuthInfo:
+    """Authorization URL and optional instructions for a browser flow."""
 
-    code: str | None = None
-    state: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class AuthorizationFlow:
-    """OpenAI Codex OAuth authorization flow state."""
-
-    verifier: str
-    state: str
     url: str
+    instructions: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class TokenResponse:
-    """Successful OAuth token response."""
+class OAuthDeviceCodeInfo:
+    """User-facing values returned by an OAuth device authorization request."""
 
-    access: str
-    refresh: str
-    expires: int
+    user_code: str
+    verification_uri: str
+    interval_seconds: float | None = None
+    expires_in_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OAuthPrompt:
+    """Text input requested by an OAuth provider before or during login."""
+
+    message: str
+    placeholder: str | None = None
+
+
+AuthCallback = Callable[[OAuthAuthInfo], None]
+DeviceCodeCallback = Callable[[OAuthDeviceCodeInfo], None]
+PromptCallback = Callable[[OAuthPrompt], Awaitable[str]]
+ProgressCallback = Callable[[str], None]
+
+
+@dataclass(frozen=True, slots=True)
+class OAuthLoginCallbacks:
+    """Frontend-independent callbacks available to an OAuth login flow."""
+
+    on_auth: AuthCallback
+    on_device_code: DeviceCodeCallback
+    on_prompt: PromptCallback
+    on_progress: ProgressCallback | None = None
+    method: OAuthFlowKind | None = None
+
+
+class OAuthProvider(Protocol):
+    """Provider-specific OAuth behavior registered with rio."""
+
+    @property
+    def id(self) -> str:
+        """Stable provider/credential identifier."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """User-facing provider name."""
+        ...
+
+    async def login(self, callbacks: OAuthLoginCallbacks) -> OAuthCredential:
+        """Complete login and return credentials to persist."""
+        ...
+
+    async def refresh(self, credential: OAuthCredential) -> OAuthCredential:
+        """Refresh an expired credential."""
+        ...
+
+    def runtime_auth(self, credential: OAuthCredential) -> RuntimeProviderAuth:
+        """Convert stored credentials to request auth."""
+        ...
+
+
+def oauth_metadata_string(
+    metadata: Mapping[str, JSONValue],
+    name: str,
+) -> str | None:
+    """Return one non-empty string from provider-specific OAuth metadata."""
+    value = metadata.get(name)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 class OAuthError(RuntimeError):
     """Raised when an OAuth flow cannot complete."""
 
 
-class OpenAICodexOAuthProvider:
-    """Registered OpenAI Codex subscription OAuth behavior."""
-
-    id = OPENAI_CODEX_OAUTH_PROVIDER
-    name = "OpenAI Codex (ChatGPT subscription)"
-
-    async def login(self, callbacks: OAuthLoginCallbacks) -> OAuthCredential:
-        if callbacks.method == "device_code":
-            raise OAuthError("OpenAI Codex device-code login is not implemented in rio yet")
-        return await login_openai_codex(
-            on_auth=callbacks.on_auth,
-            on_prompt=callbacks.on_prompt,
-            on_progress=callbacks.on_progress,
-        )
-
-    async def refresh(self, credential: OAuthCredential) -> OAuthCredential:
-        if not oauth_credential_is_expired(credential):
-            return credential
-        return await refresh_openai_codex_token(credential.refresh)
-
-    def runtime_auth(self, credential: OAuthCredential) -> OAuthRuntimeAuth:
-        return OAuthRuntimeAuth(api_key=credential.access)
+def oauth_credential_is_expired(credential: OAuthCredential) -> bool:
+    """Return whether an OAuth credential should be refreshed before use."""
+    return int(time.time() * 1000) >= credential.expires - TOKEN_REFRESH_SKEW_MS
 
 
-class _LocalOAuthServer:
-    def __init__(
-        self,
-        server: ThreadingHTTPServer,
-        thread: threading.Thread,
-        future: asyncio.Future[str | None],
-    ) -> None:
-        self._server = server
-        self._thread = thread
-        self._future = future
+@asynccontextmanager
+async def oauth_client(
+    client: httpx.AsyncClient | None, *, timeout: float = 30
+) -> AsyncIterator[httpx.AsyncClient]:
+    """Use ``client`` as given, or open and close a new one."""
+    if client is not None:
+        yield client
+        return
+    async with create_async_client(timeout=timeout) as owned:
+        yield owned
 
-    async def wait_for_code(self) -> str | None:
-        """Wait for the local callback server to receive a code."""
-        return await self._future
 
-    def close(self) -> None:
-        """Stop the local callback server."""
-        self._server.shutdown()
-        self._server.server_close()
-        self._thread.join(timeout=1)
+def required_string(raw: Mapping[str, Any], name: str, label: str) -> str:
+    """Return a non-empty string field from an OAuth response or raise."""
+    value = raw.get(name)
+    if not isinstance(value, str) or not value:
+        raise OAuthError(f"{label} response missing {name}")
+    return value
+
+
+def optional_string(raw: Mapping[str, Any], name: str) -> str | None:
+    """Return a non-empty string field from an OAuth response, if present."""
+    value = raw.get(name)
+    return value if isinstance(value, str) and value else None
+
+
+def error_detail(response: httpx.Response, *, secrets: Iterable[str] = ()) -> str:
+    """Summarize a token-endpoint failure body.
+
+    The endpoint explains itself ("invalid_grant: Refresh token not found or
+    invalid"); reporting only the status code turns a self-describing failure
+    into a guessing game. Only the structured OAuth error fields are surfaced —
+    the raw body stays out of the message because a failing request can echo
+    the token it was sent. Those fields are server-controlled too, so anything
+    we sent is scrubbed back out and the result is truncated before it reaches
+    a log or the TUI.
+    """
+    try:
+        raw = response.json()
+    except ValueError:
+        raw = None
+    detail = _error_fields(raw) if isinstance(raw, dict) else None
+    if detail is None:
+        return "no error detail"
+    for secret in secrets:
+        if len(secret) >= 8:
+            detail = detail.replace(secret, "<redacted>")
+    return detail[:200]
+
+
+def _error_fields(raw: dict[str, Any]) -> str | None:
+    """Pull the error code and message out of either error envelope.
+
+    OAuth failures arrive as flat ``error``/``error_description``, while the
+    Anthropic API's own shape nests them under ``error`` as ``type``/``message``.
+    """
+    error = raw.get("error")
+    description = raw.get("error_description") or raw.get("message")
+    if isinstance(error, dict):
+        description = description or error.get("message")
+        error = error.get("type")
+    if isinstance(error, str) and isinstance(description, str):
+        return f"{error}: {description}"
+    if isinstance(error, str):
+        return error
+    if isinstance(description, str):
+        return description
+    return None
 
 
 def create_pkce_pair() -> tuple[str, str]:
@@ -127,30 +196,12 @@ def create_pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-def create_openai_codex_authorization_flow(
-    *,
-    originator: str = "rio",
-) -> AuthorizationFlow:
-    """Create an OpenAI Codex OAuth authorization URL."""
-    verifier, challenge = create_pkce_pair()
-    state = secrets.token_hex(16)
-    params = {
-        "response_type": "code",
-        "client_id": OPENAI_CODEX_CLIENT_ID,
-        "redirect_uri": OPENAI_CODEX_REDIRECT_URI,
-        "scope": OPENAI_CODEX_SCOPE,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-        "state": state,
-        "id_token_add_organizations": "true",
-        "codex_cli_simplified_flow": "true",
-        "originator": originator,
-    }
-    return AuthorizationFlow(
-        verifier=verifier,
-        state=state,
-        url=f"{OPENAI_CODEX_AUTHORIZE_URL}?{urlencode(params)}",
-    )
+@dataclass(frozen=True, slots=True)
+class AuthorizationCode:
+    """Parsed OAuth authorization callback data."""
+
+    code: str | None = None
+    state: str | None = None
 
 
 def parse_authorization_input(value: str) -> AuthorizationCode:
@@ -181,222 +232,99 @@ def parse_authorization_input(value: str) -> AuthorizationCode:
     return AuthorizationCode(code=stripped)
 
 
-def oauth_credential_is_expired(credential: OAuthCredential) -> bool:
-    """Return whether an OAuth credential should be refreshed before use."""
-    return int(time.time() * 1000) >= credential.expires - TOKEN_REFRESH_SKEW_MS
-
-
-async def login_openai_codex(
-    *,
-    on_auth: AuthCallback,
-    on_prompt: PromptCallback,
-    on_progress: ProgressCallback | None = None,
-    originator: str = "rio",
-    client: httpx.AsyncClient | None = None,
-) -> OAuthCredential:
-    """Run OpenAI Codex OAuth and return refreshable credentials."""
-    flow = create_openai_codex_authorization_flow(originator=originator)
-    server = await _start_local_oauth_server(flow.state)
-
-    try:
-        on_auth(
-            OAuthAuthInfo(
-                url=flow.url,
-                instructions="Complete login in your browser, or paste the redirect URL below.",
-            )
-        )
-        await asyncio.to_thread(webbrowser.open, flow.url)
-
-        code = await server.wait_for_code() if server is not None else None
-        if code is None:
-            manual_input = await on_prompt(
-                OAuthPrompt(message="Paste the authorization code or full redirect URL:")
-            )
-            parsed = parse_authorization_input(manual_input)
-            _validate_state(parsed.state, flow.state)
-            code = parsed.code
-        if not code:
-            raise OAuthError("Missing authorization code")
-        on_progress and on_progress("Exchanging authorization code...")
-        token = await exchange_openai_codex_authorization_code(
-            code,
-            flow.verifier,
-            client=client,
-        )
-        account_id = account_id_from_access_token(token.access)
-        if account_id is None:
-            raise OAuthError("Failed to extract OpenAI account id from access token")
-        return OAuthCredential(
-            access=token.access,
-            refresh=token.refresh,
-            expires=token.expires,
-            account_id=account_id,
-        )
-    finally:
-        if server is not None:
-            server.close()
-
-
-async def exchange_openai_codex_authorization_code(
-    code: str,
-    verifier: str,
-    *,
-    client: httpx.AsyncClient | None = None,
-) -> TokenResponse:
-    """Exchange an OpenAI Codex authorization code for OAuth tokens."""
-    raw = await _post_openai_codex_token(
-        {
-            "grant_type": "authorization_code",
-            "client_id": OPENAI_CODEX_CLIENT_ID,
-            "code": code,
-            "code_verifier": verifier,
-            "redirect_uri": OPENAI_CODEX_REDIRECT_URI,
-        },
-        client=client,
-        action="exchange",
-    )
-    access_token = _required_token_field(raw, "access_token", action="exchange")
-    refresh_token = _required_token_field(raw, "refresh_token", action="exchange")
-    return TokenResponse(
-        access=access_token,
-        refresh=refresh_token,
-        expires=_token_expiry(raw, access_token, action="exchange"),
-    )
-
-
-async def refresh_openai_codex_token(
-    refresh_token: str,
-    *,
-    client: httpx.AsyncClient | None = None,
-) -> OAuthCredential:
-    """Refresh OpenAI Codex OAuth credentials."""
-    raw = await _post_openai_codex_token(
-        {
-            "grant_type": "refresh_token",
-            "client_id": OPENAI_CODEX_CLIENT_ID,
-            "refresh_token": refresh_token,
-        },
-        client=client,
-        action="refresh",
-    )
-    access_token = _required_token_field(raw, "access_token", action="refresh")
-    next_refresh_token = _optional_token_field(raw, "refresh_token") or refresh_token
-    account_id = account_id_from_access_token(access_token)
-    if account_id is None:
-        raise OAuthError("Failed to extract OpenAI account id from refreshed access token")
-    return OAuthCredential(
-        access=access_token,
-        refresh=next_refresh_token,
-        expires=_token_expiry(raw, access_token, action="refresh"),
-        account_id=account_id,
-    )
-
-
-def account_id_from_access_token(access_token: str) -> str | None:
-    """Extract the ChatGPT account id from an OpenAI Codex access JWT."""
-    payload = _access_token_payload(access_token)
-    if payload is None:
-        return None
-    auth = payload.get(OPENAI_CODEX_ACCOUNT_CLAIM)
-    if not isinstance(auth, dict):
-        return None
-    account_id = auth.get("chatgpt_account_id")
-    if not isinstance(account_id, str) or not account_id.strip():
-        return None
-    return account_id.strip()
-
-
-def _access_token_expiry(access_token: str) -> int | None:
-    payload = _access_token_payload(access_token)
-    if payload is None:
-        return None
-    exp = payload.get("exp")
-    if isinstance(exp, int | float) and not isinstance(exp, bool) and exp > 0:
-        return int(exp * 1000)
-    return None
-
-
-def _access_token_payload(access_token: str) -> dict[str, Any] | None:
-    try:
-        parts = access_token.split(".")
-        if len(parts) != 3:
-            return None
-        payload = loads(_base64url_decode(parts[1]).decode("utf-8"))
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    return payload
-
-
-async def _post_openai_codex_token(
-    data: dict[str, str],
-    *,
-    client: httpx.AsyncClient | None,
-    action: str,
-) -> dict[str, Any]:
-    owns_client = client is None
-    active_client = client or create_async_client(timeout=60)
-    try:
-        response = await active_client.post(
-            OPENAI_CODEX_TOKEN_URL,
-            data=data,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-    finally:
-        if owns_client:
-            await active_client.aclose()
-
-    if response.status_code >= 400:
-        # Local import avoids the shared OAuth helpers' import cycle.
-        from rio.coding.oauth_anthropic import _error_detail
-
-        detail = _error_detail(response, secrets=data.values())
-        raise OAuthError(f"OpenAI Codex token {action} failed ({response.status_code}): {detail}")
-
-    raw = response.json()
-    if not isinstance(raw, dict):
-        raise OAuthError(f"OpenAI Codex token {action} response must be a JSON object")
-    return raw
-
-
-def _required_token_field(raw: dict[str, Any], field: str, *, action: str) -> str:
-    value = raw.get(field)
-    if not isinstance(value, str) or not value:
-        raise OAuthError(f"OpenAI Codex token {action} response missing {field}")
-    return value
-
-
-def _optional_token_field(raw: dict[str, Any], field: str) -> str | None:
-    value = raw.get(field)
-    if isinstance(value, str) and value:
-        return value
-    return None
-
-
-def _token_expiry(raw: dict[str, Any], access_token: str, *, action: str) -> int:
-    expires_in = raw.get("expires_in")
-    if isinstance(expires_in, int | float) and not isinstance(expires_in, bool):
-        return int(time.time() * 1000) + int(expires_in * 1000)
-    if expires_in is not None:
-        raise OAuthError(f"OpenAI Codex token {action} response has invalid expires_in")
-    expires = _access_token_expiry(access_token)
-    if expires is not None:
-        return expires
-    raise OAuthError(f"OpenAI Codex token {action} response missing expiry")
-
-
-def _validate_state(state: str | None, expected_state: str) -> None:
+def validate_state(state: str | None, expected_state: str) -> None:
     if state is not None and state != expected_state:
         raise OAuthError("OAuth state mismatch")
 
 
-async def _start_local_oauth_server(
+DevicePollStatus = Literal["complete", "pending", "slow_down", "failed"]
+
+
+@dataclass(frozen=True, slots=True)
+class DevicePollResult[T]:
+    """Result of one device-token polling request."""
+
+    status: DevicePollStatus
+    value: T | None = None
+    message: str | None = None
+    interval_seconds: float | None = None
+
+
+async def poll_oauth_device_code[T](
+    poll: Callable[[], Awaitable[DevicePollResult[T]]],
+    *,
+    interval_seconds: float | None = None,
+    expires_in_seconds: float | None = None,
+    wait_before_first_poll: bool = False,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> T:
+    """Poll an OAuth device flow with RFC 8628 timing and cancellation."""
+    interval = _poll_interval(interval_seconds)
+    deadline = monotonic() + expires_in_seconds if expires_in_seconds is not None else math.inf
+    if wait_before_first_poll:
+        await sleep(min(interval, max(deadline - monotonic(), 0)))
+
+    saw_slow_down = False
+    while monotonic() < deadline:
+        result = await poll()
+        if result.status == "complete":
+            if result.value is None:
+                raise OAuthError("Device flow returned no credential")
+            return result.value
+        if result.status == "failed":
+            raise OAuthError(result.message or "Device authorization failed")
+        if result.status == "slow_down":
+            saw_slow_down = True
+            interval = (
+                _poll_interval(result.interval_seconds)
+                if result.interval_seconds is not None
+                else interval + 5
+            )
+
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            break
+        await sleep(min(interval, remaining))
+
+    suffix = " after one or more slow_down responses" if saw_slow_down else ""
+    raise OAuthError(f"Device flow timed out{suffix}")
+
+
+def _poll_interval(value: float | None) -> float:
+    if value is None or not math.isfinite(value) or value <= 0:
+        return 5
+    return max(value, 1)
+
+
+class _LocalOAuthServer:
+    def __init__(
+        self,
+        server: ThreadingHTTPServer,
+        thread: threading.Thread,
+        future: asyncio.Future[str | None],
+    ) -> None:
+        self._server = server
+        self._thread = thread
+        self._future = future
+
+    async def wait_for_code(self) -> str | None:
+        """Wait for the local callback server to receive a code."""
+        return await self._future
+
+    def close(self) -> None:
+        """Stop the local callback server."""
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=1)
+
+
+async def start_local_oauth_server(
     state: str,
     *,
-    callback_port: int = OPENAI_CODEX_CALLBACK_PORT,
-    callback_path: str = "/auth/callback",
-    success_message: str = "OpenAI authentication completed. You can close this window.",
+    callback_port: int,
+    callback_path: str,
+    success_message: str,
 ) -> _LocalOAuthServer | None:
     host = environ.get("RIO_OAUTH_CALLBACK_HOST", "127.0.0.1")
     loop = asyncio.get_running_loop()
@@ -455,11 +383,6 @@ def _first_query_value(params: dict[str, list[str]], key: str) -> str | None:
 
 def _base64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
-
-
-def _base64url_decode(value: str) -> bytes:
-    padding = "=" * (-len(value) % 4)
-    return base64.urlsafe_b64decode(value + padding)
 
 
 def _oauth_html(message: str) -> str:
