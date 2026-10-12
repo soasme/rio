@@ -1308,16 +1308,6 @@ def test_create_model_provider_uses_codex_model_image_capability(tmp_path: Path)
     assert text_provider._config.supports_images is False
 
 
-def test_create_model_provider_threads_compat_into_openai_codex_config(tmp_path: Path) -> None:
-    store = FileCredentialStore(tmp_path / "credentials.json")
-    config = provider_config_from_catalog_entry("openai-codex")
-
-    provider = create_model_provider(config, credential_store=store, model="gpt-5.6-sol")
-
-    assert isinstance(provider, OpenAICodexProvider)
-    assert "supportsStrictMode" in provider._config.compat
-
-
 def test_anthropic_config_from_provider_includes_compat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1326,24 +1316,7 @@ def test_anthropic_config_from_provider_includes_compat(
 
     config = anthropic_config_from_provider(provider)
 
-    # Direct Anthropic API is expected to support strict/constrained tool schemas.
     assert config.compat.get("supportsStrictMode") is True
-
-
-def test_direct_openai_runtime_enables_responses_cache_affinity(tmp_path: Path) -> None:
-    store = FileCredentialStore(tmp_path / "credentials.json")
-    store.set_api_key("openai", "sk-test")
-
-    provider = create_model_provider(
-        provider_config_from_catalog_entry("openai"),
-        credential_store=store,
-        model="gpt-5.4",
-    )
-
-    assert isinstance(provider, OpenAICompatibleProvider)
-    assert provider._config.compat["supportsPromptCacheKey"] is True
-    assert provider._config.compat["sendSessionAffinityHeaders"] is True
-    assert provider._config.compat["sessionAffinityFormat"] == "openai"
 
 
 def test_huggingface_runtime_pins_backing_provider_with_model_alias(tmp_path: Path) -> None:
@@ -1373,20 +1346,6 @@ def test_huggingface_runtime_rejects_policy_suffix(tmp_path: Path) -> None:
             model="zai-org/GLM-5.2",
             inference_provider="fastest",
         )
-
-
-def test_compatible_gateway_defaults_to_no_openai_cache_affinity(tmp_path: Path) -> None:
-    store = FileCredentialStore(tmp_path / "credentials.json")
-    store.set_api_key("together", "gateway-key")
-
-    provider = create_model_provider(
-        provider_config_from_catalog_entry("together"),
-        credential_store=store,
-    )
-
-    assert isinstance(provider, OpenAICompatibleProvider)
-    assert provider._config.compat["supportsPromptCacheKey"] is False
-    assert provider._config.compat["sendSessionAffinityHeaders"] is False
 
 
 def test_create_model_provider_uses_anthropic_oauth_runtime_auth(tmp_path: Path) -> None:

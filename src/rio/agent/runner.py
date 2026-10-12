@@ -15,9 +15,8 @@ from rio.agent.session import Session
 from rio.agent.shapes import JournalEvent, Turn
 from rio.agent.state import InvalidPatch
 from rio.agent.store import encode
-from rio.ai.events import AssistantDoneEvent, AssistantErrorEvent
 from rio.ai.messages import AssistantMessage, UserMessage, raw_tool_arguments
-from rio.ai.provider import ModelProvider
+from rio.ai.provider import AssistantDoneEvent, AssistantErrorEvent, ModelProvider
 
 
 async def replay(

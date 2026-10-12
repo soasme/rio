@@ -10,17 +10,11 @@ import httpx
 
 from rio.ai._parsing import first_choice, loads_object, parse_sse_line, tool_arguments
 from rio.ai._provider_events import (
-    ProviderErrorEvent,
     ProviderEvent,
     ProviderResponseEndEvent,
-    ProviderResponseStartEvent,
     ProviderTextDeltaEvent,
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
-)
-from rio.ai.constrained_sampling import (
-    get_json_schema_tool_parameters,
-    resolve_json_schema_strict_sampling,
 )
 from rio.ai.content import (
     NON_VISION_TOOL_IMAGE_PLACEHOLDER,
@@ -28,9 +22,7 @@ from rio.ai.content import (
     text_and_images,
 )
 from rio.ai.env import OpenAICompatibleConfig
-from rio.ai.events import AssistantMessageEvent
-from rio.ai.http import create_async_client
-from rio.ai.http_errors import provider_http_error_message
+from rio.ai.http import create_async_client, request_with_retries
 from rio.ai.messages import (
     AgentMessage,
     AssistantMessage,
@@ -39,11 +31,9 @@ from rio.ai.messages import (
     ToolResultMessage,
     UserMessage,
     assistant_content,
-    message_to_user,
 )
-from rio.ai.provider import CancellationToken
-from rio.ai.retry import RetryAttempt, check_response_status, stream_with_retries
-from rio.ai.stream import canonicalize_provider_stream
+from rio.ai.provider import AssistantMessageEvent, collect_response
+from rio.ai.retry import RetryAttempt
 from rio.ai.tool_call_ids import portable_tool_call_id
 from rio.ai.tools import AgentTool, ToolCall
 from rio.ai.types import JSONValue
@@ -75,17 +65,12 @@ class MistralConversationsProvider:
         system: str,
         messages: list[AgentMessage],
         tools: list[AgentTool],
-        signal: CancellationToken | None = None,
-        session_id: str | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
-        """Stream one response as Pi-compatible assistant message events."""
-        del session_id
+        """Collect one response as a final assistant message or error."""
         raw = self._stream_provider_events(
-            model=model, system=system, messages=messages, tools=tools, signal=signal
+            model=model, system=system, messages=messages, tools=tools
         )
-        return canonicalize_provider_stream(
-            raw, api="mistral-conversations", provider="mistral", model=model
-        )
+        return collect_response(raw, api="mistral-conversations", provider="mistral", model=model)
 
     def _stream_provider_events(
         self,
@@ -94,7 +79,6 @@ class MistralConversationsProvider:
         system: str,
         messages: list[AgentMessage],
         tools: list[AgentTool],
-        signal: CancellationToken | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one Mistral response as provider-neutral events."""
         payload = _build_mistral_payload(
@@ -110,7 +94,6 @@ class MistralConversationsProvider:
             model=model,
             url=f"{_mistral_base_url(self._config.base_url)}/chat/completions",
             payload=payload,
-            signal=signal,
         )
 
     def _stream(
@@ -119,7 +102,6 @@ class MistralConversationsProvider:
         model: str,
         url: str,
         payload: Mapping[str, JSONValue],
-        signal: CancellationToken | None,
     ) -> AsyncIterator[ProviderEvent]:
         async def iterator() -> AsyncIterator[ProviderEvent]:
             client = self._get_client()
@@ -128,46 +110,31 @@ class MistralConversationsProvider:
                 "Authorization": f"Bearer {self._config.api_key}",
             }
 
-            async def stream_attempt(attempt: RetryAttempt) -> AsyncIterator[ProviderEvent]:
+            async def parse(
+                response: httpx.Response, attempt: RetryAttempt
+            ) -> AsyncIterator[ProviderEvent]:
                 parser = _MistralStreamParser()
-                async with client.stream("POST", url, json=payload, headers=headers) as response:
-                    error = await check_response_status(
-                        response,
-                        lambda body: ProviderErrorEvent(
-                            message=provider_http_error_message(
-                                provider_name=self._config.provider_name,
-                                status_code=response.status_code,
-                                body=body,
-                                model=model,
-                            ),
-                            data={"status_code": response.status_code, "body": body},
-                        ),
-                    )
-                    if error is not None:
-                        yield error
-                        return
-
-                    yield ProviderResponseStartEvent(model=model)
-                    async for line in response.aiter_lines():
-                        if signal is not None and signal.is_cancelled():
-                            return
-                        event = parse_sse_line(line)
-                        if event is None:
-                            continue
-                        events, stop = parser.feed(event)
-                        for parser_event in events:
-                            yield parser_event
-                        attempt.emitted_content = parser.emitted_content
-                        if stop:
-                            break
-                    for parser_event in parser.finalize():
+                async for line in response.aiter_lines():
+                    event = parse_sse_line(line)
+                    if event is None:
+                        continue
+                    events, stop = parser.feed(event)
+                    for parser_event in events:
                         yield parser_event
+                    attempt.emitted_content = parser.emitted_content
+                    if stop:
+                        break
+                for parser_event in parser.finalize():
+                    yield parser_event
 
-            async for event in stream_with_retries(
-                stream_attempt,
-                max_retries=self._config.max_retries,
-                max_retry_delay_seconds=self._config.max_retry_delay_seconds,
-                signal=signal,
+            async for event in request_with_retries(
+                client,
+                url=url,
+                payload=payload,
+                headers=headers,
+                model=model,
+                config=self._config,
+                parse=parse,
             ):
                 yield event
 
@@ -384,21 +351,17 @@ def _message_to_mistral(message: AgentMessage) -> dict[str, JSONValue]:
             "name": message.tool_name,
             "content": message.text,
         }
-    return _message_to_mistral(message_to_user(message))
+    raise TypeError(f"Unsupported message: {type(message).__name__}")
 
 
 def _tool_to_mistral(tool: AgentTool) -> dict[str, JSONValue]:
-    # Mistral's JSON-schema constrained decoding is always available (pi's
-    # `mistral-conversations.ts` resolves strict sampling unconditionally too).
-    strict = resolve_json_schema_strict_sampling(tool, True)
-    parameters = get_json_schema_tool_parameters(tool.input_schema, strict)
     return {
         "type": "function",
         "function": {
             "name": tool.name,
             "description": tool.description,
-            "parameters": parameters,
-            "strict": strict if strict is not None else False,
+            "parameters": dict(tool.parameters),
+            "strict": False,
         },
     }
 

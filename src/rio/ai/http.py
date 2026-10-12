@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
-from contextlib import contextmanager
-from typing import Any
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from contextlib import aclosing, contextmanager
+from typing import TYPE_CHECKING, Any
 
 import httpx
+
+from rio.ai._provider_events import ProviderErrorEvent, ProviderEvent, ProviderResponseStartEvent
+from rio.ai.env import AnthropicConfig, OpenAICompatibleConfig
+from rio.ai.http_errors import provider_http_error_message
+from rio.ai.retry import RetryAttempt, check_response_status, stream_with_retries
+from rio.ai.types import JSONValue
+
+if TYPE_CHECKING:
+    from rio.ai.openai_codex import OpenAICodexConfig
 
 _PROXY_ENV_VARS = (
     "HTTP_PROXY",
@@ -67,3 +76,57 @@ def create_async_client(**kwargs: Any) -> httpx.AsyncClient:
 
     with normalized_proxy_environment():
         return httpx.AsyncClient(**kwargs)
+
+
+async def request_with_retries(
+    client: httpx.AsyncClient,
+    *,
+    url: str,
+    payload: Mapping[str, JSONValue],
+    headers: Mapping[str, str] | Callable[[], Awaitable[Mapping[str, str]]],
+    model: str,
+    config: OpenAICompatibleConfig | AnthropicConfig | OpenAICodexConfig,
+    parse: Callable[[httpx.Response, RetryAttempt], AsyncIterator[ProviderEvent]],
+    is_retryable: Callable[[int, str], bool] | None = None,
+) -> AsyncIterator[ProviderEvent]:
+    """Own the streaming request, HTTP errors, and retry lifetime for every adapter."""
+
+    async def attempt(state: RetryAttempt) -> AsyncIterator[ProviderEvent]:
+        request_headers = await headers() if callable(headers) else headers
+        async with client.stream("POST", url, json=payload, headers=request_headers) as response:
+            header_name = getattr(config, "response_provider_header", None)
+            response_provider = (
+                response.headers.get(header_name, "").strip() or None if header_name else None
+            )
+            error = await check_response_status(
+                response,
+                lambda body: ProviderErrorEvent(
+                    message=provider_http_error_message(
+                        provider_name=config.provider_name,
+                        status_code=response.status_code,
+                        body=body,
+                        model=model,
+                    ),
+                    data={
+                        "status_code": response.status_code,
+                        "body": body,
+                        "attempts": state.number + 1,
+                    },
+                    response_provider=response_provider,
+                ),
+                is_retryable=is_retryable,
+            )
+            if error is not None:
+                yield error
+                return
+            yield ProviderResponseStartEvent(model=model, response_provider=response_provider)
+            async with aclosing(parse(response, state)) as events:
+                async for event in events:
+                    yield event
+
+    async for event in stream_with_retries(
+        attempt,
+        max_retries=config.max_retries,
+        max_retry_delay_seconds=config.max_retry_delay_seconds,
+    ):
+        yield event
