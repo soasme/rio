@@ -6,6 +6,9 @@ rio run [OPTIONS] TASK
 rio version
 ```
 
+A subcommand is required. Bare `rio` prints usage to stderr and exits with status 2.
+Use `rio --help` to print help and exit successfully.
+
 ## `rio login`
 
 Saves credentials for a provider.
@@ -30,7 +33,6 @@ Providers come from the configured catalog; each run selects one provider and mo
 | `--agents-md PATH` | Project instructions file. Defaults to `AGENTS.md` in the working directory when present. |
 | `-r`, `--resume SESSION_ID` | Resume a durable session. |
 | `--output human\|json` | Output format; defaults to `human`. |
-| `--no-color` | Disable ANSI color output. |
 
 Omit TASK when resuming. Resume keeps the original goal, project instructions,
 and model configuration. An unfinished session needs its configured provider and

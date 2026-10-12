@@ -2,6 +2,16 @@
    and suffix selection, not Python execution, terminal layout, or SQLite commits. -/
 namespace RioCli
 
+/-- After handling help, parsing requires a command before dispatch. -/
+def requireCommand {α : Type} : Option α → Except Nat α
+  | none => .error 2
+  | some command => .ok command
+
+theorem bare_rio_exits_two : requireCommand (none : Option String) = .error 2 := rfl
+
+theorem selected_command_is_dispatched (command : String) :
+    requireCommand (some command) = .ok command := rfl
+
 structure Cell where
   id : Nat
   body : String

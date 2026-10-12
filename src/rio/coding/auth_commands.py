@@ -1,4 +1,4 @@
-"""Credential commands with injectable interaction for terminal frontends."""
+"""Terminal commands for provider authentication."""
 
 from dataclasses import replace
 from getpass import getpass
@@ -41,7 +41,7 @@ def terminal_callbacks(method=None):
     )
 
 
-async def login_provider(name, *, method=None, callbacks=None, api_key=None):
+async def login_provider(name, *, method=None):
     """Authenticate a provider and persist credentials without displaying secrets."""
     provider = _provider(name)
     key = provider.credential_name or provider.name
@@ -49,13 +49,11 @@ async def login_provider(name, *, method=None, callbacks=None, api_key=None):
     oauth = get_oauth_provider(name)
     if method not in (None, "browser", "device_code", "api-key"):
         raise ValueError("Login method must be browser, device_code, or api-key")
-    if oauth is not None and method != "api-key" and api_key is None:
-        credential = await oauth.login(callbacks or terminal_callbacks(method))
+    if oauth is not None and method != "api-key":
+        credential = await oauth.login(terminal_callbacks(method))
         store.set_oauth(key, credential)
     else:
-        secret = api_key
-        if secret is None:
-            secret = await anyio.to_thread.run_sync(lambda: getpass(f"API key for {name}: "))
+        secret = await anyio.to_thread.run_sync(lambda: getpass(f"API key for {name}: "))
         if not secret.strip():
             raise ValueError("API key cannot be empty")
         store.set_api_key(key, secret)

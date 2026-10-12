@@ -11,6 +11,9 @@ These are independent behavior models, not proofs extracted from Python.
 They do not prove SQLite synchronization, OS process cleanup, transport behavior,
 or hardware durability. Python tests cover the implementation and its failure paths.
 
+`RioCli.lean` also models required subcommands: a missing command exits with status 2,
+and a selected command proceeds to dispatch (`rio.cli`).
+
 The current user-facing contracts are described in the
 [CLI reference](../../docs/reference/cli.md) and
 [session guide](../../docs/guides/sessions.md). In particular,
