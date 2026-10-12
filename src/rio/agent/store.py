@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import fcntl
 import json
 import sqlite3
 import time
@@ -70,11 +69,13 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path.resolve()
         # Canonicalize the sidecar too: symlink aliases must share one owner lock.
-        # Locking SQLite's own inode conflicts with SQLite locks on macOS.
-        self.lock = self.path.with_suffix(self.path.suffix + ".lock").open("a+b")
+        # A separate SQLite file holds an exclusive lock for this Store's lifetime, so
+        # readers of the journal are never blocked and no OS-specific API is needed.
+        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        self.lock = sqlite3.connect(lock_path, timeout=0, isolation_level=None)
         try:
-            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+            self.lock.execute("BEGIN EXCLUSIVE")
+        except sqlite3.DatabaseError:
             self.lock.close()
             raise StorageFailure("Session already has an owner") from None
         if self.path.exists() and self.path.stat().st_nlink != 1:

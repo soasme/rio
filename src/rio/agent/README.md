@@ -23,7 +23,6 @@ fields, and output events append new chunks. Replay also accepts older full reco
 This module is environment agnostic and must not rely on operating systems.
 It does not start processes, open sockets or read environment variables.
 Agents that execute work, such as `rio.coding`, supply that through an `Owner` subclass.
-Known exception: [store.py](store.py) takes a POSIX `fcntl` lock for session ownership.
 
 ## Responsibilities
 
