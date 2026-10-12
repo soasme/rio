@@ -12,8 +12,9 @@ from pathlib import Path
 
 import psutil
 
-from rio.agent import Session, Store
 from rio.agent.owner import Owner
+from rio.agent.session import Session
+from rio.agent.store import Store
 from rio.coding.cells import KINDS
 
 
@@ -26,7 +27,7 @@ async def measure(samples: int) -> dict:
             session = Session.create(store, "measure startup", root, kinds=KINDS)
             async with Owner(session) as owner:
                 for _ in range(samples):
-                    turn = session.prepare_turn(session.system, session.schema)
+                    turn = session.prepare_turn()
                     session.accept(
                         turn["id"],
                         [
@@ -51,14 +52,14 @@ async def measure(samples: int) -> dict:
                     startup.append(events["worker_registered"] - events["execution_started"])
                     script.append(events["execution_finished"] - events["worker_registered"])
                     start = time.perf_counter()
-                    session.prepare_turn(session.system, session.schema)
+                    session.prepare_turn()
                     inbox.append(time.perf_counter() - start)
                 idle_rss = psutil.Process().memory_info().rss
                 assert owner.process is None
             commits = list(store.commit_seconds)
             # Inject an interruption at the committed authorization boundary. The separate
             # process-kill pytest cases exercise actual surviving workers and child cleanup.
-            turn = session.prepare_turn(session.system, session.schema)
+            turn = session.prepare_turn()
             session.accept(
                 turn["id"],
                 [

@@ -133,7 +133,6 @@ class Turn(TypedDict):
     delivered: list[str]
     system: str
     tool_schema: dict
-    model_config: dict
     attempts: int
     retry_at: float
     error: str | None
@@ -172,7 +171,6 @@ class Meta(TypedDict):
     instructions: str
     terminal: Terminal | None
     pause: str | None  # inbox message id of the failure that paused dispatch
-    invalid: int
     usage: Usage
     idle: NotRequired[int]
 

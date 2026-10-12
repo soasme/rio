@@ -4,8 +4,9 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from rio.agent import Session, Store
 from rio.agent.runner import run
+from rio.agent.session import Session
+from rio.agent.store import Store
 from rio.ai import AssistantDoneEvent, AssistantMessage, FakeProvider, ToolCall
 
 

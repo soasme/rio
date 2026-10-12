@@ -80,7 +80,7 @@ def truncate_tail(
         if output_bytes + line_bytes > max_bytes:
             truncated_by = "bytes"
             if not output_lines:
-                clipped = _truncate_string_to_bytes_from_end(line, max_bytes)
+                clipped = truncate_bytes_tail(line, max_bytes)
                 output_lines.insert(0, clipped)
                 output_bytes = len(clipped.encode())
                 last_line_partial = True
@@ -141,7 +141,8 @@ def _split_lines_for_counting(content: str) -> list[str]:
     return lines
 
 
-def _truncate_string_to_bytes_from_end(text: str, max_bytes: int) -> str:
+def truncate_bytes_tail(text: str, max_bytes: int) -> str:
+    """Keep a UTF-8 byte-bounded tail without splitting characters."""
     encoded = text.encode()
     if len(encoded) <= max_bytes:
         return text

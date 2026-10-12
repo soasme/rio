@@ -7,7 +7,7 @@
   Every accepted change is a journal event, and state is a fold over those events.
   Durability, resume, idempotent retries and `UnknownExecution` all follow from that one choice.
 - `admit()` in [state.py](state.py) covers ID assignment, lineage, positions,
-  context budget and pruning.
+  context budget and runtime reset. `Session.prepare_turn()` rebuilds runtime observations.
 - `CellKind` is a five-field extension point: name, field schemas, prompt,
   validator and command builder. [rio.coding.cells](../coding/cells.py) adds
   `code` and `cmd` without changing the core. Custom agents can add other kinds.
@@ -28,6 +28,7 @@
 
 ## Use
 
+Import `Store` from `rio.agent.store` and `Session` from `rio.agent.session`.
 Create or open a `Store`, then create or open a `Session` with the same cell
 kinds. Notes are built in; runnable kinds come from the caller. Pass a
 `rio.ai.ModelProvider` to `runner.run`, or call `runner.replay` for a completed

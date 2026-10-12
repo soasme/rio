@@ -7,8 +7,9 @@ opening a coding session. A completed session can replay before provider setup:
 import asyncio
 from pathlib import Path
 
-from rio.agent import Session, Store
 from rio.agent.runner import replay, run
+from rio.agent.session import Session
+from rio.agent.store import Store
 from rio.coding import cells
 from rio.coding.provider_config import load_provider_settings, resolve_provider_selection
 from rio.coding.provider_runtime import create_model_provider

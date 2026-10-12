@@ -27,6 +27,7 @@ from rio.agent.shapes import (
 )
 from rio.agent.state import NOTE, CellKind, InvalidPatch, Limits, admit
 from rio.agent.store import Store, encode
+from rio.truncate import truncate_bytes_tail
 
 # Bump when the model-facing step protocol changes; saved turns hold the old prompt.
 STATE_SCHEMA = "rio.state/2"
@@ -107,7 +108,6 @@ class Session:
                     "instructions": instructions,
                     "terminal": None,
                     "pause": None,
-                    "invalid": 0,
                     "usage": {"rounds": 0, "attempts": 0, "tokens": 0, "unknown_usage": 0},
                 },
                 "cells": {},
@@ -182,7 +182,7 @@ class Session:
             },
         )
 
-    def prepare_turn(self, system: str, tool_schema: dict) -> Turn:
+    def prepare_turn(self) -> Turn:
         if self.meta["terminal"]:
             raise ValueError("Terminal runs cannot resume")
         for turn in self.data["turns"].values():
@@ -228,9 +228,8 @@ class Session:
             "id": turn_id,
             "state": state,
             "delivered": delivered,
-            "system": system,
-            "tool_schema": tool_schema,
-            "model_config": self.meta["model_config"],
+            "system": self.system,
+            "tool_schema": self.schema,
             "attempts": 0,
             "retry_at": 0,
             "error": None,
@@ -302,7 +301,6 @@ class Session:
                         "retry_at": time.time() + min(2 ** turn["attempts"], 30),
                     }
                 },
-                "meta": {"invalid": self.meta["invalid"] + 1},
             },
         )
 
@@ -381,7 +379,6 @@ class Session:
                 "meta": {
                     "state": state,
                     "pause": None if pause in messages else pause,
-                    "invalid": 0,
                 },
                 "cells": {str(c["id"]): c for c in new},
                 "executions": executions,
@@ -503,9 +500,9 @@ class Session:
             raise ValueError("Output requires a started execution")
         changed = dict(execution)
         for name, text in (("output", stdout), ("stderr", stderr)):
-            raw = (changed[name] + text).encode()
-            changed[name] = raw[: self.limits.output_bytes].decode(errors="ignore")
-            changed["truncated"] |= len(raw) > self.limits.output_bytes
+            combined = changed[name] + text
+            changed[name] = truncate_bytes_tail(combined, self.limits.output_bytes)
+            changed["truncated"] |= changed[name] != combined
         if changed != execution:
             self.store.commit("execution_output", {"executions": {key: changed}})
 

@@ -1,7 +1,7 @@
 import pytest
 
-from rio.agent import InvalidPatch
 from rio.agent.prompt import EXECUTION, system
+from rio.agent.state import InvalidPatch
 from rio.coding.cells import CMD, CODE, KINDS
 
 SCRIPT = "# /// script\n# dependencies = []\n# ///\nprint('hi')\n"

@@ -6,8 +6,9 @@ import json
 import uuid
 from pathlib import Path
 
-from rio.agent import Session, Store
 from rio.agent.runner import replay, run
+from rio.agent.session import Session
+from rio.agent.store import Store
 from rio.coding import cells
 from rio.coding.context import load_agents_md
 from rio.coding.paths import RioPaths
