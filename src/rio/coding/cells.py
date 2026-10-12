@@ -69,6 +69,9 @@ Otherwise use PEP 723 dependencies for packages your script imports, or run a te
 command through uv run --with pytest python -m pytest. uv's script interpreter is
 separate from a project environment. When writing multiline files, prefer triple-quoted
 Python strings so newline escaping does not break the script.
+Scripts can use `from rio.coding.api import timer, records`. timer(request_id,
+unix_deadline, payload) durably registers one timer generation; it does not suspend or rerun
+the process. records(after=0) retrieves journal events as data.
 """,
     validate=_validate_code,
     command=_code_command,

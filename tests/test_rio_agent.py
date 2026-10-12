@@ -11,9 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from rio.agent.owner import Owner, RecoveryFailure, stop_worker
 from rio.agent.prompt import CONCLUSION, PROTOCOL
-from rio.agent.runner import replay, run
+from rio.agent.runner import Owner, RecoveryFailure, replay, run
 from rio.agent.session import Session
 from rio.agent.state import CellKind, InvalidPatch, Limits
 from rio.agent.store import StorageFailure, Store, reduce_event
@@ -21,6 +20,7 @@ from rio.ai import FakeProvider
 from rio.ai.messages import AssistantMessage, ToolCall
 from rio.ai.provider import AssistantDoneEvent
 from rio.coding.cells import KINDS
+from rio.coding.owner import ProcessOwner, stop_worker
 
 
 @pytest.fixture
@@ -291,7 +291,7 @@ async def test_timer_rejects_invalid_requests_without_committing(session, timer_
             session.register_timer(
                 timer_request["id"], timer_request["deadline"], timer_request["payload"]
             )
-    async with Owner(session) as owner:
+    async with ProcessOwner(session) as owner:
         sequence = session.store.sequence
         reader, writer = await asyncio.open_unix_connection(owner.socket_path)
         writer.write((json.dumps(timer_request) + "\n").encode())
@@ -313,7 +313,7 @@ async def test_serial_uv_runs_and_independent_variables(session):
             "p=Path('order')\np.write_text(p.read_text()+'2')\nprint('ok')",
         ),
     )
-    async with Owner(session) as owner:
+    async with ProcessOwner(session) as owner:
         await settle(owner)
     assert (Path(session.meta["cwd"]) / "order").read_text() == "12"
     assert session.data["executions"]["2"]["output"] == "ok\n"
@@ -323,7 +323,7 @@ async def test_serial_uv_runs_and_independent_variables(session):
 async def test_cmd_runs_argv_without_shell(session):
     accept(session, cmd(sys.executable, "-c", "import sys; print(sys.argv[1])", "$HOME"))
     accept(session, cmd("rio-missing-command"))
-    async with Owner(session) as owner:
+    async with ProcessOwner(session) as owner:
         await settle(owner)
     assert session.data["executions"]["1"]["output"] == "$HOME\n"
     assert session.data["executions"]["2"]["result"]["exit_code"] == 127
@@ -332,7 +332,7 @@ async def test_cmd_runs_argv_without_shell(session):
 
 async def test_error_pauses_queue_then_cancel_before_dispatch(session):
     accept(session, code("raise RuntimeError('bad')"), code("assert False"))
-    async with Owner(session) as owner:
+    async with ProcessOwner(session) as owner:
         async with asyncio.timeout(15):
             while session.meta["pause"] is None:
                 await owner.tick()
@@ -347,12 +347,12 @@ async def test_error_pauses_queue_then_cancel_before_dispatch(session):
 async def test_started_recovery_never_reexecutes(session):
     accept(session, code("from pathlib import Path\nPath('effect').touch()"))
     session.authorize(1, {"token": "not-a-real-worker"})
-    async with Owner(session):
+    async with ProcessOwner(session):
         assert session.data["executions"]["1"]["result"]["type"] == "UnknownExecution"
     assert not (Path(session.meta["cwd"]) / "effect").exists()
     assert session.meta["pause"] == "execution:1"
     seq = session.store.sequence
-    async with Owner(session):
+    async with ProcessOwner(session):
         pass
     assert session.store.sequence == seq
 
@@ -373,7 +373,7 @@ async def test_resolution_requires_evidence_and_keeps_original_unknown(session):
         turn["id"],
         [add(note(role="resolution", target_cell_id=1, evidence_refs=[ref]))],
     )
-    async with Owner(session):
+    async with ProcessOwner(session):
         assert not session.unresolved()
     assert session.data["executions"]["1"] == original
     assert prepare(session)["state"]["runtime"]["cells"]["1"]["resolved_by"] == 2
@@ -383,7 +383,7 @@ async def test_success_rejected_for_new_input_and_failure_is_terminal(session):
     turn = prepare(session)
     session.receive("arrived", "external", {"updated": True})
     session.accept(turn["id"], [add(note(role="conclusion", result="success"))])
-    async with Owner(session) as owner:
+    async with ProcessOwner(session) as owner:
         assert not session.meta["terminal"]
         accept(session, note(role="conclusion", result="failure"))
         await owner.controls()
@@ -393,7 +393,7 @@ async def test_success_rejected_for_new_input_and_failure_is_terminal(session):
     assert all(control["handled"] for control in session.data["controls"].values())
     assert ending["changes"]["controls"]
     seq = session.store.sequence
-    async with Owner(session):
+    async with ProcessOwner(session):
         pass
     assert session.store.sequence == seq
 
@@ -406,7 +406,7 @@ async def test_cancel_running_worker_and_children(session):
             "p=subprocess.Popen(['sleep','60'])\nPath('child').write_text(str(p.pid))\ntime.sleep(60)",
         ),
     )
-    async with Owner(session) as owner:
+    async with ProcessOwner(session) as owner:
         await owner.tick()
         path = Path(session.meta["cwd"]) / "child"
         async with asyncio.timeout(15):
@@ -443,10 +443,25 @@ async def test_public_loop_finishes_and_reopens_without_model_call(session):
         ]
     )
     published = []
-    assert await run(session, provider, "fake", published.append)
+    assert await run(ProcessOwner(session), provider, "fake", published.append)
     assert len(provider.calls) == 2
     assert any(e["type"] == "run_ended" for e in published)
-    assert await run(session, FakeProvider([]), "fake")
+    assert await run(ProcessOwner(session), FakeProvider([]), "fake")
+
+
+async def test_base_owner_runs_note_only_sessions_without_processes(tmp_path):
+    provider = FakeProvider([response([add(note("done", role="conclusion", result="success"))])])
+    with Store(tmp_path / "notes.sqlite3") as store:
+        session = Session.create(store, "say hello", tmp_path)
+        assert await run(Owner(session), provider, "fake")
+        assert await replay(Owner(session))
+
+
+async def test_base_owner_cannot_launch_runnable_cells(session):
+    accept(session, code())
+    async with Owner(session) as owner:
+        with pytest.raises(NotImplementedError):
+            await owner.tick()
 
 
 async def test_successful_completions_wake_the_model_once_after_the_queue_drains(session):
@@ -465,7 +480,7 @@ async def test_successful_completions_wake_the_model_once_after_the_queue_drains
             ),
         ]
     )
-    assert await run(session, provider, "fake")
+    assert await run(ProcessOwner(session), provider, "fake")
     state = json.loads(provider.calls[1][2][0].content)
     assert [m["id"] for m in state["runtime"]["inbox"]] == ["execution:1", "execution:2"]
 
@@ -475,7 +490,7 @@ async def test_instructions_extend_system_prompt(tmp_path):
         session = Session.create(store, "goal", tmp_path, instructions="\n\nUse tabs.")
         conclude = note("done", role="conclusion", result="success")
         provider = FakeProvider([response([add(conclude)])])
-        assert await run(session, provider, "fake")
+        assert await run(ProcessOwner(session), provider, "fake")
         # A note-only agent never hears about execution.
         assert provider.calls[0][1] == PROTOCOL + CONCLUSION + "\n\nUse tabs."
 
@@ -513,7 +528,7 @@ async def test_owner_requires_the_recorded_cell_kinds(tmp_path):
     with Store(path) as store:
         assert Session(store).state["goal"] == "goal"
         with pytest.raises(ValueError, match="Cell kinds: code"):
-            async with Owner(Session(store)):
+            async with ProcessOwner(Session(store)):
                 pass
 
 
@@ -540,14 +555,14 @@ async def test_caller_extends_agent_with_a_cell_kind(tmp_path):
         with pytest.raises(InvalidPatch, match="Echo requires text"):
             accept(session, {"kind": "echo"})
         accept(session, {"kind": "echo", "text": "hi"})
-        async with Owner(session) as owner:
+        async with ProcessOwner(session) as owner:
             await settle(owner)
         assert session.data["executions"]["1"]["output"] == "hi\n"
 
 
 async def test_uv_timer_api_acknowledges_committed_registration(session):
-    accept(session, code("from rio.agent.api import timer\ntimer('wake:1', 0, {'done':True})"))
-    async with Owner(session) as owner:
+    accept(session, code("from rio.coding.api import timer\ntimer('wake:1', 0, {'done':True})"))
+    async with ProcessOwner(session) as owner:
         await settle(owner)
     assert session.data["timers"]["wake:1"]["fired"]
     assert session.data["executions"]["1"]["result"]["type"] == "success"
@@ -557,7 +572,7 @@ async def test_owner_wakes_on_commits_and_deadlines_without_polling(session):
     import time
 
     accept(session, cmd(sys.executable, "-c", "print('done')"))
-    async with Owner(session) as owner:
+    async with ProcessOwner(session) as owner:
         # Worker output, the result commit, and the task ending each wake the owner.
         wakes = 0
         async with asyncio.timeout(10):
@@ -601,7 +616,7 @@ async def test_loop_sleeps_until_timer_instead_of_polling(session, monkeypatch):
     monkeypatch.setattr(Owner, "tick", counted)
     provider = FakeProvider([response([add(note(role="conclusion", result="success"))])])
     started = time.monotonic()
-    assert await run(session, provider, "fake")
+    assert await run(ProcessOwner(session), provider, "fake")
     assert time.monotonic() - started >= 0.25
     # Polling every 50ms would tick about six times before the timer fires.
     assert ticks <= 4
@@ -629,7 +644,7 @@ def test_output_limit_is_explicit(session):
 async def test_truncated_output_keeps_tail_and_full_output_file(session):
     source = "print('\\n'.join(map(str, range(3000))))"
     accept(session, cmd("python3", "-c", source), cmd("true"))
-    async with Owner(session) as owner:
+    async with ProcessOwner(session) as owner:
         await settle(owner)
     execution = session.data["executions"]["1"]
     assert execution["truncated"]
@@ -645,9 +660,9 @@ async def test_worker_and_validator_output_keep_utf8_tail(session, stream):
     session.limits = replace(session.limits, output_bytes=7, flush_seconds=60)
     source = f"import sys; sys.{stream}.write('old text' + 'é終!' * 3000)"
     accept(session, cmd(sys.executable, "-c", source))
-    async with Owner(session) as owner:
+    async with ProcessOwner(session) as owner:
         await settle(owner)
-        result = await owner._validate("tail", [sys.executable, "-c", source])
+        result = await owner.validate("tail", [sys.executable, "-c", source])
     assert result == {"exit": 0, "output": "!é終!"}
     key = "output" if stream == "stdout" else "stderr"
     streamed = [
@@ -669,7 +684,7 @@ async def test_required_validator_blocks_success(tmp_path):
             store, "goal", tmp_path, validators=((sys.executable, "-c", "raise SystemExit(1)"),)
         )
         accept(session, note(role="conclusion", result="success"))
-        async with Owner(session):
+        async with ProcessOwner(session):
             assert session.meta["terminal"] is None
             assert session.data["validator_results"]["0"]["exit"] == 1
 
@@ -722,7 +737,7 @@ import asyncio, sys
 from pathlib import Path
 from rio.agent.session import Session
 from rio.agent.store import Store
-from rio.agent.owner import Owner
+from rio.coding.owner import ProcessOwner
 from rio.coding.cells import KINDS
 async def main():
     root=Path(sys.argv[1]); boundary=sys.argv[2]
@@ -736,7 +751,7 @@ async def main():
              "time.sleep(60)\\n"}}])
         if boundary == 'authorized': s.authorize(1, {'token':'unlaunched'})
         if boundary == 'running':
-            async with Owner(s) as owner:
+            async with ProcessOwner(s) as owner:
                 await owner.tick()
                 while not (root/'effects').exists(): await asyncio.sleep(.01)
                 (root/'ready').touch()
@@ -757,7 +772,7 @@ asyncio.run(main())
         await asyncio.sleep(0.1)  # Allow the supervisor's EOF cleanup to finish.
         with Store(path) as store:
             session = Session(store, KINDS)
-            async with Owner(session):
+            async with ProcessOwner(session):
                 execution = session.data["executions"]["1"]
                 if boundary == "queued":
                     assert execution["phase"] == "queued"
@@ -784,11 +799,11 @@ async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch
                 response([]),
             ]
         )
-        assert not await run(session, provider, "fake")
+        assert not await run(ProcessOwner(session), provider, "fake")
         assert session.meta["usage"]["rounds"] == 2
     with Store(tmp_path / "budget.db") as store:
         session = Session(store)
-        assert not await run(session, FakeProvider([]), "fake")
+        assert not await run(ProcessOwner(session), FakeProvider([]), "fake")
         assert session.meta["usage"]["rounds"] == 2
 
 
@@ -811,7 +826,7 @@ async def test_saved_complete_response_is_accepted_without_another_provider_call
     message = response(operations)[0].message
     session.response(turn["id"], message.model_dump(mode="json"), 12)
     provider = FakeProvider([])
-    assert await run(session, provider, "fake")
+    assert await run(ProcessOwner(session), provider, "fake")
     assert not provider.calls
     assert session.meta["usage"]["tokens"] == 12
 
@@ -821,7 +836,7 @@ async def test_lost_and_partial_model_responses_are_bounded(session, monkeypatch
 
     monkeypatch.setattr(runner.time, "time", lambda: 1e20)
     provider = FakeProvider([])
-    assert not await run(session, provider, "fake")
+    assert not await run(ProcessOwner(session), provider, "fake")
     assert len(provider.calls) == session.limits.invalid_attempts
     assert not session.data["cells"]
     assert session.meta["usage"]["unknown_usage"] == session.limits.invalid_attempts
@@ -856,7 +871,7 @@ async def test_uncertain_output_commit_stops_worker_before_more_effects(session,
 
     monkeypatch.setattr(session.store, "commit", uncertain)
     with pytest.raises(StorageFailure):
-        async with Owner(session) as owner:
+        async with ProcessOwner(session) as owner:
             await settle(owner)
     assert not (session.store.path.parent / "late-effect").exists()
 
@@ -894,7 +909,7 @@ async def test_provider_name_does_not_make_missing_usage_known(session):
     ]
     events = response(operations)
     events[0].message.api = "provider-without-usage"
-    assert await run(session, FakeProvider([events]), "fake")
+    assert await run(ProcessOwner(session), FakeProvider([events]), "fake")
     assert session.meta["usage"]["unknown_usage"] == 1
 
 
@@ -999,7 +1014,7 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
 def test_idle_decision_and_budget_survive_reopen(session):
     from rio.agent.runner import _idle_action
 
-    owner = Owner(session)
+    owner = ProcessOwner(session)
     assert _idle_action(owner) == "ready"
     accept(session)
     for _ in range(session.limits.invalid_attempts):
@@ -1007,7 +1022,7 @@ def test_idle_decision_and_budget_survive_reopen(session):
         session.invalid_idle()
         assert _idle_action(owner) == "ready"
         accept(session)
-    assert _idle_action(Owner(Session(session.store, KINDS))) == "fail"
+    assert _idle_action(ProcessOwner(Session(session.store, KINDS))) == "fail"
     accept(session, code())
     session.request_work()
     assert session.meta["idle"] == 0
@@ -1019,7 +1034,7 @@ def test_idle_waits_for_wakeup_sources(session, source):
     from rio.agent.runner import _idle_action
 
     accept(session)
-    owner = Owner(session)
+    owner = ProcessOwner(session)
     if source == "worker":
         owner.task = object()
     elif source == "timer":
@@ -1038,9 +1053,9 @@ def test_idle_batches_only_successful_execution_observations(session, result):
     accept(session, code(), code())
     session.authorize(1, {"token": "none"})
     session.finish(1, {"type": result})
-    assert _idle_action(Owner(session)) == ("wait" if result == "success" else "ready")
+    assert _idle_action(ProcessOwner(session)) == ("wait" if result == "success" else "ready")
     session.receive("new", "external", {})
-    assert _idle_action(Owner(session)) == "ready"
+    assert _idle_action(ProcessOwner(session)) == "ready"
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -1118,7 +1133,7 @@ def test_resolution_rejects_missing_events_and_non_observations(session, ref):
 async def test_terminal_cli_resume_needs_no_provider_or_project(
     tmp_path, monkeypatch, capsys, result, output_mode
 ):
-    import rio.agent.owner as owner_module
+    import rio.coding.owner as owner_module
     from rio.cli import run as cli
     from rio.coding.paths import RioPaths
 
@@ -1168,13 +1183,13 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
 
 async def test_replay_requires_posix_before_cleanup(session, monkeypatch):
     session.end("failure", "stopped")
-    monkeypatch.setattr("rio.agent.owner.os.name", "nt")
+    monkeypatch.setattr("rio.coding.owner.os.name", "nt")
     with pytest.raises(RecoveryFailure, match="POSIX"):
-        await replay(session, lambda event: None)
+        await replay(ProcessOwner(session), lambda event: None)
 
 
 async def test_terminal_replay_propagates_cleanup_failure(session, monkeypatch):
-    import rio.agent.owner as owner_module
+    import rio.coding.owner as owner_module
     from rio.agent.runner import replay
 
     accept(session, code())
@@ -1188,7 +1203,7 @@ async def test_terminal_replay_propagates_cleanup_failure(session, monkeypatch):
     monkeypatch.setattr(owner_module, "stop_worker", fail)
     published = []
     with pytest.raises(RecoveryFailure, match="cannot stop"):
-        await replay(session, published.append)
+        await replay(ProcessOwner(session), published.append)
     assert not published
     assert not session.data["executions"]["1"]["worker_stopped"]
 
@@ -1199,7 +1214,7 @@ async def test_replay_without_workers_writes_nothing(session):
     session.end("success", "done")
     seq = session.store.sequence
     published = []
-    assert await replay(session, published.append)
+    assert await replay(ProcessOwner(session), published.append)
     assert session.store.sequence == seq
     assert published[-1]["type"] == "run_ended"
 
@@ -1208,7 +1223,7 @@ async def test_replay_rejects_active_session(session):
     from rio.agent.runner import replay
 
     with pytest.raises(ValueError, match="terminal"):
-        await replay(session)
+        await replay(ProcessOwner(session))
 
 
 def test_turn_events_store_state_once_and_replay_deltas(session):
@@ -1292,7 +1307,7 @@ async def test_worker_failure_flushes_last_output_and_cleans_logs(session, monke
             raise OSError("read failed")
 
         monkeypatch.setattr(asyncio.StreamReader, "readline", fail_after_output)
-    async with Owner(session) as owner:
+    async with ProcessOwner(session) as owner:
         await settle(owner)
     execution = session.data["executions"]["1"]
     assert execution["output"] == "last stdout\n"
@@ -1307,7 +1322,7 @@ async def test_cells_preserve_existing_pythonpath(session, monkeypatch):
     (module_dir / "user_module.py").write_text("value = 42\n")
     monkeypatch.setenv("PYTHONPATH", str(module_dir))
     accept(session, cmd(sys.executable, "-c", "import user_module; print(user_module.value)"))
-    async with Owner(session) as owner:
+    async with ProcessOwner(session) as owner:
         await settle(owner)
     assert session.data["executions"]["1"]["output"] == "42\n"
 

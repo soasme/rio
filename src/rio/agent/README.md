@@ -12,11 +12,18 @@
   validator and command builder. [rio.coding.cells](../coding/cells.py) adds
   `code` and `cmd` without changing the core. Custom agents can add other kinds.
 - Each model round sees a fixed state snapshot, without conversation history.
-  Scripts run in separate processes. A separate lock file protects ownership
-  before SQLite opens the database. See [Architecture](../../../docs/explanation/architecture.md).
+  A separate lock file protects ownership before SQLite opens the database.
+  See [Architecture](../../../docs/explanation/architecture.md).
 
 Each turn journals its prepared context once. Later turn events contain changed
 fields, and output events append new chunks. Replay also accepts older full records.
+
+## Constraint
+
+This module is environment agnostic and must not rely on operating systems.
+It does not start processes, open sockets or read environment variables.
+Agents that execute work, such as `rio.coding`, supply that through an `Owner` subclass.
+Known exception: [store.py](store.py) takes a POSIX `fcntl` lock for session ownership.
 
 ## Responsibilities
 
@@ -25,17 +32,17 @@ fields, and output events append new chunks. Replay also accepts older full reco
 | [session.py](session.py) | Admit turns and own event writes, including controls and run endings with metrics. |
 | [store.py](store.py) | Commit the SQLite journal and fold events into state. |
 | [state.py](state.py) | Validate cell kinds, apply operations and enforce context budgets. |
-| [runner.py](runner.py) | Drive model turns, idle decisions and terminal replay. |
-| [owner.py](owner.py), [worker.py](worker.py) | Supervise processes, recover workers and run validators. |
-| [api.py](api.py) | Let scripts read committed history and schedule timers. |
+| [runner.py](runner.py) | Drive model turns, idle decisions and terminal replay. `Owner` dispatches cells, handles controls and conclusions, and waits for wake-ups. |
 
 ## Use
 
 Import `Store` from `rio.agent.store` and `Session` from `rio.agent.session`.
 Create or open a `Store`, then create or open a `Session` with the same cell
 kinds. Notes are built in; runnable kinds come from the caller. Pass a
-`rio.ai.ModelProvider` to `runner.run`, or call `runner.replay` for a completed
-session without provider setup. Both recover recorded workers before publishing.
+`rio.ai.ModelProvider` and an `Owner` to `runner.run`, or call `runner.replay` for a
+completed session without provider setup. Both recover leftover work before publishing.
+`Owner` runs note-only sessions; subclasses implement `launch` and `validate` to execute
+runnable kinds and validators.
 
 `Session.create` accepts numeric `Limits`, validator commands and an
 `external_wakeup` policy. The model cannot change these settings. Closing the

@@ -1,4 +1,4 @@
-"""Serial Cell execution, immediate controls, and conservative recovery."""
+"""Supervised worker processes for runnable Cells and validators, with conservative recovery."""
 
 from __future__ import annotations
 
@@ -6,26 +6,23 @@ import asyncio
 import codecs
 import contextlib
 import json
-import math
 import os
 import signal
 import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Awaitable
 from pathlib import Path
 
 import psutil
 
-import rio.agent.worker as worker
+import rio.coding.worker as worker
+from rio.agent.runner import Owner, RecoveryFailure
 from rio.agent.session import Session
 from rio.agent.shapes import ValidatorResult, WorkerIdentity
 from rio.agent.store import StorageFailure
 from rio.truncate import tail_notice, truncate_bytes_tail, truncate_tail
-
-
-class RecoveryFailure(RuntimeError):
-    pass
 
 
 def stop_worker(identity: WorkerIdentity) -> None:
@@ -84,26 +81,19 @@ def stop_worker(identity: WorkerIdentity) -> None:
             pass
 
 
-class Owner:
+class ProcessOwner(Owner):
+    """Run each Cell and validator in a gated worker process group under the session cwd."""
+
     def __init__(self, session: Session):
-        self.session = session
-        self.task: asyncio.Task | None = None
+        super().__init__(session)
         self.process: asyncio.subprocess.Process | None = None
-        self.active_id: int | None = None
         self.identity: WorkerIdentity | None = None
         self.server: asyncio.Server | None = None
         self.temporary: tempfile.TemporaryDirectory | None = None
         self.socket_path = ""
-        # Set by every commit and by the worker task ending; cleared at the start of tick().
-        self.changed = asyncio.Event()
 
     async def __aenter__(self):
-        cells = self.session.data["cells"].values()
-        missing = {c["kind"] for c in cells} - {"note", *self.session.kinds}
-        if missing:
-            raise ValueError(f"Open this Session with its Cell kinds: {', '.join(sorted(missing))}")
-        self.session.store.on_commit = self.changed.set
-        await self.recover()
+        await super().__aenter__()
         self.temporary = tempfile.TemporaryDirectory(prefix="rio-owner-")
         self.socket_path = str(Path(self.temporary.name) / "timer.sock")
         self.server = await asyncio.start_unix_server(self._timer, path=self.socket_path)
@@ -111,9 +101,8 @@ class Owner:
 
     async def __aexit__(self, *args):
         try:
-            await self.stop_active()
+            await super().__aexit__(*args)
         finally:
-            self.session.store.on_commit = None
             if self.server:
                 self.server.close()
                 await self.server.wait_closed()
@@ -157,101 +146,26 @@ class Owner:
             if record["result"] is None:
                 await asyncio.to_thread(stop_worker, record["worker"])
                 self.session.interrupt_validator(key)
-        if not self.session.meta["terminal"]:
-            self.session.fire_timers()
-            await self.controls()
+        await super().recover()
+
+    def clear(self) -> None:
+        super().clear()
+        self.process = self.identity = None
 
     async def stop_active(self) -> None:
         if self.identity:
             await asyncio.to_thread(stop_worker, self.identity)
-        if self.task:
-            self.task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.task
-        if self.process:
-            await self.process.wait()
-        self.task = self.process = self.identity = self.active_id = None
+        process = self.process
+        await super().stop_active()
+        if process:
+            await process.wait()
 
-    async def fail(self, reason: str, *, note_id: str | None = None) -> None:
-        error = None
-        try:
-            await self.stop_active()
-        except RecoveryFailure as exc:
-            error = str(exc)
-        for execution in list(self.session.pending()):
-            if execution["phase"] == "queued":
-                self.session.finish(execution["cell_id"], {"type": "cancelled"})
-            else:
-                self.session.finish(
-                    execution["cell_id"],
-                    {"type": "UnknownExecution", "reason": reason, "worker_stopped": error is None},
-                )
-        self.session.end("failure", reason, cleanup_error=error, note_id=note_id)
+    def launch(self, cell_id: int) -> Awaitable[None]:
+        self.identity = {"token": uuid.uuid4().hex}
+        self.session.authorize(cell_id, self.identity)
+        return self._execute(cell_id)
 
-    async def controls(self) -> None:
-        controls = sorted(
-            self.session.data["controls"].items(),
-            key=lambda pair: (pair[1]["cell"].get("role") != "cancel", int(pair[0])),
-        )
-        for key, control in controls:
-            if control["handled"]:
-                continue
-            cell = control["cell"]
-            role = cell["role"]
-            if role == "cancel":
-                target = cell["target_cell_id"]
-                execution = self.session.data["executions"][str(target)]
-                if execution["phase"] == "started":
-                    # recover() finishes leftover workers, so a started execution is the active one.
-                    assert target == self.active_id
-                    await self.stop_active()
-                    self.session.finish(
-                        target,
-                        {
-                            "type": "UnknownExecution",
-                            "reason": "cancelled_after_launch",
-                            "worker_stopped": True,
-                        },
-                    )
-                elif execution["phase"] == "queued":
-                    self.session.finish(target, {"type": "cancelled"})
-                self.session.handled(key, "accepted")
-            elif role == "resolution":
-                self.session.handled(key, "accepted", resolution=cell["target_cell_id"])
-            elif cell["result"] == "failure":
-                await self.fail(cell["text"], note_id=key)
-            else:
-                reason = await self._success_blocker(key)
-                if reason:
-                    self.session.handled(key, reason)
-                else:
-                    self.session.end("success", cell["text"], note_id=key)
-            if self.session.meta["terminal"]:
-                break
-
-    async def _success_blocker(self, note_id: str) -> str | None:
-        self.session.fire_timers()
-        if (
-            self.session.pending()
-            or self.session.unresolved()
-            or any(not t["fired"] for t in self.session.data["timers"].values())
-        ):
-            return "Success requires no pending work or unresolved uncertainty"
-        if any(not m["consumed"] for m in self.session.data["inbox"].values()):
-            return "New observations must be consumed before success"
-        # Validators execute afresh at the conclusion, using the same supervised worker path.
-        # The API uses argv lists, never model-editable shell commands.
-        for index, command in enumerate(self.session.meta["validators"]):
-            result = await self._validate(f"{note_id}:{index}", command)
-            self.session.record_validator_result(index, command, result)
-            if result["exit"] != 0:
-                return f"Required validator {index} failed: {result['output']}"
-        self.session.fire_timers()
-        if any(not m["consumed"] for m in self.session.data["inbox"].values()):
-            return "Observations arrived during validation"
-        return None
-
-    async def _validate(self, key: str, command: list[str]) -> ValidatorResult:
+    async def validate(self, key: str, command: list[str]) -> ValidatorResult:
         previous = self.session.data.get("validation_workers", {}).get(key)
         if previous:
             return previous["result"]
@@ -310,48 +224,6 @@ class Owner:
             await process.wait()
         self.session.finish_validator(key, result)
         return result
-
-    async def wait(self, until: float = math.inf, request: asyncio.Task | None = None) -> None:
-        """Wait for a commit, the worker task ending, the next timer or `until`, or `request`.
-
-        Wake sources: worker output and results, timer registrations and inbox input all
-        commit; timer deadlines and retry backoff are deadlines; the model call is `request`.
-        """
-        timers = (t["deadline"] for t in self.session.data["timers"].values() if not t["fired"])
-        deadline = min([until, *timers])
-        timeout = None if deadline == math.inf else max(0, deadline - time.time())
-        changed = asyncio.create_task(self.changed.wait())
-        try:
-            await asyncio.wait(
-                {changed, *([request] if request else [])},
-                timeout=timeout,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-        finally:
-            changed.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await changed
-
-    async def tick(self) -> None:
-        # Anything that changes after this point wakes the next wait().
-        self.changed.clear()
-        if self.task and self.task.done():
-            await self.task
-            self.task = self.process = self.identity = self.active_id = None
-        if self.session.store.failed:
-            raise StorageFailure("Owner must recover storage")
-        self.session.fire_timers()
-        await self.controls()
-        if self.session.meta["terminal"] or self.session.meta["pause"] or self.task:
-            return
-        pending = self.session.pending()
-        if pending:
-            cell_id = pending[0]["cell_id"]
-            self.active_id = cell_id
-            self.identity = {"token": uuid.uuid4().hex}
-            self.session.authorize(cell_id, self.identity)
-            self.task = asyncio.create_task(self._execute(cell_id))
-            self.task.add_done_callback(lambda _: self.changed.set())
 
     async def _execute(self, cell_id: int) -> None:
         session = self.session

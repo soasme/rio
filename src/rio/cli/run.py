@@ -13,6 +13,7 @@ from rio.agent.store import Store
 from rio.cli.render import PlainEventRenderer
 from rio.coding import cells
 from rio.coding.context import load_agents_md
+from rio.coding.owner import ProcessOwner
 from rio.coding.paths import RioPaths
 from rio.coding.provider_config import (
     load_provider_settings,
@@ -50,7 +51,7 @@ async def run_persistent_session(
             session = Session(store, cells.KINDS)
             _check_resume(session, prompt, cwd, provider_name, model, agents_md)
             if session.meta["terminal"]:
-                return await replay(session, publish), session_id
+                return await replay(ProcessOwner(session), publish), session_id
             config = session.meta["model_config"]
             cwd = Path(session.meta["cwd"])
             provider_name, model = config["provider"], config["model"]
@@ -86,7 +87,7 @@ async def run_persistent_session(
                     },
                     instructions=instructions,
                 )
-            return await run(session, provider, model, publish), session_id
+            return await run(ProcessOwner(session), provider, model, publish), session_id
         finally:
             await provider.aclose()
 
