@@ -192,7 +192,7 @@ def test_unrelated_value_error_does_not_blame_cwd(
     with pytest.raises(SystemExit) as error:
         app(["run", "--provider", "bonsai2", "do it"])
 
-    assert error.value.code == 2
+    assert error.value.code == 1
     stderr = capsys.readouterr().err
     assert "Unknown provider: bonsai2" in stderr
     assert "error: --cwd" not in stderr

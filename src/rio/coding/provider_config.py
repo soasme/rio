@@ -36,7 +36,7 @@ from rio.ai.env import (
     OpenAICompatibleConfig,
 )
 from rio.ai.openai_codex import DEFAULT_OPENAI_CODEX_BASE_URL
-from rio.coding.catalog_loader import builtin_catalog, effective_catalog, save_user_catalog_entries
+from rio.coding.catalog_loader import builtin_catalog, effective_catalog
 from rio.coding.credentials import CredentialReader, FileCredentialStore, credentials_path
 from rio.coding.oauth_registry import get_oauth_provider
 from rio.coding.paths import RioPaths, atomic_write_text
@@ -370,11 +370,22 @@ def load_provider_settings(paths: RioPaths | None = None) -> ProviderSettings:
 def save_provider_settings(settings: ProviderSettings, paths: RioPaths | None = None) -> Path:
     """Write durable provider preferences and return the path."""
     resolved_paths = paths or RioPaths()
-    _save_provider_definitions_to_catalog(settings, paths=resolved_paths)
     path = provider_settings_path(resolved_paths)
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_provider_settings(settings, path=path, backup=True)
     return path
+
+
+def save_default_provider(name: str, paths: RioPaths | None = None) -> None:
+    """Change the login default without serializing resolved catalog values."""
+    resolved_paths = paths or RioPaths()
+    load_provider_settings(resolved_paths).get_provider(name)
+    path = provider_settings_path(resolved_paths)
+    raw = loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    raw["default_provider"] = name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _backup_provider_settings(path, strict=False)
+    atomic_write_text(path, dumps(raw, indent=2, sort_keys=True) + "\n")
 
 
 def upsert_saved_provider(
@@ -579,118 +590,6 @@ def _provider_preference_to_json(provider: ProviderConfig) -> dict[str, Any]:
     return preference
 
 
-def _save_provider_definitions_to_catalog(
-    settings: ProviderSettings,
-    *,
-    paths: RioPaths | None,
-) -> None:
-    """Persist provider definitions that are not already represented by the catalog."""
-    catalog_by_name = {entry.name: entry for entry in effective_catalog(paths)}
-    entries_to_save = []
-    for provider in settings.providers:
-        entry = catalog_by_name.get(provider.name)
-        if entry is None or _provider_definition_differs_from_catalog(provider, entry):
-            entries_to_save.append(_catalog_entry_from_provider(provider, existing=entry))
-    if entries_to_save:
-        save_user_catalog_entries(entries_to_save, paths=paths)
-
-
-def _provider_definition_differs_from_catalog(
-    provider: ProviderConfig,
-    entry: ProviderCatalogEntry,
-) -> bool:
-    """Return whether provider metadata changed enough to belong in catalog.toml."""
-    if provider_kind(provider) != entry.kind:
-        return True
-    if provider.base_url != entry.base_url:
-        return True
-    if provider.api_key_env != entry.api_key_env:
-        return True
-    if provider.credential_name != entry.credential_name:
-        return True
-    if provider.models != entry.models:
-        return True
-    if getattr(provider, "api", None) != entry.api and entry.api is not None:
-        return True
-    if provider.headers != dict(entry.headers):
-        return True
-    if getattr(provider, "compat", {}) != dict(entry.compat):
-        return True
-    if provider.model_metadata != _provider_model_metadata_from_catalog(entry.model_metadata):
-        return True
-    if provider.thinking_levels != entry.thinking_levels:
-        return True
-    if provider.thinking_models != entry.thinking_models:
-        return True
-    if provider.thinking_default != entry.thinking_default:
-        return True
-    return provider.thinking_parameter != entry.thinking_parameter
-
-
-def _catalog_entry_from_provider(
-    provider: ProviderConfig,
-    *,
-    existing: ProviderCatalogEntry | None = None,
-) -> ProviderCatalogEntry:
-    """Create catalog metadata from a runtime provider config."""
-    windows = (existing.context_windows or {}) if existing else {}
-    return ProviderCatalogEntry(
-        name=provider.name,
-        display_name=existing.display_name if existing is not None else provider.name,
-        kind=provider_kind(provider),
-        base_url=provider.base_url,
-        api_key_env=provider.api_key_env,
-        api=getattr(provider, "api", None),
-        credential_name=provider.credential_name,
-        models=provider.models,
-        default_model=(
-            existing.default_model
-            if existing is not None and existing.default_model in provider.models
-            else provider.default_model
-        ),
-        docs_url=existing.docs_url if existing is not None else provider.base_url,
-        auth_methods=existing.auth_methods if existing else ("api_key",),
-        removed_models=existing.removed_models if existing else (),
-        context_windows={model: size for model, size in windows.items() if model in provider.models}
-        or None,
-        headers=dict(provider.headers),
-        compat=dict(getattr(provider, "compat", {})),
-        model_metadata=_catalog_model_metadata_from_provider(provider, existing=existing),
-        thinking_levels=provider.thinking_levels,
-        thinking_models=provider.thinking_models,
-        thinking_default=provider.thinking_default,
-        thinking_parameter=provider.thinking_parameter,
-    )
-
-
-def _catalog_model_metadata_from_provider(
-    provider: ProviderConfig,
-    *,
-    existing: ProviderCatalogEntry | None = None,
-) -> dict[str, ModelCatalogMetadata]:
-    metadata_by_model = dict(provider.model_metadata)
-    if existing:
-        for model in existing.model_metadata:
-            if model in provider.models:
-                metadata_by_model.setdefault(model, ProviderModelMetadata())
-    return {
-        model: replace(
-            existing.model_metadata.get(model, ModelCatalogMetadata())
-            if existing
-            else ModelCatalogMetadata(),
-            api=metadata.api,
-            base_url=metadata.base_url,
-            reasoning=metadata.reasoning,
-            input=tuple(item for item in metadata.input if item in {"text", "image"}),
-            max_tokens=metadata.max_tokens,
-            headers=dict(metadata.headers),
-            compat=dict(metadata.compat),
-            thinking_level_map=dict(metadata.thinking_level_map),
-        )
-        for model, metadata in metadata_by_model.items()
-    }
-
-
 class _Preference(BaseModel):
     """Runtime overrides for one catalog provider. Newer Rio versions may add keys."""
 
@@ -710,7 +609,7 @@ class _SettingsFile(BaseModel):
 
     schema_version: Literal[2] | None = None
     default_provider: _Text
-    provider_preferences: dict[_Text, _Preference]
+    provider_preferences: dict[_Text, _Preference] = {}
 
 
 def provider_settings_from_json(

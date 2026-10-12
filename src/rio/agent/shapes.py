@@ -208,4 +208,4 @@ class JournalEvent(TypedDict):
     seq: int
     type: EventKind
     timestamp: float
-    changes: dict  # partial Projection merged per collection by reduce_event
+    changes: dict  # records, turn field updates, or output chunks folded by reduce_event

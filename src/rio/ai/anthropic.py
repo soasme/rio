@@ -279,6 +279,13 @@ class AnthropicProvider:
                             yield stream_error
                             return
 
+                    if finish_reason is None:
+                        raise RetryableFailure(
+                            "stream ended without stop_reason",
+                            ProviderErrorEvent(
+                                message="Anthropic stream ended without stop_reason"
+                            ),
+                        )
                     tool_calls = [
                         builder.build(index) for index, builder in sorted(tool_builders.items())
                     ]

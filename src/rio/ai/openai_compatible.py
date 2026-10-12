@@ -62,7 +62,7 @@ from rio.ai.messages import (
 )
 from rio.ai.openai_cache import is_direct_openai_url, openai_prompt_cache_key
 from rio.ai.provider import CancellationToken
-from rio.ai.retry import RetryAttempt, check_response_status, stream_with_retries
+from rio.ai.retry import RetryableFailure, RetryAttempt, check_response_status, stream_with_retries
 from rio.ai.stream import canonicalize_provider_stream
 from rio.ai.tool_call_ids import portable_tool_call_id
 from rio.ai.tools import AgentTool, ToolCall
@@ -507,6 +507,11 @@ class _ChatStreamParser:
         return events, False
 
     def finalize(self) -> list[ProviderEvent]:
+        if self._finish_reason is None:
+            raise RetryableFailure(
+                "stream ended without finish_reason",
+                ProviderErrorEvent(message="Provider stream ended without finish_reason"),
+            )
         tool_calls = [
             builder.build(index) for index, builder in sorted(self._tool_call_builders.items())
         ]
@@ -665,7 +670,6 @@ class _ResponsesStreamParser:
         events: list[ProviderEvent] = [
             ProviderToolCallEvent(tool_call=tool_call) for tool_call in tool_calls
         ]
-        finish_reason = _normalize_finish_reason(self._status, has_tool_calls=bool(tool_calls))
         content = assistant_content("".join(self._content_parts), tool_calls)
         if self._thinking_parts:
             content.insert(
@@ -685,7 +689,7 @@ class _ResponsesStreamParser:
                     content=content,
                     usage=self._usage or Usage(),
                 ),
-                finish_reason=finish_reason,
+                finish_reason=self._status,
             )
         )
         return events
@@ -1088,15 +1092,6 @@ def _responses_finish_reason(chunk: Mapping[str, Any]) -> str | None:
         if isinstance(status, str):
             return status
     return None
-
-
-def _normalize_finish_reason(status: str | None, *, has_tool_calls: bool) -> str:
-    """Map a Responses-API status to chat-completions-style finish reasons."""
-    if has_tool_calls:
-        return "tool_calls"
-    if status == "incomplete":
-        return "length"
-    return "stop"
 
 
 def _responses_failure_event(chunk: Mapping[str, Any]) -> ProviderErrorEvent:

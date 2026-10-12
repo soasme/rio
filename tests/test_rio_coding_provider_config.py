@@ -440,6 +440,16 @@ def test_save_and_load_provider_settings_round_trip(
     monkeypatch.setattr(provider_config, "environ", {})
 
     paths = RioPaths(home=tmp_path / ".rio")
+    paths.home.mkdir()
+    (paths.home / "catalog.toml").write_text("""
+schema_version = 1
+[[providers]]
+name = "local"
+base_url = "http://localhost:11434/v1"
+api_key_env = "LOCAL_API_KEY"
+models = ["qwen", "llama"]
+default_model = "qwen"
+""")
     settings = ProviderSettings(
         default_provider="local",
         providers=(
@@ -1908,12 +1918,12 @@ cacheWrite = 0.2
     )
     assert provider_model_max_tokens(provider, "qwen") == 4096
     assert provider_model_supports_images(provider, "qwen")
-    # Changing a request field rewrites the catalog, preserving its descriptive fields.
+    # Saving runtime preferences never rewrites catalog definitions.
     changed = replace(provider, base_url="http://localhost:9000/v1")
     save_provider_settings(ProviderSettings(default_provider="local", providers=(changed,)), paths)
     after = next(e for e in effective_catalog(paths) if e.name == "local")
-    assert after.base_url == changed.base_url
+    assert after == before
     assert after.context_windows == before.context_windows
     assert after.model_metadata == before.model_metadata
     assert after.auth_methods == before.auth_methods
-    assert load_provider_settings(paths).get_provider("local") == changed
+    assert load_provider_settings(paths).get_provider("local") == provider
