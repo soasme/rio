@@ -33,6 +33,10 @@ from rio.truncate import truncate_bytes_tail
 STATE_SCHEMA = "rio.state/2"
 
 
+class RunStopped(RuntimeError):
+    """A run cannot continue because its budget or lifecycle disallows another turn."""
+
+
 def by_name(kinds: Iterable[CellKind]) -> dict[str, CellKind]:
     named = {kind.name: kind for kind in kinds}
     if "note" in named:
@@ -184,15 +188,15 @@ class Session:
 
     def prepare_turn(self) -> Turn:
         if self.meta["terminal"]:
-            raise ValueError("Terminal runs cannot resume")
+            raise RunStopped("Terminal runs cannot resume")
         for turn in self.data["turns"].values():
             if turn["receipt"] is None:
                 return copy.deepcopy(turn)
         if self.store.journal_bytes >= self.limits.storage_bytes:
-            raise ValueError("Session storage budget exhausted")
+            raise RunStopped("Session storage budget exhausted")
         usage = self.meta["usage"]
         if usage["rounds"] >= self.limits.rounds or usage["tokens"] >= self.limits.tokens:
-            raise ValueError("Model budget exhausted")
+            raise RunStopped("Model budget exhausted")
         state = self.state
         state["revision"] += 1
         selected = {str(c["id"]) for c in state["cells"]}
@@ -222,7 +226,7 @@ class Session:
             delivered.append(message["id"])
             context_bytes += message_bytes
         if context_bytes > self.limits.context_bytes:
-            raise ValueError("Runtime facts exceed reserved context")
+            raise RunStopped("Runtime facts exceed reserved context")
         turn_id = uuid.uuid4().hex
         turn: Turn = {
             "id": turn_id,
@@ -248,12 +252,12 @@ class Session:
     def attempt(self, turn_id: str) -> Turn:
         turn = self.data["turns"][turn_id]
         if turn["receipt"] or self.meta["terminal"]:
-            raise ValueError("Turn already accepted or run ended")
+            raise RunStopped("Turn already accepted or run ended")
         if turn["attempts"] >= self.limits.invalid_attempts:
-            raise ValueError("Model retry budget exhausted")
+            raise RunStopped("Model retry budget exhausted")
         usage = self.meta["usage"]
         if usage["tokens"] >= self.limits.tokens:
-            raise ValueError("Token budget exhausted")
+            raise RunStopped("Token budget exhausted")
         changes = {"attempts": turn["attempts"] + 1, "response": None}
         # Until a complete response commits, usage for this attempt is unknown.
         self.store.commit(

@@ -379,4 +379,29 @@ def recoverStops (posix : Bool) (workers : List Nat) : Option (List Nat) :=
 theorem non_posix_recovery_stops_nothing (workers : List Nat) :
     recoverStops false workers = none := rfl
 
+/-- Only an explicit run stop becomes a failure conclusion; patch errors retry.
+   Unexpected errors propagate without writing a conclusion or rejection. -/
+inductive RoundError where
+  | invalidPatch | runStopped | unexpected
+  deriving DecidableEq, Repr
+
+inductive RoundDisposition where
+  | reject | fail | propagate
+  deriving DecidableEq, Repr
+
+def handleRoundError : RoundError → RoundDisposition
+  | .invalidPatch => .reject
+  | .runStopped => .fail
+  | .unexpected => .propagate
+
+theorem only_explicit_stop_concludes_failure (error : RoundError) :
+    handleRoundError error = .fail ↔ error = .runStopped := by
+  cases error <;> simp [handleRoundError]
+
+theorem invalid_patch_remains_retryable :
+    handleRoundError .invalidPatch = .reject := rfl
+
+theorem unexpected_error_propagates :
+    handleRoundError .unexpected = .propagate := rfl
+
 end RioAgent
