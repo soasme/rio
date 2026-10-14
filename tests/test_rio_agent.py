@@ -10,10 +10,11 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from rio.agent.prompt import CONCLUSION, PROTOCOL
 from rio.agent.runner import Owner, RecoveryFailure, replay, run
-from rio.agent.session import Session
+from rio.agent.session import RunStopped, Session
 from rio.agent.state import CellKind, InvalidPatch, Limits
 from rio.agent.store import StorageFailure, Store, reduce_event
 from rio.ai import FakeProvider
@@ -807,6 +808,103 @@ async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch
         assert session.meta["usage"]["rounds"] == 2
 
 
+@pytest.mark.parametrize(
+    ("limit", "prepared", "reason"),
+    [
+        ("storage_bytes", False, "Session storage budget exhausted"),
+        ("rounds", False, "Model budget exhausted"),
+        ("tokens", False, "Model budget exhausted"),
+        ("context_bytes", False, "Runtime facts exceed reserved context"),
+        ("invalid_attempts", True, "Model retry budget exhausted"),
+        ("tokens", True, "Token budget exhausted"),
+    ],
+)
+async def test_run_stops_at_budget_limits(session, limit, prepared, reason):
+    if limit == "context_bytes":
+        accept(session, note("x" * 5000))
+        session.limits = replace(session.limits, context_bytes=4096, output_bytes=1024)
+    else:
+        if limit in ("rounds", "tokens", "invalid_attempts"):
+            turn = prepare(session)
+            session.attempt(turn["id"])
+            if limit != "invalid_attempts":
+                session.response(turn["id"], response([])[0].message.model_dump(mode="json"), 1)
+                session.accept(turn["id"], [])
+                if prepared:
+                    prepare(session)
+        session.limits = replace(session.limits, **{limit: 1})
+    provider = FakeProvider([])
+    published = []
+
+    assert not await run(Owner(session), provider, "fake", published.append)
+
+    assert session.meta["terminal"]["reason"] == reason
+    assert not provider.calls
+    assert sum(event["type"] == "run_ended" for event in published) == 1
+
+
+@pytest.mark.parametrize("ended", [False, True])
+def test_completed_turn_cannot_attempt_again(session, ended):
+    turn = prepare(session)
+    if ended:
+        session.end("failure", "stopped")
+    else:
+        session.accept(turn["id"], [])
+    sequence = session.store.sequence
+    with pytest.raises(RunStopped, match="Turn already accepted or run ended"):
+        session.attempt(turn["id"])
+    assert session.store.sequence == sequence
+
+
+@pytest.mark.parametrize(
+    "method", ["prepare_turn", "attempt", "response", "accept", "request_work"]
+)
+async def test_unexpected_value_error_escapes_run(session, monkeypatch, method):
+    error = ValueError("unexpected conversion error")
+
+    def broken(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(session, method, broken)
+    provider = FakeProvider([response([])])
+    with pytest.raises(ValueError) as raised:
+        await run(Owner(session), provider, "fake")
+
+    assert raised.value is error
+    assert session.meta["terminal"] is None
+    assert not any(e["type"] in ("run_ended", "patch_rejected") for e in session.store.events())
+    assert session.store.on_commit is None
+
+
+async def test_invalid_saved_response_escapes_run(session):
+    turn = prepare(session)
+    session.attempt(turn["id"])
+    session.response(turn["id"], {"content": 123}, 12)
+    sequence = session.store.sequence
+    provider = FakeProvider([])
+
+    with pytest.raises(ValidationError):
+        await run(Owner(session), provider, "fake")
+
+    assert session.meta["terminal"] is None
+    assert session.store.sequence == sequence
+    assert not provider.calls
+
+
+async def test_invalid_patch_is_retried_without_ending_run(session, monkeypatch):
+    import rio.agent.runner as runner
+
+    monkeypatch.setattr(runner.time, "time", lambda: 1e20)
+    provider = FakeProvider(
+        [response([{"op": "invalid"}]), response([add(note(role="conclusion", result="success"))])]
+    )
+    assert await run(Owner(session), provider, "fake")
+    assert len(provider.calls) == 2
+    events = session.store.events()
+    assert sum(e["type"] == "patch_rejected" for e in events) == 1
+    assert sum(e["type"] == "run_ended" for e in events) == 1
+
+
 def test_context_keeps_each_output_whole(session):
     accept(session, code(), code())
     for i in (1, 2):
@@ -916,7 +1014,7 @@ async def test_provider_name_does_not_make_missing_usage_known(session):
 def test_terminal_run_cannot_prepare_an_unaccepted_request(session):
     prepare(session)
     session.end("failure", "stopped")
-    with pytest.raises(ValueError, match="Terminal"):
+    with pytest.raises(RunStopped, match="Terminal"):
         prepare(session)
 
 

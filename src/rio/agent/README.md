@@ -43,6 +43,12 @@ completed session without provider setup. Both recover leftover work before publ
 `Owner` runs note-only sessions; subclasses implement `launch` and `validate` to execute
 runnable kinds and validators.
 
+`Session.prepare_turn` and `Session.attempt` raise `RunStopped` from
+`rio.agent.session` when a budget or lifecycle limit prevents progress. The runner
+records these stops as failure conclusions and retries `InvalidPatch` rejections.
+Other errors in session operations or saved-response validation propagate to the
+caller without recording a failure conclusion. Provider request errors remain retryable.
+
 `Session.create` accepts numeric `Limits`, validator commands and an
 `external_wakeup` policy. The model cannot change these settings. Closing the
 store releases ownership; the caller closes any provider it created.

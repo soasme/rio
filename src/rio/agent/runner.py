@@ -11,7 +11,7 @@ from dataclasses import replace
 from typing import Literal
 
 from rio.agent.prompt import STEP
-from rio.agent.session import Session
+from rio.agent.session import RunStopped, Session
 from rio.agent.shapes import JournalEvent, Turn, ValidatorResult
 from rio.agent.state import InvalidPatch
 from rio.agent.store import StorageFailure, encode
@@ -250,7 +250,7 @@ async def run(
                 await owner.controls()
             except InvalidPatch as exc:
                 session.reject(turn["id"], str(exc))
-            except ValueError as exc:
+            except RunStopped as exc:
                 await owner.fail(str(exc))
             flush()
         flush()
