@@ -333,7 +333,7 @@ def test_rebuild_is_pure_and_preserves_usage(session, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: pytest.fail("reducer spawned work"))
     replay = {}
     for event in events:
-        replay = reduce_event(replay, event["changes"], event["type"])
+        replay = reduce_event(replay, event["changes"])
     assert replay == expected
     assert replay["meta"]["usage"]["unknown_usage"] == 1
 
@@ -1505,11 +1505,43 @@ async def test_replay_rejects_active_session(session):
         await replay(ProcessOwner(session))
 
 
-def test_turn_events_store_state_once_and_replay_deltas(session):
+def test_turn_records_do_not_implicitly_update_state(session):
+    before = copy.deepcopy(session.data)
+    turn_state = {**session.state, "revision": 42}
+    changes = {"turns": {"turn": {"state": turn_state}}}
+    reduced = reduce_event(session.data, changes)
+    assert reduced["meta"] == before["meta"]
+    assert reduced["turns"]["turn"]["state"] == turn_state
+
+    changes["meta"] = {"state": {"revision": 7}}
+    reduced = reduce_event(session.data, changes)
+    assert reduced["meta"]["state"] == {**before["meta"]["state"], "revision": 7}
+    assert session.data == before
+
+
+def test_prepared_turn_state_survives_reopen(tmp_path):
+    path = tmp_path / "session.sqlite3"
+    with Store(path) as store:
+        session = Session.create(store, "goal")
+        session.receive("external:1", "external", {"fact": 1})
+        turn = session.prepare_turn()
+        expected = copy.deepcopy(session.data)
+    with Store(path) as store:
+        session = Session(store)
+        assert session.data == expected
+        assert session.state == turn["state"]
+        sequence = store.sequence
+        assert session.prepare_turn() == turn
+        assert store.sequence == sequence
+        session.accept(turn["id"], [add(note())])
+        assert store.data["inbox"]["external:1"]["consumed"]
+
+
+def test_turn_events_store_explicit_state_and_replay_deltas(session):
     turn = session.prepare_turn()
     turn_id = turn["id"]
     prepared = session.store.events()[-1]
-    assert "state" not in prepared["changes"]["meta"]
+    assert prepared["changes"]["meta"]["state"] == turn["state"] == session.state
     session.start_attempt(turn_id)
     session.record_response(turn_id, {"text": "first"}, 5)
     session.reject(turn_id, "retry")

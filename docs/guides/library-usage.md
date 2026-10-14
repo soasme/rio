@@ -19,8 +19,9 @@ from rio.coding.provider_runtime import create_model_provider
 async def main():
     with Store(Path("task.sqlite3")) as store:
         session = (
-            Session(store, cells.KINDS) if store.data else
-            Session.create(
+            Session(store, cells.KINDS)
+            if store.data
+            else Session.create(
                 store,
                 "Add a health-check endpoint",
                 kinds=cells.KINDS,

@@ -54,6 +54,7 @@ not carry over. For example:
 # dependencies = []
 # ///
 from pathlib import Path
+
 print(Path("README.md").read_text())
 ```
 

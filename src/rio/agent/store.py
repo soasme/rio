@@ -21,7 +21,7 @@ def encode(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
-def reduce_event(projection: dict, changes: dict, kind: EventKind) -> dict:
+def reduce_event(projection: dict, changes: dict) -> dict:
     """Fold committed records without files, owner work, clocks, or model calls."""
     result = projection.copy()
     for collection, records in changes.items():
@@ -60,9 +60,6 @@ def reduce_event(projection: dict, changes: dict, kind: EventKind) -> dict:
                     "turns": record["rounds"],
                     **{key: value for key, value in record.items() if key != "rounds"},
                 }
-    if kind == "turn_prepared":
-        turn = next(iter(changes["turns"].values()))
-        result["meta"] = {**result["meta"], "state": copy.deepcopy(turn["state"])}
     return result
 
 
@@ -110,11 +107,9 @@ class Store:
             )
             self.data: dict = {}
             self.sequence = 0
-            for seq, kind, changes in self.db.execute(
-                "SELECT seq, kind, changes FROM events ORDER BY seq"
-            ):
+            for seq, changes in self.db.execute("SELECT seq, changes FROM events ORDER BY seq"):
                 self.journal_bytes += len(changes.encode())
-                self.data = reduce_event(self.data, json.loads(changes), kind)
+                self.data = reduce_event(self.data, json.loads(changes))
                 self.sequence = seq
         except Exception:
             self.close()
@@ -128,7 +123,7 @@ class Store:
         identity = identity or f"event:{seq}"
         raw = encode(changes)
         # Compute before entering the transaction; publish only after COMMIT returns.
-        candidate = reduce_event(self.data, changes, kind)
+        candidate = reduce_event(self.data, changes)
         started = time.monotonic()
         try:
             self.db.execute("BEGIN IMMEDIATE")

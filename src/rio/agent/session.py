@@ -181,7 +181,10 @@ class Session(RuntimeLedger):
         self.store.commit(
             "turn_prepared",
             {
-                "meta": {"usage": {**usage, "turns": usage["turns"] + 1}},
+                "meta": {
+                    "state": state,
+                    "usage": {**usage, "turns": usage["turns"] + 1},
+                },
                 "turns": {turn_id: turn},
             },
         )
