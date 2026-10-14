@@ -12,12 +12,13 @@ from typing import cast
 from rio.agent.ledger import RuntimeLedger
 from rio.agent.prompt import schema, system
 from rio.agent.shapes import (
+    Cell,
     Projection,
     Receipt,
     State,
     Turn,
 )
-from rio.agent.state import NOTE, CellKind, InvalidPatch, Limits, admit
+from rio.agent.state import NOTE, ROLES, CellKind, InvalidPatch, Limits, admit
 from rio.agent.store import Store, encode
 
 # Bump when the model-facing step protocol changes; saved turns hold the old prompt.
@@ -249,6 +250,30 @@ class Session(RuntimeLedger):
             },
         )
 
+    def _admit_resolution(self, cell: Cell) -> None:
+        if cell["target_cell_id"] not in self.unresolved():
+            raise InvalidPatch(
+                "Resolution notes apply only to unresolved UnknownExecution. "
+                "For an ordinary error, omit the resolution note; the next accepted "
+                "step consumes the error and resumes dispatch."
+            )
+        for ref in cell["evidence_refs"]:
+            if not isinstance(ref, str) or not ref.startswith("session:event:"):
+                raise InvalidPatch("Evidence must reference recorded Session events")
+            try:
+                seq = int(ref.rsplit(":", 1)[1])
+            except ValueError:
+                raise InvalidPatch("Invalid evidence reference") from None
+            if self.store.event_kind(seq) not in (
+                "execution_finished",
+                "inbox_received",
+                "validator_result",
+            ):
+                raise InvalidPatch("Evidence must reference a recorded observation")
+
+    # Accept-time checks for state.ROLES that need recorded Session state.
+    ROLE_CHECKS = {"resolution": _admit_resolution}
+
     def accept(self, turn_id: str, ops: list) -> Receipt:
         turn = self.data["turns"][turn_id]
         if turn["receipt"] is not None:
@@ -269,31 +294,13 @@ class Session(RuntimeLedger):
         runs = [cell for cell in new if cell["kind"] != "note"]
         if len(self.pending()) + len(self.unresolved()) + len(runs) > self.limits.pending_cells:
             raise InvalidPatch("Too much outstanding work or uncertainty")
-        for cell in new:
-            if cell.get("role") in ("cancel", "resolution"):
-                target = str(cell["target_cell_id"])
-                if target not in self.data["executions"]:
-                    raise InvalidPatch("Control target must be a recorded execution")
-                if cell["role"] == "resolution":
-                    if cell["target_cell_id"] not in self.unresolved():
-                        raise InvalidPatch(
-                            "Resolution notes apply only to unresolved UnknownExecution. "
-                            "For an ordinary error, omit the resolution note; the next accepted "
-                            "step consumes the error and resumes dispatch."
-                        )
-                    for ref in cell["evidence_refs"]:
-                        if not isinstance(ref, str) or not ref.startswith("session:event:"):
-                            raise InvalidPatch("Evidence must reference recorded Session events")
-                        try:
-                            seq = int(ref.rsplit(":", 1)[1])
-                        except ValueError:
-                            raise InvalidPatch("Invalid evidence reference") from None
-                        if self.store.event_kind(seq) not in (
-                            "execution_finished",
-                            "inbox_received",
-                            "validator_result",
-                        ):
-                            raise InvalidPatch("Evidence must reference a recorded observation")
+        role_notes = [c for c in new if c["kind"] == "note" and c.get("role") in ROLES]
+        for cell in role_notes:
+            target = str(cell.get("target_cell_id"))
+            if ROLES[cell["role"]].targets and target not in self.data["executions"]:
+                raise InvalidPatch("Control target must be a recorded execution")
+            if check := self.ROLE_CHECKS.get(cell["role"]):
+                check(self, cell)
         receipt: Receipt = {
             "turn_id": turn_id,
             "revision": state["revision"],
@@ -310,11 +317,7 @@ class Session(RuntimeLedger):
             }
             for c in runs
         }
-        controls = {
-            str(c["id"]): {"cell": c, "handled": False}
-            for c in new
-            if c.get("role") in ("cancel", "resolution", "conclusion")
-        }
+        controls = {str(c["id"]): {"cell": c, "handled": False} for c in role_notes}
         messages = {mid: {**self.data["inbox"][mid], "consumed": True} for mid in turn["delivered"]}
         pause = self.meta["pause"]
         self.store.commit(

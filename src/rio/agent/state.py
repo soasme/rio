@@ -51,10 +51,40 @@ class CellKind:
     validate: Callable[[dict], None]
 
 
+@dataclass(frozen=True)
+class Role:
+    """A note role. Session admits it and the Owner handles it, both keyed by name.
+
+    ``targets`` requires target_cell_id naming a recorded execution. ``check`` raises
+    InvalidPatch for other malformed fields. The Owner handles lower ``order`` first.
+    """
+
+    order: int
+    targets: bool = False
+    check: Callable[[dict], None] = lambda cell: None
+
+
+def _evidence(cell: dict) -> None:
+    if not isinstance(cell.get("evidence_refs"), list) or not cell["evidence_refs"]:
+        raise InvalidPatch("Resolution requires recorded evidence_refs")
+
+
+def _result(cell: dict) -> None:
+    if cell.get("result") not in ("success", "failure"):
+        raise InvalidPatch("Conclusion requires result: success or failure")
+
+
+# Keep in step with shapes.NoteRole.
+ROLES = {
+    "cancel": Role(order=0, targets=True),
+    "resolution": Role(order=1, targets=True, check=_evidence),
+    "conclusion": Role(order=1, check=_result),
+}
+
 # Note fields besides kind, as JSON schemas for the step tool.
 NOTE = {
     "text": {"type": "string"},
-    "role": {"type": "string", "enum": ["cancel", "resolution", "conclusion"]},
+    "role": {"type": "string", "enum": list(ROLES)},
     "target_cell_id": {"type": "integer"},
     "evidence_refs": {"type": "array", "items": {"type": "string"}},
     "result": {"type": "string", "enum": ["success", "failure"]},
@@ -72,17 +102,13 @@ def validate_cell(cell: object, kinds: Mapping[str, CellKind]) -> None:
         allowed = {"kind", *NOTE}
         if not isinstance(cell.get("text"), str) or not cell["text"].strip():
             raise InvalidPatch("Notes require nonblank text")
-        role = cell.get("role")
-        if role not in (None, "cancel", "resolution", "conclusion"):
-            raise InvalidPatch("Unknown note role")
-        if role in ("cancel", "resolution") and type(cell.get("target_cell_id")) is not int:
-            raise InvalidPatch("Control note requires target_cell_id")
-        if role == "resolution" and (
-            not isinstance(cell.get("evidence_refs"), list) or not cell["evidence_refs"]
-        ):
-            raise InvalidPatch("Resolution requires recorded evidence_refs")
-        if role == "conclusion" and cell.get("result") not in ("success", "failure"):
-            raise InvalidPatch("Conclusion requires result: success or failure")
+        if cell.get("role") is not None:
+            role = ROLES.get(cell["role"]) if isinstance(cell["role"], str) else None
+            if role is None:
+                raise InvalidPatch("Unknown note role")
+            if role.targets and type(cell.get("target_cell_id")) is not int:
+                raise InvalidPatch("Control note requires target_cell_id")
+            role.check(cell)
     elif isinstance(name, str) and name in kinds:
         allowed = {"kind", *kinds[name].fields}
         kinds[name].validate(cell)

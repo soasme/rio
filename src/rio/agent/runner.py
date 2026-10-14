@@ -12,8 +12,8 @@ from typing import Literal
 
 from rio.agent.prompt import STEP
 from rio.agent.session import RunStopped, Session
-from rio.agent.shapes import JournalEvent, Turn, ValidatorResult
-from rio.agent.state import InvalidPatch
+from rio.agent.shapes import Cell, JournalEvent, Turn, ValidatorResult
+from rio.agent.state import ROLES, InvalidPatch
 from rio.agent.store import StorageFailure, encode
 from rio.ai.messages import AssistantMessage, UserMessage, raw_tool_arguments
 from rio.ai.provider import AssistantDoneEvent, AssistantErrorEvent, ModelProvider
@@ -100,38 +100,45 @@ class Owner:
     async def handle_controls(self) -> None:
         controls = sorted(
             self.session.data["controls"].items(),
-            key=lambda pair: (pair[1]["cell"].get("role") != "cancel", int(pair[0])),
+            key=lambda pair: (ROLES[pair[1]["cell"]["role"]].order, int(pair[0])),
         )
         for key, control in controls:
             if control["handled"]:
                 continue
             cell = control["cell"]
-            role = cell["role"]
-            if role == "cancel":
-                target = cell["target_cell_id"]
-                execution = self.session.data["executions"][str(target)]
-                if execution["phase"] == "started":
-                    # recover() finishes leftover work, so a started execution is the active one.
-                    assert target == self.active_id
-                    await self.stop_active()
-                    self.session.finish(
-                        target, {"type": "UnknownExecution", "reason": "cancelled_after_launch"}
-                    )
-                elif execution["phase"] == "queued":
-                    self.session.finish(target, {"type": "cancelled"})
-                self.session.mark_handled(key, "accepted")
-            elif role == "resolution":
-                self.session.mark_handled(key, "accepted", resolution=cell["target_cell_id"])
-            elif cell["result"] == "failure":
-                await self.fail(cell["text"], note_id=key)
-            else:
-                reason = await self._success_blocker(key)
-                if reason:
-                    self.session.mark_handled(key, reason)
-                else:
-                    self.session.end("success", cell["text"], note_id=key)
+            await self.ROLE_HANDLERS[cell["role"]](self, key, cell)
             if self.session.meta["terminal"]:
                 break
+
+    async def _cancel(self, key: str, cell: Cell) -> None:
+        target = cell["target_cell_id"]
+        execution = self.session.data["executions"][str(target)]
+        if execution["phase"] == "started":
+            # recover() finishes leftover work, so a started execution is the active one.
+            assert target == self.active_id
+            await self.stop_active()
+            self.session.finish(
+                target, {"type": "UnknownExecution", "reason": "cancelled_after_launch"}
+            )
+        elif execution["phase"] == "queued":
+            self.session.finish(target, {"type": "cancelled"})
+        self.session.mark_handled(key, "accepted")
+
+    async def _resolve(self, key: str, cell: Cell) -> None:
+        self.session.mark_handled(key, "accepted", resolution=cell["target_cell_id"])
+
+    async def _conclude(self, key: str, cell: Cell) -> None:
+        if cell["result"] == "failure":
+            await self.fail(cell["text"], note_id=key)
+            return
+        reason = await self._success_blocker(key)
+        if reason:
+            self.session.mark_handled(key, reason)
+        else:
+            self.session.end("success", cell["text"], note_id=key)
+
+    # One handler per state.ROLES entry.
+    ROLE_HANDLERS = {"cancel": _cancel, "resolution": _resolve, "conclusion": _conclude}
 
     async def _success_blocker(self, note_id: str) -> str | None:
         self.session.fire_timers()
