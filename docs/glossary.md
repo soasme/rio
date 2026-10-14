@@ -15,8 +15,7 @@ view of that session.
 | **Operation** | An `add`, `replace`, or `remove` edit to cells. The model submits a list of operations through the `step` tool. Acceptance commits the whole list and queues new runnable cells. |
 | **Execution** | The work associated with one runnable cell version: queued, started, then finished with output and a result. Removing a cell from context does not cancel its work. |
 
-`step` is the tool's name, not another unit of progress. **Turn** replaces the
-older word **round**. **Run** describes driving a session toward completion.
+`step` is the tool's name. **Run** describes driving a session toward completion.
 
 ```text
 session
@@ -34,8 +33,6 @@ starts no new attempt.
 
 The provider may retry a transport request inside one model attempt. That retry
 budget is local to `rio.ai`; it does not increment the session's attempt count.
-Older journals use `rounds`; reading them converts live limits and counters to
-`turns` while preserving saved turn contexts.
 
 ## Supporting terms
 
