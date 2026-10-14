@@ -493,6 +493,20 @@ async def test_interrupted_validator_blocks_success_after_restart(tmp_path):
             assert session.meta["terminal"] is None
 
 
+async def test_finished_validator_result_is_reused_after_restart(tmp_path):
+    with Store(tmp_path / "s.db") as store:
+        session = Session.create(store, "goal", validators=[["false"]])
+        accept(session, note(role="conclusion", result="success"))
+        # The validator finished and stopped, then the owner died before the core result.
+        result = {"passed": True, "exit": 0, "output": "ok"}
+        session.record(
+            "workers", "validator:1:0", {"token": "t", "result": result, "stopped": True}
+        )
+        async with ProcessOwner(session):
+            assert session.data["validator_results"]["1:0"] == result
+            assert session.meta["terminal"]["result"] == "success"
+
+
 async def test_base_owner_cannot_launch_runnable_cells(session):
     accept(session, code())
     async with Owner(session) as owner:

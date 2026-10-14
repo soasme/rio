@@ -29,11 +29,13 @@ from rio.truncate import tail_notice, truncate_bytes_tail, truncate_tail
 
 class WorkerIdentity(TypedDict):
     # A "workers" record keyed "cell:<id>" or "validator:<key>". pid and birth are added once
-    # the gated supervisor is spawned, and stopped once its process group is gone.
+    # the gated supervisor is spawned, and stopped once its process group is gone. A validator
+    # worker keeps its result before it is stopped, so recovery reuses it instead of rerunning.
     token: str
     pid: NotRequired[int]
     birth: NotRequired[float]
     stopped: NotRequired[bool]
+    result: NotRequired[ValidatorResult]
 
 
 def stop_worker(identity: WorkerIdentity) -> None:
@@ -151,14 +153,15 @@ class ProcessOwner(Owner):
         if os.name != "posix":
             raise RecoveryFailure("Durable worker containment currently requires POSIX")
         for key, identity in list(self.session.data.get("workers", {}).items()):
-            if identity.get("stopped"):
-                continue
-            await asyncio.to_thread(stop_worker, identity)
-            self.session.record("workers", key, {"stopped": True})
+            if not identity.get("stopped"):
+                await asyncio.to_thread(stop_worker, identity)
+                self.session.record("workers", key, {"stopped": True})
             kind, _, name = key.partition(":")
             if kind == "validator" and name not in self.session.data["validator_results"]:
                 self.session.record_validator_result(
-                    name, {"passed": False, "exit": None, "output": "Unknown validator execution"}
+                    name,
+                    identity.get("result")
+                    or {"passed": False, "exit": None, "output": "Unknown validator execution"},
                 )
         # The base Owner finishes started Cells as UnknownExecution.
         await super().recover()
@@ -217,6 +220,7 @@ class ProcessOwner(Owner):
         """Run a validator argv; exit status 0 passes."""
         self._register(f"validator:{key}")
         process = await self._spawn(validator)
+        result = None
         try:
             process.stdin.write(b"start\n")
             await process.stdin.drain()
@@ -250,6 +254,8 @@ class ProcessOwner(Owner):
                 "output": "Validator interrupted; inspect effects before retrying",
             }
         finally:
+            if result is not None and not self.session.store.failed:
+                self.session.record("workers", self.key, {"result": result})
             await self._stop()
             await process.wait()
         return result
