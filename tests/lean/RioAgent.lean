@@ -432,4 +432,29 @@ theorem ledger_patch_preserves_other_records (ledger : RuntimeLedger) (collectio
     patchLedger ledger collection key fields address = ledger address := by
   simp [patchLedger, h]
 
+/-- Prepared turns supply independent updates to meta.state and the saved turn. -/
+structure TurnProjection where
+  state : Nat
+  turnState : Option Nat := none
+  deriving DecidableEq, Repr
+
+structure TurnChanges where
+  state : Option Nat := none
+  turnState : Option Nat := none
+
+def reduceTurnChanges (projection : TurnProjection) (changes : TurnChanges) : TurnProjection :=
+  { state := changes.state.getD projection.state
+    turnState := changes.turnState.orElse (fun _ => projection.turnState) }
+
+def preparedTurnChanges (state : Nat) : TurnChanges := ⟨some state, some state⟩
+
+theorem turn_record_preserves_meta_state (projection : TurnProjection) (turnState : Nat) :
+    (reduceTurnChanges projection ⟨none, some turnState⟩).state = projection.state := rfl
+
+theorem explicit_meta_state_wins (projection : TurnProjection) (state turnState : Nat) :
+    (reduceTurnChanges projection ⟨some state, some turnState⟩).state = state := rfl
+
+theorem prepared_turn_commits_both_states (projection : TurnProjection) (state : Nat) :
+    reduceTurnChanges projection (preparedTurnChanges state) = ⟨state, some state⟩ := rfl
+
 end RioAgent
