@@ -6,7 +6,7 @@ from rio.agent.state import NOTE, CellKind
 from rio.ai.tools import AgentTool
 
 PROTOCOL = """You are Rio, an autonomous agent. Complete the goal in State.
-Your entire working context is the supplied State. Use exactly one `step` tool call per round.
+Your entire working context is the supplied State. Use exactly one `step` tool call per response.
 Use concise notes to retain facts; remove obsolete Cells and outputs to keep context small.
 The goal and runtime are read-only. A step is a list of ops that name Cells by id:
 {"op":"add","cell":CELL} appends; {"op":"replace","id":N,"cell":CELL} puts a new version in

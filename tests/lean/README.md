@@ -4,7 +4,7 @@ Run `lake build` in this directory. CI builds all targets.
 
 | Model | Python behavior |
 | --- | --- |
-| `RioAgent.lean` | Runtime ledger patches preserving untouched fields and records, immutable cell versions, id-addressed step ops with runtime-assigned ids and positions, order-free removal, one op per existing Cell, stale-turn rejection, round budgets counting newly prepared turns separately from model attempts, note-only admission and caller-supplied runnable kinds sharing one step schema, bounded output tails with fresh output replacing old tails, admission runtime reset preserving allocation, duplicate step acceptance, recovery without replay, pause consumption, batched completion wake-ups, bounded idle decisions, explicit run stops versus retryable patches and propagated errors, incremental inbox byte budgets, terminal dispatch, success guards, single-commit success and failure conclusions, POSIX checks before recovery, timer delivery, run-loop wake deadlines, AGENTS.md resolution (`rio.agent.session`, `rio.agent.ledger`, `rio.coding.cells`, `rio.coding.owner`, `rio.cli.run`) |
+| `RioAgent.lean` | Runtime ledger patches preserving untouched fields and records, immutable cell versions, id-addressed step ops with runtime-assigned ids and positions, order-free removal, one op per existing Cell, stale-turn rejection, turn budgets counting newly prepared turns separately from model attempts, note-only admission and caller-supplied runnable kinds sharing one step schema, bounded output tails with fresh output replacing old tails, admission runtime reset preserving allocation, duplicate step acceptance, recovery without replay, pause consumption, batched completion wake-ups, bounded idle decisions, explicit run stops versus retryable patches and propagated errors, incremental inbox byte budgets, terminal dispatch, success guards, single-commit success and failure conclusions, POSIX checks before recovery, timer delivery, run-loop wake deadlines, AGENTS.md resolution (`rio.agent.session`, `rio.agent.ledger`, `rio.coding.cells`, `rio.coding.owner`, `rio.cli.run`) |
 | `RioAI.lean` | Final-only provider outcomes, fragment order, retry isolation, missing terminal errors, truncation priority and retry limits (`rio.ai.provider`, `rio.ai.retry`) |
 | `RioCli.lean` | Committed content without cell IDs and cumulative output without duplication, provider-free terminal replay after cleanup, replay without journal writes beyond worker cleanup, metrics recorded once at run end, catalog-only provider definitions with preference-only saves preserving catalog bytes, stable login/request credential keys, catalog-only provider resolution, provider/model selection independent of extra saved preferences, OSC 7501 status override and lifecycle (`rio.cli.render`, `rio.cli.status`) |
 
@@ -22,7 +22,4 @@ The current user-facing contracts are described in the
 [session guide](../../docs/guides/sessions.md). In particular,
 `RioCli.lean` models provider-free terminal replay only after cleanup succeeds.
 
-The [glossary](../../docs/glossary.md) distinguishes turns, steps, rounds,
-model attempts, and provider attempts. `RioAgent.lean` models new-turn counting,
-pending-turn reuse at the round limit, and attempt counters; `RioAI.lean`
-models the separate provider retry budget.
+See the [glossary](../../docs/glossary.md) for turns, attempts, and operations.

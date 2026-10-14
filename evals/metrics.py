@@ -8,7 +8,7 @@ from collections import defaultdict
 
 
 def trace_metrics(trace: str) -> dict:
-    rounds = executions = errors = unknowns = 0
+    turns = executions = errors = unknowns = 0
     input_bytes = 0
     usage = None
     durability = {}
@@ -20,7 +20,7 @@ def trace_metrics(trace: str) -> dict:
         kind = event.get("type")
         changes = event.get("changes", {})
         if kind == "turn_prepared":
-            rounds += 1
+            turns += 1
             turn = next(iter(changes["turns"].values()))
             input_bytes += len(json.dumps(turn["state"]).encode())
         elif kind == "execution_started":
@@ -34,7 +34,7 @@ def trace_metrics(trace: str) -> dict:
             usage = changes["meta"]["usage"]
         durability.update(changes.get("metrics", {}))
     return {
-        "model_rounds": rounds,
+        "model_turns": turns,
         "executions": executions,
         "execution_errors": errors,
         "unknown_executions": unknowns,
@@ -60,7 +60,9 @@ def aggregate(results: list[dict]) -> dict:
             "median_success_seconds": statistics.median([r["seconds"] for r in rows if r["passed"]])
             if any(r["passed"] for r in rows)
             else None,
-            "median_model_rounds": statistics.median(r["model_rounds"] for r in rows),
+            "median_model_turns": statistics.median(
+                r["model_turns"] if "model_turns" in r else r["model_rounds"] for r in rows
+            ),
             "median_context_bytes": statistics.median(r["context_bytes"] for r in rows),
         }
         for case, rows in groups.items()

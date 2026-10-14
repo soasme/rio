@@ -98,7 +98,7 @@ class Session(RuntimeLedger):
                     "instructions": instructions,
                     "terminal": None,
                     "pause": None,
-                    "usage": {"rounds": 0, "attempts": 0, "tokens": 0, "unknown_usage": 0},
+                    "usage": {"turns": 0, "attempts": 0, "tokens": 0, "unknown_usage": 0},
                 },
                 "cells": {},
                 "executions": {},
@@ -133,7 +133,7 @@ class Session(RuntimeLedger):
         if self.store.journal_bytes >= self.limits.storage_bytes:
             raise RunStopped("Session storage budget exhausted")
         usage = self.meta["usage"]
-        if usage["rounds"] >= self.limits.rounds or usage["tokens"] >= self.limits.tokens:
+        if usage["turns"] >= self.limits.turns or usage["tokens"] >= self.limits.tokens:
             raise RunStopped("Model budget exhausted")
         state = self.state
         state["revision"] += 1
@@ -181,13 +181,13 @@ class Session(RuntimeLedger):
         self.store.commit(
             "turn_prepared",
             {
-                "meta": {"usage": {**usage, "rounds": usage["rounds"] + 1}},
+                "meta": {"usage": {**usage, "turns": usage["turns"] + 1}},
                 "turns": {turn_id: turn},
             },
         )
         return copy.deepcopy(turn)
 
-    def attempt(self, turn_id: str) -> Turn:
+    def start_attempt(self, turn_id: str) -> Turn:
         turn = self.data["turns"][turn_id]
         if turn["receipt"] or self.meta["terminal"]:
             raise RunStopped("Turn already accepted or run ended")
@@ -213,7 +213,9 @@ class Session(RuntimeLedger):
         )
         return copy.deepcopy(self.data["turns"][turn_id])
 
-    def response(self, turn_id: str, response: dict, tokens: int, *, known: bool = True) -> None:
+    def record_response(
+        self, turn_id: str, response: dict, tokens: int, *, known: bool = True
+    ) -> None:
         usage = self.meta["usage"]
         self.store.commit(
             "model_response",

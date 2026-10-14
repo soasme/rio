@@ -131,7 +131,7 @@ def test_runtime_record_updates_preserve_journal_and_replay(
         session = Session.create(store, "goal", kinds=KINDS)
         accept(session, cmd("first"), cmd("second"))
         session.authorize(1)
-        session.output(1, {"stdout": "full output", "stderr": "diagnostic"})
+        session.append_output(1, {"stdout": "full output", "stderr": "diagnostic"})
         session.finish(1, {"type": "success"})
         session.record("jobs", "v", {"attempts": 1, "result": None})
         session.record("jobs", "other", {"attempts": 2})
@@ -327,7 +327,7 @@ def test_rebuild_is_pure_and_preserves_usage(session, monkeypatch):
     accept(session, code())
     session.finish(1, {"type": "UnknownExecution"})
     turn = prepare(session)
-    session.attempt(turn["id"])
+    session.start_attempt(turn["id"])
     expected = copy.deepcopy(session.data)
     events = session.store.events()
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: pytest.fail("reducer spawned work"))
@@ -469,7 +469,7 @@ async def test_success_rejected_for_new_input_and_failure_is_terminal(session):
     async with ProcessOwner(session) as owner:
         assert not session.meta["terminal"]
         accept(session, note(role="conclusion", result="failure"))
-        await owner.controls()
+        await owner.handle_controls()
     assert session.meta["terminal"]["result"] == "failure"
     ending = session.store.events()[-1]
     assert ending["type"] == "run_ended"
@@ -497,7 +497,7 @@ async def test_cancel_running_worker_and_children(session):
                 await asyncio.sleep(0.02)
         child_pid = int(path.read_text())
         accept(session, note(role="cancel", target_cell_id=1))
-        await owner.controls()
+        await owner.handle_controls()
     import psutil
 
     assert (
@@ -755,15 +755,15 @@ def test_output_limit_is_explicit(session):
     accept(session, code())
     session.authorize(1)
     session.limits = replace(session.limits, output_bytes=7)
-    session.output(1, {"stdout": "old text", "stderr": "old error"})
-    session.output(1, {"stdout": "é終!", "stderr": "é終!"})
+    session.append_output(1, {"stdout": "old text", "stderr": "old error"})
+    session.append_output(1, {"stdout": "é終!", "stderr": "é終!"})
     output = session.data["executions"]["1"]["output"]
     assert output == {"stdout": "té終!", "stderr": "ré終!"}
     assert len(output["stdout"].encode()) == session.limits.output_bytes
     assert session.data["executions"]["1"]["truncated"]
-    session.output(1, {"stdout": "尾", "stderr": "尾"})
+    session.append_output(1, {"stdout": "尾", "stderr": "尾"})
     assert session.data["executions"]["1"]["output"]["stdout"] == "終!尾"
-    session.output(1, {"stdout": "é"})
+    session.append_output(1, {"stdout": "é"})
     assert session.data["executions"]["1"]["output"] == {"stdout": "!尾é", "stderr": "終!尾"}
 
 
@@ -913,12 +913,73 @@ asyncio.run(main())
             process.wait()
 
 
+def test_retries_use_one_turn_and_keep_prepared_context(session):
+    session.limits = replace(session.limits, turns=1)
+    turn = session.prepare_turn()
+    session.start_attempt(turn["id"])
+    session.reject(turn["id"], "invalid operations")
+    session.receive("new", "external", {"text": "arrived during the turn"})
+    retry = session.prepare_turn()
+    assert retry["id"] == turn["id"]
+    assert retry["state"] == turn["state"]
+    session.start_attempt(turn["id"])
+    assert session.meta["usage"]["turns"] == 1
+    assert session.meta["usage"]["attempts"] == 2
+    session.accept(turn["id"], [add(note())])
+    assert not session.data["inbox"]["new"]["consumed"]
+    with pytest.raises(RunStopped, match="Model budget exhausted"):
+        session.prepare_turn()
+
+
+def test_legacy_round_counters_resume_without_changing_saved_context(tmp_path):
+    path = tmp_path / "legacy.db"
+    with Store(path) as store:
+        session = Session.create(store, "goal", limits=Limits(turns=1))
+        turn = session.prepare_turn()
+        session.start_attempt(turn["id"])
+        session.record_response(turn["id"], {"text": "saved"}, 5)
+        # Build a pre-rename journal, including its original prepared context.
+        for event in store.events():
+            changes = event["changes"]
+            meta = changes.get("meta", {})
+            counts = [meta.get("limits", {}), meta.get("usage", {})]
+            states = [meta.get("state", {})]
+            states += [t.get("state", {}) for t in changes.get("turns", {}).values()]
+            counts += [state.get("runtime", {}).get("usage", {}) for state in states]
+            for record in counts:
+                if "turns" in record:
+                    record["rounds"] = record.pop("turns")
+            store.db.execute(
+                "UPDATE events SET changes = ? WHERE seq = ?",
+                (json.dumps(changes), event["seq"]),
+            )
+        original_events = store.events()
+        saved_turn = original_events[1]["changes"]["turns"][turn["id"]]
+        saved_turn = {**saved_turn, "attempts": 1, "response": {"text": "saved"}}
+
+    with Store(path) as store:
+        session = Session(store)
+        assert session.limits.turns == 1
+        assert "rounds" not in session.meta["limits"]
+        assert session.meta["usage"] == {"turns": 1, "attempts": 1, "tokens": 5, "unknown_usage": 0}
+        assert session.prepare_turn() == saved_turn
+        assert store.events() == original_events
+        session.accept(turn["id"], [add(note())])
+        with pytest.raises(RunStopped, match="Model budget exhausted"):
+            session.prepare_turn()
+        expected = copy.deepcopy(session.data)
+
+    with Store(path) as store:
+        assert store.data == expected
+        assert store.events()[: len(original_events)] == original_events
+
+
 async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch):
     import rio.agent.runner as runner
 
     monkeypatch.setattr(runner.time, "time", lambda: 1e20)
     with Store(tmp_path / "budget.db") as store:
-        session = Session.create(store, "goal", limits=replace(Limits(), rounds=2))
+        session = Session.create(store, "goal", limits=replace(Limits(), turns=2))
         provider = FakeProvider(
             [
                 response([]),
@@ -926,18 +987,18 @@ async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch
             ]
         )
         assert not await run(ProcessOwner(session), provider, "fake")
-        assert session.meta["usage"]["rounds"] == 2
+        assert session.meta["usage"]["turns"] == 2
     with Store(tmp_path / "budget.db") as store:
         session = Session(store)
         assert not await run(ProcessOwner(session), FakeProvider([]), "fake")
-        assert session.meta["usage"]["rounds"] == 2
+        assert session.meta["usage"]["turns"] == 2
 
 
 @pytest.mark.parametrize(
     ("limit", "prepared", "reason"),
     [
         ("storage_bytes", False, "Session storage budget exhausted"),
-        ("rounds", False, "Model budget exhausted"),
+        ("turns", False, "Model budget exhausted"),
         ("tokens", False, "Model budget exhausted"),
         ("context_bytes", False, "Runtime facts exceed reserved context"),
         ("invalid_attempts", True, "Model retry budget exhausted"),
@@ -949,11 +1010,13 @@ async def test_run_stops_at_budget_limits(session, limit, prepared, reason):
         accept(session, note("x" * 5000))
         session.limits = replace(session.limits, context_bytes=4096, output_bytes=1024)
     else:
-        if limit in ("rounds", "tokens", "invalid_attempts"):
+        if limit in ("turns", "tokens", "invalid_attempts"):
             turn = prepare(session)
-            session.attempt(turn["id"])
+            session.start_attempt(turn["id"])
             if limit != "invalid_attempts":
-                session.response(turn["id"], response([])[0].message.model_dump(mode="json"), 1)
+                session.record_response(
+                    turn["id"], response([])[0].message.model_dump(mode="json"), 1
+                )
                 session.accept(turn["id"], [])
                 if prepared:
                     prepare(session)
@@ -977,12 +1040,12 @@ def test_completed_turn_cannot_attempt_again(session, ended):
         session.accept(turn["id"], [])
     sequence = session.store.sequence
     with pytest.raises(RunStopped, match="Turn already accepted or run ended"):
-        session.attempt(turn["id"])
+        session.start_attempt(turn["id"])
     assert session.store.sequence == sequence
 
 
 @pytest.mark.parametrize(
-    "method", ["prepare_turn", "attempt", "response", "accept", "request_work"]
+    "method", ["prepare_turn", "start_attempt", "record_response", "accept", "request_work"]
 )
 async def test_unexpected_value_error_escapes_run(session, monkeypatch, method):
     error = ValueError("unexpected conversion error")
@@ -1003,8 +1066,8 @@ async def test_unexpected_value_error_escapes_run(session, monkeypatch, method):
 
 async def test_invalid_saved_response_escapes_run(session):
     turn = prepare(session)
-    session.attempt(turn["id"])
-    session.response(turn["id"], {"content": 123}, 12)
+    session.start_attempt(turn["id"])
+    session.record_response(turn["id"], {"content": 123}, 12)
     sequence = session.store.sequence
     provider = FakeProvider([])
 
@@ -1034,7 +1097,7 @@ def test_context_keeps_each_output_whole(session):
     accept(session, code(), code())
     for i in (1, 2):
         session.authorize(i)
-        session.output(i, {"stdout": "x" * session.limits.output_bytes})
+        session.append_output(i, {"stdout": "x" * session.limits.output_bytes})
         session.finish(i, {"type": "success"})
     turn = prepare(session)
     for key in ("1", "2"):
@@ -1045,10 +1108,10 @@ def test_context_keeps_each_output_whole(session):
 
 async def test_saved_complete_response_is_accepted_without_another_provider_call(session):
     turn = prepare(session)
-    session.attempt(turn["id"])
+    session.start_attempt(turn["id"])
     operations = [add(note(role="conclusion", result="success"))]
     message = response(operations)[0].message
-    session.response(turn["id"], message.model_dump(mode="json"), 12)
+    session.record_response(turn["id"], message.model_dump(mode="json"), 12)
     provider = FakeProvider([])
     assert await run(ProcessOwner(session), provider, "fake")
     assert not provider.calls
@@ -1447,11 +1510,11 @@ def test_turn_events_store_state_once_and_replay_deltas(session):
     turn_id = turn["id"]
     prepared = session.store.events()[-1]
     assert "state" not in prepared["changes"]["meta"]
-    session.attempt(turn_id)
-    session.response(turn_id, {"text": "first"}, 5)
+    session.start_attempt(turn_id)
+    session.record_response(turn_id, {"text": "first"}, 5)
     session.reject(turn_id, "retry")
-    session.attempt(turn_id)
-    session.response(turn_id, {"text": "second"}, 7)
+    session.start_attempt(turn_id)
+    session.record_response(turn_id, {"text": "second"}, 7)
     session.accept(turn_id, [add(note())])
     for event in session.store.events(after=prepared["seq"]):
         fields = event["changes"].get("turns", {}).get(turn_id, {})
@@ -1477,7 +1540,7 @@ def test_output_journal_grows_linearly_and_replays_legacy_records(session):
     sizes = []
     for _ in range(20):
         before = session.store.journal_bytes
-        session.output(1, {"stdout": "x" * 100, "stderr": "warning\n"})
+        session.append_output(1, {"stdout": "x" * 100, "stderr": "warning\n"})
         sizes.append(session.store.journal_bytes - before)
     assert len(set(sizes)) == 1
     assert max(sizes) < 250
@@ -1547,7 +1610,7 @@ def test_output_chunks_replay_rolling_utf8_tails(session):
     accept(session, cmd("true"))
     session.authorize(1)
     for text in ("old text", "é終!", "é終!"):
-        session.output(1, {"stdout": text, "stderr": text})
+        session.append_output(1, {"stdout": text, "stderr": text})
     expected = copy.deepcopy(session.data)
     assert expected["executions"]["1"]["output"] == {"stdout": "!é終!", "stderr": "!é終!"}
     assert expected["executions"]["1"]["truncated"]

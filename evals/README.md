@@ -73,7 +73,7 @@ uv run python -m evals.run --trials 3 --timeout 600 \
 ```
 
 Each trial gets a fresh workspace and hidden grading. `summary.json` records
-per-case completion rate, median time, median successful time, model rounds,
+per-case completion rate, median time, median successful time, model turns,
 and context bytes. `comparison.json` reports each case's pass-rate delta and
 successful latency ratio (below 1 means faster). Faster failures do not count
 as improvements. Summaries checkpoint after each trial.

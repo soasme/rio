@@ -50,6 +50,16 @@ def reduce_event(projection: dict, changes: dict, kind: EventKind) -> dict:
             result["turns"] = turns
         else:
             result[collection] = {**result.get(collection, {}), **copy.deepcopy(records)}
+    # Old journals called the turn budget and counter "rounds". Keep saved turn
+    # contexts unchanged; normalize only live limits and usage at the read boundary.
+    if "meta" in changes:
+        for field in ("limits", "usage"):
+            record = result["meta"].get(field, {})
+            if "rounds" in record:
+                result["meta"][field] = {
+                    "turns": record["rounds"],
+                    **{key: value for key, value in record.items() if key != "rounds"},
+                }
     if kind == "turn_prepared":
         turn = next(iter(changes["turns"].values()))
         result["meta"] = {**result["meta"], "state": copy.deepcopy(turn["state"])}

@@ -139,7 +139,7 @@ class RuntimeLedger:
             raise ValueError("Dispatch is blocked")
         self._patch("executions", key, "execution_started", phase="started", started=time.time())
 
-    def output(self, cell_id: int, chunks: dict[str, str]) -> None:
+    def append_output(self, cell_id: int, chunks: dict[str, str]) -> None:
         """Append text to owner-named output streams, keeping each stream's tail."""
         key = str(cell_id)
         execution = self.data["executions"][key]
@@ -226,7 +226,7 @@ class RuntimeLedger:
                     identity=mid,
                 )
 
-    def handled(self, note_id: str, outcome: str, *, resolution: int | None = None) -> None:
+    def mark_handled(self, note_id: str, outcome: str, *, resolution: int | None = None) -> None:
         control = self.data["controls"][note_id]
         changes = {"controls": {note_id: {**control, "handled": True, "outcome": outcome}}}
         if resolution is not None:
