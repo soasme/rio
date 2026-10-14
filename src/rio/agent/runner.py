@@ -56,12 +56,18 @@ class Owner:
         """Authorize `cell_id` synchronously and return the awaitable that executes it."""
         raise NotImplementedError("This owner cannot execute runnable Cells")
 
-    async def validate(self, key: str, command: list[str]) -> ValidatorResult:
-        """Run one configured validator; `key` identifies it across restarts."""
+    async def validate(self, key: str, validator: object) -> ValidatorResult:
+        """Run one configured validator spec; `key` identifies this run across restarts."""
         raise NotImplementedError("This owner cannot run validators")
 
     async def recover(self) -> None:
-        # No dispatch happens before this finishes.
+        # Subclasses stop leftover work first. No dispatch happens before this finishes.
+        for execution in self.session.pending():
+            if execution["phase"] == "started":
+                self.session.finish(
+                    execution["cell_id"],
+                    {"type": "UnknownExecution", "reason": "owner_lost_before_result_commit"},
+                )
         if not self.session.meta["terminal"]:
             self.session.fire_timers()
             await self.controls()
@@ -87,8 +93,7 @@ class Owner:
                 self.session.finish(execution["cell_id"], {"type": "cancelled"})
             else:
                 self.session.finish(
-                    execution["cell_id"],
-                    {"type": "UnknownExecution", "reason": reason, "worker_stopped": error is None},
+                    execution["cell_id"], {"type": "UnknownExecution", "reason": reason}
                 )
         self.session.end("failure", reason, cleanup_error=error, note_id=note_id)
 
@@ -110,12 +115,7 @@ class Owner:
                     assert target == self.active_id
                     await self.stop_active()
                     self.session.finish(
-                        target,
-                        {
-                            "type": "UnknownExecution",
-                            "reason": "cancelled_after_launch",
-                            "worker_stopped": True,
-                        },
+                        target, {"type": "UnknownExecution", "reason": "cancelled_after_launch"}
                     )
                 elif execution["phase"] == "queued":
                     self.session.finish(target, {"type": "cancelled"})
@@ -143,12 +143,15 @@ class Owner:
             return "Success requires no pending work or unresolved uncertainty"
         if any(not m["consumed"] for m in self.session.data["inbox"].values()):
             return "New observations must be consumed before success"
-        # Validators execute afresh at the conclusion. The API uses argv lists,
-        # never model-editable commands.
-        for index, command in enumerate(self.session.meta["validators"]):
-            result = await self.validate(f"{note_id}:{index}", command)
-            self.session.record_validator_result(index, command, result)
-            if result["exit"] != 0:
+        # Validators execute afresh at each conclusion; the model cannot edit their specs.
+        # A result recorded before a restart is reused rather than rerun.
+        for index, validator in enumerate(self.session.meta["validators"]):
+            key = f"{note_id}:{index}"
+            result = self.session.data["validator_results"].get(key)
+            if result is None:
+                result = await self.validate(key, validator)
+                self.session.record_validator_result(key, result)
+            if not result["passed"]:
                 return f"Required validator {index} failed: {result['output']}"
         self.session.fire_timers()
         if any(not m["consumed"] for m in self.session.data["inbox"].values()):

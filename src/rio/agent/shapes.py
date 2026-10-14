@@ -19,19 +19,14 @@ EventKind = Literal[
     "work_requested",
     "invalid_idle",
     "execution_started",
-    "worker_registered",
     "execution_output",
     "output_truncated",
     "execution_finished",
-    "worker_cleanup",
     "timer_registered",
     "timer_fired",
     "control_handled",
-    "validator_started",
-    "validator_registered",
-    "validator_finished",
-    "validator_interrupted",
     "validator_result",
+    "owner_record",
     "run_ended",
 ]
 
@@ -67,39 +62,28 @@ class InboxMessage(Observation):
     consumed: bool
 
 
-class WorkerIdentity(TypedDict):
-    # pid and birth are added once the gated supervisor is spawned.
-    token: str
-    pid: NotRequired[int]
-    birth: NotRequired[float]
-
-
 class ExecutionResult(TypedDict):
+    # Owners may add their own fields.
     type: ResultType
     cell_id: int
     evidence_refs: list[str]
-    exit_code: NotRequired[int | None]
     reason: NotRequired[str]
-    worker_stopped: NotRequired[bool]
 
 
 class Execution(TypedDict):
     cell_id: int
     phase: Phase
-    output: str
-    stderr: str
+    output: dict[str, str]  # text by owner-named stream
     truncated: bool
     accepted: int  # journal seq of patch_accepted
-    worker: NotRequired[WorkerIdentity]
     started: NotRequired[float]
     finished: NotRequired[float]
     result: NotRequired[ExecutionResult]
     uncertain: NotRequired[bool]
-    worker_stopped: NotRequired[bool]
 
 
 class RuntimeCell(Execution):
-    # Execution as shown to the model: worker removed, resolution note id added.
+    # Execution as shown to the model, with the resolution note id added.
     resolved_by: NotRequired[int]
 
 
@@ -158,15 +142,15 @@ class Terminal(TypedDict):
     result: RunResult
     reason: str
     uncertainty: list[int]
-    cleanup_error: str | None
+    cleanup_error: str | None  # why the owner could not stop active work
 
 
 class Meta(TypedDict):
     state: State
-    cwd: str
     limits: dict  # asdict(Limits)
-    external_wakeup: NotRequired[bool]
-    validators: list[list[str]]
+    external_wakeup: bool
+    validators: list  # owner-defined specs, opaque to the core
+    owner_config: dict  # owner-defined settings, opaque to the core
     model_config: dict
     instructions: str
     terminal: Terminal | None
@@ -176,17 +160,9 @@ class Meta(TypedDict):
 
 
 class ValidatorResult(TypedDict):
-    exit: int | None
+    # Owners may add their own fields.
+    passed: bool
     output: str
-
-
-class ValidatorRecord(ValidatorResult):
-    command: list[str]
-
-
-class ValidationWorker(TypedDict):
-    worker: WorkerIdentity
-    result: ValidatorResult | None
 
 
 class Projection(TypedDict):
@@ -199,9 +175,9 @@ class Projection(TypedDict):
     controls: dict[str, Control]  # keyed by note Cell id
     timers: dict[str, Timer]
     resolutions: dict[str, int]  # target Cell id -> resolution note id
-    validator_results: dict[str, ValidatorRecord]  # keyed by validator index
+    validator_results: dict[str, ValidatorResult]  # keyed by "<conclusion id>:<index>"
     metrics: NotRequired[dict[str, float | int]]
-    validation_workers: NotRequired[dict[str, ValidationWorker]]  # first validator run adds it
+    # Other keys are owner collections written by Session.record.
 
 
 class JournalEvent(TypedDict):

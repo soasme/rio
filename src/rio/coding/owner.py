@@ -12,17 +12,30 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
 import psutil
 
 import rio.coding.worker as worker
 from rio.agent.runner import Owner, RecoveryFailure
 from rio.agent.session import Session
-from rio.agent.shapes import ValidatorResult, WorkerIdentity
+from rio.agent.shapes import ValidatorResult
 from rio.agent.store import StorageFailure
+from rio.coding.cells import COMMANDS
 from rio.truncate import tail_notice, truncate_bytes_tail, truncate_tail
+
+
+class WorkerIdentity(TypedDict):
+    # A "workers" record keyed "cell:<id>" or "validator:<key>". pid and birth are added once
+    # the gated supervisor is spawned, and stopped once its process group is gone. A validator
+    # worker keeps its result before it is stopped, so recovery reuses it instead of rerunning.
+    token: str
+    pid: NotRequired[int]
+    birth: NotRequired[float]
+    stopped: NotRequired[bool]
+    result: NotRequired[ValidatorResult]
 
 
 def stop_worker(identity: WorkerIdentity) -> None:
@@ -82,11 +95,22 @@ def stop_worker(identity: WorkerIdentity) -> None:
 
 
 class ProcessOwner(Owner):
-    """Run each Cell and validator in a gated worker process group under the session cwd."""
+    """Run each Cell and validator argv in a gated worker process group.
 
-    def __init__(self, session: Session):
+    Workers start in ``owner_config["cwd"]`` when the Session sets it. ``commands`` maps each
+    runnable Cell kind to the argv for one Cell version; it may write files into a scratch
+    directory. Worker identities are journaled in the "workers" owner collection.
+    """
+
+    def __init__(
+        self,
+        session: Session,
+        commands: Mapping[str, Callable[[dict, Path], list[str]]] = COMMANDS,
+    ):
         super().__init__(session)
+        self.commands = commands
         self.process: asyncio.subprocess.Process | None = None
+        self.key = ""
         self.identity: WorkerIdentity | None = None
         self.server: asyncio.Server | None = None
         self.temporary: tempfile.TemporaryDirectory | None = None
@@ -128,24 +152,18 @@ class ProcessOwner(Owner):
         # Cleanup is required even for terminal runs. No dispatch happens before this finishes.
         if os.name != "posix":
             raise RecoveryFailure("Durable worker containment currently requires POSIX")
-        for execution in list(self.session.data["executions"].values()):
-            if execution.get("worker") and not execution.get("worker_stopped"):
-                await asyncio.to_thread(stop_worker, execution["worker"])
-                if execution["phase"] == "finished":
-                    self.session.worker_stopped(execution["cell_id"])
-                    continue
-                self.session.finish(
-                    execution["cell_id"],
-                    {
-                        "type": "UnknownExecution",
-                        "reason": "worker_lost_before_result_commit",
-                        "worker_stopped": True,
-                    },
+        for key, identity in list(self.session.data.get("workers", {}).items()):
+            if not identity.get("stopped"):
+                await asyncio.to_thread(stop_worker, identity)
+                self.session.record("workers", key, {"stopped": True})
+            kind, _, name = key.partition(":")
+            if kind == "validator" and name not in self.session.data["validator_results"]:
+                self.session.record_validator_result(
+                    name,
+                    identity.get("result")
+                    or {"passed": False, "exit": None, "output": "Unknown validator execution"},
                 )
-        for key, record in list(self.session.data.get("validation_workers", {}).items()):
-            if record["result"] is None:
-                await asyncio.to_thread(stop_worker, record["worker"])
-                self.session.interrupt_validator(key)
+        # The base Owner finishes started Cells as UnknownExecution.
         await super().recover()
 
     def clear(self) -> None:
@@ -153,28 +171,40 @@ class ProcessOwner(Owner):
         self.process = self.identity = None
 
     async def stop_active(self) -> None:
-        if self.identity:
-            await asyncio.to_thread(stop_worker, self.identity)
+        await self._stop()
         process = self.process
         await super().stop_active()
         if process:
             await process.wait()
 
     def launch(self, cell_id: int) -> Awaitable[None]:
-        self.identity = {"token": uuid.uuid4().hex}
-        self.session.authorize(cell_id, self.identity)
+        self.session.authorize(cell_id)
+        self._register(f"cell:{cell_id}")
         return self._execute(cell_id)
 
+    def _register(self, key: str) -> None:
+        """Journal a worker token before spawning, so recovery can find a gated supervisor."""
+        self.key, self.identity = key, {"token": uuid.uuid4().hex}
+        self.session.record("workers", key, self.identity)
+
+    async def _stop(self) -> None:
+        """Stop the current worker and mark it, so recovery never signals a reused PID."""
+        identity, self.identity = self.identity, None
+        if identity:
+            await asyncio.to_thread(stop_worker, identity)
+            if not self.session.store.failed:
+                self.session.record("workers", self.key, {"stopped": True})
+
     async def _spawn(
-        self, identity: WorkerIdentity, command: list[str], env: dict | None = None
-    ) -> tuple[asyncio.subprocess.Process, WorkerIdentity]:
+        self, command: list[str], env: dict | None = None
+    ) -> asyncio.subprocess.Process:
         """Start a gated worker in its own process group; it waits for "start" on stdin."""
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             str(Path(worker.__file__)),
-            identity["token"],
+            self.identity["token"],
             *command,
-            cwd=self.session.meta["cwd"],
+            cwd=self.session.meta["owner_config"].get("cwd"),
             env=env,
             start_new_session=True,
             stdin=asyncio.subprocess.PIPE,
@@ -182,17 +212,16 @@ class ProcessOwner(Owner):
             stderr=asyncio.subprocess.PIPE,
         )
         birth = psutil.Process(process.pid).create_time()
-        return process, {**identity, "pid": process.pid, "birth": birth}
+        self.identity = {**self.identity, "pid": process.pid, "birth": birth}
+        self.session.record("workers", self.key, self.identity)
+        return process
 
-    async def validate(self, key: str, command: list[str]) -> ValidatorResult:
-        previous = self.session.data.get("validation_workers", {}).get(key)
-        if previous:
-            return previous["result"]
-        identity: WorkerIdentity = {"token": uuid.uuid4().hex}
-        self.session.start_validator(key, identity)
-        process, identity = await self._spawn(identity, command)
+    async def validate(self, key: str, validator: object) -> ValidatorResult:
+        """Run a validator argv; exit status 0 passes."""
+        self._register(f"validator:{key}")
+        process = await self._spawn(validator)
+        result = None
         try:
-            self.session.register_validator(key, identity)
             process.stdin.write(b"start\n")
             await process.stdin.drain()
             output = ""
@@ -217,16 +246,18 @@ class ProcessOwner(Owner):
                 output = truncate_bytes_tail(
                     output + decoder.decode(b"", final=True), self.session.limits.output_bytes
                 )
-            result = {"exit": exit_code, "output": output}
+            result = {"passed": exit_code == 0, "exit": exit_code, "output": output}
         except TimeoutError:
             result = {
+                "passed": False,
                 "exit": None,
                 "output": "Validator interrupted; inspect effects before retrying",
             }
         finally:
-            await asyncio.to_thread(stop_worker, identity)
+            if result is not None and not self.session.store.failed:
+                self.session.record("workers", self.key, {"result": result})
+            await self._stop()
             await process.wait()
-        self.session.finish_validator(key, result)
         return result
 
     async def _execute(self, cell_id: int) -> None:
@@ -242,10 +273,8 @@ class ProcessOwner(Owner):
             ),
         }
         try:
-            command = session.kinds[cell["kind"]].command(cell, Path(self.temporary.name))
-            process, self.identity = await self._spawn(self.identity, command, env)
-            self.process = process
-            session.register_worker(cell_id, self.identity)
+            command = self.commands[cell["kind"]](cell, Path(self.temporary.name))
+            self.process = process = await self._spawn(command, env)
             process.stdin.write(b"start\n")
             await process.stdin.drain()
             decoders = {
@@ -295,7 +324,7 @@ class ProcessOwner(Owner):
                                             )
                                     line_task = asyncio.create_task(process.stdout.readline())
                                 if time.monotonic() >= deadline:
-                                    session.output(cell_id, buffers["stdout"], buffers["stderr"])
+                                    session.output(cell_id, buffers)
                                     buffers = {"stdout": "", "stderr": ""}
                                     deadline = time.monotonic() + session.limits.flush_seconds
                         finally:
@@ -308,11 +337,11 @@ class ProcessOwner(Owner):
                     buffers[name] += decoders[name].decode(b"", final=True)
                 try:
                     if not session.store.failed:
-                        session.output(cell_id, buffers["stdout"], buffers["stderr"])
+                        session.output(cell_id, buffers)
                 finally:
                     # Keep the tail, and point to the full output on disk.
                     truncated = {}
-                    for name, key in (("stdout", "output"), ("stderr", "stderr")):
+                    for name in buffers:
                         if name not in files:
                             continue
                         path = Path(files[name].name)
@@ -320,13 +349,14 @@ class ProcessOwner(Owner):
                             path.read_text(encoding="utf-8"), max_bytes=session.limits.output_bytes
                         )
                         if truncation.truncated and not session.store.failed:
-                            truncated[key] = truncation.content + tail_notice(truncation, str(path))
+                            notice = tail_notice(truncation, str(path))
+                            truncated[name] = truncation.content + notice
                         else:
                             path.unlink()
                     if truncated:
                         session.truncate_output(cell_id, truncated)
             # Stop descendants before reporting completion, even when the script left them behind.
-            await asyncio.to_thread(stop_worker, self.identity)
+            await self._stop()
             await process.wait()
             session.finish(
                 cell_id,
@@ -337,11 +367,10 @@ class ProcessOwner(Owner):
                     if exit_code is not None
                     else "UnknownExecution",
                     "exit_code": exit_code,
-                    "worker_stopped": True,
                 },
             )
         except (TimeoutError, OSError) as exc:
-            await asyncio.to_thread(stop_worker, self.identity)
+            await self._stop()
             if self.process is not None:
                 await self.process.wait()
             session.finish(
@@ -349,6 +378,5 @@ class ProcessOwner(Owner):
                 {
                     "type": "UnknownExecution" if self.process else "error",
                     "reason": str(exc) or "execution timeout",
-                    "worker_stopped": True,
                 },
             )

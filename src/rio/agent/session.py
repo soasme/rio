@@ -9,7 +9,6 @@ import time
 import uuid
 from collections.abc import Iterable
 from dataclasses import asdict
-from pathlib import Path
 from typing import cast
 
 from rio.agent.prompt import schema, system
@@ -23,14 +22,13 @@ from rio.agent.shapes import (
     State,
     Turn,
     ValidatorResult,
-    WorkerIdentity,
 )
 from rio.agent.state import NOTE, CellKind, InvalidPatch, Limits, admit
 from rio.agent.store import Store, encode
 from rio.truncate import truncate_bytes_tail
 
 # Bump when the model-facing step protocol changes; saved turns hold the old prompt.
-STATE_SCHEMA = "rio.state/2"
+STATE_SCHEMA = "rio.state/3"
 
 
 class RunStopped(RuntimeError):
@@ -64,11 +62,8 @@ class Session:
                 f"Session uses {self.meta['state']['schema']}, but this Rio needs "
                 f"{STATE_SCHEMA}; start a new session"
             )
-        limits = dict(self.meta["limits"])
-        # Older journals stored this policy alongside numeric budgets.
-        legacy_wakeup = limits.pop("external_wakeup", False)
-        self.external_wakeup = self.meta.get("external_wakeup", legacy_wakeup)
-        self.limits = Limits(**limits)
+        self.external_wakeup = self.meta["external_wakeup"]
+        self.limits = Limits(**self.meta["limits"])
         self.kinds = by_name(kinds)
 
     @classmethod
@@ -76,11 +71,11 @@ class Session:
         cls,
         store: Store,
         goal: str,
-        cwd: Path,
         *,
         kinds: Iterable[CellKind] = (),
         limits: Limits | None = None,
-        validators: tuple[tuple[str, ...], ...] = (),
+        validators: Iterable = (),
+        owner_config: dict | None = None,
         model_config: dict | None = None,
         instructions: str = "",
         external_wakeup: bool = False,
@@ -104,10 +99,10 @@ class Session:
             {
                 "meta": {
                     "state": state,
-                    "cwd": str(cwd.resolve()),
                     "limits": asdict(limits),
                     "external_wakeup": external_wakeup,
-                    "validators": [list(v) for v in validators],
+                    "validators": list(validators),
+                    "owner_config": owner_config or {},
                     "model_config": model_config or {},
                     "instructions": instructions,
                     "terminal": None,
@@ -202,7 +197,7 @@ class Session:
         selected = {str(c["id"]) for c in state["cells"]}
         unresolved = set(self.unresolved())
         state["runtime"]["cells"] = {
-            key: {k: v for k, v in execution.items() if k != "worker"}
+            key: execution
             for key, execution in self.data["executions"].items()
             if key in selected or execution["phase"] != "finished" or int(key) in unresolved
         }
@@ -361,8 +356,7 @@ class Session:
             str(c["id"]): {
                 "cell_id": c["id"],
                 "phase": "queued",
-                "output": "",
-                "stderr": "",
+                "output": {},
                 "truncated": False,
                 "accepted": self.store.sequence + 1,
             }
@@ -425,67 +419,34 @@ class Session:
         if self.pending():
             self.store.commit("work_requested", {"meta": {"idle": 0}})
 
-    def register_worker(self, cell_id: int, worker: WorkerIdentity) -> None:
-        key = str(cell_id)
-        self.store.commit(
-            "worker_registered",
-            {"executions": {key: {**self.data["executions"][key], "worker": worker}}},
-        )
-
-    def worker_stopped(self, cell_id: int) -> None:
-        key = str(cell_id)
-        self.store.commit(
-            "worker_cleanup",
-            {"executions": {key: {**self.data["executions"][key], "worker_stopped": True}}},
-        )
+    def record(self, collection: str, key: str, fields: dict) -> None:
+        """Merge owner-defined fields into an owner collection, outside the core records."""
+        if collection == "output_chunks" or collection in Projection.__annotations__:
+            raise ValueError(f"{collection} is a Session collection")
+        old = self.data.get(collection, {}).get(key, {})
+        self.store.commit("owner_record", {collection: {key: {**old, **fields}}})
 
     def truncate_output(self, cell_id: int, output: dict[str, str]) -> None:
+        """Replace the given streams with final text, such as a tail and a pointer to more."""
         key = str(cell_id)
+        execution = self.data["executions"][key]
         self.store.commit(
             "output_truncated",
-            {"executions": {key: {**self.data["executions"][key], **output, "truncated": True}}},
-        )
-
-    def start_validator(self, key: str, worker: WorkerIdentity) -> None:
-        self.store.commit(
-            "validator_started", {"validation_workers": {key: {"worker": worker, "result": None}}}
-        )
-
-    def register_validator(self, key: str, worker: WorkerIdentity) -> None:
-        record = self.data["validation_workers"][key]
-        self.store.commit(
-            "validator_registered", {"validation_workers": {key: {**record, "worker": worker}}}
-        )
-
-    def finish_validator(self, key: str, result: ValidatorResult) -> None:
-        record = self.data["validation_workers"][key]
-        self.store.commit(
-            "validator_finished", {"validation_workers": {key: {**record, "result": result}}}
-        )
-
-    def interrupt_validator(self, key: str) -> None:
-        record = self.data["validation_workers"][key]
-        self.store.commit(
-            "validator_interrupted",
             {
-                "validation_workers": {
+                "executions": {
                     key: {
-                        **record,
-                        "result": {"exit": None, "output": "Unknown validator execution"},
+                        **execution,
+                        "output": {**execution["output"], **output},
+                        "truncated": True,
                     }
                 }
             },
         )
 
-    def record_validator_result(
-        self, index: int, command: list[str], result: ValidatorResult
-    ) -> None:
-        self.store.commit(
-            "validator_result",
-            {"validator_results": {str(index): {"command": command, **result}}},
-        )
+    def record_validator_result(self, key: str, result: ValidatorResult) -> None:
+        self.store.commit("validator_result", {"validator_results": {key: result}})
 
-    def authorize(self, cell_id: int, worker: WorkerIdentity) -> None:
+    def authorize(self, cell_id: int) -> None:
         key = str(cell_id)
         execution = self.data["executions"][key]
         pending = self.pending()
@@ -499,33 +460,27 @@ class Session:
             raise ValueError("Dispatch is blocked")
         self.store.commit(
             "execution_started",
-            {
-                "executions": {
-                    key: {**execution, "phase": "started", "worker": worker, "started": time.time()}
-                }
-            },
+            {"executions": {key: {**execution, "phase": "started", "started": time.time()}}},
         )
 
-    def output(self, cell_id: int, stdout: str = "", stderr: str = "") -> None:
+    def output(self, cell_id: int, chunks: dict[str, str]) -> None:
+        """Append text to owner-named output streams, keeping each stream's tail."""
         key = str(cell_id)
         execution = self.data["executions"][key]
         if execution["phase"] != "started":
             raise ValueError("Output requires a started execution")
-        chunks = {}
-        truncated = execution["truncated"]
-        for name, text in (("output", stdout), ("stderr", stderr)):
-            chunks[name] = truncate_bytes_tail(text, self.limits.output_bytes)
-            truncated |= len((execution[name] + text).encode()) > self.limits.output_bytes
-        if any(chunks.values()) or truncated != execution["truncated"]:
+        limit = self.limits.output_bytes
+        truncated = execution["truncated"] or any(
+            len((execution["output"].get(name, "") + text).encode()) > limit
+            for name, text in chunks.items()
+        )
+        chunks = {name: truncate_bytes_tail(text, limit) for name, text in chunks.items() if text}
+        if chunks or truncated != execution["truncated"]:
             self.store.commit(
                 "execution_output",
                 {
                     "output_chunks": {
-                        key: {
-                            **chunks,
-                            "truncated": truncated,
-                            "limit": self.limits.output_bytes,
-                        }
+                        key: {"output": chunks, "truncated": truncated, "limit": limit}
                     }
                 },
             )
@@ -545,7 +500,6 @@ class Session:
             "finished": time.time(),
             "result": result,
             "uncertain": unknown,
-            "worker_stopped": result.get("worker_stopped", False),
         }
         changes = {
             "executions": {key: execution},

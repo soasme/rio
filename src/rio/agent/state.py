@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
-from pathlib import Path
 
 from rio.agent.shapes import Cell, Execution, State
 from rio.agent.store import encode
@@ -42,15 +41,14 @@ class CellKind:
     """A runnable Cell kind. Notes are built in and never run; callers add kinds to act.
 
     ``fields`` maps each field besides ``kind`` to its JSON schema for the step tool.
-    ``validate`` raises InvalidPatch for a malformed Cell body. ``command`` returns the argv
-    that runs one Cell version, and may write files into the given scratch directory.
+    ``validate`` raises InvalidPatch for a malformed Cell body. The Owner decides how a
+    Cell version runs.
     """
 
     name: str
     fields: Mapping[str, dict]
     prompt: str
     validate: Callable[[dict], None]
-    command: Callable[[dict, Path], list[str]]
 
 
 # Note fields besides kind, as JSON schemas for the step tool.

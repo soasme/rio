@@ -13,8 +13,9 @@ are started separately and configured as HTTP endpoints.
 | `code` | An independent Python script with PEP 723 metadata, run through `uv run --script`. |
 | `cmd` | An argument list executed directly, without a shell. |
 
-Pass `cells.KINDS` when creating or opening a coding session and
-`cells.INSTRUCTIONS` when creating it. The agent runtime handles admission,
+Pass `cells.KINDS` when creating or opening a coding session, and
+`cells.INSTRUCTIONS` and `owner_config={"cwd": ...}` when creating it.
+`cells.COMMANDS` maps each kind to the argv that `ProcessOwner` runs. The agent runtime handles admission,
 journaling and recovery. See the
 [library guide](../../../docs/guides/library-usage.md).
 
@@ -22,7 +23,7 @@ journaling and recovery. See the
 
 | Module | Responsibility |
 | --- | --- |
-| [owner.py](owner.py) | `ProcessOwner` runs cells and validators in supervised process groups and stops leftover workers on recovery. |
+| [owner.py](owner.py) | `ProcessOwner` runs cells and argv validators in supervised process groups under `owner_config["cwd"]`, records worker identities in its `workers` collection, and stops leftover workers on recovery. |
 | [worker.py](worker.py) | Gated POSIX worker that starts user code only after the owner commits its identity. |
 | [api.py](api.py) | Let uv scripts read committed history and schedule timers. |
 

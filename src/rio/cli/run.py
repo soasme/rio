@@ -53,7 +53,7 @@ async def run_persistent_session(
             if session.meta["terminal"]:
                 return await replay(ProcessOwner(session), publish), session_id
             config = session.meta["model_config"]
-            cwd = Path(session.meta["cwd"])
+            cwd = Path(session.meta["owner_config"]["cwd"])
             provider_name, model = config["provider"], config["model"]
             thinking_level = config.get("thinking")
         else:
@@ -78,8 +78,8 @@ async def run_persistent_session(
                 session = Session.create(
                     store,
                     prompt,
-                    cwd,
                     kinds=cells.KINDS,
+                    owner_config={"cwd": str(cwd)},
                     model_config={
                         "provider": provider_name,
                         "model": model,
@@ -112,7 +112,7 @@ def _check_resume(
     agents_md: Path | None,
 ) -> None:
     """A resumed Session keeps its goal, project, model, and instructions."""
-    if cwd is not None and cwd.resolve() != Path(session.meta["cwd"]):
+    if cwd is not None and cwd.resolve() != Path(session.meta["owner_config"]["cwd"]):
         raise ValueError("--cwd must match the resumed Session")
     if prompt and prompt != session.state["goal"]:
         raise ValueError("Resume preserves the original goal; omit TASK or start a new run")

@@ -152,7 +152,7 @@ theorem ending_twice_writes_once (journal : List String) :
 
 /-- Replay appends only cleanup for leftover workers. -/
 def replayJournal (journal : List String) (leftoverWorkers : Nat) : List String :=
-  journal ++ List.replicate leftoverWorkers "worker_cleanup"
+  journal ++ List.replicate leftoverWorkers "owner_record"
 
 theorem clean_replay_writes_nothing (journal : List String) :
     replayJournal journal 0 = journal := by

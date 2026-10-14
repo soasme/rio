@@ -26,8 +26,9 @@ flowchart LR
 State has a goal, a revision, cells, and runtime observations. `rio.agent` knows
 one cell kind, the note. A note-only agent can record facts and conclude. Callers
 add runnable kinds with `CellKind`: a name, its fields and their JSON schemas, a prompt,
-a validator, and the argv for one run. `rio.coding.cells` adds `code` (a complete Python
-script) and `cmd` (a command); `rio run` uses both. The model calls one tool, `step`, with a
+and a validator. The owner decides how a cell runs. `rio.coding.cells` adds `code`
+(a complete Python script) and `cmd` (a command) and maps each to argv for
+`ProcessOwner`; `rio run` uses both. The model calls one tool, `step`, with a
 list of ops: `add` a cell, or `replace` or `remove` a cell by ID. Rio assigns IDs
 and keeps positions. A replacement gets a new ID and links to the old cell. Old versions stay
 in history. Removing a cell from context does not cancel its work.
@@ -79,7 +80,8 @@ code or calling a model. `Session` owns event writes; `Store` commits and folds
 them into state. A failed commit stops new work and publication. Reopen
 the session to check what committed; a missing receipt does not prove rollback.
 
-Recovery checks worker identities and stops surviving local processes. A script
+Recovery checks worker identities, which `ProcessOwner` keeps in its own `workers`
+records, and stops surviving local processes. A script
 that started without a recorded result becomes `UnknownExecution`. Rio never
 replays it automatically. Errors pause the queue until the model consumes their
 observations. Unknown results also need an explicit resolution with recorded
@@ -92,8 +94,9 @@ Cancellation runs in the owner without waiting for a worker slot. Success requir
 no pending work, unread observations, or unresolved results, and passing any
 configured validators. Validators use the same process supervision.
 
-`Session.create` accepts `Limits` and validator argument lists. These are outside
-model authority. Limits cover model rounds, tokens, script time, retries,
+`Session.create` accepts `Limits`, validator specs, and an opaque `owner_config`.
+`ProcessOwner` runs each validator spec as an argument list and starts processes in
+`owner_config["cwd"]`. These are outside model authority. Limits cover model rounds, tokens, script time, retries,
 context, output, pending work, inbox messages, and journal size. Cleanup and final
 records may exceed the journal admission limit. Set
 `Session.create(external_wakeup=True)` when an application supplies external

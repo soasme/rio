@@ -23,8 +23,8 @@ async def main():
             Session.create(
                 store,
                 "Add a health-check endpoint",
-                Path.cwd(),
                 kinds=cells.KINDS,
+                owner_config={"cwd": str(Path.cwd())},
                 instructions=cells.INSTRUCTIONS,
             )
         )
@@ -56,7 +56,8 @@ For the CLI's saved provider selection and project instructions, call
 Without `kinds`, a session supports notes only. Custom applications supply
 `CellKind` definitions; see [rio.agent](../../src/rio/agent/README.md).
 Pass `Limits` and `validators` to `Session.create` to set execution budgets and
-required checks. Validators are argument lists, such as `(("python", "-m", "pytest"),)`.
+required checks. `ProcessOwner` runs validators as argument lists, such as
+`[["python", "-m", "pytest"]]`, and cells and validators in `owner_config["cwd"]`.
 Use `Session.receive(message_id, kind, payload)` for external observations and
 `Session.create(external_wakeup=True)` to allow waiting for external work.
 See [Architecture](../explanation/architecture.md) for recovery rules and limits.
