@@ -1,4 +1,4 @@
-/- Behavioral specification for rio.agent.session and owner. This models committed
+/- Behavioral specification for rio.agent.session, ledger and owner. This models committed
    decisions, not SQLite fsync, JSON parsing, or operating-system containment. -/
 namespace RioAgent
 
@@ -403,5 +403,33 @@ theorem invalid_patch_remains_retryable :
 
 theorem unexpected_error_propagates :
     handleRoundError .unexpected = .propagate := rfl
+
+/-- The runtime ledger patches a full record, preserving fields not supplied by the caller. -/
+abbrev LedgerRecord := String → Option String
+abbrev RuntimeLedger := String × String → LedgerRecord
+
+def patchRecord (record fields : LedgerRecord) : LedgerRecord :=
+  fun field => (fields field).orElse (fun _ => record field)
+
+def patchLedger (ledger : RuntimeLedger) (collection key : String)
+    (fields : LedgerRecord) : RuntimeLedger :=
+  fun address => if address = (collection, key) then patchRecord (ledger address) fields
+    else ledger address
+
+theorem ledger_patch_sets_supplied_field (ledger : RuntimeLedger) (collection key field value : String)
+    (fields : LedgerRecord) (h : fields field = some value) :
+    patchLedger ledger collection key fields (collection, key) field = some value := by
+  simp [patchLedger, patchRecord, h]
+
+theorem ledger_patch_preserves_other_fields (ledger : RuntimeLedger) (collection key field : String)
+    (fields : LedgerRecord) (h : fields field = none) :
+    patchLedger ledger collection key fields (collection, key) field =
+      ledger (collection, key) field := by
+  simp [patchLedger, patchRecord, h]
+
+theorem ledger_patch_preserves_other_records (ledger : RuntimeLedger) (collection key : String)
+    (fields : LedgerRecord) (address : String × String) (h : address ≠ (collection, key)) :
+    patchLedger ledger collection key fields address = ledger address := by
+  simp [patchLedger, h]
 
 end RioAgent

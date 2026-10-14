@@ -85,6 +85,85 @@ def test_sqlite_full_wal_and_exclusive_owner(session):
         Store(session.store.path)
 
 
+@pytest.mark.parametrize(
+    ("method", "args", "collection", "key", "event", "fields"),
+    [
+        (
+            "authorize",
+            (2,),
+            "executions",
+            "2",
+            "execution_started",
+            {"phase": "started", "started": 123.0},
+        ),
+        (
+            "truncate_output",
+            (1, {"stdout": "tail"}),
+            "executions",
+            "1",
+            "output_truncated",
+            {"output": {"stdout": "tail", "stderr": "diagnostic"}, "truncated": True},
+        ),
+        (
+            "record",
+            ("jobs", "v", {"result": {"passed": True}}),
+            "jobs",
+            "v",
+            "owner_record",
+            {"result": {"passed": True}},
+        ),
+        (
+            "record",
+            ("new_jobs", "new", {"collection": "c", "key": "k", "event": "e"}),
+            "new_jobs",
+            "new",
+            "owner_record",
+            {"collection": "c", "key": "k", "event": "e"},
+        ),
+    ],
+)
+def test_runtime_record_updates_preserve_journal_and_replay(
+    tmp_path, monkeypatch, method, args, collection, key, event, fields
+):
+    monkeypatch.setattr("rio.agent.ledger.time.time", lambda: 123.0)
+    path = tmp_path / "session.sqlite3"
+    with Store(path) as store:
+        session = Session.create(store, "goal", kinds=KINDS)
+        accept(session, cmd("first"), cmd("second"))
+        session.authorize(1)
+        session.output(1, {"stdout": "full output", "stderr": "diagnostic"})
+        session.finish(1, {"type": "success"})
+        session.record("jobs", "v", {"attempts": 1, "result": None})
+        session.record("jobs", "other", {"attempts": 2})
+        before = session.data
+        snapshot = copy.deepcopy(before)
+        expected = copy.deepcopy(before)
+        expected.setdefault(collection, {}).setdefault(key, {}).update(fields)
+        sequence = store.sequence
+
+        getattr(session, method)(*args)
+
+        assert session.data == expected
+        assert before == snapshot
+        assert store.sequence == sequence + 1
+        committed = store.events(sequence)
+        assert committed[0]["type"] == event
+        assert committed[0]["changes"] == {collection: {key: expected[collection][key]}}
+
+    with Store(path) as store:
+        assert Session(store, KINDS).data == expected
+
+
+@pytest.mark.parametrize("method,args", [("authorize", (99,)), ("truncate_output", (99, {}))])
+def test_runtime_execution_updates_require_existing_record(session, method, args):
+    sequence = session.store.sequence
+    before = copy.deepcopy(session.data)
+    with pytest.raises(KeyError):
+        getattr(session, method)(*args)
+    assert session.data == before
+    assert session.store.sequence == sequence
+
+
 def test_atomic_admission_and_linear_history(session):
     accept(session, note("a"), note("b"))
     turn = prepare(session)

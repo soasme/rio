@@ -34,7 +34,8 @@ worker identities, live in owner collections written with `Session.record`.
 
 | Module | Responsibility |
 | --- | --- |
-| [session.py](session.py) | Admit turns and own event writes, including controls and run endings with metrics. |
+| [session.py](session.py) | Create sessions, prepare model context and admit turns. |
+| [ledger.py](ledger.py) | Journal executions, inbox, timers, validators, controls and run endings with metrics. |
 | [store.py](store.py) | Commit the SQLite journal and fold events into state. |
 | [state.py](state.py) | Validate cell kinds, apply operations and enforce context budgets. |
 | [runner.py](runner.py) | Drive model turns, idle decisions and terminal replay. `Owner` dispatches cells, handles controls and conclusions, and waits for wake-ups. |
@@ -42,6 +43,8 @@ worker identities, live in owner collections written with `Session.record`.
 ## Use
 
 Import `Store` from `rio.agent.store` and `Session` from `rio.agent.session`.
+`Session` inherits runtime operations from `RuntimeLedger`, keeping one public entry point.
+Single-record updates share `_patch`; multi-record transitions commit atomically.
 Create or open a `Store`, then create or open a `Session` with the same cell
 kinds. Notes are built in; runnable kinds come from the caller. Pass a
 `rio.ai.ModelProvider` and an `Owner` to `runner.run`, or call `runner.replay` for a
