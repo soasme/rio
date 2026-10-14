@@ -327,6 +327,48 @@ def applyTurnDelta (turn : JournalTurn) : TurnDelta → JournalTurn
 theorem turn_delta_preserves_prepared_context (turn : JournalTurn) (delta : TurnDelta) :
     (applyTurnDelta turn delta).state = turn.state := by cases delta <;> rfl
 
+/-- `usage.rounds` counts new prepared turns, not attempts or accepted steps.
+    Model only the round-budget branch; lifecycle, token, and storage checks are separate. -/
+structure TurnBudget where
+  rounds : Nat
+  pending : Bool
+  deriving DecidableEq, Repr
+
+def prepareWithinRoundBudget (budget : TurnBudget) (limit : Nat) : Option TurnBudget :=
+  if budget.pending then some budget
+  else if budget.rounds < limit then
+    some { rounds := budget.rounds + 1, pending := true }
+  else none
+
+theorem pending_turn_reused_at_round_limit (rounds limit : Nat) :
+    prepareWithinRoundBudget ⟨rounds, true⟩ limit = some ⟨rounds, true⟩ := rfl
+
+theorem new_turn_counts_once (rounds limit : Nat) (h : rounds < limit) :
+    prepareWithinRoundBudget ⟨rounds, false⟩ limit = some ⟨rounds + 1, true⟩ := by
+  simp [prepareWithinRoundBudget, h]
+
+theorem round_limit_blocks_new_turn (rounds limit : Nat) (h : ¬ rounds < limit) :
+    prepareWithinRoundBudget ⟨rounds, false⟩ limit = none := by
+  simp [prepareWithinRoundBudget, h]
+
+/-- Attempt, response, and rejection keep the turn pending; acceptance closes it. -/
+def accountTurnDelta (budget : TurnBudget) : TurnDelta → TurnBudget
+  | .accept _ => { budget with pending := false }
+  | _ => budget
+
+theorem turn_progress_does_not_count_rounds (budget : TurnBudget) (delta : TurnDelta) :
+    (accountTurnDelta budget delta).rounds = budget.rounds := by cases delta <;> rfl
+
+theorem rejection_reuses_turn (rounds limit : Nat) :
+    prepareWithinRoundBudget (accountTurnDelta ⟨rounds, true⟩ .reject) limit =
+      some ⟨rounds, true⟩ := rfl
+
+theorem model_attempt_increments_attempts (turn : JournalTurn) :
+    (applyTurnDelta turn .attempt).attempts = turn.attempts + 1 := rfl
+
+theorem saved_response_preserves_attempts (turn : JournalTurn) (response : String) :
+    (applyTurnDelta turn (.response response)).attempts = turn.attempts := rfl
+
 /-- Chunk concatenation before applying the output retention limit. -/
 inductive OutputRecord where
   | snapshot (text : List Char)
