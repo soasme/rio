@@ -33,10 +33,10 @@ list of ops: `add` a cell, or `replace` or `remove` a cell by ID. Rio assigns ID
 and keeps positions. A replacement gets a new ID and links to the old cell. Old versions stay
 in history. Removing a cell from context does not cancel its work.
 
-Each model round uses a saved, fixed state. New observations wait in the inbox.
+Each model turn uses a saved, fixed state. New observations wait in the inbox.
 Successful completions wait until queued work drains or an error pauses it,
-so one round sees them together.
-Accepting a step also records which observations that round consumed. Retrying
+so one turn sees them together.
+Accepting a step also records which observations that turn consumed. Retrying
 an accepted step returns the same receipt and does not launch the code again.
 A complete saved model response can be accepted after restart. Lost responses
 use bounded retries; missing token usage stays unknown.
@@ -96,7 +96,7 @@ configured validators. Validators use the same process supervision.
 
 `Session.create` accepts `Limits`, validator specs, and an opaque `owner_config`.
 `ProcessOwner` runs each validator spec as an argument list and starts processes in
-`owner_config["cwd"]`. These are outside model authority. Limits cover model rounds, tokens, script time, retries,
+`owner_config["cwd"]`. These are outside model authority. Limits cover model turns, tokens, script time, retries,
 context, output, pending work, inbox messages, and journal size. Cleanup and final
 records may exceed the journal admission limit. Set
 `Session.create(external_wakeup=True)` when an application supplies external

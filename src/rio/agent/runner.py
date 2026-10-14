@@ -1,4 +1,4 @@
-"""Fixed model rounds with persisted attempts, usage, retries, and run endings."""
+"""Fixed model turns with persisted attempts, usage, retries, and run endings."""
 
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ class Owner:
                 )
         if not self.session.meta["terminal"]:
             self.session.fire_timers()
-            await self.controls()
+            await self.handle_controls()
 
     def clear(self) -> None:
         self.task = self.active_id = None
@@ -97,7 +97,7 @@ class Owner:
                 )
         self.session.end("failure", reason, cleanup_error=error, note_id=note_id)
 
-    async def controls(self) -> None:
+    async def handle_controls(self) -> None:
         controls = sorted(
             self.session.data["controls"].items(),
             key=lambda pair: (pair[1]["cell"].get("role") != "cancel", int(pair[0])),
@@ -119,15 +119,15 @@ class Owner:
                     )
                 elif execution["phase"] == "queued":
                     self.session.finish(target, {"type": "cancelled"})
-                self.session.handled(key, "accepted")
+                self.session.mark_handled(key, "accepted")
             elif role == "resolution":
-                self.session.handled(key, "accepted", resolution=cell["target_cell_id"])
+                self.session.mark_handled(key, "accepted", resolution=cell["target_cell_id"])
             elif cell["result"] == "failure":
                 await self.fail(cell["text"], note_id=key)
             else:
                 reason = await self._success_blocker(key)
                 if reason:
-                    self.session.handled(key, reason)
+                    self.session.mark_handled(key, reason)
                 else:
                     self.session.end("success", cell["text"], note_id=key)
             if self.session.meta["terminal"]:
@@ -188,7 +188,7 @@ class Owner:
         if self.session.store.failed:
             raise StorageFailure("Owner must recover storage")
         self.session.fire_timers()
-        await self.controls()
+        await self.handle_controls()
         if self.session.meta["terminal"] or self.session.meta["pause"] or self.task:
             return
         pending = self.session.pending()
@@ -248,9 +248,9 @@ async def run(
                 session.invalid_idle()
             try:
                 turn = session.prepare_turn()
-                session.accept(turn["id"], await _model_round(owner, turn, provider, model, flush))
+                session.accept(turn["id"], await _request_ops(owner, turn, provider, model, flush))
                 session.request_work()
-                await owner.controls()
+                await owner.handle_controls()
             except InvalidPatch as exc:
                 session.reject(turn["id"], str(exc))
             except RunStopped as exc:
@@ -285,7 +285,7 @@ def _idle_action(owner: Owner) -> Literal["ready", "wait", "invalid", "fail"]:
     return "invalid"
 
 
-async def _model_round(
+async def _request_ops(
     owner: Owner,
     turn: Turn,
     provider: ModelProvider,
@@ -301,7 +301,7 @@ async def _model_round(
             await owner.wait(turn["retry_at"])
             await owner.tick()
             flush()
-        turn = session.attempt(turn["id"])
+        turn = session.start_attempt(turn["id"])
         messages = [UserMessage(content=encode(turn["state"]))]
         if turn["error"]:
             messages.append(UserMessage(content="Rejected step: " + turn["error"]))
@@ -335,7 +335,7 @@ async def _model_round(
         )
         # Provider/API names do not establish that token usage was reported.
         # Missing and ambiguous zero usage remain unknown, never a free request.
-        session.response(
+        session.record_response(
             turn["id"], response.model_dump(mode="json"), max(0, tokens), known=tokens > 0
         )
     if response.stop_reason in ("error", "aborted"):

@@ -327,6 +327,48 @@ def applyTurnDelta (turn : JournalTurn) : TurnDelta → JournalTurn
 theorem turn_delta_preserves_prepared_context (turn : JournalTurn) (delta : TurnDelta) :
     (applyTurnDelta turn delta).state = turn.state := by cases delta <;> rfl
 
+/-- `usage.turns` counts new prepared turns, not attempts or accepted steps.
+    Model only the turn-budget branch; lifecycle, token, and storage checks are separate. -/
+structure TurnBudget where
+  turns : Nat
+  pending : Bool
+  deriving DecidableEq, Repr
+
+def prepareWithinTurnBudget (budget : TurnBudget) (limit : Nat) : Option TurnBudget :=
+  if budget.pending then some budget
+  else if budget.turns < limit then
+    some { turns := budget.turns + 1, pending := true }
+  else none
+
+theorem pending_turn_reused_at_turn_limit (turns limit : Nat) :
+    prepareWithinTurnBudget ⟨turns, true⟩ limit = some ⟨turns, true⟩ := rfl
+
+theorem new_turn_counts_once (turns limit : Nat) (h : turns < limit) :
+    prepareWithinTurnBudget ⟨turns, false⟩ limit = some ⟨turns + 1, true⟩ := by
+  simp [prepareWithinTurnBudget, h]
+
+theorem turn_limit_blocks_new_turn (turns limit : Nat) (h : ¬ turns < limit) :
+    prepareWithinTurnBudget ⟨turns, false⟩ limit = none := by
+  simp [prepareWithinTurnBudget, h]
+
+/-- Attempt, response, and rejection keep the turn pending; acceptance closes it. -/
+def accountTurnDelta (budget : TurnBudget) : TurnDelta → TurnBudget
+  | .accept _ => { budget with pending := false }
+  | _ => budget
+
+theorem turn_progress_does_not_count_turns (budget : TurnBudget) (delta : TurnDelta) :
+    (accountTurnDelta budget delta).turns = budget.turns := by cases delta <;> rfl
+
+theorem rejection_reuses_turn (turns limit : Nat) :
+    prepareWithinTurnBudget (accountTurnDelta ⟨turns, true⟩ .reject) limit =
+      some ⟨turns, true⟩ := rfl
+
+theorem model_attempt_increments_attempts (turn : JournalTurn) :
+    (applyTurnDelta turn .attempt).attempts = turn.attempts + 1 := rfl
+
+theorem saved_response_preserves_attempts (turn : JournalTurn) (response : String) :
+    (applyTurnDelta turn (.response response)).attempts = turn.attempts := rfl
+
 /-- Chunk concatenation before applying the output retention limit. -/
 inductive OutputRecord where
   | snapshot (text : List Char)
@@ -381,28 +423,28 @@ theorem non_posix_recovery_stops_nothing (workers : List Nat) :
 
 /-- Only an explicit run stop becomes a failure conclusion; patch errors retry.
    Unexpected errors propagate without writing a conclusion or rejection. -/
-inductive RoundError where
+inductive TurnError where
   | invalidPatch | runStopped | unexpected
   deriving DecidableEq, Repr
 
-inductive RoundDisposition where
+inductive TurnDisposition where
   | reject | fail | propagate
   deriving DecidableEq, Repr
 
-def handleRoundError : RoundError → RoundDisposition
+def handleTurnError : TurnError → TurnDisposition
   | .invalidPatch => .reject
   | .runStopped => .fail
   | .unexpected => .propagate
 
-theorem only_explicit_stop_concludes_failure (error : RoundError) :
-    handleRoundError error = .fail ↔ error = .runStopped := by
-  cases error <;> simp [handleRoundError]
+theorem only_explicit_stop_concludes_failure (error : TurnError) :
+    handleTurnError error = .fail ↔ error = .runStopped := by
+  cases error <;> simp [handleTurnError]
 
 theorem invalid_patch_remains_retryable :
-    handleRoundError .invalidPatch = .reject := rfl
+    handleTurnError .invalidPatch = .reject := rfl
 
 theorem unexpected_error_propagates :
-    handleRoundError .unexpected = .propagate := rfl
+    handleTurnError .unexpected = .propagate := rfl
 
 /-- The runtime ledger patches a full record, preserving fields not supplied by the caller. -/
 abbrev LedgerRecord := String → Option String

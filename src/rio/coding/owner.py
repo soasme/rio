@@ -324,7 +324,7 @@ class ProcessOwner(Owner):
                                             )
                                     line_task = asyncio.create_task(process.stdout.readline())
                                 if time.monotonic() >= deadline:
-                                    session.output(cell_id, buffers)
+                                    session.append_output(cell_id, buffers)
                                     buffers = {"stdout": "", "stderr": ""}
                                     deadline = time.monotonic() + session.limits.flush_seconds
                         finally:
@@ -337,7 +337,7 @@ class ProcessOwner(Owner):
                     buffers[name] += decoders[name].decode(b"", final=True)
                 try:
                     if not session.store.failed:
-                        session.output(cell_id, buffers)
+                        session.append_output(cell_id, buffers)
                 finally:
                     # Keep the tail, and point to the full output on disk.
                     truncated = {}

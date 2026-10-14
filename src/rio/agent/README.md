@@ -11,7 +11,7 @@
 - `CellKind` is a four-field extension point: name, field schemas, prompt and
   validator. The `Owner` decides how a Cell runs. [rio.coding.cells](../coding/cells.py)
   adds `code` and `cmd` without changing the core. Custom agents can add other kinds.
-- Each model round sees a fixed state snapshot, without conversation history.
+- Each model turn sees a fixed state snapshot, without conversation history.
   A separate lock file protects ownership before SQLite opens the database.
   See [Architecture](../../../docs/explanation/architecture.md).
 
@@ -53,7 +53,7 @@ completed session without provider setup. Both recover leftover work before publ
 `UnknownExecution`. Subclasses implement `launch` and `validate` to execute runnable
 kinds and validators, and extend `recover` to stop their leftover work first.
 
-`Session.prepare_turn` and `Session.attempt` raise `RunStopped` from
+`Session.prepare_turn` and `Session.start_attempt` raise `RunStopped` from
 `rio.agent.session` when a budget or lifecycle limit prevents progress. The runner
 records these stops as failure conclusions and retries `InvalidPatch` rejections.
 Other errors in session operations or saved-response validation propagate to the

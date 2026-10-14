@@ -17,7 +17,7 @@ class InvalidPatch(ValueError):
 
 @dataclass(frozen=True)
 class Limits:
-    rounds: int = 100
+    turns: int = 100
     tokens: int = 1_000_000
     execution_seconds: float = 600
     invalid_attempts: int = 3

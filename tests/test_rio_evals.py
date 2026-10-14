@@ -11,7 +11,7 @@ def row(case, seconds, passed=True):
         "case": case,
         "seconds": seconds,
         "passed": passed,
-        "model_rounds": 2,
+        "model_turns": 2,
         "context_bytes": 100,
     }
 
@@ -63,3 +63,21 @@ def test_success_time_excludes_failed_attempts_but_latency_keeps_them():
     assert result["median_seconds"] == 5.5
     assert result["median_success_seconds"] == 10
     assert result["pass_rate"] == 0.5
+
+
+def test_turn_metrics_count_preparations_and_compare_legacy_results():
+    trace = "\n".join(
+        json.dumps(event)
+        for event in [
+            {"type": "turn_prepared", "changes": {"turns": {"one": {"state": {}}}}},
+            {"type": "model_attempt", "changes": {}},
+            {"type": "patch_rejected", "changes": {}},
+            {"type": "model_attempt", "changes": {}},
+        ]
+    )
+    assert trace_metrics(trace)["model_turns"] == 1
+    old = row("001", 10)
+    old["model_rounds"] = old.pop("model_turns")
+    result = compare(summary(old), summary(row("001", 10)))["cases"]["001"]
+    assert result["baseline"]["median_model_turns"] == 2
+    assert result["baseline"] == result["candidate"]

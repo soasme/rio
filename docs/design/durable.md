@@ -7,7 +7,7 @@ This document defines the agreed next Rio core. It describes intended behavior, 
 
 ## 1. Core contract
 
-Rio's state is model context. Each round, the LLM calls one tool, `step`, with a list of ops on Cells. The Harness commits the step, evaluates State, runs accepted code Cells, and records output. The LLM manages its context by adding, replacing, summarizing, and removing Cells.
+Rio's state is model context. Each turn, the LLM calls one tool, `step`, with a list of ops on Cells. The Harness commits the step, evaluates State, runs accepted code Cells, and records output. The LLM manages its context by adding, replacing, summarizing, and removing Cells.
 
 Cells are immutable and independent. Each new code or cmd Cell version requests one finite execution. Notes do not execute code. A Session can last for months without retaining a worker between events.
 
@@ -24,7 +24,7 @@ Rio does not guarantee identical model responses, restoration of external inputs
 | Session | SQLite records of State changes, Cells, executions, observations, and run endings |
 | State | Current goal, selected immutable Cells, and relevant runtime facts |
 | Cell | An immutable note, Python script, or command, identified by an increasing integer |
-| Inbox | Persistent observations waiting for a model round |
+| Inbox | Persistent observations waiting for a model turn |
 
 The first version has one State and one local owner per Session. One code Cell runs at a time in each Session. Different Sessions may run concurrently; their shared external resources are not coordinated by Rio.
 
@@ -98,9 +98,9 @@ The only model tool takes a list of ops that name existing Cells by ID.
 
 The model writes Cell bodies without `id` or `previous_id`. The Harness assigns IDs in op order, sets `previous_id`, keeps a replacement at its position, appends added Cells, and applies removals in any order. Reject an unknown ID, a second op on one Cell, and an op on a Cell added in the same step. The model does not echo the revision: the Harness rejects a turn whose prepared State is no longer current.
 
-Validate the complete candidate, including context limits, before committing. One SQLite transaction stores new Cell versions, accepts the step, advances revision and IDs, creates execution records, records control requests, and consumes the round's delivered messages. Invalid steps have no partial effect.
+Validate the complete candidate, including context limits, before committing. One SQLite transaction stores new Cell versions, accepts the step, advances revision and IDs, creates execution records, records control requests, and consumes the turn's delivered messages. Invalid steps have no partial effect.
 
-A durable `turn_id` identifies a model round. Only one step can be accepted for that turn. Duplicate submissions return the original receipt; conflicting submissions are rejected. Enforce a unique execution record per code Cell ID. Rebuilding or repeatedly evaluating State creates no additional execution.
+A durable `turn_id` identifies a model turn. Only one step can be accepted for that turn. Duplicate submissions return the original receipt; conflicting submissions are rejected. Enforce a unique execution record per code Cell ID. Rebuilding or repeatedly evaluating State creates no additional execution.
 
 Process accepted control requests before dispatching queued code. Publish receipts and dispatch work only after commit.
 
@@ -126,7 +126,7 @@ Remote jobs remain part of the Working Environment. Stopping a local worker does
 
 In-memory messages are wake-up hints. Startup scans and periodic checks discover committed work when hints are lost. Waiting Sessions need no Cell process.
 
-## 6. SQLite and model rounds
+## 6. SQLite and model turns
 
 SQLite is the sole persistent backend. Store ordered events, immutable Cell versions, execution records, and retained outputs. Derived indexes and optional snapshots can be rebuilt. Rebuilding State is a pure reducer: it performs no external I/O and executes no Cells or model calls.
 
@@ -146,9 +146,9 @@ Publish model-visible and user-visible progress only from committed records. Buf
 
 ### Fixed State during generation
 
-Between rounds, fold a bounded set of Inbox observations into State and commit the resulting revision. Prepare one model request with its turn ID, exact State, delivered message IDs, prompt and tool schema references, model configuration, and retry count.
+Between turns, fold a bounded set of Inbox observations into State and commit the resulting revision. Prepare one model request with its turn ID, exact State, delivered message IDs, prompt and tool schema references, model configuration, and retry count.
 
-State remains fixed during that request. Workers can finish and incoming observations can commit to Inbox, but they do not modify the model's snapshot. Accept its step against the revision it saw; reject it if State has moved on. The next round incorporates later observations. This permits decisions based on slightly old information and avoids constant revision conflicts.
+State remains fixed during that request. Workers can finish and incoming observations can commit to Inbox, but they do not modify the model's snapshot. Accept its step against the revision it saw; reject it if State has moved on. The next turn incorporates later observations. This permits decisions based on slightly old information and avoids constant revision conflicts.
 
 Commit message consumption with step acceptance. A paused dispatch resumes only after the error or interruption that caused the pause has been delivered and consumed. An unrelated in-flight model response cannot clear a newer pause.
 
@@ -171,7 +171,7 @@ If a worker is interrupted before a reliable final result commits, record an out
 
 Commit the output and its Inbox notice together, once per interruption. Retain source, timestamps, committed output, and any recorded external identifiers. Rio may not know which internal operations completed. An ordinary exception also does not imply rollback of earlier effects.
 
-UnknownExecution ends that execution, not the Session. The next model round can add query Cells to inspect files, logs, hashes, processes, or remote APIs. Investigation produces new recorded observations. The LLM chooses whether to continue, retry, wait, or fail.
+UnknownExecution ends that execution, not the Session. The next model turn can add query Cells to inspect files, logs, hashes, processes, or remote APIs. Investigation produces new recorded observations. The LLM chooses whether to continue, retry, wait, or fail.
 
 To resolve uncertainty, add an immutable note with `role: "resolution"`, a `target_cell_id`, recorded `evidence_refs`, and text explaining the decision. The Harness checks that the target and evidence exist and records the resolution. It does not certify the reasoning. The original UnknownExecution remains unchanged in history. A bare acknowledgment without evidence does not resolve uncertainty.
 
@@ -226,7 +226,7 @@ A note with `role: "conclusion"`, `result: "success" | "failure"`, and a reason 
 
 The LLM judges whether a natural-language goal is achieved. Supplied validators are mandatory and cannot be weakened by model steps. The Harness checks their recorded outcomes and mechanical conditions; it does not prove semantic success for arbitrary goals.
 
-Success requires no outstanding work or unresolved uncertainty and passing required validators. Account for observations that arrived during generation before accepting success; return them to a new round if they could invalidate the conclusion.
+Success requires no outstanding work or unresolved uncertainty and passing required validators. Account for observations that arrived during generation before accepting success; return them to a new turn if they could invalidate the conclusion.
 
 Failure stops admission, cancels queued work, and stops local workers. Record remaining external uncertainty and any inability to stop a worker in the terminal record. Failure need not resolve every unknown outcome. Restart never revives a terminal run; another attempt requires an explicit new run.
 
@@ -236,7 +236,7 @@ Bound State size and each output before it enters context. Reserve room for new 
 
 Reject steps that exceed the State budget. Ask the LLM to prune before the hard limit. Keep compact pending and uncertainty records visible, and bound admitted work so those records fit. If the model cannot produce a valid smaller State within its retry budget, fail.
 
-Persist configured model-round, token, execution-time, and consecutive-invalid-step limits. Invalid idle decisions use the retry budget. Restart does not reset usage. The LLM judges lack of progress; there is no separate semantic progress detector. Exact numeric limits are deployment configuration.
+Persist configured model-turn, token, execution-time, and consecutive-invalid-step limits. Invalid idle decisions use the retry budget. Restart does not reset usage. The LLM judges lack of progress; there is no separate semantic progress detector. Exact numeric limits are deployment configuration.
 
 ## 11. Recovery and required tests
 
@@ -266,7 +266,7 @@ Example: a Cell edits a Flask route and starts tests. Rio stops before final out
 | Crash after launch authorization | UnknownExecution; no automatic rerun |
 | Old worker or child survives restart | Stop it before new execution, or fail recovery |
 | Lost model response or partial JSON | Bounded retry; no partial or duplicate accepted step |
-| Observation arrives during generation | Persist to Inbox; keep the round's State fixed |
+| Observation arrives during generation | Persist to Inbox; keep the turn's State fixed |
 | Unrelated response arrives after a new error | It cannot clear the new dispatch pause |
 | Uncertain SQLite commit | Stop admission/publication and local workers; reopen and inspect |
 | Streaming output is visible | The chunk was committed first |
@@ -286,7 +286,7 @@ Test process termination and host/power failure separately. A process-kill test 
 
 ## 12. Scope and relation to earlier designs
 
-Implement the SQLite reducer and commit protocol, step admission, serial execution and worker cleanup, fixed model rounds, Inbox and timers, control notes, then fault-injection tests and coding evaluations.
+Implement the SQLite reducer and commit protocol, step admission, serial execution and worker cleanup, fixed model turns, Inbox and timers, control notes, then fault-injection tests and coding evaluations.
 
 BEAM informs process ownership and supervision. Rio keeps Python. The CLM approach informs model-managed context. Rio v0.7.0–v0.7.1 provide the earlier notebook-based direction; this design keeps model-edited JSON State and Session history while replacing shared kernel execution. [R8–R10, R13]
 

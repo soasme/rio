@@ -39,7 +39,7 @@ commits, before execution finishes. Stdout follows `└` directly; stderr adds a
 
 Control notes display their text. A conclusion note is a request, not an accepted
 run ending. Only `run_ended` reports final success or failure. Patch rejection
-reports `Retry: <reason>`; model-round bookkeeping does not create transcript entries.
+reports `Retry: <reason>`; model-turn bookkeeping does not create transcript entries.
 
 ## Output and replay
 

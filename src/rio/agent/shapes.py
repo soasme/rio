@@ -44,7 +44,7 @@ class Cell(TypedDict):
 
 
 class Usage(TypedDict):
-    rounds: int
+    turns: int
     attempts: int
     tokens: int
     unknown_usage: int

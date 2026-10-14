@@ -17,6 +17,7 @@ resume its durable session when needed.
 ## Reference
 
 - [Command-line interface](reference/cli.md)
+- [Glossary](glossary.md)
 
 ## Explanation
 
