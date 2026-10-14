@@ -8,6 +8,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
@@ -15,7 +16,8 @@ from pydantic import ValidationError
 from rio.agent.prompt import CONCLUSION, PROTOCOL
 from rio.agent.runner import Owner, RecoveryFailure, replay, run
 from rio.agent.session import RunStopped, Session
-from rio.agent.state import CellKind, InvalidPatch, Limits
+from rio.agent.shapes import NoteRole
+from rio.agent.state import ROLES, CellKind, InvalidPatch, Limits
 from rio.agent.store import StorageFailure, Store, reduce_event
 from rio.ai import FakeProvider
 from rio.ai.messages import AssistantMessage, ToolCall
@@ -632,6 +634,12 @@ def test_note_only_agent_rejects_runnable_cells(tmp_path):
         with pytest.raises(InvalidPatch, match="Cell kind must be"):
             accept(session, {**note(), "kind": ["note"]})
         assert accept(session, note())["cell_ids"] == [1]
+
+
+def test_note_roles_match_role_table():
+    # Session admits and Owner handles every declared role; the Literal mirrors the table.
+    assert get_args(NoteRole) == tuple(ROLES) == tuple(Owner.ROLE_HANDLERS)
+    assert Session.ROLE_CHECKS.keys() <= ROLES.keys()
 
 
 def test_note_is_not_an_extension_kind(tmp_path):
