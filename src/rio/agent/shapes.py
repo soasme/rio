@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, NotRequired, TypedDict
 
-NoteRole = Literal["cancel", "resolution", "conclusion"]
+ControlType = Literal["cancel", "resolution", "conclusion"]
 RunResult = Literal["success", "failure"]
 Phase = Literal["queued", "started", "finished"]
 ResultType = Literal["success", "error", "cancelled", "UnknownExecution"]
@@ -32,12 +32,17 @@ EventKind = Literal[
 
 
 class Cell(TypedDict):
-    # Note keys below; other kinds carry the fields of their CellKind instead.
+    # Model memory. A note has text; other kinds carry the fields of their CellKind.
     id: int
     previous_id: int | None
     kind: str  # Caller-provided CellKind.name, or the built-in "note".
     text: NotRequired[str]
-    role: NotRequired[NoteRole]
+
+
+class ControlRequest(TypedDict):
+    # A model action from a control op; required fields per type are in state.CONTROLS.
+    type: ControlType
+    reason: str
     target_cell_id: NotRequired[int]
     evidence_refs: NotRequired[list[str]]
     result: NotRequired[RunResult]
@@ -83,7 +88,7 @@ class Execution(TypedDict):
 
 
 class RuntimeCell(Execution):
-    # Execution as shown to the model, with the resolution note id added.
+    # Execution as shown to the model, with the resolution control id added.
     resolved_by: NotRequired[int]
 
 
@@ -108,6 +113,7 @@ class Receipt(TypedDict):
     turn_id: str
     revision: int
     cell_ids: list[int]
+    control_ids: list[int]
     event: int
 
 
@@ -126,7 +132,7 @@ class Turn(TypedDict):
 
 
 class Control(TypedDict):
-    cell: Cell
+    control: ControlRequest
     handled: bool
     outcome: NotRequired[str]  # "accepted" or a rejection reason
 
@@ -172,10 +178,10 @@ class Projection(TypedDict):
     executions: dict[str, Execution]
     inbox: dict[str, InboxMessage]
     turns: dict[str, Turn]
-    controls: dict[str, Control]  # keyed by note Cell id
+    controls: dict[str, Control]  # keyed by control id: 1, 2, ... in accepted op order
     timers: dict[str, Timer]
-    resolutions: dict[str, int]  # target Cell id -> resolution note id
-    validator_results: dict[str, ValidatorResult]  # keyed by "<conclusion id>:<index>"
+    resolutions: dict[str, int]  # target Cell id -> resolution control id
+    validator_results: dict[str, ValidatorResult]  # keyed by "<conclusion control id>:<index>"
     metrics: NotRequired[dict[str, float | int]]
     # Other keys are owner collections written by Session.record.
 

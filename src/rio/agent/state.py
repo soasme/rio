@@ -1,4 +1,4 @@
-"""Step admission for immutable, independent Cells addressed by id."""
+"""Step admission for immutable, independent Cells addressed by id, plus controls."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import copy
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 
-from rio.agent.shapes import Cell, Execution, State
+from rio.agent.shapes import Cell, ControlRequest, Execution, State
 from rio.agent.store import encode
 from rio.truncate import DEFAULT_MAX_OUTPUT_BYTES
 
@@ -38,7 +38,7 @@ class Limits:
 
 @dataclass(frozen=True)
 class CellKind:
-    """A runnable Cell kind. Notes are built in and never run; callers add kinds to act.
+    """A Cell kind. The built-in note never runs; callers add runnable kinds to act.
 
     ``fields`` maps each field besides ``kind`` to its JSON schema for the step tool.
     ``validate`` raises InvalidPatch for a malformed Cell body. The Owner decides how a
@@ -51,43 +51,60 @@ class CellKind:
     validate: Callable[[dict], None]
 
 
-@dataclass(frozen=True)
-class Role:
-    """A note role. Session admits it and the Owner handles it, both keyed by name.
+def _note(cell: dict) -> None:
+    if not isinstance(cell.get("text"), str) or not cell["text"].strip():
+        raise InvalidPatch("Notes require nonblank text")
 
-    ``targets`` requires target_cell_id naming a recorded execution. ``check`` raises
-    InvalidPatch for other malformed fields. The Owner handles lower ``order`` first.
+
+NOTE = CellKind(
+    name="note",
+    fields={"text": {"type": "string"}},
+    prompt='Note: {"kind":"note","text":"..."}.\n',
+    validate=_note,
+)
+
+
+@dataclass(frozen=True)
+class ControlKind:
+    """A control type. Session admits it and the Owner handles it, both keyed by name.
+
+    ``fields`` are required besides type and reason; a target_cell_id must name a
+    recorded execution. The Owner handles lower ``order`` first.
     """
 
     order: int
-    targets: bool = False
-    check: Callable[[dict], None] = lambda cell: None
+    fields: tuple[str, ...] = ()
 
 
-def _evidence(cell: dict) -> None:
-    if not isinstance(cell.get("evidence_refs"), list) or not cell["evidence_refs"]:
-        raise InvalidPatch("Resolution requires recorded evidence_refs")
-
-
-def _result(cell: dict) -> None:
-    if cell.get("result") not in ("success", "failure"):
-        raise InvalidPatch("Conclusion requires result: success or failure")
-
-
-# Keep in step with shapes.NoteRole.
-ROLES = {
-    "cancel": Role(order=0, targets=True),
-    "resolution": Role(order=1, targets=True, check=_evidence),
-    "conclusion": Role(order=1, check=_result),
+# Keep in step with shapes.ControlType.
+CONTROLS = {
+    "cancel": ControlKind(order=0, fields=("target_cell_id",)),
+    "resolution": ControlKind(order=1, fields=("target_cell_id", "evidence_refs")),
+    "conclusion": ControlKind(order=1, fields=("result",)),
 }
 
-# Note fields besides kind, as JSON schemas for the step tool.
-NOTE = {
-    "text": {"type": "string"},
-    "role": {"type": "string", "enum": list(ROLES)},
-    "target_cell_id": {"type": "integer"},
-    "evidence_refs": {"type": "array", "items": {"type": "string"}},
-    "result": {"type": "string", "enum": ["success", "failure"]},
+# Control fields besides type: the step tool's JSON schema and the runtime check.
+CONTROL_FIELDS: dict[str, tuple[dict, Callable[[object], bool]]] = {
+    "target_cell_id": (
+        {"type": "integer", "description": "id of a Cell with a recorded execution"},
+        lambda value: type(value) is int,
+    ),
+    "evidence_refs": (
+        {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": 'nonempty list of recorded "session:event:N" references',
+        },
+        lambda value: isinstance(value, list) and bool(value),
+    ),
+    "result": (
+        {"type": "string", "enum": ["success", "failure"], "description": "success or failure"},
+        lambda value: value in ("success", "failure"),
+    ),
+    "reason": (
+        {"type": "string", "description": "nonblank text explaining why"},
+        lambda value: isinstance(value, str) and bool(value.strip()),
+    ),
 }
 
 
@@ -98,29 +115,38 @@ def validate_cell(cell: object, kinds: Mapping[str, CellKind]) -> None:
     if {"id", "previous_id"} & set(cell):
         raise InvalidPatch("Omit id and previous_id from cell; the runtime assigns them")
     name = cell.get("kind")
-    if name == "note":
-        allowed = {"kind", *NOTE}
-        if not isinstance(cell.get("text"), str) or not cell["text"].strip():
-            raise InvalidPatch("Notes require nonblank text")
-        if cell.get("role") is not None:
-            role = ROLES.get(cell["role"]) if isinstance(cell["role"], str) else None
-            if role is None:
-                raise InvalidPatch("Unknown note role")
-            if role.targets and type(cell.get("target_cell_id")) is not int:
-                raise InvalidPatch("Control note requires target_cell_id")
-            role.check(cell)
-    elif isinstance(name, str) and name in kinds:
-        allowed = {"kind", *kinds[name].fields}
-        kinds[name].validate(cell)
-    else:
-        raise InvalidPatch(f"Cell kind must be one of: {', '.join(['note', *kinds])}")
-    if set(cell) - allowed:
-        raise InvalidPatch(f"Unknown Cell fields: {sorted(set(cell) - allowed)}")
+    if not isinstance(name, str) or name not in kinds:
+        raise InvalidPatch(f"Cell kind must be one of: {', '.join(kinds)}")
+    kinds[name].validate(cell)
+    if unknown := set(cell) - {"kind", *kinds[name].fields}:
+        raise InvalidPatch(f"Unknown Cell fields: {sorted(unknown)}")
 
 
-OPS = {"add": {"op", "cell"}, "replace": {"op", "id", "cell"}, "remove": {"op", "id"}}
+def validate_control(control: object) -> None:
+    """Check a model-written control against its type in CONTROLS."""
+    if not isinstance(control, dict):
+        raise InvalidPatch("control must be an object")
+    name = control.get("type")
+    if not isinstance(name, str) or name not in CONTROLS:
+        raise InvalidPatch(f"Control type must be one of: {', '.join(CONTROLS)}")
+    fields = (*CONTROLS[name].fields, "reason")
+    for field in fields:
+        spec, check = CONTROL_FIELDS[field]
+        if not check(control.get(field)):
+            raise InvalidPatch(f"{name} control requires {field}: {spec['description']}")
+    if unknown := set(control) - {"type", *fields}:
+        raise InvalidPatch(f"{name} control takes {', '.join(fields)}; remove {sorted(unknown)}")
+
+
+OPS = {
+    "add": {"op", "cell"},
+    "replace": {"op", "id", "cell"},
+    "remove": {"op", "id"},
+    "control": {"op", "control"},
+}
 USAGE = (
-    'Use {"op":"add","cell":{...}}, {"op":"replace","id":N,"cell":{...}}, or {"op":"remove","id":N}'
+    'Use {"op":"add","cell":{...}}, {"op":"replace","id":N,"cell":{...}}, {"op":"remove","id":N}, '
+    'or {"op":"control","control":{"type":...}}'
 )
 
 
@@ -135,8 +161,11 @@ def admit(
     executions: dict[str, Execution],
     limit: int,
     kinds: Mapping[str, CellKind],
-) -> tuple[State, list[Cell]]:
-    """Apply id-addressed ops; the runtime assigns ids, lineage, and positions."""
+) -> tuple[State, list[Cell], list[ControlRequest]]:
+    """Apply id-addressed ops; the runtime assigns ids, lineage, and positions.
+
+    Controls are returned in op order and never enter State.
+    """
     if not isinstance(ops, list):
         raise InvalidPatch(f"ops must be an array. {USAGE}")
     next_id = state["runtime"]["next_cell_id"]
@@ -144,14 +173,24 @@ def admit(
     replaced: dict[int, Cell] = {}
     removed: set[int] = set()
     new: list[Cell] = []
+    controls: list[ControlRequest] = []
     for index, operation in enumerate(ops):
         operation = present(operation) if isinstance(operation, dict) else None
         if (
             operation is None
-            or operation.get("op") not in ("add", "replace", "remove")
+            or not isinstance(operation.get("op"), str)
+            or operation["op"] not in OPS
             or set(operation) != OPS[operation["op"]]
         ):
             raise InvalidPatch(f"Invalid ops[{index}]. {USAGE}")
+        if operation["op"] == "control":
+            body = present(operation["control"]) if isinstance(operation["control"], dict) else None
+            try:
+                validate_control(body)
+            except InvalidPatch as exc:
+                raise InvalidPatch(f"ops[{index}]: {exc}") from None
+            controls.append(body)
+            continue
         previous = None
         if operation["op"] != "add":
             cell_id = operation["id"]
@@ -171,7 +210,7 @@ def admit(
             if executions.get(str(cell_id), {}).get("phase") in ("queued", "started"):
                 raise InvalidPatch(
                     f"ops[{index}]: Cell {cell_id} is queued or running; add a new Cell, "
-                    "or cancel it with a cancel note"
+                    "or cancel it with a cancel control"
                 )
             previous = cell_id
         body = present(operation["cell"]) if isinstance(operation["cell"], dict) else None
@@ -196,4 +235,4 @@ def admit(
     context = {**candidate, "runtime": {}}
     if len(encode(context).encode()) > limit:
         raise InvalidPatch("State exceeds context budget; remove Cells before adding work")
-    return candidate, new
+    return candidate, new, controls

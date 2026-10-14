@@ -28,23 +28,65 @@ structure Cell where
 
 def successor (old : Cell) (next : Nat) : Cell := ⟨next, some old.id⟩
 
-/-- A step op names Cells by id; the runtime assigns ids, lineage, and positions. -/
+/-- Cell ops name Cells by id; the runtime assigns ids, lineage, and positions.
+   A control is an action, not a Cell: it never enters State. -/
 inductive Op where
-  | add | replace (id : Nat) | remove (id : Nat)
+  | add | replace (id : Nat) | remove (id : Nat) | control
   deriving DecidableEq, Repr
 
 def Op.target : Op → Option Nat
-  | .add => none
+  | .add | .control => none
   | .replace id | .remove id => some id
 
-/-- Each add or replace takes the next id, in op order. -/
+/-- Each add or replace takes the next Cell id, in op order. -/
 def allocate (next : Nat) : List Op → List Nat
   | [] => []
-  | .remove _ :: ops => allocate next ops
+  | .remove _ :: ops | .control :: ops => allocate next ops
   | _ :: ops => next :: allocate (next + 1) ops
 
 theorem ids_follow_op_order :
     allocate 5 [.remove 1, .add, .replace 3, .add] = [5, 6, 7] := rfl
+
+theorem controls_take_no_cell_ids :
+    allocate 5 [.control, .add, .control, .replace 3] = [5, 6] := rfl
+
+/-- Controls take their own ids, counting on from the journaled controls. -/
+def allocateControls (recorded : Nat) (ops : List Op) : List Nat :=
+  (List.range (ops.filter (· == .control)).length).map (recorded + 1 + ·)
+
+theorem control_ids_follow_recorded (recorded : Nat) (ops : List Op) :
+    ∀ id ∈ allocateControls recorded ops, recorded < id := by
+  intro id h
+  simp [allocateControls] at h
+  omega
+
+theorem control_ids_are_distinct (recorded : Nat) (ops : List Op) :
+    (allocateControls recorded ops).Nodup := by
+  unfold allocateControls
+  exact List.Pairwise.map _ (fun _ _ h => by omega) List.nodup_range
+
+/-- Each control type requires its fields besides type and reason (state.CONTROLS). -/
+inductive ControlType where
+  | cancel | resolution | conclusion
+  deriving DecidableEq, Repr
+
+def ControlType.fields : ControlType → List String
+  | .cancel => ["target_cell_id"]
+  | .resolution => ["target_cell_id", "evidence_refs"]
+  | .conclusion => ["result"]
+
+/-- A control is admitted with exactly its type's fields. -/
+def controlAdmits (t : ControlType) (given : List String) : Bool :=
+  given.all (· ∈ "reason" :: t.fields) && ("reason" :: t.fields).all (· ∈ given)
+
+theorem cancel_requires_target :
+    controlAdmits .cancel ["reason"] = false := by decide
+
+theorem conclusion_rejects_target :
+    controlAdmits .conclusion ["reason", "result", "target_cell_id"] = false := by decide
+
+theorem resolution_admits_its_fields :
+    controlAdmits .resolution ["target_cell_id", "evidence_refs", "reason"] = true := by decide
 
 /-- A replacement keeps its position and points to the old id. -/
 def replaceId (cells : List Cell) (id next : Nat) : List Cell :=
@@ -402,13 +444,13 @@ theorem missing_finish_never_succeeds (limited tools : Bool) :
 theorem token_limit_precedes_tool_use (tools : Bool) :
     streamEnd true true tools = .length := rfl
 
-/-- Either conclusion ends the run and marks its note handled in one commit. -/
+/-- Either conclusion ends the run and marks its control handled in one commit. -/
 inductive Conclusion where
   | success | failure
   deriving DecidableEq, Repr
 
 def conclusionCommits (_ : Conclusion) : List (Bool × Bool) :=
-  [(true, true)]  -- (terminal, note handled)
+  [(true, true)]  -- (terminal, control handled)
 
 theorem conclusion_is_one_commit (c : Conclusion) :
     (conclusionCommits c).length = 1 ∧ conclusionCommits c = [(true, true)] := by

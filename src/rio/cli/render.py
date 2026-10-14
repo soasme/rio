@@ -8,7 +8,7 @@ _OUTPUT_CHARS = 8_000
 
 
 class PlainEventRenderer:
-    """Show code, notes, and streaming results without internal cell metadata."""
+    """Show code, notes, control reasons, and streaming results without internal metadata."""
 
     def __init__(self) -> None:
         self._has_entries = False
@@ -28,6 +28,9 @@ class PlainEventRenderer:
                 else:
                     body = cell["source"] if cell["kind"] == "code" else cell["text"]
                 self._message(body)
+            # Controls are requests; run_ended alone reports the final result.
+            for key in sorted(changes.get("controls", {}), key=int):
+                self._message(changes["controls"][key]["control"]["reason"])
         elif kind in ("execution_output", "output_truncated", "execution_finished"):
             chunks = "output_chunks" in changes
             for key, execution in changes.get(

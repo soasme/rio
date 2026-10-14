@@ -12,17 +12,17 @@ from typing import cast
 from rio.agent.ledger import RuntimeLedger
 from rio.agent.prompt import schema, system
 from rio.agent.shapes import (
-    Cell,
+    ControlRequest,
     Projection,
     Receipt,
     State,
     Turn,
 )
-from rio.agent.state import NOTE, ROLES, CellKind, InvalidPatch, Limits, admit
+from rio.agent.state import CONTROLS, NOTE, CellKind, InvalidPatch, Limits, admit
 from rio.agent.store import Store, encode
 
 # Bump when the model-facing step protocol changes; saved turns hold the old prompt.
-STATE_SCHEMA = "rio.state/3"
+STATE_SCHEMA = "rio.state/4"
 
 
 class RunStopped(RuntimeError):
@@ -30,11 +30,13 @@ class RunStopped(RuntimeError):
 
 
 def by_name(kinds: Iterable[CellKind]) -> dict[str, CellKind]:
+    """The built-in note, then the caller's kinds, by name."""
     named = {kind.name: kind for kind in kinds}
     if "note" in named:
         raise ValueError("note is a built-in Cell kind")
+    named = {"note": NOTE, **named}
     # All kinds share one cell schema in the step tool, so a field means one thing.
-    fields = dict(NOTE)
+    fields: dict[str, dict] = {}
     for kind in named.values():
         for field, spec in kind.fields.items():
             if field in ("kind", "id", "previous_id") or fields.setdefault(field, spec) != spec:
@@ -74,7 +76,8 @@ class Session(RuntimeLedger):
     ) -> Session:
         if store.data:
             raise ValueError("Session already exists")
-        kinds = by_name(kinds)
+        kinds = list(kinds)
+        by_name(kinds)
         limits = limits or Limits()
         state: State = {
             "schema": STATE_SCHEMA,
@@ -111,7 +114,7 @@ class Session(RuntimeLedger):
                 "validator_results": {},
             },
         )
-        return cls(store, kinds.values())
+        return cls(store, kinds)
 
     @property
     def state(self) -> State:
@@ -250,14 +253,14 @@ class Session(RuntimeLedger):
             },
         )
 
-    def _admit_resolution(self, cell: Cell) -> None:
-        if cell["target_cell_id"] not in self.unresolved():
+    def _admit_resolution(self, control: ControlRequest) -> None:
+        if control["target_cell_id"] not in self.unresolved():
             raise InvalidPatch(
-                "Resolution notes apply only to unresolved UnknownExecution. "
-                "For an ordinary error, omit the resolution note; the next accepted "
+                "Resolution applies only to unresolved UnknownExecution. "
+                "For an ordinary error, omit the resolution control; the next accepted "
                 "step consumes the error and resumes dispatch."
             )
-        for ref in cell["evidence_refs"]:
+        for ref in control["evidence_refs"]:
             if not isinstance(ref, str) or not ref.startswith("session:event:"):
                 raise InvalidPatch("Evidence must reference recorded Session events")
             try:
@@ -271,8 +274,8 @@ class Session(RuntimeLedger):
             ):
                 raise InvalidPatch("Evidence must reference a recorded observation")
 
-    # Accept-time checks for state.ROLES that need recorded Session state.
-    ROLE_CHECKS = {"resolution": _admit_resolution}
+    # Accept-time checks for state.CONTROLS that need recorded Session state.
+    CONTROL_CHECKS = {"resolution": _admit_resolution}
 
     def accept(self, turn_id: str, ops: list) -> Receipt:
         turn = self.data["turns"][turn_id]
@@ -284,7 +287,7 @@ class Session(RuntimeLedger):
             raise InvalidPatch("Run has ended")
         if turn["state"]["revision"] != self.meta["state"]["revision"]:
             raise InvalidPatch("Stale turn: State changed after this turn was prepared")
-        state, new = admit(
+        state, new, requests = admit(
             turn["state"],
             ops,
             self.data["executions"],
@@ -294,17 +297,27 @@ class Session(RuntimeLedger):
         runs = [cell for cell in new if cell["kind"] != "note"]
         if len(self.pending()) + len(self.unresolved()) + len(runs) > self.limits.pending_cells:
             raise InvalidPatch("Too much outstanding work or uncertainty")
-        role_notes = [c for c in new if c["kind"] == "note" and c.get("role") in ROLES]
-        for cell in role_notes:
-            target = str(cell.get("target_cell_id"))
-            if ROLES[cell["role"]].targets and target not in self.data["executions"]:
-                raise InvalidPatch("Control target must be a recorded execution")
-            if check := self.ROLE_CHECKS.get(cell["role"]):
-                check(self, cell)
+        for control in requests:
+            target = control.get("target_cell_id")
+            targets = "target_cell_id" in CONTROLS[control["type"]].fields
+            if targets and str(target) not in self.data["executions"]:
+                raise InvalidPatch(
+                    f"{control['type']} control: Cell {target} has no recorded execution; "
+                    "target an accepted runnable Cell"
+                )
+            if check := self.CONTROL_CHECKS.get(control["type"]):
+                check(self, control)
+        # Controls never leave the journal, so ids count up from the recorded ones.
+        first = len(self.data["controls"]) + 1
+        controls = {
+            str(first + index): {"control": control, "handled": False}
+            for index, control in enumerate(requests)
+        }
         receipt: Receipt = {
             "turn_id": turn_id,
             "revision": state["revision"],
             "cell_ids": [c["id"] for c in new],
+            "control_ids": [int(key) for key in controls],
             "event": self.store.sequence + 1,
         }
         executions = {
@@ -317,7 +330,6 @@ class Session(RuntimeLedger):
             }
             for c in runs
         }
-        controls = {str(c["id"]): {"cell": c, "handled": False} for c in role_notes}
         messages = {mid: {**self.data["inbox"][mid], "consumed": True} for mid in turn["delivered"]}
         pause = self.meta["pause"]
         self.store.commit(

@@ -140,12 +140,11 @@ async def test_run_uses_catalog_for_local_server(
                                                     {
                                                         "ops": [
                                                             {
-                                                                "op": "add",
-                                                                "cell": {
-                                                                    "kind": "note",
-                                                                    "text": "hello",
-                                                                    "role": "conclusion",
+                                                                "op": "control",
+                                                                "control": {
+                                                                    "type": "conclusion",
                                                                     "result": "success",
+                                                                    "reason": "hello",
                                                                 },
                                                             }
                                                         ]

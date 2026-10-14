@@ -3,14 +3,19 @@
 ## What is `rio.agent`?
 
 - The whole package rests on this idea: the model edits its own state
-  through one tool (`step`) using three ops (`add`, `replace`, `remove`).
+  through one tool (`step`) using three Cell ops (`add`, `replace`, `remove`).
   Every accepted change is a journal event, and state is a fold over those events.
   Durability, resume, idempotent retries and `UnknownExecution` all follow from that one choice.
+- Cells are memory; controls are actions. A fourth op, `control`, requests `cancel`,
+  `resolution` or `conclusion`. Controls never enter State. They are journaled in
+  `controls` with ids 1, 2, ... in accepted order and handled once.
+  `state.CONTROLS` lists each type's required fields and handling order.
 - `admit()` in [state.py](state.py) covers ID assignment, lineage, positions,
   context budget and runtime reset. `Session.prepare_turn()` rebuilds runtime observations.
 - `CellKind` is a four-field extension point: name, field schemas, prompt and
-  validator. The `Owner` decides how a Cell runs. [rio.coding.cells](../coding/cells.py)
-  adds `code` and `cmd` without changing the core. Custom agents can add other kinds.
+  validator. The built-in `note` is one; it never runs. The `Owner` decides how a Cell
+  runs. [rio.coding.cells](../coding/cells.py) adds `code` and `cmd` without changing
+  the core. Custom agents can add other kinds.
 - Each model turn sees a fixed state snapshot, without conversation history.
   A separate lock file protects ownership before SQLite opens the database.
   See [Architecture](../../../docs/explanation/architecture.md).

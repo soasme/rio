@@ -19,12 +19,11 @@ async def main() -> None:
                 arguments={
                     "ops": [
                         {
-                            "op": "add",
-                            "cell": {
-                                "kind": "note",
-                                "role": "conclusion",
-                                "text": "Hello from Rio.",
+                            "op": "control",
+                            "control": {
+                                "type": "conclusion",
                                 "result": "success",
+                                "reason": "Hello from Rio.",
                             },
                         }
                     ]

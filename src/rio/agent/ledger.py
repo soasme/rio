@@ -226,19 +226,19 @@ class RuntimeLedger:
                     identity=mid,
                 )
 
-    def mark_handled(self, note_id: str, outcome: str, *, resolution: int | None = None) -> None:
-        control = self.data["controls"][note_id]
-        changes = {"controls": {note_id: {**control, "handled": True, "outcome": outcome}}}
+    def mark_handled(self, control_id: str, outcome: str, *, resolution: int | None = None) -> None:
+        record = self.data["controls"][control_id]
+        changes = {"controls": {control_id: {**record, "handled": True, "outcome": outcome}}}
         if resolution is not None:
-            changes["resolutions"] = {str(resolution): int(note_id)}
+            changes["resolutions"] = {str(resolution): int(control_id)}
+        mid = f"control:{control_id}"
         if outcome != "accepted":
-            mid = f"control:{note_id}"
+            # The control is not in State, so the observation carries it.
+            payload = {"control": record["control"], "reason": outcome}
             changes["inbox"] = {
-                mid: observation(
-                    mid, "control_rejected", {"reason": outcome}, self.store.sequence + 1
-                )
+                mid: observation(mid, "control_rejected", payload, self.store.sequence + 1)
             }
-        self.store.commit("control_handled", changes, identity=f"control:{note_id}")
+        self.store.commit("control_handled", changes, identity=mid)
 
     def end(
         self,
@@ -246,7 +246,7 @@ class RuntimeLedger:
         reason: str,
         *,
         cleanup_error: str | None = None,
-        note_id: str | None = None,
+        control_id: str | None = None,
     ) -> None:
         if self.meta["terminal"]:
             return
@@ -266,8 +266,12 @@ class RuntimeLedger:
                 "journal_bytes": self.store.journal_bytes,
             },
         }
-        if note_id is not None:
+        if control_id is not None:
             changes["controls"] = {
-                note_id: {**self.data["controls"][note_id], "handled": True, "outcome": "accepted"}
+                control_id: {
+                    **self.data["controls"][control_id],
+                    "handled": True,
+                    "outcome": "accepted",
+                }
             }
         self.store.commit("run_ended", changes, identity="terminal")

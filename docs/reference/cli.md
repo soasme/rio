@@ -40,7 +40,7 @@ project directory. A completed session cleans up recorded workers and replays it
 journal without provider setup or the original directory. Cleanup failures stop
 replay. See [sessions](../guides/sessions.md).
 
-`human` prints accepted content (notes, commands, and Python source), execution output and
+`human` prints accepted content (notes, commands, Python source, and control reasons), execution output and
 outcomes, and the session ID. Cell labels and numbers are not displayed. Resume replays the committed
 transcript before showing new progress. See the [message design](../design/coding-tui-messages.md).
 `json` emits one JSON event per line and is intended for programmatic consumers.
