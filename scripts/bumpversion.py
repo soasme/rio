@@ -51,7 +51,9 @@ def changelog_entries(root: Path, release_commit: str) -> list[str]:
     for subject in subjects:
         subject = subject.rstrip(".")
         entry = PULL_REQUEST_PATTERN.sub(
-            lambda match: f" ([#{match.group(1)}](https://github.com/soasme/rio/pull/{match.group(1)}))",
+            lambda match: (
+                f" ([#{match.group(1)}](https://github.com/soasme/rio/pull/{match.group(1)}))"
+            ),
             subject,
         )
         entries.append(f"* {entry}")
