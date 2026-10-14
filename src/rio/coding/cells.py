@@ -56,7 +56,8 @@ CODE = CellKind(
     name="code",
     fields={"runtime": {"type": "string", "enum": ["python"]}, "source": {"type": "string"}},
     prompt="""Code: {"kind":"code","runtime":"python","source":"..."}.
-Code runs via uv run. Each script MUST include PEP 723 metadata, even with no dependencies:
+Code runs via uv run in a fresh process; output has stdout and stderr streams.
+Each script MUST include PEP 723 metadata, even with no dependencies:
 # /// script
 # dependencies = []
 # ///
@@ -72,20 +73,23 @@ Python strings so newline escaping does not break the script.
 Scripts can use `from rio.coding.api import timer, records`. timer(request_id,
 unix_deadline, payload) durably registers one timer generation; it does not suspend or rerun
 the process. records(after=0) retrieves journal events as data.
+Files and package caches are not durable State.
 """,
     validate=_validate_code,
-    command=_code_command,
 )
 
 CMD = CellKind(
     name="cmd",
     fields={"argv": {"type": "array", "items": {"type": "string"}}},
     prompt="""Cmd: {"kind":"cmd","argv":["pytest","-q"]}.
-A cmd runs argv directly, without a shell; use ["sh","-c","..."] for pipes or globs.
+A cmd runs argv directly in a fresh process, without a shell; use ["sh","-c","..."]
+for pipes or globs.
 Prefer cmd Cells to run tests or shell tools.
 """,
     validate=_validate_cmd,
-    command=lambda cell, scratch: cell["argv"],
 )
 
 KINDS = (CODE, CMD)
+
+# How ProcessOwner runs each kind: the argv for one Cell version, given a scratch directory.
+COMMANDS = {"code": _code_command, "cmd": lambda cell, scratch: cell["argv"]}

@@ -164,8 +164,7 @@ If a worker is interrupted before a reliable final result commits, record an out
 {
   "type": "UnknownExecution",
   "cell_id": 2,
-  "reason": "worker_lost_before_result_commit",
-  "worker_stopped": true,
+  "reason": "owner_lost_before_result_commit",
   "evidence_refs": ["session:event:104"]
 }
 ```

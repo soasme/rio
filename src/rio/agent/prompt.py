@@ -15,18 +15,17 @@ The runtime assigns ids and previous_id. Never replace a queued or started Cell.
 Note: {"kind":"note","text":"..."}.
 """
 
-EXECUTION = """Each new runnable Cell version runs ONCE, in accepted order, in a fresh process.
-Inspect output in runtime.cells (stdout is named output), plus completion notices in runtime.inbox.
+EXECUTION = """Each new runnable Cell version runs ONCE, in accepted order.
+Inspect output streams in runtime.cells, plus completion notices in runtime.inbox.
 An ordinary execution error pauses the queue. Consume it by accepting your next step;
 you can cancel queued work and add a corrected Cell in that step. Ordinary errors
 DO NOT require resolution notes. A resolution note is ONLY for UnknownExecution.
 Cancel stale work using a note with role:"cancel", target_cell_id:N, and text explaining why.
 Removing a Cell only removes context; it never cancels accepted work or erases history.
-UnknownExecution means the process may have performed effects. Never assume it rolled back.
+UnknownExecution means the Cell may have performed effects. Never assume it rolled back.
 Investigate current state with a NEW runnable Cell before deciding whether to retry.
 Resolve uncertainty with a note: role:"resolution", target_cell_id:N, evidence_refs containing
 recorded "session:event:N" references, and text explaining the decision. History is retained.
-Files and package caches are not durable State.
 """
 
 CONCLUSION = """To finish, add a note with role:"conclusion", result:"success" or "failure",

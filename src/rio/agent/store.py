@@ -22,23 +22,17 @@ def encode(value: object) -> str:
 
 
 def reduce_event(projection: dict, changes: dict, kind: EventKind) -> dict:
-    """Fold committed records without files, workers, clocks, or model calls."""
+    """Fold committed records without files, owner work, clocks, or model calls."""
     result = projection.copy()
     for collection, records in changes.items():
         if collection == "output_chunks":
             executions = result["executions"].copy()
             for key, chunks in records.items():
                 old = executions[key]
-                executions[key] = {
-                    **old,
-                    "output": truncate_bytes_tail(
-                        old["output"] + chunks["output"], chunks["limit"]
-                    ),
-                    "stderr": truncate_bytes_tail(
-                        old["stderr"] + chunks["stderr"], chunks["limit"]
-                    ),
-                    "truncated": chunks["truncated"],
-                }
+                output = dict(old["output"])
+                for name, text in chunks["output"].items():
+                    output[name] = truncate_bytes_tail(output.get(name, "") + text, chunks["limit"])
+                executions[key] = {**old, "output": output, "truncated": chunks["truncated"]}
             result["executions"] = executions
         elif collection == "meta" and "state" in records:
             old = result.get("meta", {}).get("state", {})

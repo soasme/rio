@@ -38,7 +38,7 @@ async def main() -> None:
         tempfile.TemporaryDirectory() as directory,
         Store(Path(directory) / "session.sqlite3") as store,
     ):
-        session = Session.create(store, "Say hello", Path.cwd())
+        session = Session.create(store, "Say hello")
         assert await run(Owner(session), provider, "offline", print)
 
 

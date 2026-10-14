@@ -2,7 +2,7 @@ import pytest
 
 from rio.agent.prompt import EXECUTION, system
 from rio.agent.state import InvalidPatch
-from rio.coding.cells import CMD, CODE, KINDS
+from rio.coding.cells import CMD, CODE, COMMANDS, KINDS
 
 SCRIPT = "# /// script\n# dependencies = []\n# ///\nprint('hi')\n"
 
@@ -32,10 +32,10 @@ def test_malformed_cells_are_rejected(kind, cell, message):
 
 
 def test_code_runs_its_script_through_uv(tmp_path):
-    argv = CODE.command({"id": 7, "source": SCRIPT}, tmp_path)
+    argv = COMMANDS["code"]({"id": 7, "source": SCRIPT}, tmp_path)
     assert argv == ["uv", "run", "--script", str(tmp_path / "cell-7.py")]
     assert (tmp_path / "cell-7.py").read_text() == SCRIPT
 
 
 def test_cmd_runs_its_argv(tmp_path):
-    assert CMD.command({"argv": ["pytest", "-q"]}, tmp_path) == ["pytest", "-q"]
+    assert COMMANDS["cmd"]({"argv": ["pytest", "-q"]}, tmp_path) == ["pytest", "-q"]

@@ -27,7 +27,9 @@ from rio.coding.owner import ProcessOwner, stop_worker
 @pytest.fixture
 def session(tmp_path):
     with Store(tmp_path / "session.sqlite3") as store:
-        yield Session.create(store, "fix the code", tmp_path, kinds=KINDS)
+        yield Session.create(
+            store, "fix the code", kinds=KINDS, owner_config={"cwd": str(tmp_path)}
+        )
 
 
 def note(text="remember", **extra):
@@ -176,7 +178,7 @@ def test_stale_turn_is_rejected(session):
 def test_old_protocol_session_is_rejected(tmp_path):
     path = tmp_path / "old.sqlite3"
     with Store(path) as store:
-        session = Session.create(store, "goal", tmp_path)
+        session = Session.create(store, "goal")
         state = {**session.meta["state"], "schema": "rio.state/1"}
         store.commit("test_downgrade", {"meta": {"state": state}})
     with Store(path) as store, pytest.raises(ValueError, match="rio.state/1.*new session"):
@@ -244,7 +246,7 @@ def test_inbox_deduplication_and_acknowledgment(session):
 
 def test_rebuild_is_pure_and_preserves_usage(session, monkeypatch):
     accept(session, code())
-    session.finish(1, {"type": "UnknownExecution", "worker_stopped": True})
+    session.finish(1, {"type": "UnknownExecution"})
     turn = prepare(session)
     session.attempt(turn["id"])
     expected = copy.deepcopy(session.data)
@@ -260,7 +262,7 @@ def test_rebuild_is_pure_and_preserves_usage(session, monkeypatch):
 def test_timer_generation_fires_once_after_restart(tmp_path):
     path = tmp_path / "timer.sqlite3"
     with Store(path) as store:
-        session = Session.create(store, "wait", tmp_path)
+        session = Session.create(store, "wait")
         session.register_timer("alarm:1", 10, {"wake": True})
     with Store(path) as store:
         session = Session(store)
@@ -316,8 +318,8 @@ async def test_serial_uv_runs_and_independent_variables(session):
     )
     async with ProcessOwner(session) as owner:
         await settle(owner)
-    assert (Path(session.meta["cwd"]) / "order").read_text() == "12"
-    assert session.data["executions"]["2"]["output"] == "ok\n"
+    assert (Path(session.meta["owner_config"]["cwd"]) / "order").read_text() == "12"
+    assert session.data["executions"]["2"]["output"]["stdout"] == "ok\n"
     assert all(e["result"]["type"] == "success" for e in session.data["executions"].values())
 
 
@@ -326,7 +328,7 @@ async def test_cmd_runs_argv_without_shell(session):
     accept(session, cmd("rio-missing-command"))
     async with ProcessOwner(session) as owner:
         await settle(owner)
-    assert session.data["executions"]["1"]["output"] == "$HOME\n"
+    assert session.data["executions"]["1"]["output"]["stdout"] == "$HOME\n"
     assert session.data["executions"]["2"]["result"]["exit_code"] == 127
     assert session.meta["pause"] == "execution:2"
 
@@ -342,15 +344,16 @@ async def test_error_pauses_queue_then_cancel_before_dispatch(session):
         accept(session, note(role="cancel", target_cell_id=2))
         await owner.tick()
     assert session.data["executions"]["2"]["result"]["type"] == "cancelled"
-    assert "worker" not in session.data["executions"]["2"]
+    assert "cell:2" not in session.data.get("workers", {})
 
 
 async def test_started_recovery_never_reexecutes(session):
     accept(session, code("from pathlib import Path\nPath('effect').touch()"))
-    session.authorize(1, {"token": "not-a-real-worker"})
+    session.authorize(1)
+    session.record("workers", "cell:1", {"token": "not-a-real-worker"})
     async with ProcessOwner(session):
         assert session.data["executions"]["1"]["result"]["type"] == "UnknownExecution"
-    assert not (Path(session.meta["cwd"]) / "effect").exists()
+    assert not (Path(session.meta["owner_config"]["cwd"]) / "effect").exists()
     assert session.meta["pause"] == "execution:1"
     seq = session.store.sequence
     async with ProcessOwner(session):
@@ -409,7 +412,7 @@ async def test_cancel_running_worker_and_children(session):
     )
     async with ProcessOwner(session) as owner:
         await owner.tick()
-        path = Path(session.meta["cwd"]) / "child"
+        path = Path(session.meta["owner_config"]["cwd"]) / "child"
         async with asyncio.timeout(15):
             while not path.exists():
                 await asyncio.sleep(0.02)
@@ -453,9 +456,41 @@ async def test_public_loop_finishes_and_reopens_without_model_call(session):
 async def test_base_owner_runs_note_only_sessions_without_processes(tmp_path):
     provider = FakeProvider([response([add(note("done", role="conclusion", result="success"))])])
     with Store(tmp_path / "notes.sqlite3") as store:
-        session = Session.create(store, "say hello", tmp_path)
+        session = Session.create(store, "say hello")
         assert await run(Owner(session), provider, "fake")
         assert await replay(Owner(session))
+
+
+async def test_base_owner_recovers_started_cells_as_unknown(session):
+    accept(session, code())
+    session.authorize(1)
+    async with Owner(session):
+        result = session.data["executions"]["1"]["result"]
+    assert result["type"] == "UnknownExecution"
+    assert result["reason"] == "owner_lost_before_result_commit"
+
+
+def test_owner_records_merge_outside_session_collections(session):
+    session.record("workers", "cell:1", {"token": "t"})
+    session.record("workers", "cell:1", {"stopped": True})
+    assert session.data["workers"] == {"cell:1": {"token": "t", "stopped": True}}
+    assert session.store.events()[-1]["type"] == "owner_record"
+    for collection in ("executions", "meta", "output_chunks"):
+        with pytest.raises(ValueError, match="Session collection"):
+            session.record(collection, "1", {})
+
+
+async def test_interrupted_validator_blocks_success_after_restart(tmp_path):
+    with Store(tmp_path / "s.db") as store:
+        session = Session.create(store, "goal", validators=[["true"]])
+        accept(session, note(role="conclusion", result="success"))
+        # A validator worker was registered, then the owner died before its result committed.
+        session.record("workers", "validator:1:0", {"token": "lost-validator-token"})
+        async with ProcessOwner(session):
+            assert session.data["workers"]["validator:1:0"]["stopped"]
+            assert not session.data["validator_results"]["1:0"]["passed"]
+            assert session.data["controls"]["1"]["outcome"].startswith("Required validator 0")
+            assert session.meta["terminal"] is None
 
 
 async def test_base_owner_cannot_launch_runnable_cells(session):
@@ -488,7 +523,7 @@ async def test_successful_completions_wake_the_model_once_after_the_queue_drains
 
 async def test_instructions_extend_system_prompt(tmp_path):
     with Store(tmp_path / "session.sqlite3") as store:
-        session = Session.create(store, "goal", tmp_path, instructions="\n\nUse tabs.")
+        session = Session.create(store, "goal", instructions="\n\nUse tabs.")
         conclude = note("done", role="conclusion", result="success")
         provider = FakeProvider([response([add(conclude)])])
         assert await run(ProcessOwner(session), provider, "fake")
@@ -498,7 +533,7 @@ async def test_instructions_extend_system_prompt(tmp_path):
 
 def test_note_only_agent_rejects_runnable_cells(tmp_path):
     with Store(tmp_path / "s.db") as store:
-        session = Session.create(store, "goal", tmp_path)
+        session = Session.create(store, "goal")
         with pytest.raises(InvalidPatch, match="Cell kind must be one of: note$"):
             accept(session, code())
         with pytest.raises(InvalidPatch, match="Cell kind must be"):
@@ -508,7 +543,7 @@ def test_note_only_agent_rejects_runnable_cells(tmp_path):
 
 def test_note_is_not_an_extension_kind(tmp_path):
     with Store(tmp_path / "s.db") as store, pytest.raises(ValueError, match="built-in"):
-        Session.create(store, "goal", tmp_path, kinds=[replace(KINDS[0], name="note")])
+        Session.create(store, "goal", kinds=[replace(KINDS[0], name="note")])
     with Store(tmp_path / "s.db") as store:
         assert not store.data
 
@@ -516,16 +551,16 @@ def test_note_is_not_an_extension_kind(tmp_path):
 @pytest.mark.parametrize("fields", [{"text": {"type": "integer"}}, {"id": {"type": "integer"}}])
 def test_kind_fields_share_one_cell_schema(tmp_path, fields):
     with Store(tmp_path / "s.db") as store, pytest.raises(ValueError, match="redefines field"):
-        Session.create(store, "goal", tmp_path, kinds=[replace(KINDS[0], fields=fields)])
+        Session.create(store, "goal", kinds=[replace(KINDS[0], fields=fields)])
     with Store(tmp_path / "n.db") as store:
-        cell = Session.create(store, "goal", tmp_path).schema["properties"]["ops"]["items"]
+        cell = Session.create(store, "goal").schema["properties"]["ops"]["items"]
         assert cell["properties"]["cell"]["properties"]["kind"]["enum"] == ["note"]
 
 
 async def test_owner_requires_the_recorded_cell_kinds(tmp_path):
     path = tmp_path / "s.db"
     with Store(path) as store:
-        accept(Session.create(store, "goal", tmp_path, kinds=KINDS), code())
+        accept(Session.create(store, "goal", kinds=KINDS), code())
     with Store(path) as store:
         assert Session(store).state["goal"] == "goal"
         with pytest.raises(ValueError, match="Cell kinds: code"):
@@ -543,22 +578,20 @@ async def test_caller_extends_agent_with_a_cell_kind(tmp_path):
         fields={"text": {"type": "string"}},
         prompt='Echo: {"kind":"echo","text":"..."}.\n',
         validate=validate,
-        command=lambda cell, scratch: [
-            sys.executable,
-            "-c",
-            "import sys; print(sys.argv[1])",
-            cell["text"],
-        ],
     )
+
+    def command(cell, scratch):
+        return [sys.executable, "-c", "import sys; print(sys.argv[1])", cell["text"]]
+
     with Store(tmp_path / "s.db") as store:
-        session = Session.create(store, "goal", tmp_path, kinds=[echo])
+        session = Session.create(store, "goal", kinds=[echo])
         assert echo.prompt in session.system
         with pytest.raises(InvalidPatch, match="Echo requires text"):
             accept(session, {"kind": "echo"})
         accept(session, {"kind": "echo", "text": "hi"})
-        async with ProcessOwner(session) as owner:
+        async with ProcessOwner(session, {"echo": command}) as owner:
             await settle(owner)
-        assert session.data["executions"]["1"]["output"] == "hi\n"
+        assert session.data["executions"]["1"]["output"]["stdout"] == "hi\n"
 
 
 async def test_uv_timer_api_acknowledges_committed_registration(session):
@@ -582,7 +615,7 @@ async def test_owner_wakes_on_commits_and_deadlines_without_polling(session):
                 await owner.wait()
                 await owner.tick()
                 wakes += 1
-        assert session.data["executions"]["1"]["output"] == "done\n"
+        assert session.data["executions"]["1"]["output"]["stdout"] == "done\n"
         assert wakes < 10
         # With nothing changing, a wait sleeps until the next timer deadline, then fires it.
         session.register_timer("wake", time.time() + 0.3, {})
@@ -627,19 +660,18 @@ async def test_loop_sleeps_until_timer_instead_of_polling(session, monkeypatch):
 
 def test_output_limit_is_explicit(session):
     accept(session, code())
-    session.authorize(1, {"token": "none"})
+    session.authorize(1)
     session.limits = replace(session.limits, output_bytes=7)
-    session.output(1, "old text", "old error")
-    session.output(1, "é終!", "é終!")
-    execution = session.data["executions"]["1"]
-    assert execution["output"] == "té終!"
-    assert execution["stderr"] == "ré終!"
-    assert len(execution["output"].encode()) == session.limits.output_bytes
-    assert execution["truncated"]
-    session.output(1, "尾", "尾")
-    assert session.data["executions"]["1"]["output"] == "終!尾"
-    session.output(1, "é")
-    assert session.data["executions"]["1"]["output"] == "!尾é"
+    session.output(1, {"stdout": "old text", "stderr": "old error"})
+    session.output(1, {"stdout": "é終!", "stderr": "é終!"})
+    output = session.data["executions"]["1"]["output"]
+    assert output == {"stdout": "té終!", "stderr": "ré終!"}
+    assert len(output["stdout"].encode()) == session.limits.output_bytes
+    assert session.data["executions"]["1"]["truncated"]
+    session.output(1, {"stdout": "尾", "stderr": "尾"})
+    assert session.data["executions"]["1"]["output"]["stdout"] == "終!尾"
+    session.output(1, {"stdout": "é"})
+    assert session.data["executions"]["1"]["output"] == {"stdout": "!尾é", "stderr": "終!尾"}
 
 
 async def test_truncated_output_keeps_tail_and_full_output_file(session):
@@ -649,9 +681,10 @@ async def test_truncated_output_keeps_tail_and_full_output_file(session):
         await settle(owner)
     execution = session.data["executions"]["1"]
     assert execution["truncated"]
-    assert execution["output"].startswith("1000\n")
-    path = execution["output"].rsplit("Full output: ", 1)[1].rstrip("]")
-    assert execution["output"].endswith(f"[Showing lines 1001-3000 of 3000. Full output: {path}]")
+    stdout = execution["output"]["stdout"]
+    assert stdout.startswith("1000\n")
+    path = stdout.rsplit("Full output: ", 1)[1].rstrip("]")
+    assert stdout.endswith(f"[Showing lines 1001-3000 of 3000. Full output: {path}]")
     assert Path(path).read_text().splitlines() == [str(i) for i in range(3000)]
     assert not session.data["executions"]["2"]["truncated"]
 
@@ -664,17 +697,16 @@ async def test_worker_and_validator_output_keep_utf8_tail(session, stream):
     async with ProcessOwner(session) as owner:
         await settle(owner)
         result = await owner.validate("tail", [sys.executable, "-c", source])
-    assert result == {"exit": 0, "output": "!é終!"}
-    key = "output" if stream == "stdout" else "stderr"
+    assert result == {"passed": True, "exit": 0, "output": "!é終!"}
     streamed = [
-        event["changes"]["output_chunks"]["1"][key]
+        event["changes"]["output_chunks"]["1"]["output"][stream]
         for event in session.store.events()
         if event["type"] == "execution_output"
     ]
     assert streamed == ["!é終!"]
     execution = session.data["executions"]["1"]
-    assert execution[key].startswith("!é終!")
-    path = execution[key].rsplit("Full output: ", 1)[1].rstrip("]")
+    assert execution["output"][stream].startswith("!é終!")
+    path = execution["output"][stream].rsplit("Full output: ", 1)[1].rstrip("]")
     assert Path(path).read_text() == "old text" + "é終!" * 3000
     Path(path).unlink()
 
@@ -682,12 +714,12 @@ async def test_worker_and_validator_output_keep_utf8_tail(session, stream):
 async def test_required_validator_blocks_success(tmp_path):
     with Store(tmp_path / "s.db") as store:
         session = Session.create(
-            store, "goal", tmp_path, validators=((sys.executable, "-c", "raise SystemExit(1)"),)
+            store, "goal", validators=((sys.executable, "-c", "raise SystemExit(1)"),)
         )
         accept(session, note(role="conclusion", result="success"))
         async with ProcessOwner(session):
             assert session.meta["terminal"] is None
-            assert session.data["validator_results"]["0"]["exit"] == 1
+            assert session.data["validator_results"]["1:0"]["exit"] == 1
 
 
 def test_recycled_pid_fails_closed():
@@ -700,7 +732,7 @@ def test_commit_uncertainty_reopens_committed_identity(tmp_path):
 
     path = tmp_path / "uncertain.db"
     with Store(path) as store:
-        session = Session.create(store, "goal", tmp_path, kinds=KINDS)
+        session = Session.create(store, "goal", kinds=KINDS)
         turn = prepare(session)
         connection = store.db
 
@@ -743,14 +775,14 @@ from rio.coding.cells import KINDS
 async def main():
     root=Path(sys.argv[1]); boundary=sys.argv[2]
     with Store(root/'crash.db') as store:
-        s=Session.create(store, 'one effect', root, kinds=KINDS)
+        s=Session.create(store, 'one effect', kinds=KINDS, owner_config={'cwd': str(root)})
         t=s.prepare_turn()
         s.accept(t['id'], [{'op':'add','cell':{'kind':'code','runtime':'python','source':
              "# /// script\\n# dependencies = []\\n# ///\\n"
              "from pathlib import Path\\nimport time\\n"
              "p=Path('effects'); p.write_text(p.read_text()+'x' if p.exists() else 'x')\\n"
              "time.sleep(60)\\n"}}])
-        if boundary == 'authorized': s.authorize(1, {'token':'unlaunched'})
+        if boundary == 'authorized': s.authorize(1)
         if boundary == 'running':
             async with ProcessOwner(s) as owner:
                 await owner.tick()
@@ -793,7 +825,7 @@ async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch
 
     monkeypatch.setattr(runner.time, "time", lambda: 1e20)
     with Store(tmp_path / "budget.db") as store:
-        session = Session.create(store, "goal", tmp_path, limits=replace(Limits(), rounds=2))
+        session = Session.create(store, "goal", limits=replace(Limits(), rounds=2))
         provider = FakeProvider(
             [
                 response([]),
@@ -908,12 +940,13 @@ async def test_invalid_patch_is_retried_without_ending_run(session, monkeypatch)
 def test_context_keeps_each_output_whole(session):
     accept(session, code(), code())
     for i in (1, 2):
-        session.authorize(i, {"token": "none"})
-        session.output(i, "x" * session.limits.output_bytes)
+        session.authorize(i)
+        session.output(i, {"stdout": "x" * session.limits.output_bytes})
         session.finish(i, {"type": "success"})
     turn = prepare(session)
     for key in ("1", "2"):
-        assert turn["state"]["runtime"]["cells"][key]["output"] == "x" * session.limits.output_bytes
+        output = turn["state"]["runtime"]["cells"][key]["output"]
+        assert output == {"stdout": "x" * session.limits.output_bytes}
     session.accept(turn["id"], [])
 
 
@@ -1149,27 +1182,17 @@ def test_idle_batches_only_successful_execution_observations(session, result):
     from rio.agent.runner import _idle_action
 
     accept(session, code(), code())
-    session.authorize(1, {"token": "none"})
+    session.authorize(1)
     session.finish(1, {"type": result})
     assert _idle_action(ProcessOwner(session)) == ("wait" if result == "success" else "ready")
     session.receive("new", "external", {})
     assert _idle_action(ProcessOwner(session)) == "ready"
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-def test_external_wakeup_policy_survives_reopen(tmp_path, legacy):
+def test_external_wakeup_policy_survives_reopen(tmp_path):
     path = tmp_path / "wakeup.db"
     with Store(path) as store:
-        session = Session.create(store, "goal", tmp_path, external_wakeup=not legacy)
-        if legacy:
-            # Simulate the metadata written before external_wakeup moved out of Limits.
-            meta = dict(session.meta)
-            del meta["external_wakeup"]
-            meta["limits"] = {**meta["limits"], "external_wakeup": True}
-            store.db.execute(
-                "UPDATE events SET changes = ? WHERE seq = 1",
-                (json.dumps({**store.events()[0]["changes"], "meta": meta}),),
-            )
+        Session.create(store, "goal", external_wakeup=True)
     with Store(path) as store:
         session = Session(store)
         assert session.external_wakeup is True
@@ -1215,8 +1238,8 @@ def test_run_end_records_metrics_once(session):
 @pytest.mark.parametrize("ref", ["session:event:99999", "session:event:1"])
 def test_resolution_rejects_missing_events_and_non_observations(session, ref):
     accept(session, code())
-    session.authorize(1, {"token": "none"})
-    session.finish(1, {"type": "UnknownExecution", "worker_stopped": True})
+    session.authorize(1)
+    session.finish(1, {"type": "UnknownExecution"})
     turn = prepare(session)
     before = session.store.sequence
     with pytest.raises(InvalidPatch, match="recorded observation"):
@@ -1251,12 +1274,13 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
         session = Session.create(
             store,
             "goal",
-            project,
             kinds=KINDS,
+            owner_config={"cwd": str(project)},
             model_config={"provider": "removed", "model": "retired"},
         )
         accept(session, code())
-        session.authorize(1, {"token": "leftover"})
+        session.authorize(1)
+        session.record("workers", "cell:1", {"token": "leftover"})
         session.finish(1, {"type": "success"})
         session.end(result, "done")
     project.rmdir()
@@ -1270,12 +1294,12 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
     transcript = capsys.readouterr().out
     if output_mode == "json":
         events = [json.loads(line) for line in transcript.splitlines()]
-        assert any(e["type"] == "worker_cleanup" for e in events)
+        assert any(e["type"] == "owner_record" for e in events)
         assert "durability_metrics" not in {e["type"] for e in events}
     else:
         assert "done" in transcript
     with Store(path) as store:
-        assert store.data["executions"]["1"]["worker_stopped"]
+        assert store.data["workers"]["cell:1"]["stopped"]
         assert store.data["meta"]["terminal"]["result"] == result
 
 
@@ -1291,7 +1315,8 @@ async def test_terminal_replay_propagates_cleanup_failure(session, monkeypatch):
     from rio.agent.runner import replay
 
     accept(session, code())
-    session.authorize(1, {"token": "leftover"})
+    session.authorize(1)
+    session.record("workers", "cell:1", {"token": "leftover"})
     session.finish(1, {"type": "success"})
     session.end("success", "done")
 
@@ -1303,7 +1328,7 @@ async def test_terminal_replay_propagates_cleanup_failure(session, monkeypatch):
     with pytest.raises(RecoveryFailure, match="cannot stop"):
         await replay(ProcessOwner(session), published.append)
     assert not published
-    assert not session.data["executions"]["1"]["worker_stopped"]
+    assert not session.data["workers"]["cell:1"].get("stopped")
 
 
 async def test_replay_without_workers_writes_nothing(session):
@@ -1352,14 +1377,14 @@ def test_turn_events_store_state_once_and_replay_deltas(session):
 
 def test_output_journal_grows_linearly_and_replays_legacy_records(session):
     accept(session, cmd("true"))
-    session.authorize(1, {"token": "none"})
+    session.authorize(1)
     # Older records contain a full execution snapshot.
-    old = {**session.data["executions"]["1"], "output": "legacy\n"}
+    old = {**session.data["executions"]["1"], "output": {"stdout": "legacy\n"}}
     session.store.commit("execution_output", {"executions": {"1": old}})
     sizes = []
     for _ in range(20):
         before = session.store.journal_bytes
-        session.output(1, "x" * 100, "warning\n")
+        session.output(1, {"stdout": "x" * 100, "stderr": "warning\n"})
         sizes.append(session.store.journal_bytes - before)
     assert len(set(sizes)) == 1
     assert max(sizes) < 250
@@ -1367,14 +1392,14 @@ def test_output_journal_grows_linearly_and_replays_legacy_records(session):
     session.store.close()
     with Store(session.store.path) as reopened:
         assert reopened.data == expected
-        assert reopened.data["executions"]["1"]["output"] == "legacy\n" + "x" * 2000
+        assert reopened.data["executions"]["1"]["output"]["stdout"] == "legacy\n" + "x" * 2000
 
 
 @pytest.mark.parametrize("failure", ["timeout", "oserror"])
 async def test_worker_failure_flushes_last_output_and_cleans_logs(session, monkeypatch, failure):
     import tempfile
 
-    logs = Path(session.meta["cwd"]) / "logs"
+    logs = Path(session.meta["owner_config"]["cwd"]) / "logs"
     logs.mkdir()
     original = tempfile.NamedTemporaryFile
     monkeypatch.setattr(
@@ -1408,32 +1433,30 @@ async def test_worker_failure_flushes_last_output_and_cleans_logs(session, monke
     async with ProcessOwner(session) as owner:
         await settle(owner)
     execution = session.data["executions"]["1"]
-    assert execution["output"] == "last stdout\n"
-    assert execution["stderr"] == "last stderr\n"
+    assert execution["output"] == {"stdout": "last stdout\n", "stderr": "last stderr\n"}
     assert execution["result"]["type"] == "UnknownExecution"
     assert not list(logs.iterdir())
 
 
 async def test_cells_preserve_existing_pythonpath(session, monkeypatch):
-    module_dir = Path(session.meta["cwd"]) / "modules"
+    module_dir = Path(session.meta["owner_config"]["cwd"]) / "modules"
     module_dir.mkdir()
     (module_dir / "user_module.py").write_text("value = 42\n")
     monkeypatch.setenv("PYTHONPATH", str(module_dir))
     accept(session, cmd(sys.executable, "-c", "import user_module; print(user_module.value)"))
     async with ProcessOwner(session) as owner:
         await settle(owner)
-    assert session.data["executions"]["1"]["output"] == "42\n"
+    assert session.data["executions"]["1"]["output"]["stdout"] == "42\n"
 
 
 def test_output_chunks_replay_rolling_utf8_tails(session):
     session.limits = replace(session.limits, output_bytes=7)
     accept(session, cmd("true"))
-    session.authorize(1, {"token": "none"})
+    session.authorize(1)
     for text in ("old text", "é終!", "é終!"):
-        session.output(1, text, text)
+        session.output(1, {"stdout": text, "stderr": text})
     expected = copy.deepcopy(session.data)
-    assert expected["executions"]["1"]["output"] == "!é終!"
-    assert expected["executions"]["1"]["stderr"] == "!é終!"
+    assert expected["executions"]["1"]["output"] == {"stdout": "!é終!", "stderr": "!é終!"}
     assert expected["executions"]["1"]["truncated"]
     session.store.close()
     with Store(session.store.path) as reopened:

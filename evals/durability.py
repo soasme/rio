@@ -24,7 +24,9 @@ async def measure(samples: int) -> dict:
         path = root / "session.sqlite3"
         startup, script, inbox = [], [], []
         with Store(path) as store:
-            session = Session.create(store, "measure startup", root, kinds=KINDS)
+            session = Session.create(
+                store, "measure startup", kinds=KINDS, owner_config={"cwd": str(root)}
+            )
             async with ProcessOwner(session) as owner:
                 for _ in range(samples):
                     turn = session.prepare_turn()
@@ -48,9 +50,12 @@ async def measure(samples: int) -> dict:
                         await owner.tick()
                         await asyncio.sleep(0.01)
                     await owner.tick()
-                    events = {e["type"]: e["timestamp"] for e in store.events(after)}
-                    startup.append(events["worker_registered"] - events["execution_started"])
-                    script.append(events["execution_finished"] - events["worker_registered"])
+                    events = store.events(after)
+                    times = {e["type"]: e["timestamp"] for e in events}
+                    # Owner records: worker token, then spawned pid, then stopped.
+                    spawned = [e["timestamp"] for e in events if e["type"] == "owner_record"][1]
+                    startup.append(spawned - times["execution_started"])
+                    script.append(times["execution_finished"] - spawned)
                     start = time.perf_counter()
                     session.prepare_turn()
                     inbox.append(time.perf_counter() - start)
@@ -75,7 +80,7 @@ async def measure(samples: int) -> dict:
                     },
                 ],
             )
-            session.authorize(samples + 1, {"token": "never-launched"})
+            session.authorize(samples + 1)
         with Store(path) as store:
             recovered = Session(store, KINDS)
             start = time.perf_counter()

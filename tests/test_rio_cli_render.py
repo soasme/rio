@@ -9,8 +9,8 @@ def emit(renderer, kind, **changes):
     renderer.render({"type": kind, "changes": changes})
 
 
-def execution(output="", stderr="", **extra):
-    return {"cell_id": 2, "output": output, "stderr": stderr, **extra}
+def execution(stdout="", stderr="", **extra):
+    return {"cell_id": 2, "output": {"stdout": stdout, "stderr": stderr}, **extra}
 
 
 def test_committed_cells_show_literal_source_notes_and_successors(capsys):

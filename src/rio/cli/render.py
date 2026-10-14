@@ -50,9 +50,9 @@ class PlainEventRenderer:
             self._message(f"{terminal['result'].capitalize()}: {terminal['reason']}")
 
     def _output(self, key: str, execution: dict, *, chunks: bool = False) -> None:
-        for name, label in (("output", ""), ("stderr", "stderr: ")):
+        for name, text in execution["output"].items():
+            label = "" if name == "stdout" else f"{name}: "
             stream = (key, name)
-            text = execution[name]
             previous = self._displayed.get(stream, 0)
             self._displayed[stream] = previous + len(text) if chunks else len(text)
             delta = text if chunks else text[previous:]
