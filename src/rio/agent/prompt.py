@@ -17,6 +17,10 @@ Controls are actions, not Cells: {"op":"control","control":CONTROL}. They never 
 
 EXECUTION = """Each new runnable Cell version runs ONCE, in accepted order.
 Inspect output streams in runtime.cells, plus completion notices in runtime.inbox.
+To fit context, a stream may show only its tail: runtime.cells[N].omitted counts the
+leading bytes left out per stream. The execution_finished event in result.evidence_refs
+keeps the recorded output. Remove Cells you no longer need; a "context" observation
+names Cells whose runtime records did not fit.
 An ordinary execution error pauses the queue. Consume it by accepting your next step;
 you can cancel queued work and add a corrected Cell in that step. Ordinary errors
 DO NOT require resolution. Resolution is ONLY for UnknownExecution.

@@ -11,7 +11,8 @@
   `controls` with ids 1, 2, ... in accepted order and handled once.
   `state.CONTROLS` lists each type's required fields and handling order.
 - `admit()` in [state.py](state.py) covers ID assignment, lineage, positions,
-  context budget and runtime reset. `Session.prepare_turn()` rebuilds runtime observations.
+  context budget and runtime reset. `Session.prepare_turn()` rebuilds runtime observations,
+  fitting output tails into the context budget and marking omitted bytes.
 - `CellKind` is a four-field extension point: name, field schemas, prompt and
   validator. The built-in `note` is one; it never runs. The `Owner` decides how a Cell
   runs. [rio.coding.cells](../coding/cells.py) adds `code` and `cmd` without changing

@@ -21,7 +21,7 @@ from rio.agent.store import Store, encode
 from rio.truncate import truncate_bytes_tail
 
 # Kinds of inbox ids the runtime writes; external messages cannot use these prefixes.
-RESERVED = ("execution", "control", "timer", "idle")
+RESERVED = ("execution", "control", "timer", "idle", "context")
 
 
 def runtime_id(kind: str, key: object) -> str:

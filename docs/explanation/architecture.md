@@ -83,6 +83,14 @@ Output over 2000 lines or 50 KB keeps its tail, ends with a
 `[Showing lines X-Y of Z. Full output: PATH]` notice, and sets the truncation flag.
 The full output stays in a temporary file. An idle session has no script process.
 
+Each model turn fits runtime records into the context budget. Streams within an
+equal share of the remaining bytes stay whole; larger ones show a tail, and the
+record's `omitted` field counts the leading bytes left out per stream. The
+`execution_finished` event in the result's `evidence_refs` keeps the recorded
+output. If even the records without output do not fit, the turn shows only queued,
+running and unresolved work, then none, plus a `context` observation naming the
+Cells left out. Rio stops the run only when the goal and Cells alone exceed the budget.
+
 ## Recovery
 
 Sessions live at `~/.rio/sessions/SESSION_ID.sqlite3`. Resume with

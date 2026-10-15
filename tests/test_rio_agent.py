@@ -682,7 +682,9 @@ async def test_base_owner_runs_note_only_sessions_without_processes(tmp_path):
     provider = FakeProvider([response([conclude()])])
     with Store(tmp_path / "notes.sqlite3") as store:
         session = Session.create(store, "say hello")
-        assert await run(Owner(session), provider, "fake")
+        ok = await run(Owner(session), provider, "fake")
+        print([e["changes"] for e in store.events() if e["type"] == "patch_rejected"])
+        assert ok
         assert await replay(Owner(session))
 
 
@@ -1121,7 +1123,7 @@ async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch
         ("storage_bytes", False, "Session storage budget exhausted"),
         ("turns", False, "Model budget exhausted"),
         ("tokens", False, "Model budget exhausted"),
-        ("context_bytes", False, "Runtime facts exceed reserved context"),
+        ("context_bytes", False, "Goal and Cells exceed context without runtime facts"),
         ("invalid_attempts", True, "Model retry budget exhausted"),
         ("tokens", True, "Token budget exhausted"),
     ],
@@ -1223,6 +1225,100 @@ def test_context_keeps_each_output_whole(session):
         output = turn["state"]["runtime"]["cells"][key]["output"]
         assert output == {"stdout": "x" * session.limits.output_bytes}
     session.accept(turn["id"], [])
+
+
+async def test_oversized_output_shows_marked_tails_and_replays(tmp_path):
+    from rio.agent.store import encode
+
+    path = tmp_path / "overflow.sqlite3"
+    with Store(path) as store:
+        session = Session.create(store, "goal", kinds=KINDS)
+        accept(session, cmd("a"), cmd("b"))
+        for i in (1, 2):
+            session.authorize(i)
+            session.append_output(i, {"stdout": "x" * 60_000, "stderr": "y" * 60_000})
+            session.finish(i, {"type": "success"})
+        executions = copy.deepcopy(session.data["executions"])
+        turn = prepare(session)
+        assert session.data["executions"] == executions
+        state = turn["state"]
+        assert len(encode(state).encode()) <= session.limits.context_bytes
+        for key in ("1", "2"):
+            cell, recorded = state["runtime"]["cells"][key], executions[key]["output"]
+            assert set(cell["omitted"]) == {"stdout", "stderr"}
+            for name, text in recorded.items():
+                assert text.endswith(cell["output"][name])
+                assert cell["omitted"][name] == len(text) - len(cell["output"][name]) > 0
+            # The evidence event keeps the recorded output.
+            seq = int(cell["result"]["evidence_refs"][0].rsplit(":", 1)[1])
+            event = store.events(seq - 1)[0]
+            assert event["changes"]["executions"][key]["output"] == recorded
+        data = copy.deepcopy(store.data)
+    with Store(path) as store:
+        assert store.data == data
+        session = Session(store, KINDS)
+        assert prepare(session) == turn
+        provider = FakeProvider([response([conclude()])])
+        assert await run(Owner(session), provider, "fake")
+        assert len(provider.calls) == 1
+
+
+def test_many_large_outputs_share_context(session):
+    from rio.agent.store import encode
+
+    accept(session, *(cmd(str(i)) for i in range(12)))
+    for i in range(1, 13):
+        session.authorize(i)
+        text = "small" if i == 12 else "line\n" * 20_000
+        session.append_output(i, {"stdout": text})
+        session.finish(i, {"type": "success"})
+    state = prepare(session)["state"]
+    assert len(encode(state).encode()) <= session.limits.context_bytes
+    cells = state["runtime"]["cells"]
+    assert cells["12"]["output"] == {"stdout": "small"}
+    assert "omitted" not in cells["12"]
+    # Equal tails of the recorded 50 KB; JSON escapes count toward the budget.
+    tails = {cells[str(i)]["output"]["stdout"] for i in range(1, 12)}
+    assert len(tails) == 1
+    tail = tails.pop()
+    assert 10_000 < len(tail) < 20_000
+    for i in range(1, 12):
+        assert cells[str(i)]["omitted"] == {"stdout": session.limits.output_bytes - len(tail)}
+
+
+def test_output_shares_and_json_tails_respect_budget():
+    from rio.agent.session import json_tail, shares
+
+    assert shares([5, 50, 100], 65) == [5, 30, 30]
+    assert shares([5, 50], 100) == [5, 50]
+    assert shares([7, 7], 0) == [0, 0]
+    assert json_tail("ab\n\n", 3) == "\n"
+    assert json_tail("\n\n", 1) == ""
+    assert json_tail("é", 1) == ""
+
+
+def test_overflowing_records_keep_outstanding_work_and_notify(session):
+    from rio.agent.store import encode
+
+    accept(session, *(cmd(str(i)) for i in range(20)))
+    for i in range(1, 19):
+        session.authorize(i)
+        session.finish(i, {"type": "success"})
+    session.authorize(19)
+    session.finish(19, {"type": "UnknownExecution"})
+    session.limits = replace(session.limits, context_bytes=4096, output_bytes=1024)
+    turn = prepare(session)
+    state = turn["state"]
+    assert len(encode(state).encode()) <= 4096
+    assert list(state["runtime"]["cells"]) == ["19", "20"]
+    notice = state["runtime"]["inbox"][0]
+    assert notice["kind"] == "context"
+    assert notice["payload"]["cell_ids"] == list(range(1, 19))
+    assert notice["id"] not in turn["delivered"]
+    session.accept(turn["id"], [remove(i) for i in range(1, 19)])
+    state = prepare(session)["state"]
+    assert all(m["kind"] != "context" for m in state["runtime"]["inbox"])
+    assert list(state["runtime"]["cells"]) == ["19", "20"]
 
 
 async def test_saved_complete_response_is_accepted_without_another_provider_call(session):
