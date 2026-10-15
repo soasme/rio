@@ -33,7 +33,9 @@ repository (so the fix is not in history), and installs `install` into
 `workspace/.venv` with `uv`, which Rio's shell uses as its active environment. To
 grade, it restores the patched test files, applies `test.patch`, and runs the
 listed `tests` (FAIL_TO_PASS plus PASS_TO_PASS) with pytest. Setup needs network
-access and `uv`; it is not counted in the agent's time.
+access and `uv`; it is not counted in the agent's time. Each `result.json` lists
+lockfiles the agent changed (`lockfiles_changed`) and `.venv` distributions it
+added or removed (`venv_added`, `venv_removed`); grading still uses that environment.
 
 The local cases are deliberately small. They check the runner and provide an
 initial signal, not a reliable comparison between models. Grow the suite from

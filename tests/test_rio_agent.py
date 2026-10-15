@@ -500,6 +500,26 @@ async def test_cmd_runs_argv_without_shell(session):
     assert session.meta["pause"] == "execution:2"
 
 
+@pytest.mark.parametrize("venv", [None, "/project/.venv"])
+async def test_active_venv_keeps_uv_run_from_syncing_it(session, monkeypatch, venv):
+    if venv:
+        monkeypatch.setenv("VIRTUAL_ENV", venv)
+    else:
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.delenv("UV_NO_SYNC", raising=False)
+    monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
+    show = "import os; print(*map(os.environ.get, ['UV_NO_SYNC', 'UV_PROJECT_ENVIRONMENT']))"
+    accept(session, cmd(sys.executable, "-c", show))
+    # A PEP 723 script still installs its own dependencies, without a no-op warning.
+    script = code("import iniconfig\nprint('ok')")
+    accept(session, {**script, "source": script["source"].replace("[]", '["iniconfig"]')})
+    async with ProcessOwner(session) as owner:
+        await settle(owner)
+    executions = session.data["executions"]
+    assert executions["1"]["output"]["stdout"] == ("1 " + venv if venv else "None None") + "\n"
+    assert executions["2"]["output"] == {"stdout": "ok\n"}
+
+
 async def test_error_pauses_queue_then_cancel_before_dispatch(session):
     accept(session, code("raise RuntimeError('bad')"), code("assert False"))
     async with ProcessOwner(session) as owner:
