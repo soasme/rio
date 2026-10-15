@@ -43,7 +43,8 @@ def _validate_code(cell: dict) -> None:
 def _code_command(cell: dict, scratch: Path) -> list[str]:
     script = scratch / f"cell-{cell['id']}.py"
     script.write_text(cell["source"], encoding="utf-8")
-    return ["uv", "run", "--script", str(script)]
+    # Quiet keeps uv's install chatter and UV_NO_SYNC's no-op warning out of output; errors remain.
+    return ["uv", "run", "-q", "--script", str(script)]
 
 
 def _validate_cmd(cell: dict) -> None:
@@ -66,9 +67,11 @@ print(Path('README.md').read_text())
 No shared variables, kernel, magics, top-level return, or cell imports. Use normal Python,
 pathlib, subprocess, and ordinary files.
 Check whether a workspace .venv/bin/python exists before using it for project tests.
-Otherwise use PEP 723 dependencies for packages your script imports, or run a test
-command through uv run --with pytest python -m pytest. uv's script interpreter is
-separate from a project environment. When writing multiline files, prefer triple-quoted
+Run project tools in that active environment (python -m pytest); do not uv run, uv sync,
+or pip install against the project unless the task changes dependencies. Otherwise use
+PEP 723 dependencies for packages your script imports, or run a test command through
+uv run --with pytest python -m pytest. uv's script interpreter is separate from a
+project environment. When writing multiline files, prefer triple-quoted
 Python strings so newline escaping does not break the script.
 Scripts can use `from rio.coding.api import timer, records`. timer(request_id,
 unix_deadline, payload) durably registers one timer generation; it does not suspend or rerun

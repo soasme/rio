@@ -21,6 +21,7 @@ import psutil
 from evals.metrics import aggregate, compare, trace_metrics
 
 CASES = Path(__file__).resolve().parent / "cases"
+LOCKFILES = ("uv.lock", "poetry.lock", "pdm.lock", "Pipfile.lock")
 
 
 def prepare_workspace(case: Path, workspace: Path, cache: Path) -> None:
@@ -66,6 +67,29 @@ def prepare_workspace(case: Path, workspace: Path, cache: Path) -> None:
         cwd=workspace,
         env={**os.environ, "SETUPTOOLS_SCM_PRETEND_VERSION": spec["version"]},
     )
+
+
+def environment(workspace: Path) -> dict[str, object]:
+    """Hash lockfiles and list installed distributions, to report what the agent changed."""
+    locks = {}
+    for name in LOCKFILES:
+        if (path := workspace / name).is_file():
+            locks[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    venv = workspace.glob(".venv/lib/python*/site-packages/*.dist-info")
+    return {"lockfiles": locks, "distributions": sorted(path.name for path in venv)}
+
+
+def environment_changes(before: dict, after: dict) -> dict[str, list[str]]:
+    """Lockfiles and venv distributions the agent created, changed, or removed."""
+    locks = before["lockfiles"].keys() | after["lockfiles"].keys()
+    old, new = set(before["distributions"]), set(after["distributions"])
+    return {
+        "lockfiles_changed": sorted(
+            n for n in locks if before["lockfiles"].get(n) != after["lockfiles"].get(n)
+        ),
+        "venv_added": sorted(new - old),
+        "venv_removed": sorted(old - new),
+    }
 
 
 def grade(case: Path, workspace: Path) -> subprocess.CompletedProcess[str]:
@@ -135,6 +159,7 @@ def run_case(
     with tempfile.TemporaryDirectory(prefix=f"rio-eval-{case.name}-") as temporary:
         workspace = Path(temporary) / "workspace"
         prepare_workspace(case, workspace, cache)
+        before = environment(workspace)
         env = dict(os.environ)
         venv = workspace / ".venv"
         if venv.is_dir():
@@ -182,6 +207,8 @@ def run_case(
         output.mkdir(parents=True, exist_ok=True)
         (output / "agent.jsonl").write_text(agent_stdout, encoding="utf-8")
         (output / "agent.stderr").write_text(agent_stderr, encoding="utf-8")
+        # Report, not mask: a lockfile or venv change the agent made still counts against it.
+        changes = environment_changes(before, environment(workspace))
 
         if (workspace / ".git").is_dir():
             # A repository is too large to copy per trial; keep the agent's diff instead.
@@ -204,6 +231,7 @@ def run_case(
             "agent_exit": agent_exit,
             "grader_exit": grader.returncode,
             "seconds": duration,
+            **changes,
             **trace_metrics(agent_stdout),
         }
         (output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
@@ -293,9 +321,14 @@ def main() -> int:
             (args.output_dir / "summary.json").write_text(
                 json.dumps(summary, indent=2) + "\n", encoding="utf-8"
             )
+            changed = [
+                *result["lockfiles_changed"],
+                *(["venv"] if result["venv_added"] or result["venv_removed"] else []),
+            ]
             print(
                 f"{name} trial {trial}: "
-                f"{'pass' if result['passed'] else 'fail'} ({result['seconds']}s)",
+                f"{'pass' if result['passed'] else 'fail'} ({result['seconds']}s)"
+                + (f"; agent changed {', '.join(changed)}" if changed else ""),
                 flush=True,
             )
     if fingerprint(sources) != metadata["source_sha256"]:

@@ -4,6 +4,7 @@ import json
 
 import pytest
 from evals.metrics import aggregate, compare, trace_metrics
+from evals.run import environment, environment_changes
 
 
 def row(case, seconds, passed=True):
@@ -81,3 +82,23 @@ def test_turn_metrics_count_preparations_and_compare_legacy_results():
     result = compare(summary(old), summary(row("001", 10)))["cases"]["001"]
     assert result["baseline"]["median_model_turns"] == 2
     assert result["baseline"] == result["candidate"]
+
+
+def test_environment_changes_report_new_lockfiles_and_venv_upgrades(tmp_path):
+    site = tmp_path / ".venv/lib/python3.11/site-packages"
+    (site / "werkzeug-2.3.0.dist-info").mkdir(parents=True)
+    (tmp_path / "poetry.lock").write_text("old")
+    before = environment(tmp_path)
+    assert environment_changes(before, environment(tmp_path)) == {
+        "lockfiles_changed": [],
+        "venv_added": [],
+        "venv_removed": [],
+    }
+    (site / "werkzeug-2.3.0.dist-info").rename(site / "werkzeug-3.1.0.dist-info")
+    (tmp_path / "uv.lock").write_text("new")
+    (tmp_path / "poetry.lock").unlink()
+    assert environment_changes(before, environment(tmp_path)) == {
+        "lockfiles_changed": ["poetry.lock", "uv.lock"],
+        "venv_added": ["werkzeug-3.1.0.dist-info"],
+        "venv_removed": ["werkzeug-2.3.0.dist-info"],
+    }

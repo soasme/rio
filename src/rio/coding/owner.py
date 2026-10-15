@@ -272,6 +272,10 @@ class ProcessOwner(Owner):
                 + ([os.environ["PYTHONPATH"]] if "PYTHONPATH" in os.environ else [])
             ),
         }
+        if "VIRTUAL_ENV" in env:
+            # The active environment is the prepared project environment: make `uv run` use it
+            # without re-locking or re-syncing, so a habitual `uv run` cannot upgrade it.
+            env.update(UV_NO_SYNC="1", UV_PROJECT_ENVIRONMENT=env["VIRTUAL_ENV"])
         try:
             command = self.commands[cell["kind"]](cell, Path(self.temporary.name))
             self.process = process = await self._spawn(command, env)

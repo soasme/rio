@@ -33,7 +33,7 @@ def test_malformed_cells_are_rejected(kind, cell, message):
 
 def test_code_runs_its_script_through_uv(tmp_path):
     argv = COMMANDS["code"]({"id": 7, "source": SCRIPT}, tmp_path)
-    assert argv == ["uv", "run", "--script", str(tmp_path / "cell-7.py")]
+    assert argv == ["uv", "run", "-q", "--script", str(tmp_path / "cell-7.py")]
     assert (tmp_path / "cell-7.py").read_text() == SCRIPT
 
 
