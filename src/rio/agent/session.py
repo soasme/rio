@@ -18,7 +18,7 @@ from rio.agent.shapes import (
     State,
     Turn,
 )
-from rio.agent.state import CONTROLS, NOTE, CellKind, InvalidPatch, Limits, admit
+from rio.agent.state import CONTROLS, NOTE, CellKind, InvalidPatch, Limits, admit, zero_usage
 from rio.agent.store import Store, encode
 
 # Bump when the model-facing step protocol changes; saved turns hold the old prompt.
@@ -85,7 +85,7 @@ class Session(RuntimeLedger):
             "revision": 0,
             "goal": goal,
             "cells": [],
-            "runtime": {"next_cell_id": 1, "cells": {}, "inbox": [], "usage": {}},
+            "runtime": {"next_cell_id": 1, "cells": {}, "inbox": [], "usage": zero_usage()},
         }
         if len(encode(state).encode()) > limits.context_bytes // 2:
             raise ValueError("Goal exceeds reserved context")
@@ -102,7 +102,7 @@ class Session(RuntimeLedger):
                     "instructions": instructions,
                     "terminal": None,
                     "pause": None,
-                    "usage": {"turns": 0, "attempts": 0, "tokens": 0, "unknown_usage": 0},
+                    "usage": zero_usage(),
                 },
                 "cells": {},
                 "executions": {},

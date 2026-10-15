@@ -6,13 +6,17 @@ import copy
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 
-from rio.agent.shapes import Cell, ControlRequest, Execution, State
+from rio.agent.shapes import Cell, ControlRequest, Execution, State, Usage
 from rio.agent.store import encode
 from rio.truncate import DEFAULT_MAX_OUTPUT_BYTES
 
 
 class InvalidPatch(ValueError):
     pass
+
+
+def zero_usage() -> Usage:
+    return {"turns": 0, "attempts": 0, "tokens": 0, "unknown_usage": 0}
 
 
 @dataclass(frozen=True)
@@ -32,8 +36,10 @@ class Limits:
         for name, value in asdict(self).items():
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
-        if self.context_bytes < 4096 or self.output_bytes > self.context_bytes // 4:
-            raise ValueError("Reserve context for observations: output <= context / 4")
+        if self.context_bytes < 4096:
+            raise ValueError("context_bytes must be at least 4096")
+        if self.output_bytes > self.context_bytes // 4:
+            raise ValueError("Reserve context for observations: output_bytes <= context_bytes / 4")
 
 
 @dataclass(frozen=True)
@@ -230,7 +236,7 @@ def admit(
         "next_cell_id": next_id + len(new),
         "cells": {},
         "inbox": [],
-        "usage": {},
+        "usage": zero_usage(),
     }
     context = {**candidate, "runtime": {}}
     if len(encode(context).encode()) > limit:
