@@ -25,6 +25,7 @@ class Limits:
     tokens: int = 1_000_000
     execution_seconds: float = 600
     invalid_attempts: int = 3
+    provider_attempts: int = 8
     context_bytes: int = 204_800
     output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES
     pending_cells: int = 32

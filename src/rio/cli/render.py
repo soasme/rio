@@ -48,6 +48,9 @@ class PlainEventRenderer:
         elif kind == "patch_rejected":
             for turn in changes["turns"].values():
                 self._message(f"Retry: {turn['error']}")
+        elif kind == "provider_failed":
+            for turn in changes["turns"].values():
+                self._message(f"Provider error: {turn['provider_error']}")
         elif kind == "run_ended":
             terminal = changes["meta"]["terminal"]
             self._message(f"{terminal['result'].capitalize()}: {terminal['reason']}")

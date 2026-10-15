@@ -239,7 +239,7 @@ Bound State size and each output before it enters context. Reserve room for new 
 
 Reject steps that exceed the State budget. Ask the LLM to prune before the hard limit. Keep compact pending and uncertainty records visible, and bound admitted work so those records fit. If the model cannot produce a valid smaller State within its retry budget, fail.
 
-Persist configured model-turn, token, execution-time, and consecutive-invalid-step limits. Invalid idle decisions use the retry budget. Restart does not reset usage. The LLM judges lack of progress; there is no separate semantic progress detector. Exact numeric limits are deployment configuration.
+Persist configured model-turn, token, execution-time, consecutive-invalid-step, and provider-failure limits. Provider failures back off and retry without counting as invalid steps. Invalid idle decisions use the retry budget. Restart does not reset usage. The LLM judges lack of progress; there is no separate semantic progress detector. Exact numeric limits are deployment configuration.
 
 ## 11. Recovery and required tests
 

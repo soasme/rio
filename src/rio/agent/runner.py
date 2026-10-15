@@ -16,10 +16,19 @@ from rio.agent.state import CONTROLS, InvalidPatch
 from rio.agent.store import StorageFailure, encode
 from rio.ai.messages import AssistantMessage, UserMessage, raw_tool_arguments
 from rio.ai.provider import AssistantDoneEvent, AssistantErrorEvent, ModelProvider
+from rio.ai.retry import is_transient_status
 
 
 class RecoveryFailure(RuntimeError):
     """Active work could not be stopped, so its effects remain uncertain."""
+
+
+class ProviderFailure(RuntimeError):
+    """The provider, not the model, failed to return a step."""
+
+    def __init__(self, error: str, *, retryable: bool = True):
+        super().__init__(error)
+        self.retryable = retryable
 
 
 class Owner:
@@ -254,9 +263,14 @@ async def run(
                 session.invalid_idle()
             try:
                 turn = session.prepare_turn()
-                session.accept(turn["id"], await _request_ops(owner, turn, provider, model, flush))
-                session.request_work()
-                await owner.handle_controls()
+                try:
+                    ops = await _request_ops(owner, turn, provider, model, flush)
+                except ProviderFailure as exc:
+                    session.provider_failed(turn["id"], str(exc), retryable=exc.retryable)
+                else:
+                    session.accept(turn["id"], ops)
+                    session.request_work()
+                    await owner.handle_controls()
             except InvalidPatch as exc:
                 session.reject(turn["id"], str(exc))
             except RunStopped as exc:
@@ -303,7 +317,7 @@ async def _request_ops(
     if turn["response"] is not None:
         response = AssistantMessage.model_validate(turn["response"])
     else:
-        while time.time() < turn["retry_at"]:
+        while time.time() < turn["retry_at"] and not session.meta["terminal"]:
             await owner.wait(turn["retry_at"])
             await owner.tick()
             flush()
@@ -329,7 +343,8 @@ async def _request_ops(
             try:
                 response = await request
             except Exception as exc:
-                raise InvalidPatch(f"Provider request failed: {exc}") from exc
+                # No status to classify, so retry within the provider budget.
+                raise ProviderFailure(str(exc) or type(exc).__name__) from exc
         finally:
             if not request.done():
                 request.cancel()
@@ -344,14 +359,25 @@ async def _request_ops(
         session.record_response(
             turn["id"], response.model_dump(mode="json"), max(0, tokens), known=tokens > 0
         )
-    if response.stop_reason in ("error", "aborted"):
-        raise InvalidPatch(response.error_message or "Provider failed")
+    if response.stop_reason == "error":
+        raise ProviderFailure(
+            response.error_message or "Provider failed", retryable=_retryable(response)
+        )
     if len(response.tool_calls) != 1 or response.tool_calls[0].name != "step":
         raise InvalidPatch("Call exactly one step tool")
     arguments = response.tool_calls[0].arguments
     if raw_tool_arguments(arguments) is not None or set(arguments) != {"ops"}:
         raise InvalidPatch("step requires one complete ops argument")
     return arguments["ops"]
+
+
+def _retryable(response: AssistantMessage) -> bool:
+    """Only an HTTP error status that retrying cannot fix, such as 401 or 404, is final."""
+    for diagnostic in response.diagnostics or ():
+        status = (diagnostic.details or {}).get("status_code")
+        if isinstance(status, int):
+            return is_transient_status(status)
+    return True
 
 
 async def _call_model(
@@ -370,5 +396,5 @@ async def _call_model(
         elif isinstance(event, AssistantErrorEvent):
             result = event.error
     if result is None:
-        raise RuntimeError("provider produced no assistant message")
+        raise ProviderFailure("provider produced no assistant message")
     return result

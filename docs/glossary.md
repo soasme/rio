@@ -34,6 +34,9 @@ starts no new attempt.
 
 The provider may retry a transport request inside one model attempt. That retry
 budget is local to `rio.ai`; it does not increment the session's attempt count.
+When the request still fails, the session records `provider_failed`, refunds the
+turn's attempt, and retries after a backoff. `Limits.provider_attempts` caps these
+failures per turn.
 
 ## Supporting terms
 
@@ -57,6 +60,7 @@ budget is local to `rio.ai`; it does not increment the session's attempt count.
 | `Owner.handle_controls()` | Process cancellation, resolution, and conclusion controls. |
 | `Session.start_attempt()` | Record a new attempt and increment its counters. |
 | `Session.record_response()` | Save a response and account for token usage. |
+| `Session.provider_failed()` | Record a failed provider request and its backoff. |
 | `Session.append_output()` | Append execution output, retaining bounded tails. |
 | `Session.mark_handled()` | Record a control outcome and any resolution or rejection observation. |
 
