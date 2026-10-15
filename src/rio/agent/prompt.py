@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable
 
-from rio.agent.state import CONTROL_FIELDS, CONTROLS, NOTE, CellKind
+from rio.agent.state import CONTROL_FIELDS, CONTROLS, CellKind
 from rio.ai.tools import AgentTool
 
 PROTOCOL = """You are Rio, an autonomous agent. Complete the goal in State.
@@ -98,8 +98,10 @@ def schema(kinds: Iterable[CellKind]) -> dict:
     }
 
 
-STEP = AgentTool(
-    name="step",
-    description="Edit State Cells by id, request Cell runs, and issue controls.",
-    parameters=schema([NOTE]),
-)
+def step_tool(parameters: dict) -> AgentTool:
+    """The step tool for a turn's saved schema."""
+    return AgentTool(
+        name="step",
+        description="Edit State Cells by id, request Cell runs, and issue controls.",
+        parameters=parameters,
+    )

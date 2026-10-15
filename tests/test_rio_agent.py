@@ -13,11 +13,20 @@ from typing import get_args
 import pytest
 from pydantic import ValidationError
 
+from rio.agent.ledger import RESERVED
 from rio.agent.prompt import CONCLUSION, PROTOCOL
 from rio.agent.runner import Owner, RecoveryFailure, replay, run
 from rio.agent.session import RunStopped, Session
 from rio.agent.shapes import ControlType
-from rio.agent.state import CONTROL_FIELDS, CONTROLS, NOTE, CellKind, InvalidPatch, Limits
+from rio.agent.state import (
+    CONTROL_FIELDS,
+    CONTROLS,
+    NOTE,
+    CellKind,
+    InvalidPatch,
+    Limits,
+    zero_usage,
+)
 from rio.agent.store import StorageFailure, Store, reduce_event
 from rio.ai import FakeProvider
 from rio.ai.messages import AssistantMessage, ToolCall
@@ -355,7 +364,12 @@ def test_busy_replace_rejected_removal_keeps_work(session):
         session.accept(turn["id"], [replace_cell(1, code())])
     session.accept(turn["id"], [remove(1)])
     assert not session.state["cells"]
-    assert session.state["runtime"] == {"next_cell_id": 2, "cells": {}, "inbox": [], "usage": {}}
+    assert session.state["runtime"] == {
+        "next_cell_id": 2,
+        "cells": {},
+        "inbox": [],
+        "usage": zero_usage(),
+    }
     assert session.pending()[0]["cell_id"] == 1
     assert "1" in prepare(session)["state"]["runtime"]["cells"]
 
@@ -834,6 +848,18 @@ async def test_loop_sleeps_until_timer_instead_of_polling(session, monkeypatch):
     assert [m["id"] for m in state["runtime"]["inbox"]] == ["timer:wake"]
 
 
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"context_bytes": 4095, "output_bytes": 1}, "context_bytes must be at least 4096"),
+        ({"context_bytes": 4096, "output_bytes": 1025}, "output_bytes <= context_bytes / 4"),
+    ],
+)
+def test_limits_reserve_context(fields, message):
+    with pytest.raises(ValueError, match=message):
+        Limits(**fields)
+
+
 def test_output_limit_is_explicit(session):
     accept(session, code())
     session.authorize(1)
@@ -1012,49 +1038,6 @@ def test_retries_use_one_turn_and_keep_prepared_context(session):
     assert not session.data["inbox"]["new"]["consumed"]
     with pytest.raises(RunStopped, match="Model budget exhausted"):
         session.prepare_turn()
-
-
-def test_legacy_round_counters_resume_without_changing_saved_context(tmp_path):
-    path = tmp_path / "legacy.db"
-    with Store(path) as store:
-        session = Session.create(store, "goal", limits=Limits(turns=1))
-        turn = session.prepare_turn()
-        session.start_attempt(turn["id"])
-        session.record_response(turn["id"], {"text": "saved"}, 5)
-        # Build a pre-rename journal, including its original prepared context.
-        for event in store.events():
-            changes = event["changes"]
-            meta = changes.get("meta", {})
-            counts = [meta.get("limits", {}), meta.get("usage", {})]
-            states = [meta.get("state", {})]
-            states += [t.get("state", {}) for t in changes.get("turns", {}).values()]
-            counts += [state.get("runtime", {}).get("usage", {}) for state in states]
-            for record in counts:
-                if "turns" in record:
-                    record["rounds"] = record.pop("turns")
-            store.db.execute(
-                "UPDATE events SET changes = ? WHERE seq = ?",
-                (json.dumps(changes), event["seq"]),
-            )
-        original_events = store.events()
-        saved_turn = original_events[1]["changes"]["turns"][turn["id"]]
-        saved_turn = {**saved_turn, "attempts": 1, "response": {"text": "saved"}}
-
-    with Store(path) as store:
-        session = Session(store)
-        assert session.limits.turns == 1
-        assert "rounds" not in session.meta["limits"]
-        assert session.meta["usage"] == {"turns": 1, "attempts": 1, "tokens": 5, "unknown_usage": 0}
-        assert session.prepare_turn() == saved_turn
-        assert store.events() == original_events
-        session.accept(turn["id"], [add(note())])
-        with pytest.raises(RunStopped, match="Model budget exhausted"):
-            session.prepare_turn()
-        expected = copy.deepcopy(session.data)
-
-    with Store(path) as store:
-        assert store.data == expected
-        assert store.events()[: len(original_events)] == original_events
 
 
 async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch):
@@ -1296,7 +1279,7 @@ def test_runtime_selector_is_removed():
     assert error.value.code == 2
 
 
-@pytest.mark.parametrize("prefix", ["execution", "control", "timer", "idle"])
+@pytest.mark.parametrize("prefix", RESERVED)
 def test_external_ids_cannot_overwrite_harness_observations(session, prefix):
     before = session.store.sequence
     with pytest.raises(ValueError, match="reserved"):
@@ -1642,12 +1625,9 @@ def test_turn_events_store_explicit_state_and_replay_deltas(session):
         assert reopened.data["meta"]["usage"]["tokens"] == 12
 
 
-def test_output_journal_grows_linearly_and_replays_legacy_records(session):
+def test_output_journal_grows_linearly_and_replays(session):
     accept(session, cmd("true"))
     session.authorize(1)
-    # Older records contain a full execution snapshot.
-    old = {**session.data["executions"]["1"], "output": {"stdout": "legacy\n"}}
-    session.store.commit("execution_output", {"executions": {"1": old}})
     sizes = []
     for _ in range(20):
         before = session.store.journal_bytes
@@ -1659,7 +1639,7 @@ def test_output_journal_grows_linearly_and_replays_legacy_records(session):
     session.store.close()
     with Store(session.store.path) as reopened:
         assert reopened.data == expected
-        assert reopened.data["executions"]["1"]["output"]["stdout"] == "legacy\n" + "x" * 2000
+        assert reopened.data["executions"]["1"]["output"]["stdout"] == "x" * 2000
 
 
 @pytest.mark.parametrize("failure", ["timeout", "oserror"])

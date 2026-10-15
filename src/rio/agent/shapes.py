@@ -96,7 +96,7 @@ class Runtime(TypedDict):
     next_cell_id: int
     cells: dict[str, RuntimeCell]
     inbox: list[Observation]
-    usage: dict[str, int]  # {} until the first turn, then a Usage copy
+    usage: Usage  # Meta.usage as of a prepared turn; zeros between turns
 
 
 class State(TypedDict):

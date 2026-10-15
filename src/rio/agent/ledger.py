@@ -20,6 +20,13 @@ from rio.agent.state import Limits
 from rio.agent.store import Store, encode
 from rio.truncate import truncate_bytes_tail
 
+# Kinds of inbox ids the runtime writes; external messages cannot use these prefixes.
+RESERVED = ("execution", "control", "timer", "idle")
+
+
+def runtime_id(kind: str, key: object) -> str:
+    return f"{kind}:{key}"
+
 
 def observation(message_id: str, kind: str, payload: dict, seq: int) -> InboxMessage:
     return {"id": message_id, "kind": kind, "payload": payload, "seq": seq, "consumed": False}
@@ -56,7 +63,7 @@ class RuntimeLedger:
         if (
             not isinstance(message_id, str)
             or not message_id
-            or message_id.startswith(("execution:", "control:", "timer:", "idle:"))
+            or message_id.startswith(tuple(runtime_id(kind, "") for kind in RESERVED))
         ):
             raise ValueError(
                 "External message IDs must be nonempty and outside reserved namespaces"
@@ -84,7 +91,7 @@ class RuntimeLedger:
 
     def invalid_idle(self) -> None:
         seq = self.store.sequence + 1
-        message_id = f"idle:{seq}"
+        message_id = runtime_id("idle", seq)
         self.store.commit(
             "invalid_idle",
             {
@@ -167,7 +174,7 @@ class RuntimeLedger:
         if execution["phase"] == "finished":
             return
         seq = self.store.sequence + 1
-        mid = f"execution:{cell_id}"
+        mid = runtime_id("execution", cell_id)
         unknown = result.get("type") == "UnknownExecution"
         result = {**result, "cell_id": cell_id, "evidence_refs": [f"session:event:{seq}"]}
         execution = {
@@ -212,7 +219,7 @@ class RuntimeLedger:
         now = time.time() if now is None else now
         for key, timer in list(self.data["timers"].items()):
             if not timer["fired"] and timer["deadline"] <= now:
-                mid = f"timer:{key}"
+                mid = runtime_id("timer", key)
                 self.store.commit(
                     "timer_fired",
                     {
@@ -231,7 +238,7 @@ class RuntimeLedger:
         changes = {"controls": {control_id: {**record, "handled": True, "outcome": outcome}}}
         if resolution is not None:
             changes["resolutions"] = {str(resolution): int(control_id)}
-        mid = f"control:{control_id}"
+        mid = runtime_id("control", control_id)
         if outcome != "accepted":
             # The control is not in State, so the observation carries it.
             payload = {"control": record["control"], "reason": outcome}

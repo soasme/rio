@@ -7,10 +7,9 @@ import contextlib
 import math
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
 from typing import Literal
 
-from rio.agent.prompt import STEP
+from rio.agent.prompt import step_tool
 from rio.agent.session import RunStopped, Session
 from rio.agent.shapes import ControlRequest, JournalEvent, Turn, ValidatorResult
 from rio.agent.state import CONTROLS, InvalidPatch
@@ -319,7 +318,7 @@ async def _request_ops(
                 model,
                 turn["system"],
                 messages,
-                [replace(STEP, parameters=turn["tool_schema"])],
+                [step_tool(turn["tool_schema"])],
             )
         )
         try:

@@ -21,7 +21,8 @@
   See [Architecture](../../../docs/explanation/architecture.md).
 
 Each turn journals its prepared context once. Later turn events contain changed
-fields, and output events append new chunks. Replay also accepts older full records.
+fields, and output events append new chunks. Sessions from an older `STATE_SCHEMA`
+are refused on open.
 
 ## Constraint
 
