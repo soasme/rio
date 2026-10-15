@@ -15,6 +15,7 @@ EventKind = Literal[
     "model_attempt",
     "model_response",
     "patch_rejected",
+    "provider_failed",
     "patch_accepted",
     "work_requested",
     "invalid_idle",
@@ -125,10 +126,12 @@ class Turn(TypedDict):
     tool_schema: dict
     attempts: int
     retry_at: float
-    error: str | None
+    error: str | None  # last rejection, shown to the model on the next attempt
     receipt: Receipt | None
     response: dict | None  # AssistantMessage JSON
     ops: NotRequired[list]  # set on acceptance
+    provider_failures: NotRequired[int]  # set by provider_failed; never shown to the model
+    provider_error: NotRequired[str]
 
 
 class Control(TypedDict):

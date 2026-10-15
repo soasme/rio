@@ -63,7 +63,9 @@ kinds and validators, and extend `recover` to stop their leftover work first.
 `rio.agent.session` when a budget or lifecycle limit prevents progress. The runner
 records these stops as failure conclusions and retries `InvalidPatch` rejections.
 Other errors in session operations or saved-response validation propagate to the
-caller without recording a failure conclusion. Provider request errors remain retryable.
+caller without recording a failure conclusion. Provider failures are recorded with
+`Session.provider_failed`, back off, and retry within `Limits.provider_attempts`
+without consuming `Limits.invalid_attempts` or reaching the model.
 
 `Session.create` accepts numeric `Limits`, validator specs, an `owner_config` and an
 `external_wakeup` policy. The model cannot change these settings. Closing the

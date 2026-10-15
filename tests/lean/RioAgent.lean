@@ -358,12 +358,15 @@ inductive TurnDelta where
   | attempt
   | response (text : String)
   | reject
+  | providerFailed
   | accept (receipt : Nat)
 
 def applyTurnDelta (turn : JournalTurn) : TurnDelta → JournalTurn
   | .attempt => { turn with attempts := turn.attempts + 1, response := none }
   | .response text => { turn with response := some text }
   | .reject => { turn with response := none }
+  -- A failed provider request refunds its attempt to the invalid-step budget.
+  | .providerFailed => { turn with attempts := turn.attempts - 1, response := none }
   | .accept receipt => { turn with receipt := some receipt }
 
 theorem turn_delta_preserves_prepared_context (turn : JournalTurn) (delta : TurnDelta) :
@@ -407,6 +410,10 @@ theorem rejection_reuses_turn (turns limit : Nat) :
 
 theorem model_attempt_increments_attempts (turn : JournalTurn) :
     (applyTurnDelta turn .attempt).attempts = turn.attempts + 1 := rfl
+
+theorem provider_failure_refunds_attempt (turn : JournalTurn) :
+    (applyTurnDelta (applyTurnDelta turn .attempt) .providerFailed).attempts =
+      turn.attempts := by simp [applyTurnDelta]
 
 theorem saved_response_preserves_attempts (turn : JournalTurn) (response : String) :
     (applyTurnDelta turn (.response response)).attempts = turn.attempts := rfl
@@ -464,17 +471,19 @@ theorem non_posix_recovery_stops_nothing (workers : List Nat) :
     recoverStops false workers = none := rfl
 
 /-- Only an explicit run stop becomes a failure conclusion; patch errors retry.
+   Provider failures back off without a rejection; exhausting their budget is a run stop.
    Unexpected errors propagate without writing a conclusion or rejection. -/
 inductive TurnError where
-  | invalidPatch | runStopped | unexpected
+  | invalidPatch | providerFailure | runStopped | unexpected
   deriving DecidableEq, Repr
 
 inductive TurnDisposition where
-  | reject | fail | propagate
+  | reject | backoff | fail | propagate
   deriving DecidableEq, Repr
 
 def handleTurnError : TurnError → TurnDisposition
   | .invalidPatch => .reject
+  | .providerFailure => .backoff
   | .runStopped => .fail
   | .unexpected => .propagate
 
@@ -484,6 +493,20 @@ theorem only_explicit_stop_concludes_failure (error : TurnError) :
 
 theorem invalid_patch_remains_retryable :
     handleTurnError .invalidPatch = .reject := rfl
+
+theorem provider_failure_is_not_a_rejection :
+    handleTurnError .providerFailure ≠ .reject := by simp [handleTurnError]
+
+/-- Provider failures stop the run only when final or at their own budget. -/
+def providerFailureStops (retryable : Bool) (failures limit : Nat) : Bool :=
+  !retryable || limit ≤ failures
+
+theorem retryable_failure_under_budget_continues (failures limit : Nat) (h : failures < limit) :
+    providerFailureStops true failures limit = false := by
+  simp [providerFailureStops]; omega
+
+theorem final_provider_error_stops (failures limit : Nat) :
+    providerFailureStops false failures limit = true := rfl
 
 theorem unexpected_error_propagates :
     handleTurnError .unexpected = .propagate := rfl

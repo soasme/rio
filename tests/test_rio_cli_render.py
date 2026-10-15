@@ -103,8 +103,10 @@ def test_conclusion_request_does_not_claim_success_and_retries_are_visible(capsy
         },
     )
     emit(renderer, "patch_rejected", turns={"t1": {"error": "Invalid patch"}})
+    emit(renderer, "provider_failed", turns={"t1": {"provider_error": "HTTP 529"}})
     assert capsys.readouterr().out == (
-        "• Checked.\n\n• Done?\n\n• Stale.\n\n• Retry: Invalid patch\n"
+        "• Checked.\n\n• Done?\n\n• Stale.\n\n• Retry: Invalid patch\n\n"
+        "• Provider error: HTTP 529\n"
     )
 
 

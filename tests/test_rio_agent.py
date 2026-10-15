@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import json
+import math
 import os
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from rio.agent.state import (
     CONTROL_FIELDS,
     CONTROLS,
     NOTE,
+    USAGE,
     CellKind,
     InvalidPatch,
     Limits,
@@ -30,7 +32,7 @@ from rio.agent.state import (
 from rio.agent.store import StorageFailure, Store, reduce_event
 from rio.ai import FakeProvider
 from rio.ai.messages import AssistantMessage, ToolCall
-from rio.ai.provider import AssistantDoneEvent
+from rio.ai.provider import AssistantDoneEvent, AssistantErrorEvent
 from rio.coding.cells import KINDS
 from rio.coding.owner import ProcessOwner, stop_worker
 
@@ -1241,9 +1243,129 @@ async def test_lost_and_partial_model_responses_are_bounded(session, monkeypatch
     monkeypatch.setattr(runner.time, "time", lambda: 1e20)
     provider = FakeProvider([])
     assert not await run(ProcessOwner(session), provider, "fake")
-    assert len(provider.calls) == session.limits.invalid_attempts
+    assert len(provider.calls) == session.limits.provider_attempts
     assert not session.data["cells"]
-    assert session.meta["usage"]["unknown_usage"] == session.limits.invalid_attempts
+    assert session.meta["usage"]["unknown_usage"] == session.limits.provider_attempts
+    assert session.meta["terminal"]["reason"] == (
+        "Provider retry budget exhausted: provider produced no assistant message"
+    )
+
+
+def provider_error(message="overloaded", **details):
+    error = AssistantMessage(
+        stop_reason="error",
+        error_message=message,
+        diagnostics=[{"type": "provider_error", "details": details}],
+    )
+    return [AssistantErrorEvent(reason="error", error=error)]
+
+
+class Clock:
+    """Fake time that jumps to each awaited deadline instead of sleeping."""
+
+    def __init__(self, monkeypatch):
+        import rio.agent.runner as runner
+
+        self.now = 1000.0
+        self.waits = []
+        wait = Owner.wait
+        monkeypatch.setattr(runner.time, "time", lambda: self.now)
+
+        async def jump(owner, until=math.inf, request=None):
+            if request is None and until != math.inf:
+                self.waits.append(until - self.now)
+                self.now = max(self.now, until)
+            await wait(owner, until, request)
+
+        monkeypatch.setattr(Owner, "wait", jump)
+
+
+class Raising(FakeProvider):
+    def __init__(self, streams, failures):
+        super().__init__(streams)
+        self.failures = failures
+
+    def stream_response(self, **kwargs):
+        if self.failures:
+            self.failures -= 1
+            self.calls.append(tuple(kwargs.values()))
+            raise ConnectionError("connection reset")
+        return super().stream_response(**kwargs)
+
+
+async def test_provider_failures_back_off_outside_invalid_budget(session, monkeypatch):
+    clock = Clock(monkeypatch)
+    provider = Raising(
+        [
+            provider_error(status_code=529),
+            provider_error("stream ended"),
+            response([{"op": "invalid"}]),
+            response([conclude()]),
+        ],
+        failures=2,
+    )
+    assert await run(Owner(session), provider, "fake")
+    assert len(provider.calls) == 6
+    assert [round(w) for w in clock.waits] == [2, 4, 8, 16, 2]
+    events = session.store.events()
+    failed = [e for e in events if e["type"] == "provider_failed"]
+    assert [next(iter(e["changes"]["turns"].values()))["provider_error"] for e in failed] == [
+        "connection reset",
+        "connection reset",
+        "overloaded",
+        "stream ended",
+    ]
+    assert sum(e["type"] == "patch_rejected" for e in events) == 1
+    texts = [[m.content for m in call[2][1:]] for call in provider.calls]
+    assert texts == [[], [], [], [], [], ["Rejected step: Invalid ops[0]. " + USAGE]]
+    turn = next(iter(session.data["turns"].values()))
+    assert turn["attempts"] == 2
+    assert turn["provider_failures"] == 4
+    assert session.meta["usage"]["attempts"] == 6
+    # Fake responses report no tokens, and failed requests never do.
+    assert session.meta["usage"]["unknown_usage"] == 6
+
+
+async def test_invalid_model_output_still_uses_invalid_budget(session, monkeypatch):
+    Clock(monkeypatch)
+    text = [AssistantDoneEvent(reason="stop", message=AssistantMessage(content="done"))]
+    provider = FakeProvider([text, response([{"op": "invalid"}]), text])
+    assert not await run(Owner(session), provider, "fake")
+    assert len(provider.calls) == session.limits.invalid_attempts
+    assert session.meta["terminal"]["reason"] == "Model retry budget exhausted"
+    assert not any(e["type"] == "provider_failed" for e in session.store.events())
+
+
+@pytest.mark.parametrize("status", [400, 401, 404])
+async def test_final_provider_errors_fail_promptly(session, monkeypatch, status):
+    clock = Clock(monkeypatch)
+    provider = FakeProvider([provider_error("bad key", status_code=status)])
+    assert not await run(Owner(session), provider, "fake")
+    assert len(provider.calls) == 1
+    assert not clock.waits
+    assert session.meta["terminal"]["reason"] == "Provider request failed: bad key"
+
+
+async def test_provider_backoff_resumes_after_restart(tmp_path, monkeypatch):
+    clock = Clock(monkeypatch)
+    path = tmp_path / "backoff.db"
+    with Store(path) as store:
+        session = Session.create(store, "goal")
+        turn = session.prepare_turn()
+        session.start_attempt(turn["id"])
+        session.provider_failed(turn["id"], "rate limited")
+        session.start_attempt(turn["id"])
+        session.provider_failed(turn["id"], "rate limited")
+    clock.now += 1
+    with Store(path) as store:
+        session = Session(store)
+        provider = FakeProvider([response([conclude()])])
+        assert await run(Owner(session), provider, "fake")
+        assert [round(w) for w in clock.waits] == [3]
+        assert len(provider.calls[0][2]) == 1
+        turn = session.data["turns"][turn["id"]]
+        assert (turn["attempts"], turn["provider_failures"]) == (1, 2)
+        assert turn["error"] is None
 
 
 def test_success_receipt_and_ending_share_a_transaction(session):

@@ -23,6 +23,8 @@ from rio.agent.store import Store, encode
 
 # Bump when the model-facing step protocol changes; saved turns hold the old prompt.
 STATE_SCHEMA = "rio.state/4"
+# Longest wait between failed provider requests.
+PROVIDER_BACKOFF_SECONDS = 120
 
 
 class RunStopped(RuntimeError):
@@ -254,6 +256,30 @@ class Session(RuntimeLedger):
                 },
             },
         )
+
+    def provider_failed(self, turn_id: str, error: str, *, retryable: bool = True) -> None:
+        """Record a failed provider request; it does not use the invalid-step budget."""
+        turn = self.data["turns"][turn_id]
+        failures = turn.get("provider_failures", 0) + 1
+        self.store.commit(
+            "provider_failed",
+            {
+                "turns": {
+                    turn_id: {
+                        # Refund the attempt; its usage stays unknown.
+                        "attempts": turn["attempts"] - 1,
+                        "provider_failures": failures,
+                        "provider_error": error,
+                        "response": None,
+                        "retry_at": time.time() + min(2**failures, PROVIDER_BACKOFF_SECONDS),
+                    }
+                },
+            },
+        )
+        if not retryable:
+            raise RunStopped(f"Provider request failed: {error}")
+        if failures >= self.limits.provider_attempts:
+            raise RunStopped(f"Provider retry budget exhausted: {error}")
 
     def _admit_resolution(self, control: ControlRequest) -> None:
         if control["target_cell_id"] not in self.unresolved():
