@@ -95,7 +95,7 @@ class RuntimeLedger:
         self.store.commit(
             "invalid_idle",
             {
-                "meta": {"idle": self.meta.get("idle", 0) + 1},
+                "meta": {"idle": self.meta["idle"] + 1},
                 "inbox": {
                     message_id: observation(
                         message_id,
@@ -233,9 +233,13 @@ class RuntimeLedger:
                     identity=mid,
                 )
 
+    def _handled(self, control_id: str, outcome: str) -> dict:
+        record = self.data["controls"][control_id]
+        return {"controls": {control_id: {**record, "handled": True, "outcome": outcome}}}
+
     def mark_handled(self, control_id: str, outcome: str, *, resolution: int | None = None) -> None:
         record = self.data["controls"][control_id]
-        changes = {"controls": {control_id: {**record, "handled": True, "outcome": outcome}}}
+        changes = self._handled(control_id, outcome)
         if resolution is not None:
             changes["resolutions"] = {str(resolution): int(control_id)}
         mid = runtime_id("control", control_id)
@@ -274,11 +278,5 @@ class RuntimeLedger:
             },
         }
         if control_id is not None:
-            changes["controls"] = {
-                control_id: {
-                    **self.data["controls"][control_id],
-                    "handled": True,
-                    "outcome": "accepted",
-                }
-            }
+            changes |= self._handled(control_id, "accepted")
         self.store.commit("run_ended", changes, identity="terminal")

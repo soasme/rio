@@ -548,6 +548,59 @@ async def test_resolution_requires_evidence_and_keeps_original_unknown(session):
     assert prepare(session)["state"]["runtime"]["cells"]["1"]["resolved_by"] == 1
 
 
+def folded(store):
+    data = {}
+    for event in store.events():
+        data = reduce_event(data, event["changes"])
+    return data
+
+
+async def test_runtime_cells_leave_the_live_projection_a_fold_of_events(session, monkeypatch):
+    accept(session, code(), code())
+    session.authorize(1)
+    session.finish(1, {"type": "UnknownExecution"})
+    turn = prepare(session)
+    session.receive("inspection", "external", {"file_hash": "verified"})
+    ref = f"session:event:{session.store.sequence}"
+    session.accept(turn["id"], [control("resolution", target_cell_id=1, evidence_refs=[ref])])
+    async with Owner(session) as owner:
+        await owner.handle_controls()
+    turn = prepare(session)
+    assert turn["state"]["runtime"]["cells"]["1"]["resolved_by"] == 1
+    assert "resolved_by" not in session.data["executions"]["1"]
+    assert session.data == folded(session.store)
+    session.accept(turn["id"], [control("cancel", target_cell_id=2)])
+    prepared = Session.prepare_turn
+
+    def checked(self):
+        turn = prepared(self)
+        assert self.data == folded(self.store)
+        return turn
+
+    monkeypatch.setattr(Session, "prepare_turn", checked)
+    assert await run(Owner(session), FakeProvider([response([conclude()])]), "fake")
+    expected = copy.deepcopy(session.data)
+    assert expected == folded(session.store)
+    session.store.close()
+    with Store(session.store.path) as reopened:
+        assert reopened.data == expected
+
+
+def test_live_projection_holds_journaled_json(tmp_path):
+    with Store(tmp_path / "s.db") as store:
+        Session.create(store, "goal", validators=(("check", 1),))
+        assert store.data["meta"]["validators"] == [["check", 1]]
+        assert store.data == folded(store)
+
+
+async def test_cancel_requires_started_cell_to_be_active(session):
+    accept(session, code())
+    session.authorize(1)
+    accept(session, control("cancel", target_cell_id=1))
+    with pytest.raises(RuntimeError, match="Started Cell 1 is not the active execution"):
+        await Owner(session).handle_controls()
+
+
 async def test_success_rejected_for_new_input_and_failure_is_terminal(session):
     turn = prepare(session)
     session.receive("arrived", "external", {"updated": True})

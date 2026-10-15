@@ -114,7 +114,8 @@ class Owner:
         execution = self.session.data["executions"][str(target)]
         if execution["phase"] == "started":
             # recover() finishes leftover work, so a started execution is the active one.
-            assert target == self.active_id
+            if target != self.active_id:
+                raise RuntimeError(f"Started Cell {target} is not the active execution")
             await self.stop_active()
             self.session.finish(
                 target, {"type": "UnknownExecution", "reason": "cancelled_after_launch"}
@@ -286,7 +287,7 @@ def _idle_action(owner: Owner) -> Literal["ready", "wait", "invalid", "fail"]:
         or session.external_wakeup
     ):
         return "wait"
-    if session.meta.get("idle", 0) >= session.limits.invalid_attempts:
+    if session.meta["idle"] >= session.limits.invalid_attempts:
         return "fail"
     return "invalid"
 
