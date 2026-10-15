@@ -162,7 +162,7 @@ class Meta(TypedDict):
     terminal: Terminal | None
     pause: str | None  # inbox message id of the failure that paused dispatch
     usage: Usage
-    idle: NotRequired[int]
+    idle: int  # consecutive invalid idle decisions
 
 
 class ValidatorResult(TypedDict):

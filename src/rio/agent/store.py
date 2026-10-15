@@ -112,8 +112,8 @@ class Store:
         seq = self.sequence + 1
         identity = identity or f"event:{seq}"
         raw = encode(changes)
-        # Compute before entering the transaction; publish only after COMMIT returns.
-        candidate = reduce_event(self.data, changes)
+        # Fold the encoded form, as a rebuild does. Publish only after COMMIT returns.
+        candidate = reduce_event(self.data, json.loads(raw))
         started = time.monotonic()
         try:
             self.db.execute("BEGIN IMMEDIATE")

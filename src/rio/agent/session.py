@@ -103,6 +103,7 @@ class Session(RuntimeLedger):
                     "terminal": None,
                     "pause": None,
                     "usage": zero_usage(),
+                    "idle": 0,
                 },
                 "cells": {},
                 "executions": {},
@@ -122,7 +123,7 @@ class Session(RuntimeLedger):
 
     @property
     def system(self) -> str:
-        return system(self.kinds.values()) + self.meta.get("instructions", "")
+        return system(self.kinds.values()) + self.meta["instructions"]
 
     @property
     def schema(self) -> dict:
@@ -143,8 +144,9 @@ class Session(RuntimeLedger):
         state["revision"] += 1
         selected = {str(c["id"]) for c in state["cells"]}
         unresolved = set(self.unresolved())
+        # Copy each record: the live projection changes only through journal events.
         state["runtime"]["cells"] = {
-            key: execution
+            key: dict(execution)
             for key, execution in self.data["executions"].items()
             if key in selected or execution["phase"] != "finished" or int(key) in unresolved
         }
