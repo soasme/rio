@@ -12,8 +12,8 @@ from typing import Literal
 
 from rio.agent.prompt import STEP
 from rio.agent.session import RunStopped, Session
-from rio.agent.shapes import Cell, JournalEvent, Turn, ValidatorResult
-from rio.agent.state import ROLES, InvalidPatch
+from rio.agent.shapes import ControlRequest, JournalEvent, Turn, ValidatorResult
+from rio.agent.state import CONTROLS, InvalidPatch
 from rio.agent.store import StorageFailure, encode
 from rio.ai.messages import AssistantMessage, UserMessage, raw_tool_arguments
 from rio.ai.provider import AssistantDoneEvent, AssistantErrorEvent, ModelProvider
@@ -39,7 +39,7 @@ class Owner:
 
     async def __aenter__(self):
         cells = self.session.data["cells"].values()
-        missing = {c["kind"] for c in cells} - {"note", *self.session.kinds}
+        missing = {c["kind"] for c in cells} - set(self.session.kinds)
         if missing:
             raise ValueError(f"Open this Session with its Cell kinds: {', '.join(sorted(missing))}")
         self.session.store.on_commit = self.changed.set
@@ -82,7 +82,7 @@ class Owner:
                 await self.task
         self.clear()
 
-    async def fail(self, reason: str, *, note_id: str | None = None) -> None:
+    async def fail(self, reason: str, *, control_id: str | None = None) -> None:
         error = None
         try:
             await self.stop_active()
@@ -95,23 +95,23 @@ class Owner:
                 self.session.finish(
                     execution["cell_id"], {"type": "UnknownExecution", "reason": reason}
                 )
-        self.session.end("failure", reason, cleanup_error=error, note_id=note_id)
+        self.session.end("failure", reason, cleanup_error=error, control_id=control_id)
 
     async def handle_controls(self) -> None:
         controls = sorted(
             self.session.data["controls"].items(),
-            key=lambda pair: (ROLES[pair[1]["cell"]["role"]].order, int(pair[0])),
+            key=lambda pair: (CONTROLS[pair[1]["control"]["type"]].order, int(pair[0])),
         )
-        for key, control in controls:
-            if control["handled"]:
+        for key, record in controls:
+            if record["handled"]:
                 continue
-            cell = control["cell"]
-            await self.ROLE_HANDLERS[cell["role"]](self, key, cell)
+            control = record["control"]
+            await self.CONTROL_HANDLERS[control["type"]](self, key, control)
             if self.session.meta["terminal"]:
                 break
 
-    async def _cancel(self, key: str, cell: Cell) -> None:
-        target = cell["target_cell_id"]
+    async def _cancel(self, key: str, control: ControlRequest) -> None:
+        target = control["target_cell_id"]
         execution = self.session.data["executions"][str(target)]
         if execution["phase"] == "started":
             # recover() finishes leftover work, so a started execution is the active one.
@@ -124,23 +124,23 @@ class Owner:
             self.session.finish(target, {"type": "cancelled"})
         self.session.mark_handled(key, "accepted")
 
-    async def _resolve(self, key: str, cell: Cell) -> None:
-        self.session.mark_handled(key, "accepted", resolution=cell["target_cell_id"])
+    async def _resolve(self, key: str, control: ControlRequest) -> None:
+        self.session.mark_handled(key, "accepted", resolution=control["target_cell_id"])
 
-    async def _conclude(self, key: str, cell: Cell) -> None:
-        if cell["result"] == "failure":
-            await self.fail(cell["text"], note_id=key)
+    async def _conclude(self, key: str, control: ControlRequest) -> None:
+        if control["result"] == "failure":
+            await self.fail(control["reason"], control_id=key)
             return
-        reason = await self._success_blocker(key)
-        if reason:
-            self.session.mark_handled(key, reason)
+        blocker = await self._success_blocker(key)
+        if blocker:
+            self.session.mark_handled(key, blocker)
         else:
-            self.session.end("success", cell["text"], note_id=key)
+            self.session.end("success", control["reason"], control_id=key)
 
-    # One handler per state.ROLES entry.
-    ROLE_HANDLERS = {"cancel": _cancel, "resolution": _resolve, "conclusion": _conclude}
+    # One handler per state.CONTROLS entry.
+    CONTROL_HANDLERS = {"cancel": _cancel, "resolution": _resolve, "conclusion": _conclude}
 
-    async def _success_blocker(self, note_id: str) -> str | None:
+    async def _success_blocker(self, control_id: str) -> str | None:
         self.session.fire_timers()
         if (
             self.session.pending()
@@ -153,7 +153,7 @@ class Owner:
         # Validators execute afresh at each conclusion; the model cannot edit their specs.
         # A result recorded before a restart is reused rather than rerun.
         for index, validator in enumerate(self.session.meta["validators"]):
-            key = f"{note_id}:{index}"
+            key = f"{control_id}:{index}"
             result = self.session.data["validator_results"].get(key)
             if result is None:
                 result = await self.validate(key, validator)

@@ -8,8 +8,8 @@ TUI. `--output json` continues to emit the committed event records unchanged.
 
 ## Durable cells
 
-Render accepted note text, command arguments, and complete Python source
-(including PEP 723 metadata) from `patch_accepted`. Entries contain the content itself: no `Cell` label,
+Render accepted note text, command arguments, complete Python source
+(including PEP 723 metadata), and control reasons from `patch_accepted`. Entries contain the content itself: no `Cell` label,
 number, kind, predecessor, or control metadata. IDs remain internal to ordering
 and output tracking. Show only new versions in allocation order, not every cell
 in the State snapshot. Removing a cell from current context does not erase its
@@ -37,7 +37,7 @@ commits, before execution finishes. Stdout follows `└` directly; stderr adds a
 • Success: The calculation returned 2.
 ```
 
-Control notes display their text. A conclusion note is a request, not an accepted
+Controls display their reason after the new cells. A conclusion is a request, not an accepted
 run ending. Only `run_ended` reports final success or failure. Patch rejection
 reports `Retry: <reason>`; model-turn bookkeeping does not create transcript entries.
 

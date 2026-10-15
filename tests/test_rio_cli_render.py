@@ -96,19 +96,16 @@ def test_conclusion_request_does_not_claim_success_and_retries_are_visible(capsy
     emit(
         renderer,
         "patch_accepted",
-        cells={
-            "3": {
-                "id": 3,
-                "previous_id": None,
-                "kind": "note",
-                "text": "Done?",
-                "role": "conclusion",
-                "result": "success",
-            },
+        cells={"3": {"id": 3, "previous_id": None, "kind": "note", "text": "Checked."}},
+        controls={
+            "10": {"control": {"type": "cancel", "target_cell_id": 2, "reason": "Stale."}},
+            "9": {"control": {"type": "conclusion", "result": "success", "reason": "Done?"}},
         },
     )
     emit(renderer, "patch_rejected", turns={"t1": {"error": "Invalid patch"}})
-    assert capsys.readouterr().out == ("• Done?\n\n• Retry: Invalid patch\n")
+    assert capsys.readouterr().out == (
+        "• Checked.\n\n• Done?\n\n• Stale.\n\n• Retry: Invalid patch\n"
+    )
 
 
 def test_command_arguments_are_quoted_without_cell_metadata(capsys):

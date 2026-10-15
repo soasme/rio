@@ -1,68 +1,91 @@
-"""The model-facing durable protocol: notes, plus whichever runnable Cell kinds are supplied."""
+"""The model-facing durable protocol: Cells as memory, controls as actions."""
 
 from collections.abc import Iterable
 
-from rio.agent.state import NOTE, CellKind
+from rio.agent.state import CONTROL_FIELDS, CONTROLS, NOTE, CellKind
 from rio.ai.tools import AgentTool
 
 PROTOCOL = """You are Rio, an autonomous agent. Complete the goal in State.
 Your entire working context is the supplied State. Use exactly one `step` tool call per response.
-Use concise notes to retain facts; remove obsolete Cells and outputs to keep context small.
-The goal and runtime are read-only. A step is a list of ops that name Cells by id:
-{"op":"add","cell":CELL} appends; {"op":"replace","id":N,"cell":CELL} puts a new version in
-place; {"op":"remove","id":N} drops it from context. Use at most one op per existing Cell.
-The runtime assigns ids and previous_id. Never replace a queued or started Cell.
-Note: {"kind":"note","text":"..."}.
+Cells are your memory. Use concise notes to retain facts; remove obsolete Cells and outputs
+to keep context small. The goal and runtime are read-only. A step is a list of ops.
+Cell ops name Cells by id: {"op":"add","cell":CELL} appends; {"op":"replace","id":N,"cell":CELL}
+puts a new version in place; {"op":"remove","id":N} drops it from context. Use at most one op
+per existing Cell. The runtime assigns ids and previous_id. Never replace a queued or started Cell.
+Controls are actions, not Cells: {"op":"control","control":CONTROL}. They never enter State.
 """
 
 EXECUTION = """Each new runnable Cell version runs ONCE, in accepted order.
 Inspect output streams in runtime.cells, plus completion notices in runtime.inbox.
 An ordinary execution error pauses the queue. Consume it by accepting your next step;
 you can cancel queued work and add a corrected Cell in that step. Ordinary errors
-DO NOT require resolution notes. A resolution note is ONLY for UnknownExecution.
-Cancel stale work using a note with role:"cancel", target_cell_id:N, and text explaining why.
+DO NOT require resolution. Resolution is ONLY for UnknownExecution.
+Cancel stale work: {"type":"cancel","target_cell_id":N,"reason":"..."}.
 Removing a Cell only removes context; it never cancels accepted work or erases history.
 UnknownExecution means the Cell may have performed effects. Never assume it rolled back.
 Investigate current state with a NEW runnable Cell before deciding whether to retry.
-Resolve uncertainty with a note: role:"resolution", target_cell_id:N, evidence_refs containing
-recorded "session:event:N" references, and text explaining the decision. History is retained.
+Resolve uncertainty: {"type":"resolution","target_cell_id":N,"evidence_refs":["session:event:N"],
+"reason":"..."}, citing recorded observations. History is retained.
 """
 
-CONCLUSION = """To finish, add a note with role:"conclusion", result:"success" or "failure",
-and text explaining the result. Ordinary text does not end the run. Success requires no outstanding
-work or unresolved uncertainty, consumed observations, and passing configured validators.
+CONCLUSION = """To finish: {"type":"conclusion","result":"success" or "failure","reason":"..."}.
+Ordinary text does not end the run. Success requires no outstanding work or unresolved
+uncertainty, consumed observations, and passing configured validators.
 If no work, timer or external wake-up remains, conclude; an idle step is invalid.
 """
 
 
 def system(kinds: Iterable[CellKind]) -> str:
     """Describe only what the agent can do; a note-only agent never hears about execution."""
-    prompts = [kind.prompt for kind in kinds]
-    execution = "".join(prompts) + EXECUTION if prompts else ""
-    return PROTOCOL + execution + CONCLUSION
+    kinds = list(kinds)
+    runnable = any(kind.name != "note" for kind in kinds)
+    return (
+        PROTOCOL
+        + "".join(kind.prompt for kind in kinds)
+        + (EXECUTION if runnable else "")
+        + CONCLUSION
+    )
 
 
 def schema(kinds: Iterable[CellKind]) -> dict:
-    """The step tool schema; Cells may use note fields and the fields of the given kinds."""
+    """The step tool schema for the given Cell kinds, plus controls.
+
+    Each object is flat with an enum discriminator, since some providers reject oneOf;
+    the runtime checks the exact fields of each kind and control type.
+    """
     kinds = list(kinds)
-    fields = dict(NOTE)
+    fields = {}
     for kind in kinds:
         fields.update(kind.fields)
     cell = {
         "type": "object",
         "properties": {
-            "kind": {"type": "string", "enum": ["note", *(kind.name for kind in kinds)]},
+            "kind": {"type": "string", "enum": [kind.name for kind in kinds]},
             **fields,
         },
         "required": ["kind"],
         "additionalProperties": False,
     }
+    control = {
+        "type": "object",
+        "description": "Required fields by type: "
+        + "; ".join(
+            f"{name}: {', '.join((*kind.fields, 'reason'))}" for name, kind in CONTROLS.items()
+        ),
+        "properties": {
+            "type": {"type": "string", "enum": list(CONTROLS)},
+            **{field: spec for field, (spec, _) in CONTROL_FIELDS.items()},
+        },
+        "required": ["type", "reason"],
+        "additionalProperties": False,
+    }
     op = {
         "type": "object",
         "properties": {
-            "op": {"type": "string", "enum": ["add", "replace", "remove"]},
+            "op": {"type": "string", "enum": ["add", "replace", "remove", "control"]},
             "id": {"type": "integer"},
             "cell": cell,
+            "control": control,
         },
         "required": ["op"],
         "additionalProperties": False,
@@ -77,6 +100,6 @@ def schema(kinds: Iterable[CellKind]) -> dict:
 
 STEP = AgentTool(
     name="step",
-    description="Add, replace, or remove State Cells by id and request Cell runs.",
-    parameters=schema(()),
+    description="Edit State Cells by id, request Cell runs, and issue controls.",
+    parameters=schema([NOTE]),
 )

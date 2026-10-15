@@ -36,7 +36,7 @@ State has six top-level fields:
 
 ```json
 {
-  "schema": "rio.state/2",
+  "schema": "rio.state/4",
   "id": "s1",
   "revision": 12,
   "goal": "Fix the Flask route and pass the required tests",
@@ -91,10 +91,13 @@ The only model tool takes a list of ops that name existing Cells by ID.
   "ops": [
     {"op": "replace", "id": 1, "cell": {"kind": "note", "text": "Check the route and its tests"}},
     {"op": "remove", "id": 2},
-    {"op": "add", "cell": {"kind": "cmd", "argv": ["pytest", "-q", "tests/test_routes.py"]}}
+    {"op": "add", "cell": {"kind": "cmd", "argv": ["pytest", "-q", "tests/test_routes.py"]}},
+    {"op": "control", "control": {"type": "cancel", "target_cell_id": 3, "reason": "stale"}}
   ]
 }
 ```
+
+Cells are memory; controls are actions. A `control` op never becomes a Cell, takes no Cell ID, and cannot be replaced or removed. Accepted controls get their own IDs, 1, 2, ..., in accepted order.
 
 The model writes Cell bodies without `id` or `previous_id`. The Harness assigns IDs in op order, sets `previous_id`, keeps a replacement at its position, appends added Cells, and applies removals in any order. Reject an unknown ID, a second op on one Cell, and an op on a Cell added in the same step. The model does not echo the revision: the Harness rejects a turn whose prepared State is no longer current.
 
@@ -173,7 +176,7 @@ Commit the output and its Inbox notice together, once per interruption. Retain s
 
 UnknownExecution ends that execution, not the Session. The next model turn can add query Cells to inspect files, logs, hashes, processes, or remote APIs. Investigation produces new recorded observations. The LLM chooses whether to continue, retry, wait, or fail.
 
-To resolve uncertainty, add an immutable note with `role: "resolution"`, a `target_cell_id`, recorded `evidence_refs`, and text explaining the decision. The Harness checks that the target and evidence exist and records the resolution. It does not certify the reasoning. The original UnknownExecution remains unchanged in history. A bare acknowledgment without evidence does not resolve uncertainty.
+To resolve uncertainty, issue a `resolution` control with a `target_cell_id`, recorded `evidence_refs`, and a `reason` explaining the decision. The Harness checks that the target and evidence exist and records the resolution. It does not certify the reasoning. The original UnknownExecution remains unchanged in history. A bare acknowledgment without evidence does not resolve uncertainty.
 
 A fresh Cell ID permits a fresh execution, not a claim that external repetition is safe. Rio cannot mechanically prevent the LLM from repeating an action that already succeeded. This is an explicit limit of the design.
 
@@ -204,7 +207,7 @@ Record required recovery facts in SQLite, not solely in temporary files. Large o
 
 A `cmd` Cell holds an argv array, such as `{"kind": "cmd", "argv": ["pytest", "-q"]}`. The worker executes it directly in the Session working directory, without a shell or uv. It follows the same execution, output, cancellation, and recovery rules as a code Cell. Use `["sh", "-c", "..."]` when shell syntax is needed.
 
-## 9. Inbox, timers, and control notes
+## 9. Inbox, timers, and controls
 
 Persist Inbox messages before acknowledging receipt. Each has a stable message ID, kind, payload reference, causal identity, and Session sequence. Completion messages name the exact Cell ID. External events target the Session, with no Cell subscriptions to transfer between versions. Events wake the model; they never rerun existing Cell versions. A successful completion does not wake the model while accepted work is still queued; completions are delivered together once the queue drains or an error pauses it.
 
@@ -216,13 +219,13 @@ If an accepted step creates no work or conclusion, the Session may sleep while t
 
 ### Cancellation
 
-A note with `role: "cancel"` and `target_cell_id` requests cancellation. The owner handles it directly after step commit, without waiting for a code execution slot. Record handling by note ID so repeated State evaluation does not repeat the command.
+A `cancel` control with `target_cell_id` and a `reason` requests cancellation. The owner handles it directly after step commit, without waiting for a code execution slot. Record handling by control ID so repeated State evaluation does not repeat the command.
 
-Queued cancellation finishes the target without launching it. Running cancellation stops the local worker and its children, then records the observed outcome. If the outcome is uncertain, return UnknownExecution. Failure to establish local termination blocks new execution. Cancellation cannot undo earlier writes or recall external requests. Removing a cancellation note does not undo an accepted cancellation.
+Queued cancellation finishes the target without launching it. Running cancellation stops the local worker and its children, then records the observed outcome. If the outcome is uncertain, return UnknownExecution. Failure to establish local termination blocks new execution. Cancellation cannot undo earlier writes or recall external requests.
 
 ### Conclusions
 
-A note with `role: "conclusion"`, `result: "success" | "failure"`, and a reason requests a run ending. Ordinary text such as “done” has no control effect. Record the request outcome so it is not repeatedly processed. Rejected requests return observations; a new request requires a new note version.
+A `conclusion` control with `result: "success" | "failure"` and a `reason` requests a run ending. Ordinary text such as “done” has no control effect. Record the request outcome so it is not repeatedly processed. Rejected requests return observations carrying the control; a new request requires a new control.
 
 The LLM judges whether a natural-language goal is achieved. Supplied validators are mandatory and cannot be weakened by model steps. The Harness checks their recorded outcomes and mechanical conditions; it does not prove semantic success for arbitrary goals.
 
@@ -249,7 +252,7 @@ Recovery follows this order:
 5. Restore timers and recover unaccepted model requests. Apply committed control requests idempotently. Preserve any dispatch pause until its observation is consumed.
 6. Let the LLM inspect uncertainty and choose subsequent work. Start queued work only when dispatch is allowed.
 
-Example: a Cell edits a Flask route and starts tests. Rio stops before final output commits. On restart it does not rerun the Cell. It returns UnknownExecution with committed output and the original source. The LLM cancels stale queued work if needed, runs a query Cell, inspects the file, and verifies it. A resolution note cites those observations. A matching file alone does not prove every other operation in the original script completed.
+Example: a Cell edits a Flask route and starts tests. Rio stops before final output commits. On restart it does not rerun the Cell. It returns UnknownExecution with committed output and the original source. The LLM cancels stale queued work if needed, runs a query Cell, inspects the file, and verifies it. A resolution control cites those observations. A matching file alone does not prove every other operation in the original script completed.
 
 | Failure or input | Required result |
 | --- | --- |
@@ -270,8 +273,8 @@ Example: a Cell edits a Flask route and starts tests. Rio stops before final out
 | Unrelated response arrives after a new error | It cannot clear the new dispatch pause |
 | Uncertain SQLite commit | Stop admission/publication and local workers; reopen and inspect |
 | Streaming output is visible | The chunk was committed first |
-| Resolution note with no evidence | Cannot clear uncertainty |
-| Successful resolution note | Original UnknownExecution remains in history |
+| Resolution control with no evidence | Cannot clear uncertainty |
+| Successful resolution control | Original UnknownExecution remains in history |
 | Scratch file disappears | No claimed restoration; inspect or recreate input |
 | Environment disappears | Prepare from script metadata or report failure |
 | Context or output exceeds limit | Bounded context, explicit truncation, pruning or failure |
@@ -286,7 +289,7 @@ Test process termination and host/power failure separately. A process-kill test 
 
 ## 12. Scope and relation to earlier designs
 
-Implement the SQLite reducer and commit protocol, step admission, serial execution and worker cleanup, fixed model turns, Inbox and timers, control notes, then fault-injection tests and coding evaluations.
+Implement the SQLite reducer and commit protocol, step admission, serial execution and worker cleanup, fixed model turns, Inbox and timers, controls, then fault-injection tests and coding evaluations.
 
 BEAM informs process ownership and supervision. Rio keeps Python. The CLM approach informs model-managed context. Rio v0.7.0–v0.7.1 provide the earlier notebook-based direction; this design keeps model-edited JSON State and Session history while replacing shared kernel execution. [R8–R10, R13]
 

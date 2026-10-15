@@ -33,6 +33,13 @@ list of ops: `add` a cell, or `replace` or `remove` a cell by ID. Rio assigns ID
 and keeps positions. A replacement gets a new ID and links to the old cell. Old versions stay
 in history. Removing a cell from context does not cancel its work.
 
+Cells are memory; controls are actions. A `control` op requests an action and
+never becomes a cell:
+
+```json
+{"op": "control", "control": {"type": "cancel", "target_cell_id": 4, "reason": "stale"}}
+```
+
 Each model turn uses a saved, fixed state. New observations wait in the inbox.
 Successful completions wait until queued work drains or an error pauses it,
 so one turn sees them together.
@@ -89,8 +96,12 @@ evidence. The original unknown result stays in history.
 
 ## Controls and limits
 
-Notes can request cancellation, resolve uncertainty, or conclude the task.
-Cancellation runs in the owner without waiting for a worker slot. Success requires
+Controls cancel work (`cancel`, with `target_cell_id`), resolve uncertainty
+(`resolution`, with `target_cell_id` and `evidence_refs`), or end the task
+(`conclusion`, with `result`). Each needs a `reason`. Accepted controls get
+IDs 1, 2, ... in order and are handled once, including after a restart.
+A rejected control returns a `control_rejected` observation that carries the
+control. Cancellation runs in the owner without waiting for a worker slot. Success requires
 no pending work, unread observations, or unresolved results, and passing any
 configured validators. Validators use the same process supervision.
 
@@ -121,5 +132,5 @@ are not guaranteed to happen exactly once.
 Tests cover process crashes, lost commit receipts, replay, and child cleanup.
 They do not prove power-loss durability. That needs testing on the target storage.
 
-See the [design contract](https://github.com/soasme/rio/blob/main/docs/design/durable.md), [Lean models](https://github.com/soasme/rio/blob/main/tests/lean/README.md),
-and [evals](https://github.com/soasme/rio/blob/main/evals/README.md) for details and checks.
+See the [design contract](../design/durable.md), [Lean models](../../tests/lean/README.md),
+and [evals](../../evals/README.md) for details and checks.

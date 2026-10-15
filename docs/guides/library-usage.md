@@ -54,7 +54,7 @@ For the CLI's saved provider selection and project instructions, call
 `rio.cli.run.run_persistent_session` with task text and keyword options such as
 `cwd`, `provider_name`, `model`, and `resume`.
 
-Without `kinds`, a session supports notes only. Custom applications supply
+Without `kinds`, a session supports notes and controls only. Custom applications supply
 `CellKind` definitions; see [rio.agent](../../src/rio/agent/README.md).
 Pass `Limits` and `validators` to `Session.create` to set execution budgets and
 required checks. `ProcessOwner` runs validators as argument lists, such as

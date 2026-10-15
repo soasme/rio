@@ -16,8 +16,8 @@ from pydantic import ValidationError
 from rio.agent.prompt import CONCLUSION, PROTOCOL
 from rio.agent.runner import Owner, RecoveryFailure, replay, run
 from rio.agent.session import RunStopped, Session
-from rio.agent.shapes import NoteRole
-from rio.agent.state import ROLES, CellKind, InvalidPatch, Limits
+from rio.agent.shapes import ControlType
+from rio.agent.state import CONTROL_FIELDS, CONTROLS, NOTE, CellKind, InvalidPatch, Limits
 from rio.agent.store import StorageFailure, Store, reduce_event
 from rio.ai import FakeProvider
 from rio.ai.messages import AssistantMessage, ToolCall
@@ -67,9 +67,18 @@ def remove(cell_id):
     return {"op": "remove", "id": cell_id}
 
 
-def accept(session, *cells):
+def control(kind, reason="because", **fields):
+    return {"op": "control", "control": {"type": kind, "reason": reason, **fields}}
+
+
+def conclude(result="success", reason="done"):
+    return control("conclusion", reason, result=result)
+
+
+def accept(session, *items):
+    """Accept Cells (added) and ops, in order."""
     turn = prepare(session)
-    return session.accept(turn["id"], [add(c) for c in cells])
+    return session.accept(turn["id"], [i if "op" in i else add(i) for i in items])
 
 
 async def settle(owner):
@@ -211,7 +220,17 @@ def test_runtime_assigns_ids_positions_and_order_free_removal(session):
         add(cmd()),
         add(cmd("ls", 1)),
         add(cmd("ls", source="x")),
+        add(note(role="conclusion", result="success")),
         "add",
+        {**control("cancel", target_cell_id=1), "id": 1},
+        {"op": "control", "control": "cancel"},
+        control("restart"),
+        control("cancel"),
+        control("cancel", target_cell_id="1"),
+        control("cancel", target_cell_id=1, result="success"),
+        control("conclusion", result="maybe"),
+        control("conclusion", " ", result="success"),
+        control("resolution", target_cell_id=1, evidence_refs=[]),
     ],
 )
 def test_restricted_ops(session, operation):
@@ -221,10 +240,61 @@ def test_restricted_ops(session, operation):
         session.accept(turn["id"], [operation])
 
 
-def test_null_fields_from_strict_providers_are_omitted(session):
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        (control("cancel"), r"ops\[0\]: cancel control requires target_cell_id: id of a Cell"),
+        (
+            control("cancel", target_cell_id=1, result="success"),
+            r"cancel control takes target_cell_id, reason; remove \['result'\]",
+        ),
+        (control("restart"), "Control type must be one of: cancel, resolution, conclusion"),
+        (control("cancel", target_cell_id=9), "Cell 9 has no recorded execution"),
+        (add(note(role="cancel")), r"Unknown Cell fields: \['role'\]"),
+    ],
+)
+def test_control_rejections_name_the_fix(session, operation, message):
     turn = prepare(session)
-    session.accept(turn["id"], [{"op": "add", "id": None, "cell": note(role=None)}])
-    assert session.state["cells"] == [{"id": 1, "previous_id": None, **note()}]
+    with pytest.raises(InvalidPatch, match=message):
+        session.accept(turn["id"], [operation])
+
+
+def test_null_fields_from_strict_providers_are_omitted(session):
+    accept(session, cmd("ls"))
+    turn = prepare(session)
+    stop = {"type": "cancel", "target_cell_id": 1, "reason": "stale", "result": None}
+    session.accept(
+        turn["id"],
+        [
+            {"op": "add", "id": None, "cell": note(argv=None), "control": None},
+            {"op": "control", "id": None, "cell": None, "control": stop},
+        ],
+    )
+    assert session.state["cells"][-1] == {"id": 2, "previous_id": None, **note()}
+    assert session.data["controls"] == {
+        "1": {
+            "control": {"type": "cancel", "target_cell_id": 1, "reason": "stale"},
+            "handled": False,
+        }
+    }
+
+
+def test_controls_stay_out_of_cells_and_take_their_own_ids(session):
+    accept(session, cmd("ls"), cmd("ls"))
+    receipt = accept(
+        session,
+        control("cancel", "stale", target_cell_id=2),
+        note("kept"),
+        control("cancel", target_cell_id=1),
+    )
+    assert receipt["cell_ids"] == [3] and receipt["control_ids"] == [1, 2]
+    assert [c["kind"] for c in session.state["cells"]] == ["cmd", "cmd", "note"]
+    assert session.state["runtime"]["next_cell_id"] == 4
+    assert accept(session, conclude())["control_ids"] == [3]
+    turn = prepare(session)
+    # A control is no Cell, so it cannot be replaced or removed.
+    with pytest.raises(InvalidPatch, match="not in cells"):
+        session.accept(turn["id"], [remove(4)])
 
 
 def test_unknown_id_names_current_ids(session):
@@ -422,7 +492,7 @@ async def test_error_pauses_queue_then_cancel_before_dispatch(session):
                 await owner.tick()
                 await asyncio.sleep(0.02)
         assert session.data["executions"]["2"]["phase"] == "queued"
-        accept(session, note(role="cancel", target_cell_id=2))
+        accept(session, control("cancel", target_cell_id=2))
         await owner.tick()
     assert session.data["executions"]["2"]["result"]["type"] == "cancelled"
     assert "cell:2" not in session.data.get("workers", {})
@@ -450,33 +520,38 @@ async def test_resolution_requires_evidence_and_keeps_original_unknown(session):
     with pytest.raises(InvalidPatch):
         session.accept(
             turn["id"],
-            [add(note(role="resolution", target_cell_id=1, evidence_refs=[]))],
+            [control("resolution", target_cell_id=1, evidence_refs=[])],
         )
     session.receive("inspection", "external", {"file_hash": "verified"})
     ref = f"session:event:{session.store.sequence}"
     session.accept(
         turn["id"],
-        [add(note(role="resolution", target_cell_id=1, evidence_refs=[ref]))],
+        [control("resolution", target_cell_id=1, evidence_refs=[ref])],
     )
     async with ProcessOwner(session):
         assert not session.unresolved()
     assert session.data["executions"]["1"] == original
-    assert prepare(session)["state"]["runtime"]["cells"]["1"]["resolved_by"] == 2
+    assert prepare(session)["state"]["runtime"]["cells"]["1"]["resolved_by"] == 1
 
 
 async def test_success_rejected_for_new_input_and_failure_is_terminal(session):
     turn = prepare(session)
     session.receive("arrived", "external", {"updated": True})
-    session.accept(turn["id"], [add(note(role="conclusion", result="success"))])
+    session.accept(turn["id"], [conclude()])
     async with ProcessOwner(session) as owner:
         assert not session.meta["terminal"]
-        accept(session, note(role="conclusion", result="failure"))
+        accept(session, conclude("failure"))
         await owner.handle_controls()
     assert session.meta["terminal"]["result"] == "failure"
     ending = session.store.events()[-1]
     assert ending["type"] == "run_ended"
-    assert all(control["handled"] for control in session.data["controls"].values())
+    assert all(record["handled"] for record in session.data["controls"].values())
     assert ending["changes"]["controls"]
+    # The rejected success names itself, since controls never enter State.
+    rejected = session.data["inbox"]["control:1"]
+    assert rejected["kind"] == "control_rejected"
+    assert rejected["payload"]["control"] == conclude()["control"]
+    assert rejected["payload"]["reason"].startswith("New observations")
     seq = session.store.sequence
     async with ProcessOwner(session):
         pass
@@ -498,7 +573,7 @@ async def test_cancel_running_worker_and_children(session):
             while not path.exists():
                 await asyncio.sleep(0.02)
         child_pid = int(path.read_text())
-        accept(session, note(role="cancel", target_cell_id=1))
+        accept(session, control("cancel", target_cell_id=1))
         await owner.handle_controls()
     import psutil
 
@@ -522,7 +597,7 @@ async def test_public_loop_finishes_and_reopens_without_model_call(session):
             response([add(code())]),
             response(
                 [
-                    add(note("completed", role="conclusion", result="success")),
+                    conclude(),
                 ]
             ),
         ]
@@ -535,7 +610,7 @@ async def test_public_loop_finishes_and_reopens_without_model_call(session):
 
 
 async def test_base_owner_runs_note_only_sessions_without_processes(tmp_path):
-    provider = FakeProvider([response([add(note("done", role="conclusion", result="success"))])])
+    provider = FakeProvider([response([conclude()])])
     with Store(tmp_path / "notes.sqlite3") as store:
         session = Session.create(store, "say hello")
         assert await run(Owner(session), provider, "fake")
@@ -564,7 +639,7 @@ def test_owner_records_merge_outside_session_collections(session):
 async def test_interrupted_validator_blocks_success_after_restart(tmp_path):
     with Store(tmp_path / "s.db") as store:
         session = Session.create(store, "goal", validators=[["true"]])
-        accept(session, note(role="conclusion", result="success"))
+        accept(session, conclude())
         # A validator worker was registered, then the owner died before its result committed.
         session.record("workers", "validator:1:0", {"token": "lost-validator-token"})
         async with ProcessOwner(session):
@@ -577,7 +652,7 @@ async def test_interrupted_validator_blocks_success_after_restart(tmp_path):
 async def test_finished_validator_result_is_reused_after_restart(tmp_path):
     with Store(tmp_path / "s.db") as store:
         session = Session.create(store, "goal", validators=[["false"]])
-        accept(session, note(role="conclusion", result="success"))
+        accept(session, conclude())
         # The validator finished and stopped, then the owner died before the core result.
         result = {"passed": True, "exit": 0, "output": "ok"}
         session.record(
@@ -606,7 +681,7 @@ async def test_successful_completions_wake_the_model_once_after_the_queue_drains
             ),
             response(
                 [
-                    add(note("completed", role="conclusion", result="success")),
+                    conclude(),
                 ]
             ),
         ]
@@ -619,11 +694,10 @@ async def test_successful_completions_wake_the_model_once_after_the_queue_drains
 async def test_instructions_extend_system_prompt(tmp_path):
     with Store(tmp_path / "session.sqlite3") as store:
         session = Session.create(store, "goal", instructions="\n\nUse tabs.")
-        conclude = note("done", role="conclusion", result="success")
-        provider = FakeProvider([response([add(conclude)])])
+        provider = FakeProvider([response([conclude()])])
         assert await run(ProcessOwner(session), provider, "fake")
         # A note-only agent never hears about execution.
-        assert provider.calls[0][1] == PROTOCOL + CONCLUSION + "\n\nUse tabs."
+        assert provider.calls[0][1] == PROTOCOL + NOTE.prompt + CONCLUSION + "\n\nUse tabs."
 
 
 def test_note_only_agent_rejects_runnable_cells(tmp_path):
@@ -636,10 +710,11 @@ def test_note_only_agent_rejects_runnable_cells(tmp_path):
         assert accept(session, note())["cell_ids"] == [1]
 
 
-def test_note_roles_match_role_table():
-    # Session admits and Owner handles every declared role; the Literal mirrors the table.
-    assert get_args(NoteRole) == tuple(ROLES) == tuple(Owner.ROLE_HANDLERS)
-    assert Session.ROLE_CHECKS.keys() <= ROLES.keys()
+def test_control_types_match_control_table():
+    # Session admits and Owner handles every declared type; the Literal mirrors the table.
+    assert get_args(ControlType) == tuple(CONTROLS) == tuple(Owner.CONTROL_HANDLERS)
+    assert Session.CONTROL_CHECKS.keys() <= CONTROLS.keys()
+    assert {f for kind in CONTROLS.values() for f in kind.fields} < CONTROL_FIELDS.keys()
 
 
 def test_note_is_not_an_extension_kind(tmp_path):
@@ -749,7 +824,7 @@ async def test_loop_sleeps_until_timer_instead_of_polling(session, monkeypatch):
         await tick(self)
 
     monkeypatch.setattr(Owner, "tick", counted)
-    provider = FakeProvider([response([add(note(role="conclusion", result="success"))])])
+    provider = FakeProvider([response([conclude()])])
     started = time.monotonic()
     assert await run(ProcessOwner(session), provider, "fake")
     assert time.monotonic() - started >= 0.25
@@ -817,7 +892,7 @@ async def test_required_validator_blocks_success(tmp_path):
         session = Session.create(
             store, "goal", validators=((sys.executable, "-c", "raise SystemExit(1)"),)
         )
-        accept(session, note(role="conclusion", result="success"))
+        accept(session, conclude())
         async with ProcessOwner(session):
             assert session.meta["terminal"] is None
             assert session.data["validator_results"]["1:0"]["exit"] == 1
@@ -1091,9 +1166,7 @@ async def test_invalid_patch_is_retried_without_ending_run(session, monkeypatch)
     import rio.agent.runner as runner
 
     monkeypatch.setattr(runner.time, "time", lambda: 1e20)
-    provider = FakeProvider(
-        [response([{"op": "invalid"}]), response([add(note(role="conclusion", result="success"))])]
-    )
+    provider = FakeProvider([response([{"op": "invalid"}]), response([conclude()])])
     assert await run(Owner(session), provider, "fake")
     assert len(provider.calls) == 2
     events = session.store.events()
@@ -1117,7 +1190,7 @@ def test_context_keeps_each_output_whole(session):
 async def test_saved_complete_response_is_accepted_without_another_provider_call(session):
     turn = prepare(session)
     session.start_attempt(turn["id"])
-    operations = [add(note(role="conclusion", result="success"))]
+    operations = [conclude()]
     message = response(operations)[0].message
     session.record_response(turn["id"], message.model_dump(mode="json"), 12)
     provider = FakeProvider([])
@@ -1138,8 +1211,8 @@ async def test_lost_and_partial_model_responses_are_bounded(session, monkeypatch
 
 
 def test_success_receipt_and_ending_share_a_transaction(session):
-    accept(session, note(role="conclusion", result="success"))
-    session.end("success", "done", note_id="1")
+    accept(session, conclude())
+    session.end("success", "done", control_id="1")
     ending = session.store.events()[-1]
     assert ending["changes"]["meta"]["terminal"]["result"] == "success"
     assert ending["changes"]["controls"]["1"]["handled"]
@@ -1200,7 +1273,7 @@ def test_database_alias_cannot_acquire_a_second_owner(session, tmp_path, alias_k
 
 async def test_provider_name_does_not_make_missing_usage_known(session):
     operations = [
-        add(note(role="conclusion", result="success")),
+        conclude(),
     ]
     events = response(operations)
     events[0].message.api = "provider-without-usage"
@@ -1259,7 +1332,7 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
             ),
             response(
                 [
-                    add(note("done", role="conclusion", result="success")),
+                    conclude(),
                 ]
             ),
         ]
@@ -1407,9 +1480,7 @@ def test_resolution_rejects_missing_events_and_non_observations(session, ref):
     turn = prepare(session)
     before = session.store.sequence
     with pytest.raises(InvalidPatch, match="recorded observation"):
-        session.accept(
-            turn["id"], [add(note(role="resolution", target_cell_id=1, evidence_refs=[ref]))]
-        )
+        session.accept(turn["id"], [control("resolution", target_cell_id=1, evidence_refs=[ref])])
     assert session.store.sequence == before
 
 
