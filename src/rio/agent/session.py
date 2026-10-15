@@ -9,26 +9,69 @@ from collections.abc import Iterable
 from dataclasses import asdict
 from typing import cast
 
-from rio.agent.ledger import RuntimeLedger
+from rio.agent.ledger import RuntimeLedger, runtime_id
 from rio.agent.prompt import schema, system
 from rio.agent.shapes import (
     ControlRequest,
+    Observation,
     Projection,
     Receipt,
+    RuntimeCell,
     State,
     Turn,
 )
 from rio.agent.state import CONTROLS, NOTE, CellKind, InvalidPatch, Limits, admit, zero_usage
 from rio.agent.store import Store, encode
+from rio.truncate import truncate_bytes_tail
 
 # Bump when the model-facing step protocol changes; saved turns hold the old prompt.
-STATE_SCHEMA = "rio.state/4"
+STATE_SCHEMA = "rio.state/5"
 # Longest wait between failed provider requests.
 PROVIDER_BACKOFF_SECONDS = 120
 
 
 class RunStopped(RuntimeError):
     """A run cannot continue because its budget or lifecycle disallows another turn."""
+
+
+def size(value: object) -> int:
+    """Bytes of a value in the model-facing JSON."""
+    return len(encode(value).encode())
+
+
+def shares(sizes: list[int], budget: int) -> list[int]:
+    """Max-min fair caps: sizes within an equal share stay whole; the rest split what is left."""
+    caps = list(sizes)
+    order = sorted(range(len(sizes)), key=sizes.__getitem__)
+    for rank, index in enumerate(order):
+        share = budget // (len(order) - rank)
+        if sizes[index] > share:
+            for other in order[rank:]:
+                caps[other] = share
+            break
+        budget -= sizes[index]
+    return caps
+
+
+def json_tail(text: str, cap: int) -> str:
+    """The longest tail whose JSON string body fits in `cap` bytes."""
+    tail = truncate_bytes_tail(text, cap)
+    while (excess := size(tail) - 2 - cap) > 0:
+        tail = truncate_bytes_tail(tail, len(tail.encode()) - excess)
+    return tail
+
+
+def context_notice(seq: int, cell_ids: list[int]) -> Observation:
+    """An observation, recorded only in its turn_prepared event, naming Cells left out."""
+    return {
+        "id": runtime_id("context", seq),
+        "kind": "context",
+        "payload": {
+            "cell_ids": cell_ids,
+            "reason": "Runtime records of these Cells exceed the context budget; remove Cells",
+        },
+        "seq": seq,
+    }
 
 
 def by_name(kinds: Iterable[CellKind]) -> dict[str, CellKind]:
@@ -131,6 +174,20 @@ class Session(RuntimeLedger):
     def schema(self) -> dict:
         return schema(self.kinds.values())
 
+    def _runtime_cell(self, key: str, output: dict[str, str]) -> RuntimeCell:
+        """A copy of an execution showing `output`, which tails its recorded streams."""
+        execution = self.data["executions"][key]
+        cell: RuntimeCell = {**execution, "output": output}
+        if key in self.data["resolutions"]:
+            cell["resolved_by"] = self.data["resolutions"][key]
+        omitted = {
+            name: len(text.encode()) - len(output[name].encode())
+            for name, text in execution["output"].items()
+        }
+        if omitted := {name: count for name, count in omitted.items() if count}:
+            cell["omitted"] = omitted
+        return cell
+
     def prepare_turn(self) -> Turn:
         if self.meta["terminal"]:
             raise RunStopped("Terminal runs cannot resume")
@@ -144,35 +201,48 @@ class Session(RuntimeLedger):
             raise RunStopped("Model budget exhausted")
         state = self.state
         state["revision"] += 1
-        selected = {str(c["id"]) for c in state["cells"]}
-        unresolved = set(self.unresolved())
-        # Copy each record: the live projection changes only through journal events.
-        state["runtime"]["cells"] = {
-            key: dict(execution)
-            for key, execution in self.data["executions"].items()
-            if key in selected or execution["phase"] != "finished" or int(key) in unresolved
-        }
-        for key, execution in state["runtime"]["cells"].items():
-            if key in self.data["resolutions"]:
-                execution["resolved_by"] = self.data["resolutions"][key]
-        # Selected output competes with new observations. Keep receipts compact; full records
-        # stay available through read-only SQLite retrieval, even after context pruning.
-        delivered = []
-        state["runtime"]["inbox"] = []
         state["runtime"]["usage"] = dict(usage)
-        context_bytes = len(encode(state).encode())
+        executions = self.data["executions"]
+        selected = {str(c["id"]) for c in state["cells"]}
+        unresolved = {str(cell_id) for cell_id in self.unresolved()}
+        outstanding = [
+            key for key, e in executions.items() if e["phase"] != "finished" or key in unresolved
+        ]
+        shown = [key for key in executions if key in selected or key in outstanding]
+        # Reserve each record with all output omitted. If even that overflows, show only
+        # outstanding work, then none, with a notice naming the Cells left out.
+        limit = self.limits.context_bytes
+        for kept in (shown, outstanding, []):
+            outputs = {key: dict.fromkeys(executions[key]["output"], "") for key in kept}
+            state["runtime"]["cells"] = {key: self._runtime_cell(key, outputs[key]) for key in kept}
+            missing = [int(key) for key in shown if key not in kept]
+            state["runtime"]["inbox"] = (
+                [context_notice(self.store.sequence + 1, missing)] if missing else []
+            )
+            context_bytes = size(state)
+            if context_bytes <= limit:
+                break
+        else:
+            raise RunStopped("Goal and Cells exceed context without runtime facts")
+        delivered = []
         for message in self.data["inbox"].values():
             if message["consumed"]:
                 continue
             compact = {k: v for k, v in message.items() if k != "consumed"}
-            message_bytes = len(encode(compact).encode()) + bool(delivered)
-            if context_bytes + message_bytes > self.limits.context_bytes:
+            message_bytes = size(compact) + bool(state["runtime"]["inbox"])
+            if context_bytes + message_bytes > limit:
                 break
             state["runtime"]["inbox"].append(compact)
             delivered.append(message["id"])
             context_bytes += message_bytes
-        if context_bytes > self.limits.context_bytes:
-            raise RunStopped("Runtime facts exceed reserved context")
+        # Output fills the rest: streams within an equal share stay whole, larger ones keep
+        # a tail. The journal keeps the recorded output; see prompt.EXECUTION.
+        streams = [(key, name) for key in kept for name in executions[key]["output"]]
+        texts = [executions[key]["output"][name] for key, name in streams]
+        caps = shares([size(text) - 2 for text in texts], limit - context_bytes)
+        for (key, name), text, cap in zip(streams, texts, caps, strict=True):
+            outputs[key][name] = json_tail(text, cap)
+        state["runtime"]["cells"] = {key: self._runtime_cell(key, outputs[key]) for key in kept}
         turn_id = uuid.uuid4().hex
         turn: Turn = {
             "id": turn_id,

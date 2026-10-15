@@ -146,7 +146,7 @@ def truncate_bytes_tail(text: str, max_bytes: int) -> str:
     encoded = text.encode()
     if len(encoded) <= max_bytes:
         return text
-    clipped = encoded[-max_bytes:]
+    clipped = encoded[len(encoded) - max_bytes :]
     return clipped.decode(errors="ignore")
 
 

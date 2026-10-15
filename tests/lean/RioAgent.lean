@@ -258,6 +258,50 @@ theorem separator_can_exhaust_budget (current message : Nat) :
   simp only [admitBytes, appendBytes, ↓reduceIte]
   split <;> omega
 
+/-- A prepared turn shows each output stream up to a cap; the rest is counted as omitted. -/
+def shownBytes (recorded cap : Nat) : Nat := min recorded cap
+
+def omittedBytes (recorded cap : Nat) : Nat := recorded - shownBytes recorded cap
+
+theorem shown_and_omitted_cover_record (recorded cap : Nat) :
+    shownBytes recorded cap + omittedBytes recorded cap = recorded := by
+  simp only [omittedBytes, shownBytes]
+  omega
+
+theorem stream_within_cap_is_whole (recorded cap : Nat) (h : recorded ≤ cap) :
+    omittedBytes recorded cap = 0 := by
+  simp only [omittedBytes, shownBytes]
+  omega
+
+/-- Streams within an equal share stay whole; the others share what is left equally. -/
+def fill (whole : List Nat) (larger budget : Nat) : Nat :=
+  whole.sum + larger * ((budget - whole.sum) / larger)
+
+theorem fill_fits_budget (whole : List Nat) (larger budget : Nat) (h : whole.sum ≤ budget) :
+    fill whole larger budget ≤ budget := by
+  simp only [fill]
+  have := Nat.mul_div_le (budget - whole.sum) larger
+  omega
+
+/-- Fall back from all shown records to outstanding work, then none; stop only if none fits. -/
+def firstFit (limit : Nat) : List Nat → Option Nat
+  | [] => none
+  | bytes :: rest => if bytes ≤ limit then some bytes else firstFit limit rest
+
+theorem first_fit_fits (limit bytes : Nat) :
+    ∀ candidates, firstFit limit candidates = some bytes → bytes ≤ limit
+  | [], h => by simp [firstFit] at h
+  | b :: rest, h => by
+    simp only [firstFit] at h
+    split at h
+    · cases h; assumption
+    · exact first_fit_fits limit bytes rest h
+
+theorem minimal_state_fits_without_stop (limit records outstanding minimal : Nat)
+    (h : minimal ≤ limit) : (firstFit limit [records, outstanding, minimal]).isSome := by
+  simp only [firstFit]
+  by_cases h1 : records ≤ limit <;> by_cases h2 : outstanding ≤ limit <;> simp [h1, h2, h]
+
 def fireTimer (fired expired : Bool) : Bool × Nat :=
   if !fired && expired then (true, 1) else (fired, 0)
 

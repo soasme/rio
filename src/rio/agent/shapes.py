@@ -59,7 +59,7 @@ class Usage(TypedDict):
 class Observation(TypedDict):
     # Inbox message as delivered to the model.
     id: str
-    kind: str  # execution, timer, control_rejected, invalid_idle, or any external kind
+    kind: str  # execution, timer, control_rejected, invalid_idle, context, or external
     payload: dict
     seq: int
 
@@ -91,6 +91,8 @@ class Execution(TypedDict):
 class RuntimeCell(Execution):
     # Execution as shown to the model, with the resolution control id added.
     resolved_by: NotRequired[int]
+    # Leading UTF-8 bytes left out per stream to fit context; its output is the tail.
+    omitted: NotRequired[dict[str, int]]
 
 
 class Runtime(TypedDict):
