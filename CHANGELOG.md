@@ -1,3 +1,27 @@
+# 0.9.1
+
+* fix(coding): keep uv run from re-syncing the active venv ([#171](https://github.com/soasme/rio/pull/171))
+* fix(agent): fit runtime output into context instead of stopping the run ([#170](https://github.com/soasme/rio/pull/170))
+* fix(agent): retry provider failures on their own budget ([#169](https://github.com/soasme/rio/pull/169))
+* fix(agent): keep the live projection a fold of journal events ([#168](https://github.com/soasme/rio/pull/168))
+* refactor(agent): remove dead journal shim and tidy small definitions ([#167](https://github.com/soasme/rio/pull/167))
+* refactor(agent)!: move controls from notes to a control op ([#166](https://github.com/soasme/rio/pull/166))
+* refactor(agent): declare note roles once in a role table ([#165](https://github.com/soasme/rio/pull/165))
+* refactor: simplify agent terminology and action names ([#163](https://github.com/soasme/rio/pull/163))
+* fix(agent): commit prepared turn state explicitly ([#164](https://github.com/soasme/rio/pull/164))
+* refactor(agent): split turn admission from runtime ledger ([#162](https://github.com/soasme/rio/pull/162))
+* refactor(agent)!: move process records and argv config out of rio.agent ([#161](https://github.com/soasme/rio/pull/161))
+* fix(agent): distinguish intentional run stops from value errors ([#160](https://github.com/soasme/rio/pull/160))
+* refactor(agent)!: keep rio.agent environment agnostic ([#159](https://github.com/soasme/rio/pull/159))
+* refactor(coding)!: consolidate shared OAuth code and trim credential API ([#158](https://github.com/soasme/rio/pull/158))
+* refactor(ai)!: drop unset config options and name shared defaults neutrally ([#157](https://github.com/soasme/rio/pull/157))
+* refactor(cli)!: move terminal rendering into cli and tidy owner control flow ([#156](https://github.com/soasme/rio/pull/156))
+* refactor(coding)!: remove unused catalog and OAuth layers ([#155](https://github.com/soasme/rio/pull/155))
+* fix: protect credentials and preserve stream/session integrity ([#153](https://github.com/soasme/rio/pull/153))
+* refactor(ai)!: remove unused layers and share provider request handling ([#154](https://github.com/soasme/rio/pull/154))
+* refactor(agent)!: trim state and standardize output tails ([#152](https://github.com/soasme/rio/pull/152))
+* fix(cli): require subcommands and simplify login ([#151](https://github.com/soasme/rio/pull/151))
+
 # 0.9.0
 
 * refactor!: split run loop, record metrics at run end, define providers only in catalog ([#150](https://github.com/soasme/rio/pull/150))
