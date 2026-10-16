@@ -116,7 +116,6 @@ VALID_PROVIDER = """
 [[providers]]
 name = "nebius"
 display_name = "Nebius AI Studio"
-kind = "openai-compatible"
 base_url = "https://api.studio.nebius.ai/v1"
 api_key_env = "NEBIUS_API_KEY"
 credential_name = "nebius"
@@ -297,7 +296,7 @@ def test_builtin_catalog_matches_expected_providers() -> None:
 def test_builtin_catalog_golden_anthropic_entry() -> None:
     entry = builtin_provider_entry("anthropic")
     assert entry is not None
-    assert entry.kind == "anthropic"
+    assert entry.api == "anthropic-messages"
     assert entry.base_url == "https://api.anthropic.com"
     assert entry.api_key_env == "ANTHROPIC_API_KEY"
     assert entry.credential_name == "anthropic"
@@ -477,7 +476,6 @@ def assert_model_metadata_schema(model: str, metadata: ModelCatalogMetadata) -> 
 def test_builtin_catalog_golden_nvidia_entry() -> None:
     entry = builtin_provider_entry("nvidia")
     assert entry is not None
-    assert entry.kind == "openai-compatible"
     assert entry.base_url == "https://integrate.api.nvidia.com/v1"
     assert entry.api_key_env == "NVIDIA_API_KEY"
     assert entry.credential_name == "nvidia"
@@ -581,7 +579,7 @@ def test_user_catalog_accepts_minimal_provider(tmp_path: Path) -> None:
         '[[providers]]\nname = "local-llama"\nbase_url = "http://localhost:8080/v1"\n',
     )
     entry = effective_catalog(paths)[-1]
-    assert entry.kind == "openai-compatible"
+    assert entry.api is None
     assert entry.api_key_env == ""
     assert entry.models == ("local-llama",)
     assert entry.default_model == "local-llama"
@@ -683,9 +681,19 @@ def test_user_catalog_rejects_default_model_not_in_models(tmp_path: Path) -> Non
         effective_catalog(paths)
 
 
-def test_user_catalog_rejects_bad_kind(tmp_path: Path) -> None:
+def test_user_catalog_rejects_bad_api(tmp_path: Path) -> None:
     paths = _write_user_catalog(
-        tmp_path / ".rio", VALID_PROVIDER.replace("openai-compatible", "grpc")
+        tmp_path / ".rio",
+        VALID_PROVIDER.replace('thinking_parameter = "reasoning_effort"\n', 'api = "grpc"\n'),
+    )
+    with pytest.raises(CatalogError, match="api"):
+        effective_catalog(paths)
+
+
+def test_user_catalog_rejects_removed_kind(tmp_path: Path) -> None:
+    paths = _write_user_catalog(
+        tmp_path / ".rio",
+        VALID_PROVIDER.replace("[[providers]]\n", '[[providers]]\nkind = "anthropic"\n'),
     )
     with pytest.raises(CatalogError, match="kind"):
         effective_catalog(paths)

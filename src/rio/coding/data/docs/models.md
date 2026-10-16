@@ -38,16 +38,14 @@ preserves them. Python callers can read descriptive metadata through
 ## Catalog keys
 
 A catalog has `schema_version = 1` and one or more `[[providers]]` tables.
-Only `name` and `base_url` are required for a new provider. The catalog uses
-`kind` for the provider type; omitting it selects `openai-compatible`.
+Only `name` and `base_url` are required for a new provider.
 
 | Provider key | Meaning and default |
 | --- | --- |
 | `name` | Required provider ID. |
 | `base_url` | Required API base URL. |
 | `display_name` | Name shown to users; defaults to `name`. |
-| `kind` | `openai-compatible` (default), `anthropic`, `openai-codex`, `google-generative-ai`, or `mistral-conversations`. |
-| `api` | Protocol override: `openai-completions`, `openai-responses`, `anthropic-messages`, `openai-codex-responses`, `google-generative-ai`, or `mistral-conversations`. Defaults to the protocol for `kind`. |
+| `api` | Protocol: `openai-completions` (default), `openai-responses`, `anthropic-messages`, `openai-codex-responses`, `google-generative-ai`, or `mistral-conversations`. |
 | `api_key_env` | Environment variable containing the API key. When omitted or unset, Rio uses a blank key. |
 | `credential_name` | Name of a saved credential to check before the environment variable; omitted by default. |
 | `models` | Nonempty list of model IDs; defaults to `[default_model]` when set, otherwise `[name]`. |
