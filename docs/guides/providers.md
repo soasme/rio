@@ -80,3 +80,10 @@ Use `[providers.model_metadata."MODEL_ID"]` for per-model settings:
 When overriding a built-in provider, you can supply just the fields to change.
 Model lists are combined, and `headers`, `compat`, and
 `model_metadata` tables merge with the built-in values.
+
+API selection uses the model's `api`, then the provider's `api`, then the default
+for `kind`. Compatibility settings use protocol defaults, then provider `compat`,
+then model `compat`. Built-in provider quirks are declared in `catalog.toml`.
+Custom providers must declare their quirks in `compat`; names and URLs do not
+select compatibility behavior. Anthropic cache control is disabled by default;
+set `supportsCacheControl = true` for a custom endpoint that supports it.

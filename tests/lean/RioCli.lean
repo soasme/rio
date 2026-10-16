@@ -269,4 +269,59 @@ theorem login_preserves_unknown_keys (settings : LoginSettings) (provider : Stri
 theorem login_sets_default (settings : LoginSettings) (provider : String) :
     (loginDefault settings provider).defaultProvider = provider := rfl
 
+/-- Both API and individual compat keys resolve explicit model/provider data first. -/
+def resolveProviderValue {α : Type} (fallback : α) (provider model : Option α) : α :=
+  model.getD (provider.getD fallback)
+
+theorem model_value_overrides_provider {α : Type} (fallback value : α)
+    (provider : Option α) :
+    resolveProviderValue fallback provider (some value) = value := rfl
+
+theorem provider_value_overrides_default {α : Type} (fallback value : α) :
+    resolveProviderValue fallback (some value) none = value := rfl
+
+theorem missing_values_use_default {α : Type} (fallback : α) :
+    resolveProviderValue fallback none none = fallback := rfl
+
+inductive ProviderKind where
+  | openaiCompatible | anthropic | openaiCodex | google | mistral
+
+def defaultApi : ProviderKind → String
+  | .openaiCompatible => "openai-completions"
+  | .anthropic => "anthropic-messages"
+  | .openaiCodex => "openai-codex-responses"
+  | .google => "google-generative-ai"
+  | .mistral => "mistral-conversations"
+
+def resolveApi (kind : ProviderKind) (provider model : Option String) : String :=
+  resolveProviderValue (defaultApi kind) provider model
+
+theorem explicit_api_overrides_every_kind (kind : ProviderKind) (api : String) :
+    resolveApi kind (some api) none = api := rfl
+
+theorem model_api_overrides_every_kind (kind : ProviderKind) (provider : Option String)
+    (api : String) :
+    resolveApi kind provider (some api) = api := rfl
+
+theorem omitted_api_uses_kind (kind : ProviderKind) :
+    resolveApi kind none none = defaultApi kind := rfl
+
+/-- Names and URLs carry identity/transport data, never compatibility policy. -/
+structure ProviderCompat where
+  name : String
+  baseUrl : String
+  providerValue : Option Bool
+  modelValue : Option Bool
+
+def resolveCompat (fallback : Bool) (config : ProviderCompat) : Bool :=
+  resolveProviderValue fallback config.providerValue config.modelValue
+
+theorem rename_or_relocate_preserves_compat (fallback : Bool) (config : ProviderCompat)
+    (name baseUrl : String) :
+    resolveCompat fallback { config with name := name, baseUrl := baseUrl } =
+      resolveCompat fallback config := rfl
+
+theorem explicit_false_overrides_true (config : ProviderCompat) :
+    resolveCompat true { config with modelValue := some false } = false := rfl
+
 end RioCli
