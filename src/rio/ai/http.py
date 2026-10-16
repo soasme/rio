@@ -12,7 +12,10 @@ import httpx
 from rio.ai._provider_events import ProviderErrorEvent, ProviderEvent, ProviderResponseStartEvent
 from rio.ai.env import AnthropicConfig, OpenAICompatibleConfig
 from rio.ai.http_errors import provider_http_error_message
+from rio.ai.messages import AssistantMessage, UserMessage
+from rio.ai.provider import collect_response
 from rio.ai.retry import RetryAttempt, check_response_status, stream_with_retries
+from rio.ai.tools import AgentTool
 from rio.ai.types import JSONValue
 
 if TYPE_CHECKING:
@@ -76,6 +79,58 @@ def create_async_client(**kwargs: Any) -> httpx.AsyncClient:
 
     with normalized_proxy_environment():
         return httpx.AsyncClient(**kwargs)
+
+
+class HTTPProvider[ConfigT: OpenAICompatibleConfig | AnthropicConfig | OpenAICodexConfig]:
+    """Shared provider lifecycle: own the HTTP client and collect one final message.
+
+    Subclasses name the ``api`` and ``provider`` recorded on the message and
+    stream one request as provider events.
+    """
+
+    def __init__(self, config: ConfigT, *, client: httpx.AsyncClient | None = None) -> None:
+        self._config = config
+        self._client = client
+        self._owns_client = client is None
+
+    async def aclose(self) -> None:
+        """Close the underlying HTTP client if this provider created it."""
+        if self._client is not None and self._owns_client:
+            await self._client.aclose()
+            self._client = None
+
+    async def complete(
+        self,
+        *,
+        model: str,
+        system: str,
+        messages: list[UserMessage],
+        tools: list[AgentTool],
+    ) -> AssistantMessage:
+        """Return one response as a final assistant message or error."""
+        api, provider = self._labels()
+        raw = self._stream_provider_events(
+            model=model, system=system, messages=messages, tools=tools
+        )
+        return await collect_response(raw, api=api, provider=provider, model=model)
+
+    def _labels(self) -> tuple[str, str]:
+        raise NotImplementedError
+
+    def _stream_provider_events(
+        self,
+        *,
+        model: str,
+        system: str,
+        messages: list[UserMessage],
+        tools: list[AgentTool],
+    ) -> AsyncIterator[ProviderEvent]:
+        raise NotImplementedError
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = create_async_client(timeout=self._config.timeout_seconds)
+        return self._client
 
 
 async def request_with_retries(

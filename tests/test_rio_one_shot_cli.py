@@ -168,9 +168,9 @@ async def test_run_uses_catalog_for_local_server(
     def fake_client(*, timeout: float) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout)
 
-    import rio.ai.openai_compatible as compatible
+    import rio.ai.http as http
 
-    monkeypatch.setattr(compatible, "create_async_client", fake_client)
+    monkeypatch.setattr(http, "create_async_client", fake_client)
     ok, _ = await run_persistent_session(
         prompt="say hello",
         model="qwen-local",

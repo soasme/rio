@@ -27,7 +27,7 @@ Close network providers with `await provider.aclose()` when finished.
 | [messages.py](messages.py) | Shared message, content and usage types. |
 | [openai_compatible.py](openai_compatible.py) | OpenAI-compatible chat completions and Responses requests. |
 | [anthropic.py](anthropic.py), [google.py](google.py), [mistral.py](mistral.py), [openai_codex.py](openai_codex.py) | Provider-specific requests and stream parsing. |
-| [http.py](http.py), [retry.py](retry.py) | HTTP transport and retry support. |
+| [http.py](http.py), [retry.py](retry.py) | `HTTPProvider` client lifecycle, HTTP transport and retry support. |
 | [fake.py](fake.py) | Scripted responses for offline examples and tests. |
 
 Provider selection, catalog metadata and saved credentials belong to
@@ -38,4 +38,5 @@ Provider selection, catalog metadata and saved credentials belong to
 
 Tool definitions contain only `name`, `description`, and `parameters`; schemas are
 sent as supplied. Codex reuses the Responses parser while keeping subscription
-authentication and its retry rules.
+authentication and its retry rules. Mistral reuses the chat-completions streaming envelope
+with its own payload and chunk parser.

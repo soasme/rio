@@ -16,7 +16,7 @@ from rio.ai._provider_events import (
     ProviderToolCallEvent,
 )
 from rio.ai.env import OpenAICompatibleConfig
-from rio.ai.http import create_async_client, request_with_retries
+from rio.ai.http import HTTPProvider, request_with_retries
 from rio.ai.messages import (
     AssistantMessage,
     ThinkingContent,
@@ -24,7 +24,6 @@ from rio.ai.messages import (
     UserMessage,
     assistant_content,
 )
-from rio.ai.provider import collect_response
 from rio.ai.retry import (
     RetryableFailure,
     RetryAttempt,
@@ -33,40 +32,11 @@ from rio.ai.tools import AgentTool, ToolCall
 from rio.ai.types import JSONValue
 
 
-class GoogleGenerativeAIProvider:
+class GoogleGenerativeAIProvider(HTTPProvider[OpenAICompatibleConfig]):
     """Provider adapter for Google's Generative Language streaming API."""
 
-    def __init__(
-        self,
-        config: OpenAICompatibleConfig,
-        *,
-        client: httpx.AsyncClient | None = None,
-    ) -> None:
-        self._config = config
-        self._client = client
-        self._owns_client = client is None
-
-    async def aclose(self) -> None:
-        """Close the underlying HTTP client if this provider created it."""
-        if self._client is not None and self._owns_client:
-            await self._client.aclose()
-            self._client = None
-
-    async def complete(
-        self,
-        *,
-        model: str,
-        system: str,
-        messages: list[UserMessage],
-        tools: list[AgentTool],
-    ) -> AssistantMessage:
-        """Return one response as a final assistant message or error."""
-        raw = self._stream_provider_events(
-            model=model, system=system, messages=messages, tools=tools
-        )
-        return await collect_response(
-            raw, api="google-generative-ai", provider="google", model=model
-        )
+    def _labels(self) -> tuple[str, str]:
+        return "google-generative-ai", "google"
 
     def _stream_provider_events(
         self,
@@ -128,11 +98,6 @@ class GoogleGenerativeAIProvider:
                 yield event
 
         return iterator()
-
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = create_async_client(timeout=self._config.timeout_seconds)
-        return self._client
 
 
 class _GoogleStreamParser:

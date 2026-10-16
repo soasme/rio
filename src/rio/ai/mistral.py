@@ -5,9 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
-import httpx
-
-from rio.ai._parsing import first_choice, loads_object, parse_sse_line
+from rio.ai._parsing import first_choice, loads_object
 from rio.ai._provider_events import (
     ProviderErrorEvent,
     ProviderEvent,
@@ -16,8 +14,6 @@ from rio.ai._provider_events import (
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
-from rio.ai.env import OpenAICompatibleConfig
-from rio.ai.http import create_async_client, request_with_retries
 from rio.ai.messages import (
     AssistantMessage,
     ThinkingContent,
@@ -25,47 +21,22 @@ from rio.ai.messages import (
     UserMessage,
     assistant_content,
 )
-from rio.ai.openai_compatible import _parse_chunk_usage, _tool_call_deltas, _ToolCallBuilder
-from rio.ai.provider import collect_response
-from rio.ai.retry import RetryableFailure, RetryAttempt
+from rio.ai.openai_compatible import (
+    OpenAICompatibleProvider,
+    _parse_chunk_usage,
+    _tool_call_deltas,
+    _ToolCallBuilder,
+)
+from rio.ai.retry import RetryableFailure
 from rio.ai.tools import AgentTool
 from rio.ai.types import JSONValue
 
 
-class MistralConversationsProvider:
+class MistralConversationsProvider(OpenAICompatibleProvider):
     """Provider adapter for Mistral's streaming chat API."""
 
-    def __init__(
-        self,
-        config: OpenAICompatibleConfig,
-        *,
-        client: httpx.AsyncClient | None = None,
-    ) -> None:
-        self._config = config
-        self._client = client
-        self._owns_client = client is None
-
-    async def aclose(self) -> None:
-        """Close the underlying HTTP client if this provider created it."""
-        if self._client is not None and self._owns_client:
-            await self._client.aclose()
-            self._client = None
-
-    async def complete(
-        self,
-        *,
-        model: str,
-        system: str,
-        messages: list[UserMessage],
-        tools: list[AgentTool],
-    ) -> AssistantMessage:
-        """Return one response as a final assistant message or error."""
-        raw = self._stream_provider_events(
-            model=model, system=system, messages=messages, tools=tools
-        )
-        return await collect_response(
-            raw, api="mistral-conversations", provider="mistral", model=model
-        )
+    def _labels(self) -> tuple[str, str]:
+        return "mistral-conversations", "mistral"
 
     def _stream_provider_events(
         self,
@@ -88,61 +59,14 @@ class MistralConversationsProvider:
             model=model,
             url=f"{_mistral_base_url(self._config.base_url)}/chat/completions",
             payload=payload,
+            parser_factory=_MistralStreamParser,
         )
-
-    def _stream(
-        self,
-        *,
-        model: str,
-        url: str,
-        payload: Mapping[str, JSONValue],
-    ) -> AsyncIterator[ProviderEvent]:
-        async def iterator() -> AsyncIterator[ProviderEvent]:
-            client = self._get_client()
-            headers = {
-                **dict(self._config.headers or {}),
-                "Authorization": f"Bearer {self._config.api_key}",
-            }
-
-            async def parse(
-                response: httpx.Response, attempt: RetryAttempt
-            ) -> AsyncIterator[ProviderEvent]:
-                parser = _MistralStreamParser()
-                async for line in response.aiter_lines():
-                    event = parse_sse_line(line)
-                    if event is None:
-                        continue
-                    events, stop = parser.feed(event)
-                    for parser_event in events:
-                        yield parser_event
-                    attempt.emitted_content = parser.emitted_content
-                    if stop:
-                        break
-                for parser_event in parser.finalize():
-                    yield parser_event
-
-            async for event in request_with_retries(
-                client,
-                url=url,
-                payload=payload,
-                headers=headers,
-                model=model,
-                config=self._config,
-                parse=parse,
-            ):
-                yield event
-
-        return iterator()
-
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = create_async_client(timeout=self._config.timeout_seconds)
-        return self._client
 
 
 class _MistralStreamParser:
     def __init__(self) -> None:
         self.emitted_content = False
+        self.fatal = False
         self._content_parts: list[str] = []
         self._thinking_parts: list[str] = []
         self._tool_call_builders: dict[int, _ToolCallBuilder] = {}

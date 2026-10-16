@@ -20,10 +20,9 @@ from rio.ai.env import (
     DEFAULT_MAX_RETRY_DELAY_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
 )
-from rio.ai.http import create_async_client, request_with_retries
-from rio.ai.messages import AssistantMessage, UserMessage
+from rio.ai.http import HTTPProvider, request_with_retries
+from rio.ai.messages import UserMessage
 from rio.ai.openai_compatible import _ResponsesStreamParser, _stream_error_details
-from rio.ai.provider import collect_response
 from rio.ai.retry import (
     RetryableFailure,
     RetryAttempt,
@@ -61,43 +60,11 @@ class OpenAICodexConfig:
     provider_name: str = "OpenAI Codex"
 
 
-class OpenAICodexProvider:
+class OpenAICodexProvider(HTTPProvider[OpenAICodexConfig]):
     """Provider adapter for ChatGPT subscription Codex Responses over SSE."""
 
-    def __init__(
-        self,
-        config: OpenAICodexConfig,
-        *,
-        client: httpx.AsyncClient | None = None,
-    ) -> None:
-        self._config = config
-        self._client = client
-        self._owns_client = client is None
-
-    async def aclose(self) -> None:
-        """Close the underlying HTTP client if this provider created it."""
-        if self._client is not None and self._owns_client:
-            await self._client.aclose()
-            self._client = None
-
-    async def complete(
-        self,
-        *,
-        model: str,
-        system: str,
-        messages: list[UserMessage],
-        tools: list[AgentTool],
-    ) -> AssistantMessage:
-        """Return one response as a final assistant message or error."""
-        raw = self._stream_provider_events(
-            model=model,
-            system=system,
-            messages=messages,
-            tools=tools,
-        )
-        return await collect_response(
-            raw, api="openai-codex-responses", provider="openai-codex", model=model
-        )
+    def _labels(self) -> tuple[str, str]:
+        return "openai-codex-responses", "openai-codex"
 
     def _stream_provider_events(
         self,
@@ -169,11 +136,6 @@ class OpenAICodexProvider:
                 yield ProviderErrorEvent(message=str(exc))
 
         return iterator()
-
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = create_async_client(timeout=self._config.timeout_seconds)
-        return self._client
 
 
 def _build_codex_payload(
