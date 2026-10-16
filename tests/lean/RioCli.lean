@@ -324,4 +324,17 @@ theorem rename_or_relocate_preserves_compat (fallback : Bool) (config : Provider
 theorem explicit_false_overrides_true (config : ProviderCompat) :
     resolveCompat true { config with modelValue := some false } = false := rfl
 
+/-- Release preparation refreshes models by default, before verification. -/
+def releaseChecks (refreshModels : Option Bool) : List String :=
+  (if refreshModels.getD true then ["refreshModels"] else []) ++ ["ruff", "pytest"]
+
+theorem release_refreshes_by_default :
+    releaseChecks none = ["refreshModels", "ruff", "pytest"] := rfl
+
+theorem release_explicit_refresh_matches_default :
+    releaseChecks (some true) = releaseChecks none := rfl
+
+theorem release_can_skip_refresh_without_skipping_verification :
+    releaseChecks (some false) = ["ruff", "pytest"] := rfl
+
 end RioCli

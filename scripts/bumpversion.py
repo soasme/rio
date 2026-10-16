@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare a release by updating the changelog, project version, and lockfile."""
+"""Prepare a release by updating the changelog, version, lockfile, and bundled models."""
 
 from __future__ import annotations
 
@@ -12,6 +12,12 @@ from pathlib import Path
 VERSION_PATTERN = re.compile(r"^version = \"([^\"]+)\"$", re.MULTILINE)
 RELEASE_VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 PULL_REQUEST_PATTERN = re.compile(r" \(#(\d+)\)$")
+RELEASE_FILES = (
+    "CHANGELOG.md",
+    "pyproject.toml",
+    "uv.lock",
+    "src/rio/coding/data/models-dev-catalog.json",
+)
 
 
 def run(*args: str, cwd: Path) -> str:
@@ -98,7 +104,7 @@ def update_changelog(path: Path, version: str, entries: list[str]) -> None:
     path.write_text(f"# {version}\n\n{entries_text}\n\n{content}", encoding="utf-8")
 
 
-def prepare_release(root: Path, part: str) -> str:
+def prepare_release(root: Path, part: str, *, refresh_models: bool = True) -> str:
     version = bumped_version(root / "pyproject.toml", part)
     release_commit = latest_release_commit(root)
     entries = changelog_entries(root, release_commit)
@@ -109,6 +115,10 @@ def prepare_release(root: Path, part: str) -> str:
     update_pyproject(root / "pyproject.toml", version)
     run_checked("uv", "lock", cwd=root)
     run_checked("uv", "sync", "--locked", "--dev", cwd=root)
+    if refresh_models:
+        run_checked(
+            "uv", "run", "--no-sync", "python", "scripts/vendor_bundled_models.py", cwd=root
+        )
     run_checked("uv", "run", "--no-sync", "ruff", "check", ".", cwd=root)
     run_checked("uv", "run", "--no-sync", "pytest", cwd=root)
     return version
@@ -116,11 +126,11 @@ def prepare_release(root: Path, part: str) -> str:
 
 def print_plan(root: Path) -> None:
     print("Release plan:")
-    print(run("git", "diff", "--", "CHANGELOG.md", "pyproject.toml", "uv.lock", cwd=root), end="")
+    print(run("git", "diff", "--", *RELEASE_FILES, cwd=root), end="")
 
 
 def commit_release(root: Path, version: str) -> None:
-    run_checked("git", "add", "CHANGELOG.md", "pyproject.toml", "uv.lock", cwd=root)
+    run_checked("git", "add", *RELEASE_FILES, cwd=root)
     run_checked("git", "commit", "-m", f"chore(release): {version}", cwd=root)
     run_checked("git", "tag", f"v{version}", cwd=root)
     run_checked("git", "push", cwd=root)
@@ -145,6 +155,12 @@ def main() -> None:
         action="store_true",
         help="commit, tag, and push the planned release",
     )
+    parser.add_argument(
+        "--refresh-models",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="refresh the bundled model catalog before verification (default: enabled)",
+    )
     args = parser.parse_args()
 
     root = repository_root()
@@ -152,7 +168,7 @@ def main() -> None:
         clone = Path(temporary_directory) / "rio"
         run_checked("git", "clone", "--quiet", origin_url(root), str(clone), cwd=root)
         run_checked("git", "checkout", args.commit, cwd=clone)
-        version = prepare_release(clone, args.part)
+        version = prepare_release(clone, args.part, refresh_models=args.refresh_models)
         print_plan(clone)
         if args.yes:
             commit_release(clone, version)
