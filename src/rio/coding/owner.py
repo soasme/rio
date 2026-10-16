@@ -225,27 +225,12 @@ class ProcessOwner(Owner):
             process.stdin.write(b"start\n")
             await process.stdin.drain()
             output = ""
-            decoders = {
-                name: codecs.getincrementaldecoder("utf-8")("replace")
-                for name in ("stdout", "stderr")
-            }
-            exit_code = None
-            async with asyncio.timeout(self.session.limits.execution_seconds):
-                while line := await process.stdout.readline():
-                    message = json.loads(line)
-                    if "exit" in message:
-                        exit_code = message["exit"]
-                        break
-                    for name in ("stdout", "stderr"):
-                        if name in message:
-                            text = decoders[name].decode(bytes.fromhex(message[name]))
-                            output = truncate_bytes_tail(
-                                output + text, self.session.limits.output_bytes
-                            )
-            for decoder in decoders.values():
-                output = truncate_bytes_tail(
-                    output + decoder.decode(b"", final=True), self.session.limits.output_bytes
-                )
+
+            def append(name: str, text: str) -> None:
+                nonlocal output
+                output = truncate_bytes_tail(output + text, self.session.limits.output_bytes)
+
+            exit_code = await self._read_output(process, append)
             result = {"passed": exit_code == 0, "exit": exit_code, "output": output}
         except TimeoutError:
             result = {
@@ -260,13 +245,97 @@ class ProcessOwner(Owner):
             await process.wait()
         return result
 
-    async def _execute(self, cell_id: int) -> None:
-        session = self.session
-        cell = session.data["cells"][str(cell_id)]
+    async def _read_output(
+        self,
+        process: asyncio.subprocess.Process,
+        append: Callable[[str, str], None],
+        flush: Callable[[], None] | None = None,
+    ) -> int | None:
+        """Decode worker streams and flush pending output even while the worker is quiet."""
+        decoders = {
+            name: codecs.getincrementaldecoder("utf-8")("replace") for name in ("stdout", "stderr")
+        }
+        deadline = time.monotonic() + self.session.limits.flush_seconds
+        line_task = asyncio.create_task(process.stdout.readline())
+        try:
+            async with asyncio.timeout(self.session.limits.execution_seconds):
+                while True:
+                    timeout = max(0, deadline - time.monotonic()) if flush else None
+                    done, _ = await asyncio.wait({line_task}, timeout=timeout)
+                    if done:
+                        line = line_task.result()
+                        if not line:
+                            return None
+                        message = json.loads(line)
+                        if "exit" in message:
+                            return message["exit"]
+                        for name, decoder in decoders.items():
+                            if name in message:
+                                append(name, decoder.decode(bytes.fromhex(message[name])))
+                        line_task = asyncio.create_task(process.stdout.readline())
+                    if flush and time.monotonic() >= deadline:
+                        flush()
+                        deadline = time.monotonic() + self.session.limits.flush_seconds
+        finally:
+            line_task.cancel()
+            try:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await line_task
+            finally:
+                for name, decoder in decoders.items():
+                    append(name, decoder.decode(b"", final=True))
+
+    async def _cell_output(self, cell_id: int, process: asyncio.subprocess.Process) -> int | None:
+        buffers = {"stdout": "", "stderr": ""}
+        files = {}
+
+        def append(name: str, text: str) -> None:
+            files[name].write(text)
+            buffers[name] = truncate_bytes_tail(
+                buffers[name] + text, self.session.limits.output_bytes
+            )
+
+        def flush() -> None:
+            self.session.append_output(cell_id, buffers)
+            buffers.update(stdout="", stderr="")
+
+        try:
+            with contextlib.ExitStack() as stack:
+                for name in buffers:
+                    files[name] = stack.enter_context(
+                        tempfile.NamedTemporaryFile(
+                            "w", encoding="utf-8", prefix="rio-output-", suffix=".log", delete=False
+                        )
+                    )
+                return await self._read_output(process, append, flush)
+        finally:
+            # Flush even on timeout/read failure; close handles before reading the tail.
+            try:
+                if not self.session.store.failed:
+                    flush()
+            finally:
+                self._retain_output(cell_id, files)
+
+    def _retain_output(self, cell_id: int, files: dict) -> None:
+        """Keep truncated output files and link to them from the retained tails."""
+        truncated = {}
+        for name, file in files.items():
+            path = Path(file.name)
+            truncation = truncate_tail(
+                path.read_text(encoding="utf-8"), max_bytes=self.session.limits.output_bytes
+            )
+            if truncation.truncated and not self.session.store.failed:
+                truncated[name] = truncation.content + tail_notice(truncation, str(path))
+            else:
+                path.unlink()
+        if truncated:
+            self.session.truncate_output(cell_id, truncated)
+
+    def _cell_env(self) -> dict[str, str]:
         env = {
             **os.environ,
             "RIO_TIMER_SOCKET": self.socket_path,
-            "RIO_SESSION_URI": session.store.path.as_uri() + "?mode=ro",
+            "RIO_SESSION_URI": self.session.store.path.as_uri() + "?mode=ro",
             "PYTHONPATH": os.pathsep.join(
                 [str(Path(__file__).resolve().parents[2])]
                 + ([os.environ["PYTHONPATH"]] if "PYTHONPATH" in os.environ else [])
@@ -276,103 +345,28 @@ class ProcessOwner(Owner):
             # The active environment is the prepared project environment: make `uv run` use it
             # without re-locking or re-syncing, so a habitual `uv run` cannot upgrade it.
             env.update(UV_NO_SYNC="1", UV_PROJECT_ENVIRONMENT=env["VIRTUAL_ENV"])
+        return env
+
+    async def _execute(self, cell_id: int) -> None:
+        session = self.session
+        cell = session.data["cells"][str(cell_id)]
+        env = self._cell_env()
         try:
             command = self.commands[cell["kind"]](cell, Path(self.temporary.name))
             self.process = process = await self._spawn(command, env)
             process.stdin.write(b"start\n")
             await process.stdin.drain()
-            decoders = {
-                name: codecs.getincrementaldecoder("utf-8")("replace")
-                for name in ("stdout", "stderr")
-            }
-            buffers = {"stdout": "", "stderr": ""}
-            files = {}
-            try:
-                with contextlib.ExitStack() as stack:
-                    for name in buffers:
-                        files[name] = stack.enter_context(
-                            tempfile.NamedTemporaryFile(
-                                "w",
-                                encoding="utf-8",
-                                prefix="rio-output-",
-                                suffix=".log",
-                                delete=False,
-                            )
-                        )
-                    deadline = time.monotonic() + session.limits.flush_seconds
-                    exit_code = None
-                    async with asyncio.timeout(session.limits.execution_seconds):
-                        line_task = asyncio.create_task(process.stdout.readline())
-                        try:
-                            while True:
-                                done, _ = await asyncio.wait(
-                                    {line_task}, timeout=max(0, deadline - time.monotonic())
-                                )
-                                if done:
-                                    line = line_task.result()
-                                    if not line:
-                                        break
-                                    message = json.loads(line)
-                                    if "exit" in message:
-                                        exit_code = message["exit"]
-                                        break
-                                    for name in buffers:
-                                        if name in message:
-                                            text = decoders[name].decode(
-                                                bytes.fromhex(message[name])
-                                            )
-                                            files[name].write(text)
-                                            combined = buffers[name] + text
-                                            buffers[name] = truncate_bytes_tail(
-                                                combined, session.limits.output_bytes
-                                            )
-                                    line_task = asyncio.create_task(process.stdout.readline())
-                                if time.monotonic() >= deadline:
-                                    session.append_output(cell_id, buffers)
-                                    buffers = {"stdout": "", "stderr": ""}
-                                    deadline = time.monotonic() + session.limits.flush_seconds
-                        finally:
-                            line_task.cancel()
-                            with contextlib.suppress(asyncio.CancelledError):
-                                await line_task
-            finally:
-                # Flush even on timeout/read failure; close handles before reading the tail.
-                for name in buffers:
-                    buffers[name] += decoders[name].decode(b"", final=True)
-                try:
-                    if not session.store.failed:
-                        session.append_output(cell_id, buffers)
-                finally:
-                    # Keep the tail, and point to the full output on disk.
-                    truncated = {}
-                    for name in buffers:
-                        if name not in files:
-                            continue
-                        path = Path(files[name].name)
-                        truncation = truncate_tail(
-                            path.read_text(encoding="utf-8"), max_bytes=session.limits.output_bytes
-                        )
-                        if truncation.truncated and not session.store.failed:
-                            notice = tail_notice(truncation, str(path))
-                            truncated[name] = truncation.content + notice
-                        else:
-                            path.unlink()
-                    if truncated:
-                        session.truncate_output(cell_id, truncated)
+            exit_code = await self._cell_output(cell_id, process)
             # Stop descendants before reporting completion, even when the script left them behind.
             await self._stop()
             await process.wait()
-            session.finish(
-                cell_id,
-                {
-                    "type": "success"
-                    if exit_code == 0
-                    else "error"
-                    if exit_code is not None
-                    else "UnknownExecution",
-                    "exit_code": exit_code,
-                },
-            )
+            if exit_code is None:
+                result_type = "UnknownExecution"
+            elif exit_code == 0:
+                result_type = "success"
+            else:
+                result_type = "error"
+            session.finish(cell_id, {"type": result_type, "exit_code": exit_code})
         except (TimeoutError, OSError) as exc:
             await self._stop()
             if self.process is not None:

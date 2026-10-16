@@ -355,6 +355,26 @@ theorem new_output_replaces_old_tail (limit : Nat) (old fresh : List α)
   congr 1
   omega
 
+/-- Worker EOF without an exit record leaves execution uncertain. -/
+inductive WorkerResult where
+  | success | error | unknownExecution
+  deriving DecidableEq, Repr
+
+def workerResult : Option Int → WorkerResult
+  | none => .unknownExecution
+  | some code => if code == 0 then .success else .error
+
+theorem worker_success_iff_zero (code : Option Int) :
+    workerResult code = .success ↔ code = some 0 := by
+  cases code with
+  | none => simp [workerResult]
+  | some code => simp [workerResult]
+
+theorem worker_missing_exit_is_unknown : workerResult none = .unknownExecution := rfl
+
+theorem worker_nonzero_exit_is_error (code : Int) (h : code ≠ 0) :
+    workerResult (some code) = .error := by simp [workerResult, h]
+
 /-- Admission retains allocation state; the next turn rebuilds runtime observations. -/
 structure RuntimeSnapshot where
   nextId : Nat

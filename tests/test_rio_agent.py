@@ -9,6 +9,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import get_args
 
 import pytest
@@ -988,6 +989,75 @@ async def test_worker_and_validator_output_keep_utf8_tail(session, stream):
     path = execution["output"][stream].rsplit("Full output: ", 1)[1].rstrip("]")
     assert Path(path).read_text() == "old text" + "é終!" * 3000
     Path(path).unlink()
+
+
+@pytest.mark.parametrize("exit_code", [0, 7, None])
+async def test_worker_reader_decodes_streams_independently_and_flushes_eof(session, exit_code):
+    reader = asyncio.StreamReader()
+    messages = [
+        {"stdout": b"old \xc3".hex()},
+        {"stderr": b"err \xe7".hex()},
+        {"stdout": b"\xa9".hex(), "stderr": b"\xb5\x82".hex()},
+        {"stdout": b"\xff\xe2".hex()},
+    ]
+    if exit_code is not None:
+        messages.append({"exit": exit_code})
+    for message in messages:
+        reader.feed_data((json.dumps(message) + "\n").encode())
+    reader.feed_eof()
+    output = {"stdout": "", "stderr": ""}
+
+    def append(name, text):
+        output[name] += text
+
+    owner = ProcessOwner(session)
+    assert await owner._read_output(SimpleNamespace(stdout=reader), append) == exit_code
+    assert output == {"stdout": "old é��", "stderr": "err 終"}
+
+
+@pytest.mark.parametrize("ending", ["eof", "timeout", "cancel"])
+async def test_worker_reader_flushes_while_quiet_and_releases_pending_read(session, ending):
+    session.limits = replace(session.limits, flush_seconds=0.01, execution_seconds=0.1)
+    reader = asyncio.StreamReader()
+    reader.feed_data(b'{"stdout":"6869"}\n')
+    output = []
+    flushed = asyncio.Event()
+    owner = ProcessOwner(session)
+    task = asyncio.create_task(
+        owner._read_output(
+            SimpleNamespace(stdout=reader), lambda _, text: output.append(text), flushed.set
+        )
+    )
+    await asyncio.wait_for(flushed.wait(), timeout=1)
+    assert "".join(output) == "hi"
+    assert not task.done()
+    if ending == "eof":
+        reader.feed_eof()
+        assert await task is None
+    else:
+        if ending == "cancel":
+            task.cancel()
+        with pytest.raises(TimeoutError if ending == "timeout" else asyncio.CancelledError):
+            await task
+        # A subsequent read must not compete with an abandoned readline task.
+        reader.feed_data(b"next\n")
+        assert await reader.readline() == b"next\n"
+
+
+async def test_validator_timeout_records_result_and_stops_worker(session):
+    session.limits = replace(session.limits, execution_seconds=0.1)
+    async with ProcessOwner(session) as owner:
+        result = await owner.validate(
+            "timeout", [sys.executable, "-c", "import time; time.sleep(30)"]
+        )
+    assert result == {
+        "passed": False,
+        "exit": None,
+        "output": "Validator interrupted; inspect effects before retrying",
+    }
+    worker = session.data["workers"]["validator:timeout"]
+    assert worker["result"] == result
+    assert worker["stopped"]
 
 
 async def test_required_validator_blocks_success(tmp_path):
