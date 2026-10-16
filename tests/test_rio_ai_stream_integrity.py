@@ -42,13 +42,10 @@ async def collect(kind, body):
         return httpx.Response(200, text=body)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-        events = [
-            e
-            async for e in provider(kind, client).stream_response(
-                model="test-model", system="", messages=[], tools=[]
-            )
-        ]
-    return events, requests
+        message = await provider(kind, client).complete(
+            model="test-model", system="", messages=[], tools=[]
+        )
+    return message, requests
 
 
 @pytest.mark.parametrize("kind", ["anthropic", "chat", "mistral", "google"])
@@ -63,16 +60,15 @@ async def test_clean_eof_without_finish_is_error(kind, partial):
         "chat": {"choices": [{"delta": {"content": "partial"}}]},
         "mistral": {"choices": [{"delta": {"content": "partial"}}]},
     }[kind]
-    events, requests = await collect(kind, sse(chunk) if partial else "")
-    assert events[-1].type == "error"
-    assert not any(e.type == "done" for e in events)
+    message, requests = await collect(kind, sse(chunk) if partial else "")
+    assert message.stop_reason == "error"
     assert len(requests) == (1 if partial else 2)
 
 
 @pytest.mark.parametrize("kind", ["chat", "mistral"])
 async def test_done_sentinel_without_finish_reason_is_error(kind):
-    events, _ = await collect(kind, sse("[DONE]"))
-    assert events[-1].type == "error"
+    message, _ = await collect(kind, sse("[DONE]"))
+    assert message.stop_reason == "error"
 
 
 @pytest.mark.parametrize("kind", ["chat", "mistral", "google", "responses"])
@@ -106,14 +102,13 @@ async def test_token_limit_with_tool_call_reports_length(kind):
             },
             {"type": "response.incomplete", "response": {"status": "incomplete"}},
         )
-    events, _ = await collect(kind, body)
-    assert events[-1].type == "done"
-    assert events[-1].message.tool_calls
-    assert events[-1].message.stop_reason == "length"
+    message, _ = await collect(kind, body)
+    assert message.tool_calls
+    assert message.stop_reason == "length"
 
 
 async def test_google_usage_only_chunk_and_header_auth():
-    events, requests = await collect(
+    message, requests = await collect(
         "google",
         sse(
             {"candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}]},
@@ -128,7 +123,7 @@ async def test_google_usage_only_chunk_and_header_auth():
             },
         ),
     )
-    usage = events[-1].message.usage
+    usage = message.usage
     assert (usage.input, usage.cache_read, usage.output, usage.reasoning, usage.total_tokens) == (
         70,
         30,
@@ -142,7 +137,7 @@ async def test_google_usage_only_chunk_and_header_auth():
 
 
 async def test_mistral_requests_and_parses_trailing_usage():
-    events, requests = await collect(
+    message, requests = await collect(
         "mistral",
         sse(
             {"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]},
@@ -150,6 +145,6 @@ async def test_mistral_requests_and_parses_trailing_usage():
             "[DONE]",
         ),
     )
-    usage = events[-1].message.usage
+    usage = message.usage
     assert (usage.input, usage.output, usage.total_tokens) == (100, 20, 120)
     assert json.loads(requests[0].content)["stream_options"] == {"include_usage": True}

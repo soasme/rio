@@ -82,7 +82,6 @@ class ProviderModelMetadata:
     api: ProviderApi | None = None
     base_url: str | None = None
     reasoning: bool | None = None
-    input: tuple[str, ...] = ()
     max_tokens: int | None = None
     headers: dict[str, str] = field(default_factory=dict)
     compat: dict[str, Any] = field(default_factory=dict)
@@ -181,7 +180,6 @@ def _provider_model_metadata_from_catalog(
             api=metadata.api,
             base_url=metadata.base_url,
             reasoning=metadata.reasoning,
-            input=tuple(metadata.input),
             max_tokens=metadata.max_tokens,
             headers=dict(metadata.headers),
             compat=dict(metadata.compat),
@@ -465,12 +463,6 @@ def provider_model_max_tokens(provider: ProviderConfig, model: str | None = None
     return metadata.max_tokens if metadata is not None else None
 
 
-def provider_model_supports_images(provider: ProviderConfig, model: str | None = None) -> bool:
-    selected_model = model or provider.default_model
-    metadata = _metadata_for_model(provider, selected_model)
-    return metadata is not None and "image" in metadata.input
-
-
 def provider_default_thinking_level(
     provider: ProviderConfig,
     *,
@@ -546,7 +538,6 @@ def openai_compatible_config_from_provider(
         timeout_seconds=provider.timeout_seconds,
         max_retries=provider.max_retries,
         max_retry_delay_seconds=provider.max_retry_delay_seconds,
-        supports_images=provider_model_supports_images(provider, selected_model),
         reasoning_effort=reasoning_effort,
         reasoning_effort_parameter=provider.thinking_parameter or "reasoning_effort",
         thinking_format=_thinking_format(provider, selected_model),
@@ -590,7 +581,6 @@ def anthropic_config_from_provider(
         max_retries=provider.max_retries,
         max_retry_delay_seconds=provider.max_retry_delay_seconds,
         max_tokens=provider_model_max_tokens(provider, selected_model),
-        supports_images=provider_model_supports_images(provider, selected_model),
         thinking_budget_tokens=thinking_budget_tokens,
         thinking_effort=_reasoning_effort_from_anthropic_provider(
             provider,

@@ -1,16 +1,10 @@
-"""Sanity tests for the ported rio.ai vocabulary and FakeProvider.
-
-These don't hit any network; they confirm the tau_ai -> rio.ai port holds
-together end to end (message/tool models construct and round-trip through
-a ModelProvider implementation) before rio.agent builds on top of it.
-"""
+"""Sanity tests for the rio.ai vocabulary and FakeProvider, without a network."""
 
 from __future__ import annotations
 
 import pytest
 
 from rio.ai import (
-    AssistantDoneEvent,
     AssistantMessage,
     FakeProvider,
     TextContent,
@@ -20,27 +14,24 @@ from rio.ai import (
 
 
 @pytest.mark.asyncio
-async def test_fake_provider_replays_scripted_stream():
+async def test_fake_provider_returns_scripted_messages_then_an_error():
     message = AssistantMessage(content=[TextContent(text="hi")], stop_reason="stop")
-    provider = FakeProvider([[AssistantDoneEvent(reason="stop", message=message)]])
+    provider = FakeProvider([message])
+    request = {
+        "model": "fake-model",
+        "system": "be nice",
+        "messages": [UserMessage(content="hello")],
+        "tools": [],
+    }
 
-    events = [
-        event
-        async for event in provider.stream_response(
-            model="fake-model",
-            system="be nice",
-            messages=[UserMessage(content="hello")],
-            tools=[],
-        )
-    ]
+    assert (await provider.complete(**request)).text == "hi"
+    exhausted = await provider.complete(**request)
 
-    assert len(events) == 1
-    assert events[0].message.text == "hi"
+    assert exhausted.stop_reason == "error"
     model, system, messages, tools = provider.calls[0]
     assert model == "fake-model"
     assert system == "be nice"
-    assert len(messages) == 1
-    assert messages[0].text == "hello"
+    assert [m.content for m in messages] == ["hello"]
     assert tools == []
 
 

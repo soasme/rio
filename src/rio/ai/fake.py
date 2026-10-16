@@ -1,34 +1,31 @@
-"""Deterministic Pi-compatible model provider for tests."""
+"""Deterministic model provider for tests and offline examples."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import Iterable
 
-from rio.ai.messages import AgentMessage
-from rio.ai.provider import AssistantMessageEvent
+from rio.ai.messages import AssistantMessage, UserMessage
 from rio.ai.tools import AgentTool
 
 
 class FakeProvider:
-    """A provider that replays predefined assistant event streams."""
+    """A provider that returns predefined assistant messages in order."""
 
-    def __init__(self, streams: Iterable[Iterable[AssistantMessageEvent]]) -> None:
-        self._streams = [list(stream) for stream in streams]
-        self.calls: list[tuple[str, str, list[AgentMessage], list[AgentTool]]] = []
+    def __init__(self, responses: Iterable[AssistantMessage]) -> None:
+        self._responses = list(responses)
+        self.calls: list[tuple[str, str, list[UserMessage], list[AgentTool]]] = []
 
-    def stream_response(
+    async def complete(
         self,
         *,
         model: str,
         system: str,
-        messages: list[AgentMessage],
+        messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[AssistantMessageEvent]:
+    ) -> AssistantMessage:
         self.calls.append((model, system, list(messages), list(tools)))
-        stream = self._streams.pop(0) if self._streams else []
-
-        async def iterator() -> AsyncIterator[AssistantMessageEvent]:
-            for event in stream:
-                yield event
-
-        return iterator()
+        if not self._responses:
+            return AssistantMessage(
+                stop_reason="error", error_message="FakeProvider has no scripted response"
+            )
+        return self._responses.pop(0)

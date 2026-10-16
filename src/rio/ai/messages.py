@@ -1,12 +1,10 @@
-"""Pi-compatible provider-neutral content and transcript message models."""
+"""Provider-neutral request and response message models."""
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
-from hashlib import sha256
 from time import time
-from typing import Annotated, Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -68,20 +66,11 @@ class ResponseTiming(WireModel):
 class TextContent(WireModel):
     type: Literal["text"] = "text"
     text: str
-    text_signature: str | None = None
 
 
 class ThinkingContent(WireModel):
     type: Literal["thinking"] = "thinking"
     thinking: str
-    thinking_signature: str | None = None
-    redacted: bool = False
-
-
-class ImageContent(WireModel):
-    type: Literal["image"] = "image"
-    data: str
-    mime_type: str
 
 
 class ToolCall(WireModel):
@@ -91,7 +80,6 @@ class ToolCall(WireModel):
     id: str
     name: str
     arguments: dict[str, JSONValue] = Field(default_factory=dict)
-    thought_signature: str | None = None
 
 
 RAW_TOOL_ARGUMENTS_KEY = "_raw_arguments"
@@ -116,19 +104,15 @@ def raw_tool_arguments(arguments: Mapping[str, JSONValue]) -> str | None:
     return raw if isinstance(raw, str) else None
 
 
-type UserContent = str | list[TextContent | ImageContent]
 type AssistantContent = TextContent | ThinkingContent | ToolCall
-type ToolResultContent = TextContent | ImageContent
 
 
 class UserMessage(WireModel):
-    role: Literal["user"] = "user"
-    content: UserContent
-    timestamp: int = Field(default_factory=current_timestamp_ms)
+    """One request message. Rio sends each turn as fresh user text, never a transcript."""
 
-    @property
-    def text(self) -> str:
-        return content_text(self.content)
+    role: Literal["user"] = "user"
+    content: str
+    timestamp: int = Field(default_factory=current_timestamp_ms)
 
 
 class AssistantDiagnosticError(WireModel):
@@ -149,7 +133,7 @@ StopReason = Literal["stop", "length", "toolUse", "error"]
 
 
 class AssistantMessage(WireModel):
-    """A Pi-compatible assistant message with ordered content blocks."""
+    """An assistant response with ordered content blocks."""
 
     role: Literal["assistant"] = "assistant"
     content: list[AssistantContent] = Field(default_factory=list)
@@ -191,46 +175,8 @@ class AssistantMessage(WireModel):
         return "".join(block.text for block in self.content if isinstance(block, TextContent))
 
     @property
-    def thinking_text(self) -> str:
-        return "".join(
-            block.thinking for block in self.content if isinstance(block, ThinkingContent)
-        )
-
-    @property
     def tool_calls(self) -> tuple[ToolCall, ...]:
         return tuple(block for block in self.content if isinstance(block, ToolCall))
-
-
-class ToolResultMessage(WireModel):
-    role: Literal["toolResult"] = "toolResult"
-    tool_call_id: str
-    tool_name: str
-    content: list[ToolResultContent] = Field(default_factory=list)
-    details: JSONValue = None
-    added_tool_names: list[str] | None = None
-    is_error: bool = False
-    timestamp: int = Field(default_factory=current_timestamp_ms)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _normalize_convenient_content(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        data = dict(value)
-        content = data.get("content")
-        if isinstance(content, str):
-            data["content"] = [TextContent(text=content)] if content else []
-        return data
-
-    @property
-    def text(self) -> str:
-        return content_text(self.content)
-
-
-type AgentMessage = Annotated[
-    UserMessage | AssistantMessage | ToolResultMessage,
-    Field(discriminator="role"),
-]
 
 
 def assistant_content(
@@ -241,34 +187,3 @@ def assistant_content(
     blocks: list[AssistantContent] = [TextContent(text=text)] if text else []
     blocks.extend(tool_calls)
     return blocks
-
-
-def content_text(content: str | list[Any]) -> str:
-    """Return visible text from string or text/image content."""
-    if isinstance(content, str):
-        return content
-    return "".join(block.text for block in content if isinstance(block, TextContent))
-
-
-def message_text(message: AgentMessage) -> str:
-    """Return the user-visible text represented by an agent message."""
-    return message.text
-
-
-# Anthropic has the strictest documented identifier alphabet among Rio's
-# providers. Keeping translated IDs within this common subset also avoids
-# provider-specific punctuation and length constraints elsewhere.
-_PORTABLE_TOOL_CALL_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-
-
-def portable_tool_call_id(value: str) -> str:
-    """Return a deterministic provider-safe correlation ID.
-
-    Provider-native IDs that already fit the common format remain unchanged,
-    preserving same-provider cache/replay behavior. Other IDs are hashed rather
-    than character-replaced so distinct native IDs cannot collapse together.
-    """
-    if _PORTABLE_TOOL_CALL_ID.fullmatch(value):
-        return value
-    digest = sha256(value.encode("utf-8")).hexdigest()
-    return f"tc_{digest[:40]}"

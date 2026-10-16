@@ -173,44 +173,6 @@ def test_tool_call_without_done_event_ends_with_error():
     assert "unfinished tool call: read (call-0)" in events[0].message
 
 
-def test_shared_responses_input_preserves_tool_result_correlation_and_images():
-    from rio.ai.messages import (
-        AssistantMessage,
-        ImageContent,
-        TextContent,
-        ToolCall,
-        ToolResultMessage,
-        UserMessage,
-        portable_tool_call_id,
-    )
-    from rio.ai.openai_compatible import _messages_to_responses_input
-
-    image = ImageContent(data="aGVsbG8=", mime_type="image/png")
-    messages = [
-        UserMessage(content=[TextContent(text="look"), image]),
-        AssistantMessage(
-            content=[
-                TextContent(text="answer", text_signature="msg_1"),
-                ToolCall(id="call_1|fc_1", name="read", arguments={}),
-            ]
-        ),
-        ToolResultMessage(tool_call_id="call_1|fc_1", tool_name="read", content=[image]),
-    ]
-    for preserve_ids in (False, True):
-        items = _messages_to_responses_input(
-            messages, supports_images=True, preserve_ids=preserve_ids
-        )
-        assert items[0]["content"][1]["image_url"] == "data:image/png;base64,aGVsbG8="
-        expected = "call_1" if preserve_ids else portable_tool_call_id("call_1|fc_1")
-        assert items[2]["call_id"] == items[3]["call_id"] == expected
-        assert items[3]["output"][0]["type"] == "input_image"
-        if preserve_ids:
-            assert items[1]["id"] == "msg_1"
-            assert items[2]["id"] == "fc_1"
-        else:
-            assert "id" not in items[2]
-
-
 def test_incomplete_responses_preserve_raw_reason_with_tools():
     events = _finalize(
         [

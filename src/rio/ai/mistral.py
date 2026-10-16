@@ -17,26 +17,17 @@ from rio.ai._provider_events import (
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
-from rio.ai.content import (
-    NON_VISION_TOOL_IMAGE_PLACEHOLDER,
-    NON_VISION_USER_IMAGE_PLACEHOLDER,
-    text_and_images,
-)
 from rio.ai.env import OpenAICompatibleConfig
 from rio.ai.http import create_async_client, request_with_retries
 from rio.ai.messages import (
-    AgentMessage,
     AssistantMessage,
-    ImageContent,
     ThinkingContent,
-    ToolResultMessage,
     Usage,
     UserMessage,
     assistant_content,
-    portable_tool_call_id,
 )
 from rio.ai.openai_compatible import _parse_chunk_usage
-from rio.ai.provider import AssistantMessageEvent, collect_response
+from rio.ai.provider import collect_response
 from rio.ai.retry import RetryableFailure, RetryAttempt
 from rio.ai.tools import AgentTool, ToolCall
 from rio.ai.types import JSONValue
@@ -61,26 +52,28 @@ class MistralConversationsProvider:
             await self._client.aclose()
             self._client = None
 
-    def stream_response(
+    async def complete(
         self,
         *,
         model: str,
         system: str,
-        messages: list[AgentMessage],
+        messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[AssistantMessageEvent]:
-        """Collect one response as a final assistant message or error."""
+    ) -> AssistantMessage:
+        """Return one response as a final assistant message or error."""
         raw = self._stream_provider_events(
             model=model, system=system, messages=messages, tools=tools
         )
-        return collect_response(raw, api="mistral-conversations", provider="mistral", model=model)
+        return await collect_response(
+            raw, api="mistral-conversations", provider="mistral", model=model
+        )
 
     def _stream_provider_events(
         self,
         *,
         model: str,
         system: str,
-        messages: list[AgentMessage],
+        messages: list[UserMessage],
         tools: list[AgentTool],
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one Mistral response as provider-neutral events."""
@@ -91,7 +84,6 @@ class MistralConversationsProvider:
             tools=tools,
             reasoning_effort=self._config.reasoning_effort,
             max_tokens=self._config.max_tokens,
-            supports_images=self._config.supports_images,
         )
         return self._stream(
             model=model,
@@ -249,11 +241,10 @@ def _build_mistral_payload(
     *,
     model: str,
     system: str,
-    messages: list[AgentMessage],
+    messages: list[UserMessage],
     tools: list[AgentTool],
     reasoning_effort: str | None,
     max_tokens: int | None,
-    supports_images: bool = False,
 ) -> dict[str, JSONValue]:
     payload: dict[str, JSONValue] = {
         "model": model,
@@ -261,7 +252,7 @@ def _build_mistral_payload(
         "stream_options": {"include_usage": True},
         "messages": [
             *_system_messages(system),
-            *_messages_to_mistral(messages, supports_images=supports_images),
+            *({"role": "user", "content": message.content} for message in messages),
         ],
     }
     if max_tokens is not None:
@@ -280,92 +271,6 @@ def _system_messages(system: str) -> list[dict[str, JSONValue]]:
     return [{"role": "system", "content": system}] if system else []
 
 
-def _messages_to_mistral(
-    messages: list[AgentMessage], *, supports_images: bool
-) -> list[dict[str, JSONValue]]:
-    converted: list[dict[str, JSONValue]] = []
-    pending_tool_images: list[ImageContent] = []
-    for message in messages:
-        if pending_tool_images and not isinstance(message, ToolResultMessage):
-            converted.append(_mistral_tool_image_message(pending_tool_images))
-            pending_tool_images = []
-        if isinstance(message, UserMessage):
-            text, images = text_and_images(
-                message.content,
-                supports_images=supports_images,
-                image_placeholder=NON_VISION_USER_IMAGE_PLACEHOLDER,
-            )
-            if images:
-                content: list[JSONValue] = []
-                if text:
-                    content.append({"type": "text", "text": text})
-                content.extend(
-                    {
-                        "type": "image_url",
-                        "image_url": f"data:{image.mime_type};base64,{image.data}",
-                    }
-                    for image in images
-                )
-                converted.append({"role": "user", "content": content})
-            else:
-                converted.append({"role": "user", "content": text})
-            continue
-        if isinstance(message, ToolResultMessage):
-            text, images = text_and_images(
-                message.content,
-                supports_images=supports_images,
-                image_placeholder=NON_VISION_TOOL_IMAGE_PLACEHOLDER,
-            )
-            converted.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": portable_tool_call_id(message.tool_call_id),
-                    "name": message.tool_name,
-                    "content": text or ("(see attached image)" if images else "(no tool output)"),
-                }
-            )
-            pending_tool_images.extend(images)
-            continue
-        converted.append(_message_to_mistral(message))
-    if pending_tool_images:
-        converted.append(_mistral_tool_image_message(pending_tool_images))
-    return converted
-
-
-def _mistral_tool_image_message(images: list[ImageContent]) -> dict[str, JSONValue]:
-    content: list[JSONValue] = [{"type": "text", "text": "Attached image(s) from tool result:"}]
-    content.extend(
-        {
-            "type": "image_url",
-            "image_url": f"data:{image.mime_type};base64,{image.data}",
-        }
-        for image in images
-    )
-    return {"role": "user", "content": content}
-
-
-def _message_to_mistral(message: AgentMessage) -> dict[str, JSONValue]:
-    if isinstance(message, UserMessage):
-        return {"role": "user", "content": message.text}
-    if isinstance(message, AssistantMessage):
-        item: dict[str, JSONValue] = {"role": "assistant", "content": message.text}
-        if message.thinking_text:
-            item["reasoning_content"] = message.thinking_text
-        if message.tool_calls:
-            item["tool_calls"] = [
-                _tool_call_to_mistral(tool_call) for tool_call in message.tool_calls
-            ]
-        return item
-    if isinstance(message, ToolResultMessage):
-        return {
-            "role": "tool",
-            "tool_call_id": portable_tool_call_id(message.tool_call_id),
-            "name": message.tool_name,
-            "content": message.text,
-        }
-    raise TypeError(f"Unsupported message: {type(message).__name__}")
-
-
 def _tool_to_mistral(tool: AgentTool) -> dict[str, JSONValue]:
     return {
         "type": "function",
@@ -375,14 +280,6 @@ def _tool_to_mistral(tool: AgentTool) -> dict[str, JSONValue]:
             "parameters": dict(tool.parameters),
             "strict": False,
         },
-    }
-
-
-def _tool_call_to_mistral(tool_call: ToolCall) -> dict[str, JSONValue]:
-    return {
-        "id": portable_tool_call_id(tool_call.id),
-        "type": "function",
-        "function": {"name": tool_call.name, "arguments": dumps(tool_call.arguments)},
     }
 
 

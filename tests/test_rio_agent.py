@@ -33,7 +33,6 @@ from rio.agent.state import (
 from rio.agent.store import StorageFailure, Store, reduce_event
 from rio.ai import FakeProvider
 from rio.ai.messages import AssistantMessage, ToolCall
-from rio.ai.provider import AssistantDoneEvent, AssistantErrorEvent
 from rio.coding.cells import KINDS
 from rio.coding.owner import ProcessOwner, stop_worker
 
@@ -678,7 +677,7 @@ def response(operations):
     message = AssistantMessage(
         content=[ToolCall(id="call", name="step", arguments={"ops": operations})]
     )
-    return [AssistantDoneEvent(reason="toolUse", message=message)]
+    return message
 
 
 async def test_public_loop_finishes_and_reopens_without_model_call(session):
@@ -1252,9 +1251,7 @@ async def test_run_stops_at_budget_limits(session, limit, prepared, reason):
             turn = prepare(session)
             session.start_attempt(turn["id"])
             if limit != "invalid_attempts":
-                session.record_response(
-                    turn["id"], response([])[0].message.model_dump(mode="json"), 1
-                )
+                session.record_response(turn["id"], response([]).model_dump(mode="json"), 1)
                 session.accept(turn["id"], [])
                 if prepared:
                     prepare(session)
@@ -1440,7 +1437,7 @@ async def test_saved_complete_response_is_accepted_without_another_provider_call
     turn = prepare(session)
     session.start_attempt(turn["id"])
     operations = [conclude()]
-    message = response(operations)[0].message
+    message = response(operations)
     session.record_response(turn["id"], message.model_dump(mode="json"), 12)
     provider = FakeProvider([])
     assert await run(ProcessOwner(session), provider, "fake")
@@ -1458,7 +1455,7 @@ async def test_lost_and_partial_model_responses_are_bounded(session, monkeypatch
     assert not session.data["cells"]
     assert session.meta["usage"]["unknown_usage"] == session.limits.provider_attempts
     assert session.meta["terminal"]["reason"] == (
-        "Provider retry budget exhausted: provider produced no assistant message"
+        "Provider retry budget exhausted: FakeProvider has no scripted response"
     )
 
 
@@ -1468,7 +1465,7 @@ def provider_error(message="overloaded", **details):
         error_message=message,
         diagnostics=[{"type": "provider_error", "details": details}],
     )
-    return [AssistantErrorEvent(reason="error", error=error)]
+    return error
 
 
 class Clock:
@@ -1496,12 +1493,12 @@ class Raising(FakeProvider):
         super().__init__(streams)
         self.failures = failures
 
-    def stream_response(self, **kwargs):
+    async def complete(self, **kwargs):
         if self.failures:
             self.failures -= 1
             self.calls.append(tuple(kwargs.values()))
             raise ConnectionError("connection reset")
-        return super().stream_response(**kwargs)
+        return await super().complete(**kwargs)
 
 
 async def test_provider_failures_back_off_outside_invalid_budget(session, monkeypatch):
@@ -1539,7 +1536,7 @@ async def test_provider_failures_back_off_outside_invalid_budget(session, monkey
 
 async def test_invalid_model_output_still_uses_invalid_budget(session, monkeypatch):
     Clock(monkeypatch)
-    text = [AssistantDoneEvent(reason="stop", message=AssistantMessage(content="done"))]
+    text = AssistantMessage(content="done")
     provider = FakeProvider([text, response([{"op": "invalid"}]), text])
     assert not await run(Owner(session), provider, "fake")
     assert len(provider.calls) == session.limits.invalid_attempts
@@ -1644,9 +1641,9 @@ async def test_provider_name_does_not_make_missing_usage_known(session):
     operations = [
         conclude(),
     ]
-    events = response(operations)
-    events[0].message.api = "provider-without-usage"
-    assert await run(ProcessOwner(session), FakeProvider([events]), "fake")
+    message = response(operations)
+    message.api = "provider-without-usage"
+    assert await run(ProcessOwner(session), FakeProvider([message]), "fake")
     assert session.meta["usage"]["unknown_usage"] == 1
 
 

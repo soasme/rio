@@ -98,11 +98,8 @@ def test_codex_subscription_usage_limit_is_not_retryable():
     assert not _is_retryable_status(429, '{"code": "subscription_sharing_usage_limit_exceeded"}')
 
 
-async def test_codex_aliases_usage_and_replay_ids_survive_shared_parser():
-    import json
-
+async def test_codex_aliases_and_usage_survive_shared_parser():
     from rio.ai.messages import ThinkingContent
-    from rio.ai.openai_codex import _build_codex_payload
 
     reasoning = {"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque"}
     events = await _collect(
@@ -137,7 +134,7 @@ async def test_codex_aliases_usage_and_replay_ids_survive_shared_parser():
         ]
     )
     message = events[-1].message
-    assert message.tool_calls[0].id == "call_1|fc_1"
+    assert message.tool_calls[0].id == "call_1"
     assert message.tool_calls[0].arguments == {"path": "a"}
     assert (
         message.usage.input,
@@ -148,11 +145,19 @@ async def test_codex_aliases_usage_and_replay_ids_survive_shared_parser():
         message.usage.total_tokens,
     ) == (13, 9, 5, 2, 3, 29)
     assert isinstance(message.content[0], ThinkingContent)
-    assert json.loads(message.content[0].thinking_signature) == reasoning
-    payload = _build_codex_payload(model="m", system="s", messages=[message], tools=[])
-    assert payload["input"][0] == reasoning
-    assert payload["input"][1]["id"] == "fc_1"
-    assert payload["input"][1]["call_id"] == "call_1"
+
+
+def test_codex_payload_sends_each_message_as_fresh_user_text():
+    from rio.ai.messages import UserMessage
+    from rio.ai.openai_codex import _build_codex_payload
+
+    payload = _build_codex_payload(
+        model="m", system="s", messages=[UserMessage(content="state")], tools=[]
+    )
+    assert payload["input"] == [
+        {"role": "user", "content": [{"type": "input_text", "text": "state"}]}
+    ]
+    assert "include" not in payload
 
 
 async def test_codex_arguments_done_is_not_a_completed_tool():

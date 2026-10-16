@@ -15,26 +15,16 @@ from rio.ai._provider_events import (
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
-from rio.ai.content import (
-    NON_VISION_TOOL_IMAGE_PLACEHOLDER,
-    NON_VISION_USER_IMAGE_PLACEHOLDER,
-    text_and_images,
-)
 from rio.ai.env import OpenAICompatibleConfig
 from rio.ai.http import create_async_client, request_with_retries
 from rio.ai.messages import (
-    AgentMessage,
     AssistantMessage,
-    ImageContent,
-    TextContent,
     ThinkingContent,
-    ToolResultMessage,
     Usage,
     UserMessage,
     assistant_content,
-    portable_tool_call_id,
 )
-from rio.ai.provider import AssistantMessageEvent, collect_response
+from rio.ai.provider import collect_response
 from rio.ai.retry import (
     RetryableFailure,
     RetryAttempt,
@@ -62,26 +52,28 @@ class GoogleGenerativeAIProvider:
             await self._client.aclose()
             self._client = None
 
-    def stream_response(
+    async def complete(
         self,
         *,
         model: str,
         system: str,
-        messages: list[AgentMessage],
+        messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[AssistantMessageEvent]:
-        """Collect one response as a final assistant message or error."""
+    ) -> AssistantMessage:
+        """Return one response as a final assistant message or error."""
         raw = self._stream_provider_events(
             model=model, system=system, messages=messages, tools=tools
         )
-        return collect_response(raw, api="google-generative-ai", provider="google", model=model)
+        return await collect_response(
+            raw, api="google-generative-ai", provider="google", model=model
+        )
 
     def _stream_provider_events(
         self,
         *,
         model: str,
         system: str,
-        messages: list[AgentMessage],
+        messages: list[UserMessage],
         tools: list[AgentTool],
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one Gemini response as provider-neutral events."""
@@ -95,7 +87,6 @@ class GoogleGenerativeAIProvider:
                 tools=tools,
                 reasoning_effort=self._config.reasoning_effort,
                 max_tokens=self._config.max_tokens,
-                supports_images=self._config.supports_images,
             )
             url = (
                 f"{self._config.base_url.rstrip('/')}/models/{model}:streamGenerateContent?alt=sse"
@@ -209,14 +200,10 @@ class _GoogleStreamParser:
             if isinstance(function_call, Mapping):
                 self.emitted_content = True
                 default_id = f"tool-call-{len(self._tool_calls)}"
-                thought_signature = part.get("thoughtSignature")
                 tool_call = ToolCall(
                     id=_string_or_default(function_call.get("id"), default_id),
                     name=_string_or_default(function_call.get("name"), ""),
                     arguments=_object_or_empty(function_call.get("args")),
-                    thought_signature=thought_signature
-                    if isinstance(thought_signature, str)
-                    else None,
                 )
                 self._tool_calls.append(tool_call)
                 events.append(ProviderToolCallEvent(tool_call=tool_call))
@@ -240,18 +227,15 @@ def _build_google_payload(
     *,
     model: str,
     system: str,
-    messages: list[AgentMessage],
+    messages: list[UserMessage],
     tools: list[AgentTool],
     reasoning_effort: str | None,
     max_tokens: int | None,
-    supports_images: bool = False,
 ) -> dict[str, JSONValue]:
     config: dict[str, JSONValue] = {}
     payload: dict[str, JSONValue] = {
         "contents": [
-            item
-            for message in messages
-            for item in _messages_to_google(message, model=model, supports_images=supports_images)
+            {"role": "user", "parts": [{"text": message.content}]} for message in messages
         ],
     }
     if system:
@@ -330,79 +314,6 @@ def _is_gemini3_flash_model(model: str) -> bool:
 
 def _is_gemma4_model(model: str) -> bool:
     return "gemma-4" in model.lower() or "gemma4" in model.lower()
-
-
-def _messages_to_google(
-    message: AgentMessage, *, model: str, supports_images: bool
-) -> list[dict[str, JSONValue]]:
-    if isinstance(message, UserMessage):
-        text, images = text_and_images(
-            message.content,
-            supports_images=supports_images,
-            image_placeholder=NON_VISION_USER_IMAGE_PLACEHOLDER,
-        )
-        user_parts: list[JSONValue] = []
-        if text:
-            user_parts.append({"text": text})
-        user_parts.extend(_google_image(image) for image in images)
-        return [{"role": "user", "parts": user_parts}]
-    if isinstance(message, AssistantMessage):
-        parts: list[JSONValue] = []
-        for block in message.content:
-            if isinstance(block, TextContent):
-                parts.append({"text": block.text})
-            elif isinstance(block, ThinkingContent):
-                part: dict[str, JSONValue] = {"text": block.thinking, "thought": True}
-                if block.thinking_signature is not None:
-                    part["thoughtSignature"] = block.thinking_signature
-                parts.append(part)
-            elif isinstance(block, ToolCall):
-                part = {
-                    "functionCall": {
-                        "id": portable_tool_call_id(block.id),
-                        "name": block.name,
-                        "args": dict(block.arguments),
-                    }
-                }
-                if block.thought_signature is not None:
-                    part["thoughtSignature"] = block.thought_signature
-                parts.append(part)
-        return [{"role": "model", "parts": parts or [{"text": ""}]}]
-    if isinstance(message, ToolResultMessage):
-        text, images = text_and_images(
-            message.content,
-            supports_images=supports_images,
-            image_placeholder=NON_VISION_TOOL_IMAGE_PLACEHOLDER,
-        )
-        response: dict[str, JSONValue] = {
-            "name": message.tool_name,
-            "response": {"output" if not message.is_error else "error": text},
-        }
-        if message.tool_call_id:
-            response["id"] = portable_tool_call_id(message.tool_call_id)
-        image_parts: list[JSONValue] = [_google_image(image) for image in images]
-        if image_parts and _supports_multimodal_function_response(model):
-            response["parts"] = image_parts
-        converted: list[dict[str, JSONValue]] = [
-            {"role": "user", "parts": [{"functionResponse": response}]}
-        ]
-        if image_parts and not _supports_multimodal_function_response(model):
-            separate_image_parts: list[JSONValue] = [
-                {"text": "Tool result image:"},
-                *image_parts,
-            ]
-            converted.append({"role": "user", "parts": separate_image_parts})
-        return converted
-    raise TypeError(f"Unsupported message: {type(message).__name__}")
-
-
-def _google_image(image: ImageContent) -> dict[str, JSONValue]:
-    return {"inlineData": {"mimeType": image.mime_type, "data": image.data}}
-
-
-def _supports_multimodal_function_response(model: str) -> bool:
-    normalized = model.lower()
-    return not normalized.startswith("gemini-") or normalized.startswith("gemini-3")
 
 
 def _tool_to_google(tool: AgentTool) -> dict[str, JSONValue]:

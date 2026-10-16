@@ -21,15 +21,9 @@ from rio.ai.env import (
     DEFAULT_TIMEOUT_SECONDS,
 )
 from rio.ai.http import create_async_client, request_with_retries
-from rio.ai.messages import (
-    AgentMessage,
-)
-from rio.ai.openai_compatible import (
-    _messages_to_responses_input,
-    _ResponsesStreamParser,
-    _stream_error_details,
-)
-from rio.ai.provider import AssistantMessageEvent, collect_response
+from rio.ai.messages import AssistantMessage, UserMessage
+from rio.ai.openai_compatible import _ResponsesStreamParser, _stream_error_details
+from rio.ai.provider import collect_response
 from rio.ai.retry import (
     RetryableFailure,
     RetryAttempt,
@@ -64,7 +58,6 @@ class OpenAICodexConfig:
     max_retry_delay_seconds: float = DEFAULT_MAX_RETRY_DELAY_SECONDS
     originator: str = "tau"
     reasoning_effort: str | None = None
-    supports_images: bool = False
     provider_name: str = "OpenAI Codex"
 
 
@@ -87,22 +80,22 @@ class OpenAICodexProvider:
             await self._client.aclose()
             self._client = None
 
-    def stream_response(
+    async def complete(
         self,
         *,
         model: str,
         system: str,
-        messages: list[AgentMessage],
+        messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[AssistantMessageEvent]:
-        """Collect one response as a final assistant message or error."""
+    ) -> AssistantMessage:
+        """Return one response as a final assistant message or error."""
         raw = self._stream_provider_events(
             model=model,
             system=system,
             messages=messages,
             tools=tools,
         )
-        return collect_response(
+        return await collect_response(
             raw, api="openai-codex-responses", provider="openai-codex", model=model
         )
 
@@ -111,7 +104,7 @@ class OpenAICodexProvider:
         *,
         model: str,
         system: str,
-        messages: list[AgentMessage],
+        messages: list[UserMessage],
         tools: list[AgentTool],
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one Codex Responses request as provider-neutral events."""
@@ -124,7 +117,6 @@ class OpenAICodexProvider:
                 messages=messages,
                 tools=tools,
                 reasoning_effort=self._config.reasoning_effort,
-                supports_images=self._config.supports_images,
             )
             url = _resolve_codex_url(self._config.base_url)
 
@@ -188,21 +180,20 @@ def _build_codex_payload(
     *,
     model: str,
     system: str,
-    messages: list[AgentMessage],
+    messages: list[UserMessage],
     tools: list[AgentTool],
     reasoning_effort: str | None = None,
-    supports_images: bool = False,
 ) -> dict[str, JSONValue]:
     payload: dict[str, JSONValue] = {
         "model": model,
         "store": False,
         "stream": True,
         "instructions": system or "You are a helpful assistant.",
-        "input": _messages_to_responses_input(
-            messages, supports_images=supports_images, preserve_ids=True
-        ),
+        "input": [
+            {"role": "user", "content": [{"type": "input_text", "text": message.content}]}
+            for message in messages
+        ],
         "text": {"verbosity": "low"},
-        "include": ["reasoning.encrypted_content"],
         "tool_choice": "auto",
         "parallel_tool_calls": True,
     }

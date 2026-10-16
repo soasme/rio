@@ -1,12 +1,10 @@
-"""Provider and Pi-compatible model streaming layer for Rio.
+"""Model providers for Rio: one request in, one final assistant message out.
 
 Ported from `huggingface/tau <https://github.com/huggingface/tau>`_'s
-``tau_ai`` module (MIT licensed). The vocabulary types that ``tau_ai``
-depends on (messages, tools, wire-level types, the ``ModelProvider``
-contract, and the canonical assistant stream event union) lived in
-``tau_agent`` upstream; they are folded into this package so ``rio.ai`` is
-self-contained and installable independent of the ``rio.agent`` runtime.
-See ``NOTICE`` at the repository root for the original license text.
+``tau_ai`` module (MIT licensed) and narrowed to Rio's stateless turns: each
+request is fresh user text, never a replayed transcript. ``rio.ai`` is
+installable independent of the ``rio.agent`` runtime. See ``NOTICE`` at the
+repository root for the original license text.
 """
 
 # ruff: noqa: F401 - this module intentionally defines the public facade
@@ -24,20 +22,15 @@ from rio.ai.env import (
 from rio.ai.fake import FakeProvider
 from rio.ai.google import GoogleGenerativeAIProvider
 from rio.ai.messages import (
-    AgentMessage,
     AssistantMessage,
-    ImageContent,
     ResponseTiming,
     TextContent,
     ThinkingContent,
     ToolCall,
-    ToolResultMessage,
     Usage,
     UsageCost,
     UserMessage,
-    content_text,
     malformed_tool_arguments,
-    message_text,
     raw_tool_arguments,
 )
 from rio.ai.mistral import MistralConversationsProvider
@@ -48,12 +41,7 @@ from rio.ai.openai_codex import (
     OpenAICodexProvider,
 )
 from rio.ai.openai_compatible import OpenAICompatibleProvider
-from rio.ai.provider import (
-    AssistantDoneEvent,
-    AssistantErrorEvent,
-    AssistantMessageEvent,
-    ModelProvider,
-)
+from rio.ai.provider import ModelProvider
 from rio.ai.tools import AgentTool
 from rio.ai.types import JSONObject, JSONPrimitive, JSONValue
 
