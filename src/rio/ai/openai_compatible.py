@@ -11,6 +11,7 @@ the original chat-completions path unchanged.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping
+from json import dumps
 from typing import Any, Protocol
 
 import httpx
@@ -572,7 +573,7 @@ class _ToolCallBuilder:
 
     def add_delta(self, delta: Mapping[str, Any]) -> None:
         call_id = delta.get("id")
-        if isinstance(call_id, str):
+        if isinstance(call_id, str) and call_id != "null":
             self.id = call_id
 
         function = delta.get("function")
@@ -586,6 +587,8 @@ class _ToolCallBuilder:
         arguments = function.get("arguments")
         if isinstance(arguments, str):
             self.arguments_parts.append(arguments)
+        elif isinstance(arguments, Mapping):
+            self.arguments_parts.append(dumps(arguments))
 
     def build(self, index: int) -> ToolCall:
         return ToolCall(
@@ -975,7 +978,7 @@ def _usage_from_responses_event(chunk: Mapping[str, Any]) -> Usage | None:
 
 
 def _tool_call_deltas(delta: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    tool_calls = delta.get("tool_calls")
+    tool_calls = delta.get("tool_calls") or delta.get("toolCalls")
     if not isinstance(tool_calls, list):
         return []
     return [tool_call for tool_call in tool_calls if isinstance(tool_call, Mapping)]

@@ -61,12 +61,3 @@ class ProviderCatalogEntry:
     thinking_default: ThinkingLevel | None = None
     thinking_parameter: ThinkingParameter | None = None
     removed_models: tuple[str, ...] = ()
-
-
-def __getattr__(name: str) -> tuple[ProviderCatalogEntry, ...]:
-    if name == "BUILTIN_PROVIDER_CATALOG":
-        # Lazy: catalog_loader imports the dataclasses defined in this module.
-        from rio.coding.catalog_loader import builtin_catalog
-
-        return builtin_catalog()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

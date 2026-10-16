@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
-from json import dumps
 from typing import Any
 
 import httpx
 
-from rio.ai._parsing import first_choice, loads_object, parse_sse_line, tool_arguments
+from rio.ai._parsing import first_choice, loads_object, parse_sse_line
 from rio.ai._provider_events import (
     ProviderErrorEvent,
     ProviderEvent,
@@ -26,10 +25,10 @@ from rio.ai.messages import (
     UserMessage,
     assistant_content,
 )
-from rio.ai.openai_compatible import _parse_chunk_usage
+from rio.ai.openai_compatible import _parse_chunk_usage, _tool_call_deltas, _ToolCallBuilder
 from rio.ai.provider import collect_response
 from rio.ai.retry import RetryableFailure, RetryAttempt
-from rio.ai.tools import AgentTool, ToolCall
+from rio.ai.tools import AgentTool
 from rio.ai.types import JSONValue
 
 
@@ -207,36 +206,6 @@ class _MistralStreamParser:
         return events
 
 
-class _ToolCallBuilder:
-    def __init__(self) -> None:
-        self.id = ""
-        self.name = ""
-        self.arguments_parts: list[str] = []
-
-    def add_delta(self, delta: Mapping[str, Any]) -> None:
-        call_id = delta.get("id")
-        if isinstance(call_id, str) and call_id != "null":
-            self.id = call_id
-        function = delta.get("function")
-        if not isinstance(function, Mapping):
-            return
-        name = function.get("name")
-        if isinstance(name, str):
-            self.name = name
-        arguments = function.get("arguments")
-        if isinstance(arguments, str):
-            self.arguments_parts.append(arguments)
-        elif isinstance(arguments, Mapping):
-            self.arguments_parts.append(dumps(arguments))
-
-    def build(self, index: int) -> ToolCall:
-        return ToolCall(
-            id=self.id or f"tool-call-{index}",
-            name=self.name,
-            arguments=tool_arguments("".join(self.arguments_parts)),
-        )
-
-
 def _build_mistral_payload(
     *,
     model: str,
@@ -333,10 +302,3 @@ def _thinking_deltas(delta: Mapping[str, Any]) -> list[str]:
                     if isinstance(text, str) and text:
                         output.append(text)
     return output
-
-
-def _tool_call_deltas(delta: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    tool_calls = delta.get("tool_calls") or delta.get("toolCalls")
-    if not isinstance(tool_calls, list):
-        return []
-    return [tool_call for tool_call in tool_calls if isinstance(tool_call, Mapping)]

@@ -26,7 +26,6 @@ from rio.coding.models_dev import (
 )
 from rio.coding.paths import RioPaths
 from rio.coding.provider_catalog import (
-    BUILTIN_PROVIDER_CATALOG,
     ModelCatalogMetadata,
     ModelInput,
     ProviderApi,
@@ -262,7 +261,7 @@ def test_builtin_catalog_with_bundled_models_matches_schema(
 
 
 def test_builtin_catalog_matches_expected_providers() -> None:
-    names = [entry.name for entry in BUILTIN_PROVIDER_CATALOG]
+    names = [entry.name for entry in builtin_catalog()]
     assert names == [
         "openai",
         "openai-codex",
