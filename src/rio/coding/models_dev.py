@@ -10,12 +10,7 @@ from typing import TYPE_CHECKING, Any
 from rio.coding.thinking import THINKING_LEVELS, ThinkingLevel
 
 if TYPE_CHECKING:
-    # Deferred: provider_catalog's module-level BUILTIN_PROVIDER_CATALOG
-    # computation imports catalog_loader, which imports this module back.
-    # ProviderCatalogEntry is only used here in type annotations (evaluated
-    # lazily thanks to `from __future__ import annotations`), so a real
-    # import isn't needed and would otherwise make the cycle import-order
-    # dependent.
+    # Type-only: ProviderCatalogEntry appears only in annotations.
     from rio.coding.provider_catalog import ProviderCatalogEntry
 
 MODELS_DEV_URL = "https://models.dev/api.json"
