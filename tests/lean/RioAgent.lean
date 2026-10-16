@@ -628,4 +628,18 @@ theorem explicit_meta_state_wins (projection : TurnProjection) (state turnState 
 theorem prepared_turn_commits_both_states (projection : TurnProjection) (state : Nat) :
     reduceTurnChanges projection (preparedTurnChanges state) = ⟨state, some state⟩ := rfl
 
+/-- Model-facing State puts stable JSON fields before revision and runtime.
+    Fields are already encoded; this models ordering, not provider cache policy. -/
+def statePrompt (schema id goal cells revision runtime : String) : List String :=
+  [schema, id, goal, cells, revision, runtime]
+
+theorem state_prompt_prefix_survives_turn_changes
+    (schema id goal cells revision runtime nextRevision nextRuntime : String) :
+    (statePrompt schema id goal cells revision runtime).take 4 =
+      (statePrompt schema id goal cells nextRevision nextRuntime).take 4 := rfl
+
+theorem state_prompt_retains_dynamic_fields
+    (schema id goal cells revision runtime : String) :
+    (statePrompt schema id goal cells revision runtime).drop 4 = [revision, runtime] := rfl
+
 end RioAgent

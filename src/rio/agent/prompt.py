@@ -2,7 +2,9 @@
 
 from collections.abc import Iterable
 
+from rio.agent.shapes import State
 from rio.agent.state import CONTROL_FIELDS, CONTROLS, CellKind
+from rio.agent.store import encode
 from rio.ai.tools import AgentTool
 
 PROTOCOL = """You are Rio, an autonomous agent. Complete the goal in State.
@@ -37,6 +39,20 @@ Ordinary text does not end the run. Success requires no outstanding work or unre
 uncertainty, consumed observations, and passing configured validators.
 If no work, timer or external wake-up remains, conclude; an idle step is invalid.
 """
+
+
+def encode_state(state: State) -> str:
+    """Keep stable content ahead of per-turn fields, including in resumed sessions."""
+    return encode(
+        {
+            "schema": state["schema"],
+            "id": state["id"],
+            "goal": state["goal"],
+            "cells": state["cells"],
+            "revision": state["revision"],
+            "runtime": state["runtime"],
+        }
+    )
 
 
 def system(kinds: Iterable[CellKind]) -> str:

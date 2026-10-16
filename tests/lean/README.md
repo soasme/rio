@@ -9,6 +9,9 @@ Run `lake build` in this directory. CI builds all targets.
 | `RioCli.lean` | Committed content without cell IDs and cumulative output without duplication, provider-free terminal replay after cleanup, replay without journal writes beyond worker cleanup, metrics recorded once at run end, catalog-only provider definitions with login saving only the default provider and preserving preferences, unknown keys, and catalog bytes, ignored retired preferences, strict explicit thinking levels, stable login/request credential keys, catalog-only provider resolution, model/provider/kind API precedence and model/provider/protocol compat precedence independent of provider names and URLs, provider/model selection independent of extra saved preferences, OSC 7501 status override and lifecycle (`rio.cli.render`, `rio.cli.status`) |
 
 These are independent behavior models, not proofs extracted from Python.
+`RioAgent.lean` also checks that model-facing State keeps goal and Cells before
+revision and runtime, preserving that prefix across per-turn changes. This models
+field ordering, not provider cache hits.
 They do not prove SQLite synchronization, OS process cleanup, transport behavior,
 or hardware durability. Python tests cover the implementation and its failure paths.
 
