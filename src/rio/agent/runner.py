@@ -15,7 +15,7 @@ from rio.agent.shapes import ControlRequest, JournalEvent, Turn, ValidatorResult
 from rio.agent.state import CONTROLS, InvalidPatch
 from rio.agent.store import StorageFailure
 from rio.ai.messages import AssistantMessage, UserMessage, raw_tool_arguments
-from rio.ai.provider import AssistantDoneEvent, AssistantErrorEvent, ModelProvider
+from rio.ai.provider import ModelProvider
 from rio.ai.retry import is_transient_status
 
 
@@ -328,12 +328,11 @@ async def _request_ops(
             messages.append(UserMessage(content="Rejected step: " + turn["error"]))
         # No State changes during generation. Owner work only appends runtime records.
         request = asyncio.create_task(
-            _call_model(
-                provider,
-                model,
-                turn["system"],
-                messages,
-                [step_tool(turn["tool_schema"])],
+            provider.complete(
+                model=model,
+                system=turn["system"],
+                messages=messages,
+                tools=[step_tool(turn["tool_schema"])],
             )
         )
         try:
@@ -379,23 +378,3 @@ def _retryable(response: AssistantMessage) -> bool:
         if isinstance(status, int):
             return is_transient_status(status)
     return True
-
-
-async def _call_model(
-    provider: ModelProvider,
-    model: str,
-    system: str,
-    messages: list,
-    tools: list,
-) -> AssistantMessage:
-    result: AssistantMessage | None = None
-    async for event in provider.stream_response(
-        model=model, system=system, messages=messages, tools=tools
-    ):
-        if isinstance(event, AssistantDoneEvent):
-            result = event.message
-        elif isinstance(event, AssistantErrorEvent):
-            result = event.error
-    if result is None:
-        raise ProviderFailure("provider produced no assistant message")
-    return result

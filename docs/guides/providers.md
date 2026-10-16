@@ -70,7 +70,7 @@ Use `[providers.model_metadata."MODEL_ID"]` for per-model settings:
 | `api` | Protocol override, using the `api` values above. |
 | `base_url` | API base URL override. |
 | `reasoning` | Whether the model supports reasoning (`true` or `false`). |
-| `input` | Input modalities: `text` and/or `image`. |
+| `input` | Input modalities: `text` and/or `image`. Catalog metadata only; Rio sends text. |
 | `max_tokens` | Positive maximum output tokens. |
 | `headers` | Extra HTTP headers for this model. |
 | `compat` | Protocol compatibility settings for this model. |

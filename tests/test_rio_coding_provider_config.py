@@ -42,7 +42,6 @@ from rio.coding.provider_config import (
     provider_default_thinking_level,
     provider_has_usable_credentials,
     provider_model_max_tokens,
-    provider_model_supports_images,
     provider_settings_from_json,
     provider_thinking_levels,
     resolve_provider_selection,
@@ -154,23 +153,6 @@ def test_load_provider_settings_missing_file_uses_openai_default(tmp_path: Path)
     assert settings.get_provider("anthropic").api_key_env == "ANTHROPIC_API_KEY"
     assert settings.get_provider("openrouter").api_key_env == "OPENROUTER_API_KEY"
     assert settings.get_provider("huggingface").api_key_env == "HF_TOKEN"
-
-
-def test_builtin_codex_preserves_model_input_capabilities() -> None:
-    codex = ProviderSettings().get_provider("openai-codex")
-
-    for model in (
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.3-codex",
-        "gpt-5.2",
-    ):
-        assert provider_model_supports_images(codex, model)
-    assert not provider_model_supports_images(codex, "gpt-5.3-codex-spark")
 
 
 def test_builtin_openai_declares_model_scoped_thinking_capabilities() -> None:
@@ -616,25 +598,6 @@ def test_resolve_provider_selection_rejects_model_not_declared_for_provider() ->
 # ---------------------------------------------------------------------------
 # Runtime config construction (openai-compatible / anthropic)
 # ---------------------------------------------------------------------------
-
-
-def test_runtime_config_uses_selected_model_image_capability(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("CUSTOM_API_KEY", "secret")
-    provider = ProviderConfig(
-        name="custom",
-        api_key_env="CUSTOM_API_KEY",
-        models=("text", "vision"),
-        default_model="text",
-        model_metadata={
-            "text": ProviderModelMetadata(input=("text",)),
-            "vision": ProviderModelMetadata(input=("text", "image")),
-        },
-    )
-
-    assert not openai_compatible_config_from_provider(provider, model="text").supports_images
-    assert openai_compatible_config_from_provider(provider, model="vision").supports_images
 
 
 def test_openai_compatible_config_from_provider_uses_configured_env_var(
@@ -1204,27 +1167,6 @@ def test_create_model_provider_returns_openai_codex_provider(tmp_path: Path) -> 
     )
 
     assert isinstance(provider, OpenAICodexProvider)
-
-
-def test_create_model_provider_uses_codex_model_image_capability(tmp_path: Path) -> None:
-    store = FileCredentialStore(tmp_path / "credentials.json")
-    config = provider_config_from_catalog_entry("openai-codex")
-
-    vision_provider = create_model_provider(
-        config,
-        credential_store=store,
-        model="gpt-5.6-sol",
-    )
-    text_provider = create_model_provider(
-        config,
-        credential_store=store,
-        model="gpt-5.3-codex-spark",
-    )
-
-    assert isinstance(vision_provider, OpenAICodexProvider)
-    assert isinstance(text_provider, OpenAICodexProvider)
-    assert vision_provider._config.supports_images is True
-    assert text_provider._config.supports_images is False
 
 
 def test_anthropic_config_from_provider_includes_compat(
@@ -1797,7 +1739,6 @@ cacheWrite = 0.2
     before = catalog_path.read_bytes()
     provider = load_provider_settings(paths).get_provider("local")
     assert provider_model_max_tokens(provider, "qwen") == 4096
-    assert provider_model_supports_images(provider, "qwen")
     save_default_provider("local", paths)
     assert catalog_path.read_bytes() == before
     assert load_provider_settings(paths).get_provider("local") == provider

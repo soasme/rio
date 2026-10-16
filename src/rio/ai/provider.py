@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Annotated, Literal, Protocol
-
-from pydantic import Field
+from typing import Literal, Protocol
 
 from rio.ai._provider_events import (
     ProviderErrorEvent,
@@ -18,48 +16,29 @@ from rio.ai._provider_events import (
     ProviderToolCallEvent,
 )
 from rio.ai.messages import (
-    AgentMessage,
     AssistantMessage,
     AssistantMessageDiagnostic,
     TextContent,
     ThinkingContent,
-    WireModel,
+    UserMessage,
 )
 from rio.ai.tools import AgentTool
 
 DoneReason = Literal["stop", "length", "toolUse"]
-ErrorReason = Literal["error"]
-
-
-class AssistantDoneEvent(WireModel):
-    type: Literal["done"] = "done"
-    reason: DoneReason
-    message: AssistantMessage
-
-
-class AssistantErrorEvent(WireModel):
-    type: Literal["error"] = "error"
-    reason: ErrorReason
-    error: AssistantMessage
-
-
-type AssistantMessageEvent = Annotated[
-    AssistantDoneEvent | AssistantErrorEvent, Field(discriminator="type")
-]
 
 
 class ModelProvider(Protocol):
-    """Provider-neutral interface for final assistant results."""
+    """Provider-neutral interface: one request, one final assistant message."""
 
-    def stream_response(
+    async def complete(
         self,
         *,
         model: str,
         system: str,
-        messages: list[AgentMessage],
+        messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[AssistantMessageEvent]:
-        """Return the final assistant message or a provider error."""
+    ) -> AssistantMessage:
+        """Return the response; a provider failure has ``stop_reason`` "error"."""
         ...
 
 
@@ -73,12 +52,16 @@ class ClosableModelProvider(ModelProvider, Protocol):
 
 async def collect_response(
     source: AsyncIterator[ProviderEvent], *, api: str, provider: str, model: str
-) -> AsyncIterator[AssistantMessageEvent]:
-    """Collect ordered blocks once, without exposing or copying partial messages."""
+) -> AssistantMessage:
+    """Collect ordered blocks once, without exposing or copying partial messages.
+
+    The source is read to its end, which is what releases the provider's transport;
+    events after the first terminal one are ignored.
+    """
     partial = AssistantMessage(api=api, provider=provider, model=model)
     fragments: list[str] = []
     kind: str | None = None
-    result: AssistantMessageEvent | None = None
+    result: AssistantMessage | None = None
 
     def flush() -> None:
         if fragments:
@@ -114,12 +97,11 @@ async def collect_response(
             final.api, final.provider, final.model = api, provider, model
             final.response_provider = final.response_provider or partial.response_provider
             if partial.content:
-                _copy_replay_metadata(partial, final)
                 final.content = partial.content
             final.stop_reason = _finish_reason(
                 event.finish_reason, has_tools=bool(final.tool_calls)
             )
-            result = AssistantDoneEvent(reason=final.stop_reason, message=final)
+            result = final
         elif isinstance(event, ProviderErrorEvent):
             flush()
             partial.response_provider = event.response_provider or partial.response_provider
@@ -128,27 +110,13 @@ async def collect_response(
             partial.diagnostics = [
                 AssistantMessageDiagnostic(type="provider_error", details=event.data)
             ]
-            result = AssistantErrorEvent(reason="error", error=partial)
-    if result is None:
-        flush()
-        partial.stop_reason = "error"
-        partial.error_message = "Provider stream ended without a terminal event"
-        result = AssistantErrorEvent(reason="error", error=partial)
-    yield result
-
-
-def _copy_replay_metadata(target: AssistantMessage, source: AssistantMessage) -> None:
-    """Copy provider metadata onto streamed blocks without changing their order."""
-    source_thinking = [block for block in source.content if isinstance(block, ThinkingContent)]
-    target_thinking = [block for block in target.content if isinstance(block, ThinkingContent)]
-    for target_block, source_block in zip(target_thinking, source_thinking, strict=False):
-        target_block.thinking_signature = source_block.thinking_signature
-        target_block.redacted = source_block.redacted
-
-    source_text = [block for block in source.content if isinstance(block, TextContent)]
-    target_text = [block for block in target.content if isinstance(block, TextContent)]
-    for target_text_block, source_text_block in zip(target_text, source_text, strict=False):
-        target_text_block.text_signature = source_text_block.text_signature
+            result = partial
+    if result is not None:
+        return result
+    flush()
+    partial.stop_reason = "error"
+    partial.error_message = "Provider stream ended without a terminal event"
+    return partial
 
 
 def _finish_reason(value: str | None, *, has_tools: bool) -> DoneReason:

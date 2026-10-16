@@ -11,8 +11,6 @@ the original chat-completions path unchanged.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping
-from contextlib import suppress
-from json import dumps, loads
 from typing import Any, Protocol
 
 import httpx
@@ -33,28 +31,16 @@ from rio.ai._provider_events import (
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
-from rio.ai.content import (
-    NON_VISION_TOOL_IMAGE_PLACEHOLDER,
-    NON_VISION_USER_IMAGE_PLACEHOLDER,
-    messages_have_images,
-    text_and_images,
-)
 from rio.ai.env import OpenAICompatibleConfig
 from rio.ai.http import create_async_client, request_with_retries
 from rio.ai.messages import (
-    AgentMessage,
     AssistantMessage,
-    AssistantMessageDiagnostic,
-    ImageContent,
-    TextContent,
     ThinkingContent,
-    ToolResultMessage,
     Usage,
     UserMessage,
     assistant_content,
-    portable_tool_call_id,
 )
-from rio.ai.provider import AssistantMessageEvent, collect_response
+from rio.ai.provider import collect_response
 from rio.ai.retry import RetryableFailure, RetryAttempt
 from rio.ai.tools import AgentTool, ToolCall
 from rio.ai.types import JSONValue
@@ -94,22 +80,22 @@ class OpenAICompatibleProvider:
             await self._client.aclose()
             self._client = None
 
-    def stream_response(
+    async def complete(
         self,
         *,
         model: str,
         system: str,
-        messages: list[AgentMessage],
+        messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[AssistantMessageEvent]:
-        """Collect one response as a final assistant message or error."""
+    ) -> AssistantMessage:
+        """Return one response as a final assistant message or error."""
         raw = self._stream_provider_events(
             model=model,
             system=system,
             messages=messages,
             tools=tools,
         )
-        return collect_response(
+        return await collect_response(
             raw,
             api=self._config.api,
             provider=getattr(self._config, "provider_name", "openai-compatible"),
@@ -121,7 +107,7 @@ class OpenAICompatibleProvider:
         *,
         model: str,
         system: str,
-        messages: list[AgentMessage],
+        messages: list[UserMessage],
         tools: list[AgentTool],
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one model response as provider-neutral events."""
@@ -144,7 +130,7 @@ class OpenAICompatibleProvider:
         *,
         model: str,
         system: str,
-        messages: list[AgentMessage],
+        messages: list[UserMessage],
         tools: list[AgentTool],
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one chat completion response as provider-neutral events."""
@@ -159,14 +145,12 @@ class OpenAICompatibleProvider:
             compat=self._config.compat,
             max_tokens=self._config.max_tokens,
             include_reasoning_effort_none=self._config.include_reasoning_effort_none,
-            supports_images=self._config.supports_images,
         )
         return self._stream(
             model=model,
             url=f"{self._config.base_url.rstrip('/')}/chat/completions",
             payload=payload,
             parser_factory=_ChatStreamParser,
-            has_images=(self._config.supports_images and messages_have_images(messages)),
         )
 
     def _stream_responses(
@@ -174,7 +158,7 @@ class OpenAICompatibleProvider:
         *,
         model: str,
         system: str,
-        messages: list[AgentMessage],
+        messages: list[UserMessage],
         tools: list[AgentTool],
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one `/v1/responses` response as provider-neutral events."""
@@ -185,7 +169,6 @@ class OpenAICompatibleProvider:
             tools=tools,
             reasoning_effort=self._config.reasoning_effort,
             max_tokens=self._config.max_tokens,
-            supports_images=self._config.supports_images,
             compat=self._config.compat,
         )
         return self._stream(
@@ -193,7 +176,6 @@ class OpenAICompatibleProvider:
             url=f"{self._config.base_url.rstrip('/')}/responses",
             payload=payload,
             parser_factory=_ResponsesStreamParser,
-            has_images=(self._config.supports_images and messages_have_images(messages)),
         )
 
     def _stream(
@@ -203,7 +185,6 @@ class OpenAICompatibleProvider:
         url: str,
         payload: Mapping[str, JSONValue],
         parser_factory: Callable[[], _StreamParser],
-        has_images: bool = False,
     ) -> AsyncIterator[ProviderEvent]:
         """Run the shared streaming POST + retry envelope for a given endpoint.
 
@@ -218,8 +199,6 @@ class OpenAICompatibleProvider:
             api_key = self._config.api_key
             request_url = url
             headers = dict(self._config.headers or {})
-            if self._config.provider_name == "github-copilot" and has_images:
-                headers["Copilot-Vision-Request"] = "true"
             if self._config.credential_resolver is not None:
                 auth = await self._config.credential_resolver()
                 api_key = auth.api_key
@@ -253,17 +232,7 @@ class OpenAICompatibleProvider:
 
                 if parser.fatal:
                     return
-                final_events = parser.finalize()
-                observer = self._config.response_headers_observer
-                if observer is not None:
-                    try:
-                        observer(dict(response.headers))
-                    except Exception as exc:
-                        # Observer reporting is also best-effort; response
-                        # completion must never depend on metadata hooks.
-                        with suppress(Exception):
-                            _append_response_observer_diagnostic(final_events, exc)
-                for parser_event in final_events:
+                for parser_event in parser.finalize():
                     yield parser_event
 
             async for event in request_with_retries(
@@ -283,26 +252,6 @@ class OpenAICompatibleProvider:
         if self._client is None:
             self._client = create_async_client(timeout=self._config.timeout_seconds)
         return self._client
-
-
-def _append_response_observer_diagnostic(
-    events: list[ProviderEvent],
-    exc: Exception,
-) -> None:
-    for event in events:
-        if isinstance(event, ProviderResponseEndEvent):
-            diagnostic = AssistantMessageDiagnostic(
-                type="response_headers_observer_error",
-                details={
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                },
-            )
-            event.message.diagnostics = [
-                *(event.message.diagnostics or []),
-                diagnostic,
-            ]
-            return
 
 
 class _StreamParser(Protocol):
@@ -332,7 +281,6 @@ class _ChatStreamParser:
         self.fatal = False
         self._content_parts: list[str] = []
         self._thinking_parts: list[str] = []
-        self._thinking_signature: str | None = None
         self._tool_call_builders: dict[int, _ToolCallBuilder] = {}
         self._finish_reason: str | None = None
         self._usage: Usage | None = None
@@ -377,11 +325,9 @@ class _ChatStreamParser:
 
         thinking = _thinking_delta(delta)
         if thinking is not None:
-            field_name, text = thinking
             self.emitted_content = True
-            self._thinking_parts.append(text)
-            self._thinking_signature = self._thinking_signature or field_name
-            events.append(ProviderThinkingDeltaEvent(delta=text))
+            self._thinking_parts.append(thinking)
+            events.append(ProviderThinkingDeltaEvent(delta=thinking))
 
         for tool_call_delta in _tool_call_deltas(delta):
             self.emitted_content = True
@@ -405,13 +351,7 @@ class _ChatStreamParser:
         ]
         content = assistant_content("".join(self._content_parts), tool_calls)
         if self._thinking_parts:
-            content.insert(
-                0,
-                ThinkingContent(
-                    thinking="".join(self._thinking_parts),
-                    thinking_signature=self._thinking_signature,
-                ),
-            )
+            content.insert(0, ThinkingContent(thinking="".join(self._thinking_parts)))
         events.append(
             ProviderResponseEndEvent(
                 message=AssistantMessage(
@@ -433,7 +373,6 @@ class _ResponsesStreamParser:
         self.fatal = False
         self._content_parts: list[str] = []
         self._thinking_parts: list[str] = []
-        self._reasoning_items: dict[str, dict[str, JSONValue]] = {}
         self._tool_call_builders: dict[str, _ResponsesToolCallBuilder] = {}
         self._status: str | None = None
         self._usage: Usage | None = None
@@ -478,7 +417,6 @@ class _ResponsesStreamParser:
                 return [ProviderThinkingDeltaEvent(delta=separator)], False
 
         elif chunk_type == "response.output_item.added":
-            _register_reasoning_item(self._reasoning_items, chunk.get("item"))
             self._tool_builder(chunk)
 
         elif chunk_type == "response.function_call_arguments.delta":
@@ -497,14 +435,11 @@ class _ResponsesStreamParser:
 
         elif chunk_type in ("response.output_item.done", "response.output_item.completed"):
             item = chunk.get("item")
-            _register_reasoning_item(self._reasoning_items, item)
             builder = self._tool_builder(chunk)
             if builder is not None:
                 builder.done = True
                 if self._codex:
-                    return [
-                        ProviderToolCallEvent(tool_call=builder.build(0, preserve_id=True))
-                    ], False
+                    return [ProviderToolCallEvent(tool_call=builder.build(0))], False
             if (
                 isinstance(item, Mapping)
                 and item.get("type") == "message"
@@ -608,9 +543,7 @@ class _ResponsesStreamParser:
                         )
                     )
                 ]
-        tool_calls = [
-            builder.build(index, preserve_id=self._codex) for index, builder in enumerate(builders)
-        ]
+        tool_calls = [builder.build(index) for index, builder in enumerate(builders)]
         events: list[ProviderEvent] = [
             ProviderToolCallEvent(tool_call=tool_call)
             for tool_call in tool_calls
@@ -618,17 +551,7 @@ class _ResponsesStreamParser:
         ]
         content = assistant_content("".join(self._content_parts), tool_calls)
         if self._thinking_parts:
-            content.insert(
-                0,
-                ThinkingContent(
-                    thinking="".join(self._thinking_parts),
-                    thinking_signature=(
-                        dumps(next(iter(self._reasoning_items.values())))
-                        if self._reasoning_items
-                        else None
-                    ),
-                ),
-            )
+            content.insert(0, ThinkingContent(thinking="".join(self._thinking_parts)))
         events.append(
             ProviderResponseEndEvent(
                 message=AssistantMessage(
@@ -714,15 +637,14 @@ class _ResponsesToolCallBuilder:
         if output_index is not None:
             self.output_index = output_index
 
-    def build(self, index: int, *, preserve_id: bool = False) -> ToolCall:
+    def build(self, index: int) -> ToolCall:
         arguments_text = (
             self.arguments_final
             if self.arguments_final is not None
             else "".join(self.arguments_parts)
         )
         return ToolCall(
-            id=(self.call_id or f"tool-call-{index}")
-            + (f"|{self.item_id}" if preserve_id and self.item_id else ""),
+            id=self.call_id or f"tool-call-{index}",
             name=self.name,
             arguments=tool_arguments(arguments_text),
         )
@@ -732,7 +654,7 @@ def _build_chat_payload(
     *,
     model: str,
     system: str,
-    messages: list[AgentMessage],
+    messages: list[UserMessage],
     tools: list[AgentTool],
     reasoning_effort: str | None = None,
     reasoning_effort_parameter: str = "reasoning_effort",
@@ -740,7 +662,6 @@ def _build_chat_payload(
     compat: Mapping[str, JSONValue] | None = None,
     max_tokens: int | None = None,
     include_reasoning_effort_none: bool = False,
-    supports_images: bool = False,
 ) -> dict[str, JSONValue]:
     resolved_compat = dict(compat or {})
     supports_store = bool(resolved_compat.get("supportsStore", True))
@@ -753,8 +674,8 @@ def _build_chat_payload(
         "model": model,
         "stream": True,
         "messages": [
-            _system_message(system),
-            *_messages_to_openai_chat(messages, supports_images=supports_images),
+            {"role": "system", "content": system},
+            *({"role": "user", "content": message.content} for message in messages),
         ],
     }
     if supports_usage:
@@ -828,22 +749,21 @@ def _build_responses_payload(
     *,
     model: str,
     system: str,
-    messages: list[AgentMessage],
+    messages: list[UserMessage],
     tools: list[AgentTool],
     reasoning_effort: str | None = None,
     max_tokens: int | None = None,
-    supports_images: bool = False,
     compat: Mapping[str, JSONValue] | None = None,
 ) -> dict[str, JSONValue]:
     payload: dict[str, JSONValue] = {
         "model": model,
         "stream": True,
-        # Stay stateless: the full transcript is resent every turn, so there is
-        # no need for server-side retention. ``store: false`` also keeps the
-        # path usable for zero-data-retention orgs, which reject ``store: true``.
+        # Stay stateless: each turn is a fresh request, so there is no need for
+        # server-side retention. ``store: false`` also keeps the path usable for
+        # zero-data-retention orgs, which reject ``store: true``.
         "store": False,
         "instructions": system,
-        "input": _messages_to_responses_input(messages, supports_images=supports_images),
+        "input": [{"role": "user", "content": message.content} for message in messages],
     }
     if max_tokens is not None:
         payload["max_output_tokens"] = max_tokens
@@ -868,102 +788,6 @@ def _normalize_responses_effort(reasoning_effort: str | None) -> str | None:
     return normalized
 
 
-def _messages_to_responses_input(
-    messages: list[AgentMessage], *, supports_images: bool = False, preserve_ids: bool = False
-) -> list[JSONValue]:
-    items: list[JSONValue] = []
-    assistant_index = 0
-    for message in messages:
-        if isinstance(message, UserMessage):
-            text, images = text_and_images(
-                message.content,
-                supports_images=supports_images,
-                image_placeholder=NON_VISION_USER_IMAGE_PLACEHOLDER,
-            )
-            content: list[JSONValue] = []
-            if text:
-                content.append({"type": "input_text", "text": text})
-            content.extend(_openai_input_image(image) for image in images)
-            items.append({"role": "user", "content": content if images or preserve_ids else text})
-        elif isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, ThinkingContent) and block.thinking_signature:
-                    try:
-                        reasoning_item = loads(block.thinking_signature)
-                    except (TypeError, ValueError):
-                        reasoning_item = None
-                    if isinstance(reasoning_item, dict):
-                        items.append(reasoning_item)
-                elif isinstance(block, TextContent) and preserve_ids:
-                    items.append(
-                        {
-                            "type": "message",
-                            "role": "assistant",
-                            "content": [
-                                {
-                                    "type": "output_text",
-                                    "text": block.text,
-                                    "annotations": [],
-                                }
-                            ],
-                            "status": "completed",
-                            "id": block.text_signature or f"msg_{assistant_index}",
-                        }
-                    )
-                    assistant_index += 1
-            if message.text and not preserve_ids:
-                items.append({"role": "assistant", "content": message.text})
-            for tool_call in message.tool_calls:
-                call_id, _, item_id = tool_call.id.partition("|")
-                if not preserve_ids:
-                    call_id = portable_tool_call_id(tool_call.id)
-                item: dict[str, JSONValue] = {
-                    "type": "function_call",
-                    "call_id": call_id,
-                    "name": tool_call.name,
-                    "arguments": dumps(tool_call.arguments),
-                }
-                if item_id and preserve_ids:
-                    item["id"] = item_id
-                items.append(item)
-        elif isinstance(message, ToolResultMessage):
-            call_id = (
-                message.tool_call_id.partition("|")[0]
-                if preserve_ids
-                else portable_tool_call_id(message.tool_call_id)
-            )
-            text, images = text_and_images(
-                message.content,
-                supports_images=supports_images,
-                image_placeholder=NON_VISION_TOOL_IMAGE_PLACEHOLDER,
-            )
-            output: JSONValue
-            if images:
-                output_parts: list[JSONValue] = []
-                if text:
-                    output_parts.append({"type": "input_text", "text": text})
-                output_parts.extend(_openai_input_image(image) for image in images)
-                output = output_parts
-            else:
-                output = text or "(no tool output)"
-            items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": output,
-                }
-            )
-    return items
-
-
-def _openai_input_image(image: ImageContent) -> dict[str, JSONValue]:
-    return {
-        "type": "input_image",
-        "detail": "auto",
-        "image_url": f"data:{image.mime_type};base64,{image.data}",
-    }
-
-
 def _tool_to_responses(
     tool: AgentTool, compat: Mapping[str, JSONValue] | None = None
 ) -> dict[str, JSONValue]:
@@ -975,17 +799,6 @@ def _tool_to_responses(
         "parameters": dict(tool.parameters),
         **({"strict": False} if supports_strict_mode else {}),
     }
-
-
-def _register_reasoning_item(
-    items: dict[str, dict[str, JSONValue]],
-    item: object,
-) -> None:
-    if not isinstance(item, Mapping) or item.get("type") != "reasoning":
-        return
-    item_id = item.get("id")
-    if isinstance(item_id, str):
-        items[item_id] = dict(item)
 
 
 def _responses_item_key(output_index: object, item_id: object) -> str | None:
@@ -1071,101 +884,6 @@ def _str_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _system_message(system: str) -> dict[str, JSONValue]:
-    return {"role": "system", "content": system}
-
-
-def _messages_to_openai_chat(
-    messages: list[AgentMessage], *, supports_images: bool
-) -> list[dict[str, JSONValue]]:
-    converted: list[dict[str, JSONValue]] = []
-    pending_tool_images: list[ImageContent] = []
-    for message in messages:
-        if pending_tool_images and not isinstance(message, ToolResultMessage):
-            converted.append(_openai_tool_image_message(pending_tool_images))
-            pending_tool_images = []
-        if isinstance(message, UserMessage):
-            text, images = text_and_images(
-                message.content,
-                supports_images=supports_images,
-                image_placeholder=NON_VISION_USER_IMAGE_PLACEHOLDER,
-            )
-            if images:
-                content: list[JSONValue] = []
-                if text:
-                    content.append({"type": "text", "text": text})
-                content.extend(
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{image.mime_type};base64,{image.data}"},
-                    }
-                    for image in images
-                )
-                converted.append({"role": "user", "content": content})
-            else:
-                converted.append({"role": "user", "content": text})
-            continue
-        if isinstance(message, ToolResultMessage):
-            text, images = text_and_images(
-                message.content,
-                supports_images=supports_images,
-                image_placeholder=NON_VISION_TOOL_IMAGE_PLACEHOLDER,
-            )
-            converted.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": portable_tool_call_id(message.tool_call_id),
-                    "name": message.tool_name,
-                    "content": text or ("(see attached image)" if images else "(no tool output)"),
-                }
-            )
-            pending_tool_images.extend(images)
-            continue
-        converted.append(_message_to_openai(message))
-    if pending_tool_images:
-        converted.append(_openai_tool_image_message(pending_tool_images))
-    return converted
-
-
-def _openai_tool_image_message(images: list[ImageContent]) -> dict[str, JSONValue]:
-    content: list[JSONValue] = [{"type": "text", "text": "Attached image(s) from tool result:"}]
-    content.extend(
-        {
-            "type": "image_url",
-            "image_url": {"url": f"data:{image.mime_type};base64,{image.data}"},
-        }
-        for image in images
-    )
-    return {"role": "user", "content": content}
-
-
-def _message_to_openai(message: AgentMessage) -> dict[str, JSONValue]:
-    if isinstance(message, UserMessage):
-        return {"role": "user", "content": message.text}
-
-    if isinstance(message, AssistantMessage):
-        item: dict[str, JSONValue] = {"role": "assistant", "content": message.text}
-        thinking = [block for block in message.content if isinstance(block, ThinkingContent)]
-        if thinking:
-            signature = thinking[0].thinking_signature or "reasoning_content"
-            if signature in {"reasoning_content", "reasoning", "thinking"}:
-                item[signature] = "".join(block.thinking for block in thinking)
-        if message.tool_calls:
-            item["tool_calls"] = [
-                _tool_call_to_openai(tool_call) for tool_call in message.tool_calls
-            ]
-        return item
-
-    if isinstance(message, ToolResultMessage):
-        return {
-            "role": "tool",
-            "tool_call_id": portable_tool_call_id(message.tool_call_id),
-            "name": message.tool_name,
-            "content": message.text,
-        }
-    raise TypeError(f"Unsupported message: {type(message).__name__}")
-
-
 def _tool_to_openai(
     tool: AgentTool, compat: Mapping[str, JSONValue] | None = None
 ) -> dict[str, JSONValue]:
@@ -1177,17 +895,6 @@ def _tool_to_openai(
             "description": tool.description,
             "parameters": dict(tool.parameters),
             **({"strict": False} if supports_strict_mode else {}),
-        },
-    }
-
-
-def _tool_call_to_openai(tool_call: ToolCall) -> dict[str, JSONValue]:
-    return {
-        "id": portable_tool_call_id(tool_call.id),
-        "type": "function",
-        "function": {
-            "name": tool_call.name,
-            "arguments": dumps(tool_call.arguments),
         },
     }
 
@@ -1274,9 +981,9 @@ def _tool_call_deltas(delta: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [tool_call for tool_call in tool_calls if isinstance(tool_call, Mapping)]
 
 
-def _thinking_delta(delta: Mapping[str, Any]) -> tuple[str, str] | None:
+def _thinking_delta(delta: Mapping[str, Any]) -> str | None:
     for field_name in ("reasoning_content", "reasoning", "thinking"):
         value = delta.get(field_name)
         if isinstance(value, str) and value:
-            return field_name, value
+            return value
     return None

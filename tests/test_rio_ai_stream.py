@@ -8,7 +8,7 @@ import pytest
 
 from rio.ai._provider_events import ProviderEvent, ProviderResponseEndEvent, ProviderToolCallEvent
 from rio.ai.messages import AssistantMessage, ToolCall, malformed_tool_arguments
-from rio.ai.provider import AssistantDoneEvent, collect_response
+from rio.ai.provider import collect_response
 
 
 async def _canonicalize(events: list[ProviderEvent]) -> AssistantMessage:
@@ -16,14 +16,11 @@ async def _canonicalize(events: list[ProviderEvent]) -> AssistantMessage:
         for event in events:
             yield event
 
-    done = [
-        event
-        async for event in collect_response(
-            source(), api="anthropic-messages", provider="anthropic", model="m"
-        )
-        if isinstance(event, AssistantDoneEvent)
-    ]
-    return done[-1].message
+    message = await collect_response(
+        source(), api="anthropic-messages", provider="anthropic", model="m"
+    )
+    assert message.stop_reason != "error"
+    return message
 
 
 @pytest.mark.asyncio
@@ -66,7 +63,7 @@ async def test_a_complete_tool_call_is_still_reported_as_tool_use():
 
 
 @pytest.mark.asyncio
-async def test_collector_preserves_order_metadata_and_usage_without_snapshots(monkeypatch):
+async def test_collector_preserves_order_and_usage_without_snapshots(monkeypatch):
     from rio.ai._provider_events import ProviderTextDeltaEvent, ProviderThinkingDeltaEvent
     from rio.ai.messages import ThinkingContent, Usage
 
@@ -81,7 +78,7 @@ async def test_collector_preserves_order_metadata_and_usage_without_snapshots(mo
             ProviderTextDeltaEvent(delta="after"),
             ProviderResponseEndEvent(
                 message=AssistantMessage(
-                    content=[ThinkingContent(thinking="reason", thinking_signature="opaque")],
+                    content=[ThinkingContent(thinking="reason")],
                     usage=Usage(input=4, output=8),
                 )
             ),
@@ -89,20 +86,32 @@ async def test_collector_preserves_order_metadata_and_usage_without_snapshots(mo
     )
     assert [block.type for block in message.content] == ["text", "thinking", "text"]
     assert message.text == "x" * 1000 + "after"
-    assert message.content[1].thinking_signature == "opaque"
     assert message.usage.input == 4
     assert message.usage.output == 8
 
 
 @pytest.mark.asyncio
-async def test_collector_emits_one_error_when_stream_has_no_terminal_event():
+async def test_collector_returns_an_error_when_stream_has_no_terminal_event():
     from rio.ai._provider_events import ProviderTextDeltaEvent
 
     async def source():
         yield ProviderTextDeltaEvent(delta="partial")
 
-    events = [event async for event in collect_response(source(), api="a", provider="p", model="m")]
-    assert len(events) == 1
-    assert events[0].type == "error"
-    assert events[0].error.text == "partial"
-    assert "terminal event" in events[0].error.error_message
+    message = await collect_response(source(), api="a", provider="p", model="m")
+    assert message.stop_reason == "error"
+    assert message.text == "partial"
+    assert "terminal event" in message.error_message
+
+
+@pytest.mark.asyncio
+async def test_collector_reads_the_stream_to_its_end_and_keeps_the_first_terminal_event():
+    finished = []
+
+    async def source():
+        yield ProviderResponseEndEvent(message=AssistantMessage())
+        yield ProviderResponseEndEvent(message=AssistantMessage(content="late"))
+        finished.append(True)
+
+    message = await collect_response(source(), api="a", provider="p", model="m")
+    assert message.text == ""
+    assert finished == [True]

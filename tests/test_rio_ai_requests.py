@@ -80,11 +80,8 @@ def success(kind):
     return sse({"choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}]})
 
 
-async def collect(adapter):
-    return [
-        event
-        async for event in adapter.stream_response(model="m", system="s", messages=[], tools=[])
-    ]
+async def complete(adapter):
+    return await adapter.complete(model="m", system="s", messages=[], tools=[])
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -104,12 +101,10 @@ async def test_shared_request_retries_then_closes_before_publishing(kind):
         return response
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-        async for event in provider(kind, client).stream_response(
-            model="m", system="s", messages=[], tools=[]
-        ):
-            assert body.closed
-            assert event.type == "done"
-            assert event.message.text == "hi"
+        message = await complete(provider(kind, client))
+        assert body.closed
+        assert message.stop_reason == "stop"
+        assert message.text == "hi"
         assert len(responses) == 2
         assert all(response.is_closed for response in responses)
 
@@ -123,11 +118,11 @@ async def test_shared_request_terminal_http_error_is_not_retried(kind):
         return httpx.Response(400, json={"error": {"message": "bad request"}})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-        events = await collect(provider(kind, client))
-    assert len(requests) == len(events) == 1
-    assert events[0].type == "error"
-    assert "bad request" in events[0].error.error_message
-    assert events[0].error.diagnostics[0].details["attempts"] == 1
+        message = await complete(provider(kind, client))
+    assert len(requests) == 1
+    assert message.stop_reason == "error"
+    assert "bad request" in message.error_message
+    assert message.diagnostics[0].details["attempts"] == 1
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -142,10 +137,10 @@ async def test_network_failure_after_text_is_not_retried(kind):
         return httpx.Response(200, stream=body)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-        events = await collect(provider(kind, client))
-    assert len(requests) == len(events) == 1
-    assert events[0].type == "error"
-    assert events[0].error.text == "hi"
+        message = await complete(provider(kind, client))
+    assert len(requests) == 1
+    assert message.stop_reason == "error"
+    assert message.text == "hi"
     assert body.closed
 
 
@@ -171,40 +166,13 @@ async def test_codex_refreshes_credentials_and_discards_reasoning_on_network_ret
             OpenAICodexConfig(credential_resolver=credentials, max_retry_delay_seconds=0),
             client=client,
         )
-        events = await collect(adapter)
+        message = await complete(adapter)
     assert [request.headers["authorization"] for request in attempts] == [
         "Bearer token-1",
         "Bearer token-2",
     ]
-    assert len(events) == 1
-    assert events[0].message.text == "hi"
-    assert [block.type for block in events[0].message.content] == ["text"]
-
-
-async def test_response_header_observer_failure_does_not_lose_message():
-    def observer(headers):
-        assert headers["x-provider"] == "backing-provider"
-        raise RuntimeError("observer failed")
-
-    async with httpx.AsyncClient(
-        transport=httpx.MockTransport(
-            lambda _: httpx.Response(
-                200, content=success("openai"), headers={"x-provider": "backing-provider"}
-            )
-        )
-    ) as client:
-        events = await collect(
-            provider(
-                "openai",
-                client,
-                response_provider_header="x-provider",
-                response_headers_observer=observer,
-            )
-        )
-    assert len(events) == 1
-    assert events[0].message.text == "hi"
-    assert events[0].message.response_provider == "backing-provider"
-    assert events[0].message.diagnostics
+    assert message.text == "hi"
+    assert [block.type for block in message.content] == ["text"]
 
 
 @pytest.mark.parametrize(
@@ -233,11 +201,11 @@ async def test_codex_stream_error_after_output_is_not_retried(output):
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-        events = await collect(provider("codex", client))
-    assert len(requests) == len(events) == 1
-    assert events[0].type == "error"
-    assert events[0].error.error_message == "server_error"
-    assert events[0].error.content
+        message = await complete(provider("codex", client))
+    assert len(requests) == 1
+    assert message.stop_reason == "error"
+    assert message.error_message == "server_error"
+    assert message.content
 
 
 async def test_task_cancellation_closes_the_response():
@@ -255,7 +223,7 @@ async def test_task_cancellation_closes_the_response():
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=body))
     ) as client:
-        task = asyncio.create_task(collect(provider("openai", client)))
+        task = asyncio.create_task(complete(provider("openai", client)))
         await started.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

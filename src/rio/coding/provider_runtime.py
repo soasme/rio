@@ -31,7 +31,6 @@ from rio.coding.provider_config import (
     anthropic_config_from_provider,
     openai_compatible_config_from_provider,
     provider_model_max_tokens,
-    provider_model_supports_images,
     reasoning_effort_from_provider,
     validate_provider_model,
 )
@@ -91,7 +90,6 @@ def create_model_provider(
                     model=model,
                     thinking_level=thinking_level,
                 ),
-                supports_images=provider_model_supports_images(provider, model),
             )
         )
     if provider.kind in {"openai-compatible", "google-generative-ai", "mistral-conversations"}:
@@ -137,7 +135,6 @@ def create_model_provider(
                 max_tokens=provider_model_max_tokens(provider, model),
                 bearer_auth=True,
                 credential_resolver=compatible_config.credential_resolver,
-                supports_images=compatible_config.supports_images,
                 # Resolved from compat like the first-party path, so a gateway
                 # proxying real Claude can opt back in per provider or per model.
                 cache_retention=gateway_retention,

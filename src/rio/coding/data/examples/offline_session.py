@@ -7,7 +7,7 @@ from pathlib import Path
 from rio.agent.runner import Owner, run
 from rio.agent.session import Session
 from rio.agent.store import Store
-from rio.ai import AssistantDoneEvent, AssistantMessage, FakeProvider, ToolCall
+from rio.ai import AssistantMessage, FakeProvider, ToolCall
 
 
 async def main() -> None:
@@ -32,7 +32,7 @@ async def main() -> None:
         ],
         stop_reason="toolUse",
     )
-    provider = FakeProvider([[AssistantDoneEvent(reason="toolUse", message=message)]])
+    provider = FakeProvider([message])
     with (
         tempfile.TemporaryDirectory() as directory,
         Store(Path(directory) / "session.sqlite3") as store,
