@@ -22,10 +22,12 @@ import rio.coding.oauth_registry as oauth_registry
 import rio.coding.provider_config as provider_config
 from rio.ai import AnthropicProvider, OpenAICodexProvider, OpenAICompatibleProvider
 from rio.ai.env import RuntimeProviderAuth
+from rio.coding.catalog_loader import builtin_catalog
 from rio.coding.credentials import FileCredentialStore, OAuthCredential
 from rio.coding.oauth import OAuthLoginCallbacks, OAuthProvider
 from rio.coding.oauth_registry import get_oauth_provider
 from rio.coding.paths import RioPaths
+from rio.coding.provider_catalog import ProviderApi, ProviderKind
 from rio.coding.provider_config import (
     DEFAULT_MODEL,
     ProviderConfig,
@@ -36,6 +38,7 @@ from rio.coding.provider_config import (
     load_provider_settings,
     openai_compatible_config_from_provider,
     provider_config_from_catalog_entry,
+    provider_config_from_entry,
     provider_default_thinking_level,
     provider_has_usable_credentials,
     provider_model_max_tokens,
@@ -1328,10 +1331,8 @@ def test_provider_compat_can_clamp_the_one_hour_ttl_on_oauth(tmp_path: Path) -> 
         "anthropic",
         OAuthCredential(access="a", refresh="r", expires=9999999999999),
     )
-    config = replace(
-        provider_config_from_catalog_entry("anthropic"),
-        compat={"supportsLongCacheRetention": False},
-    )
+    config = provider_config_from_catalog_entry("anthropic")
+    config = replace(config, compat={**config.compat, "supportsLongCacheRetention": False})
 
     provider = create_model_provider(config, credential_store=store)
 
@@ -1343,10 +1344,8 @@ def test_provider_compat_can_suppress_only_the_tools_breakpoint(tmp_path: Path) 
     """Some gateways accept cache_control everywhere except inside tool objects."""
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set("anthropic", "sk-test")
-    config = replace(
-        provider_config_from_catalog_entry("anthropic"),
-        compat={"supportsCacheControlOnTools": False},
-    )
+    config = provider_config_from_catalog_entry("anthropic")
+    config = replace(config, compat={**config.compat, "supportsCacheControlOnTools": False})
 
     provider = create_model_provider(config, credential_store=store)
 
@@ -1841,3 +1840,142 @@ async def test_builtin_login_does_not_create_catalog(tmp_path, monkeypatch):
     await login_provider("openai")
     assert not (RioPaths().home / "catalog.toml").exists()
     assert load_provider_settings().default_provider == "openai"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("anthropic", {"supportsCacheControl": True}),
+        ("deepseek", {"supportsStore": False, "thinkingFormat": "deepseek"}),
+        ("xai", {"supportsStore": False, "supportsReasoningEffort": False}),
+        ("cerebras", {"supportsStore": False}),
+        ("openrouter", {"thinkingFormat": "openrouter"}),
+        (
+            "zai",
+            {
+                "supportsStore": False,
+                "supportsReasoningEffort": False,
+                "thinkingFormat": "zai",
+            },
+        ),
+        (
+            "moonshotai",
+            {
+                "supportsStore": False,
+                "supportsReasoningEffort": False,
+                "maxTokensField": "max_tokens",
+                "supportsStrictMode": False,
+            },
+        ),
+        (
+            "moonshotai-cn",
+            {
+                "supportsStore": False,
+                "supportsReasoningEffort": False,
+                "maxTokensField": "max_tokens",
+                "supportsStrictMode": False,
+            },
+        ),
+        (
+            "together",
+            {
+                "supportsStore": False,
+                "supportsReasoningEffort": False,
+                "maxTokensField": "max_tokens",
+                "supportsStrictMode": False,
+                "thinkingFormat": "together",
+                "supportsLongCacheRetention": False,
+            },
+        ),
+    ],
+)
+def test_catalog_compat_survives_provider_rename_and_url_change(name, expected) -> None:
+    provider = provider_config_from_catalog_entry(name)
+    assert provider.compat == expected
+    renamed = replace(provider, name="custom", base_url="https://gateway.example/v1")
+    assert provider_config._model_compat(renamed) == provider_config._model_compat(provider)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "together",
+        "zai",
+        "moonshotai",
+        "moonshotai-cn",
+        "xai",
+        "deepseek",
+        "cerebras",
+        "openrouter",
+        "anthropic",
+    ],
+)
+def test_custom_provider_names_and_urls_do_not_infer_compat(name: str) -> None:
+    builtin = provider_config_from_catalog_entry(name)
+    baseline = provider_config._model_compat(ProviderConfig(name="custom"))
+    assert provider_config._model_compat(ProviderConfig(name=name)) == baseline
+    provider = ProviderConfig(name="custom", base_url=builtin.base_url)
+    assert provider_config._model_compat(provider) == baseline
+    provider = replace(
+        provider,
+        model_metadata={
+            provider.default_model: ProviderModelMetadata(base_url=builtin.base_url),
+        },
+        base_url="https://gateway.example/v1",
+    )
+    assert provider_config._model_compat(provider) == baseline
+
+
+def test_catalog_compat_overlays_and_model_overrides_reach_runtime(tmp_path: Path) -> None:
+    paths = RioPaths(home=tmp_path)
+    (tmp_path / "catalog.toml").write_text("""schema_version = 1
+[[providers]]
+name = "together"
+models = ["custom", "plain"]
+default_model = "custom"
+compat = { supportsStore = true, thinkingFormat = "zai" }
+[providers.model_metadata.custom]
+compat = { supportsStore = false, thinkingFormat = "deepseek" }
+""")
+    provider = load_provider_settings(paths).get_provider("together")
+    plain = openai_compatible_config_from_provider(provider, model="plain")
+    custom = openai_compatible_config_from_provider(provider)
+    assert plain.compat["supportsStore"] is True
+    assert plain.thinking_format == "zai"
+    assert custom.compat["supportsStore"] is False
+    assert custom.thinking_format == "deepseek"
+    for config in (plain, custom):
+        assert config.compat["maxTokensField"] == "max_tokens"
+        assert config.compat["supportsUsageInStreaming"] is True
+        assert config.compat["supportsLongCacheRetention"] is False
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("openai-compatible", "openai-completions"),
+        ("anthropic", "anthropic-messages"),
+        ("openai-codex", "openai-codex-responses"),
+        ("google-generative-ai", "google-generative-ai"),
+        ("mistral-conversations", "mistral-conversations"),
+    ],
+)
+def test_provider_api_precedence_is_shared_by_catalog_and_direct_configs(
+    kind: ProviderKind,
+    expected: ProviderApi,
+) -> None:
+    for api in (None, "openai-responses"):
+        entry = replace(builtin_catalog()[0], kind=kind, api=api, model_metadata={})
+        direct = ProviderConfig(name="custom", kind=kind, api=api)
+        for provider in (direct, provider_config_from_entry(entry)):
+            assert openai_compatible_config_from_provider(provider).api == (api or expected)
+            provider = replace(
+                provider,
+                model_metadata={
+                    provider.default_model: ProviderModelMetadata(api="openai-completions"),
+                },
+            )
+            assert openai_compatible_config_from_provider(provider).api == "openai-completions"
+            assert openai_compatible_config_from_provider(provider, model="other").api == (
+                api or expected
+            )

@@ -9,7 +9,6 @@ from os import environ
 from pathlib import Path
 from shutil import copy2
 from typing import Annotated, Any, Literal
-from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -25,7 +24,6 @@ from rio.ai.env import (
     CACHE_RETENTION_LONG,
     CACHE_RETENTION_NONE,
     CACHE_RETENTION_SHORT,
-    DEFAULT_ANTHROPIC_BASE_URL,
     DEFAULT_MAX_RETRIES,
     DEFAULT_MAX_RETRY_DELAY_SECONDS,
     DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
@@ -57,6 +55,19 @@ from rio.coding.thinking import (
 DEFAULT_PROVIDER_NAME = "openai"
 DEFAULT_MODEL = "gpt-5.4"
 
+# Protocol defaults are provider-independent; catalog compat declares exceptions.
+_DEFAULT_COMPAT: dict[str, Any] = {
+    "supportsStore": True,
+    "supportsReasoningEffort": True,
+    "supportsUsageInStreaming": True,
+    "maxTokensField": "max_completion_tokens",
+    "thinkingFormat": "openai",
+    "supportsStrictMode": True,
+    "supportsLongCacheRetention": True,
+    "supportsCacheControl": False,
+    "supportsCacheControlOnTools": True,
+}
+
 _Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
@@ -85,7 +96,7 @@ class ProviderConfig:
     name: str
     kind: ProviderKind = "openai-compatible"
     base_url: str = DEFAULT_OPENAI_COMPATIBLE_BASE_URL
-    api: ProviderApi = "openai-completions"
+    api: ProviderApi | None = None
     api_key_env: str = "OPENAI_API_KEY"
     credential_name: str | None = None
     models: tuple[str, ...] = (DEFAULT_MODEL,)
@@ -145,10 +156,7 @@ def provider_config_from_entry(entry: ProviderCatalogEntry) -> ProviderConfig:
     """Create a durable provider config from a catalog entry."""
     return ProviderConfig(
         kind=entry.kind,
-        # Catalog anthropic entries always speak the Messages API.
-        api="anthropic-messages"
-        if entry.kind == "anthropic"
-        else entry.api or _default_api_for_kind(entry.kind),
+        api=entry.api,
         compat=dict(entry.compat),
         name=entry.name,
         base_url=entry.base_url,
@@ -163,18 +171,6 @@ def provider_config_from_entry(entry: ProviderCatalogEntry) -> ProviderConfig:
         thinking_default=entry.thinking_default,
         thinking_parameter=entry.thinking_parameter,
     )
-
-
-def _default_api_for_kind(kind: str) -> ProviderApi:
-    if kind == "anthropic":
-        return "anthropic-messages"
-    if kind == "openai-codex":
-        return "openai-codex-responses"
-    if kind == "google-generative-ai":
-        return "google-generative-ai"
-    if kind == "mistral-conversations":
-        return "mistral-conversations"
-    return "openai-completions"
 
 
 def _provider_model_metadata_from_catalog(
@@ -423,14 +419,21 @@ def _metadata_for_model(provider: ProviderConfig, model: str) -> ProviderModelMe
     return provider.model_metadata.get(model)
 
 
-def _provider_api(provider: ProviderConfig, model: str | None = None) -> ProviderApi | str:
+def _provider_api(provider: ProviderConfig, model: str | None = None) -> ProviderApi:
+    """Resolve API once: model override, provider override, then kind default."""
     selected_model = model or provider.default_model
     metadata = _metadata_for_model(provider, selected_model)
     if metadata is not None and metadata.api is not None:
         return metadata.api
-    if provider.kind == "openai-codex":
-        return "openai-codex-responses"
-    return provider.api
+    if provider.api is not None:
+        return provider.api
+    return {
+        "openai-compatible": "openai-completions",
+        "anthropic": "anthropic-messages",
+        "openai-codex": "openai-codex-responses",
+        "google-generative-ai": "google-generative-ai",
+        "mistral-conversations": "mistral-conversations",
+    }[provider.kind]
 
 
 def _model_base_url(provider: ProviderConfig, model: str | None = None) -> str:
@@ -449,48 +452,9 @@ def _model_compat(provider: ProviderConfig, model: str | None = None) -> dict[st
     selected_model = model or provider.default_model
     metadata = _metadata_for_model(provider, selected_model)
     return {
-        **_detected_compat(provider, selected_model),
+        **_DEFAULT_COMPAT,
         **provider.compat,
         **(metadata.compat if metadata is not None else {}),
-    }
-
-
-def _detected_compat(provider: ProviderConfig, model: str) -> dict[str, Any]:
-    base_url = _model_base_url(provider, model)
-    is_together = provider.name == "together" or "api.together.ai" in base_url
-    is_zai = provider.name == "zai" or "api.z.ai" in base_url
-    is_moonshot = provider.name in {"moonshotai", "moonshotai-cn"} or "moonshot." in base_url
-    is_grok = provider.name == "xai" or "api.x.ai" in base_url
-    is_deepseek = provider.name == "deepseek" or "deepseek.com" in base_url
-    is_cerebras = provider.name == "cerebras" or "cerebras.ai" in base_url
-    is_openrouter = provider.name == "openrouter" or "openrouter.ai" in base_url
-    is_nonstandard = is_cerebras or is_grok or is_together or is_deepseek or is_zai or is_moonshot
-    use_max_tokens = is_moonshot or is_together
-    is_anthropic_api = urlsplit(base_url).hostname == urlsplit(DEFAULT_ANTHROPIC_BASE_URL).hostname
-    return {
-        "supportsStore": not is_nonstandard,
-        "supportsReasoningEffort": not (is_grok or is_zai or is_moonshot or is_together),
-        "supportsUsageInStreaming": True,
-        "maxTokensField": "max_tokens" if use_max_tokens else "max_completion_tokens",
-        "thinkingFormat": (
-            "deepseek"
-            if is_deepseek
-            else "zai"
-            if is_zai
-            else "together"
-            if is_together
-            else "openrouter"
-            if is_openrouter
-            else "openai"
-        ),
-        "supportsStrictMode": not (is_moonshot or is_together),
-        "supportsLongCacheRetention": not is_together,
-        # Only first-party Anthropic is known to accept cache_control. Several
-        # catalog providers speak the Anthropic protocol through a gateway, and one
-        # proxies to non-Anthropic models, so they default to no breakpoints. This
-        # is a detected default, overridable per provider or per model.
-        "supportsCacheControl": is_anthropic_api,
-        "supportsCacheControlOnTools": True,
     }
 
 
@@ -739,7 +703,7 @@ def _thinking_format(provider: ProviderConfig, model: str) -> str:
     value = _model_compat(provider, model).get("thinkingFormat")
     if isinstance(value, str) and value:
         return value
-    return _detected_compat(provider, model)["thinkingFormat"]
+    return "openai"
 
 
 def _include_reasoning_effort_none(
@@ -804,8 +768,8 @@ def anthropic_cache_settings(
 ) -> tuple[CacheRetention, bool]:
     """Resolve prompt-cache settings for one Anthropic-protocol request.
 
-    Capability comes from compat, which layers a detected default under the
-    provider's own compat and then per-model compat. Intent comes from the auth
+    Capability comes from compat, which layers protocol defaults under the
+    catalog provider's compat and then per-model compat. Intent comes from the auth
     mode: subscription OAuth is not billed per token, so it asks for the 1 hour
     TTL, while an API key keeps the shorter default. Capability only ever narrows
     intent, so the two compose without any precedence rule.
