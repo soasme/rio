@@ -9,11 +9,11 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Literal
 
-from rio.agent.prompt import step_tool
+from rio.agent.prompt import encode_state, step_tool
 from rio.agent.session import RunStopped, Session
 from rio.agent.shapes import ControlRequest, JournalEvent, Turn, ValidatorResult
 from rio.agent.state import CONTROLS, InvalidPatch
-from rio.agent.store import StorageFailure, encode
+from rio.agent.store import StorageFailure
 from rio.ai.messages import AssistantMessage, UserMessage, raw_tool_arguments
 from rio.ai.provider import AssistantDoneEvent, AssistantErrorEvent, ModelProvider
 from rio.ai.retry import is_transient_status
@@ -323,7 +323,7 @@ async def _request_ops(
             await owner.tick()
             flush()
         turn = session.start_attempt(turn["id"])
-        messages = [UserMessage(content=encode(turn["state"]))]
+        messages = [UserMessage(content=encode_state(turn["state"]))]
         if turn["error"]:
             messages.append(UserMessage(content="Rejected step: " + turn["error"]))
         # No State changes during generation. Owner work only appends runtime records.

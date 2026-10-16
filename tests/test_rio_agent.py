@@ -709,6 +709,31 @@ async def test_base_owner_runs_note_only_sessions_without_processes(tmp_path):
         assert await replay(Owner(session))
 
 
+async def test_model_state_keeps_stable_prefix_after_resume(tmp_path):
+    path = tmp_path / "prefix.sqlite3"
+    with Store(path) as store:
+        session = Session.create(store, "Remember café and 日本語.")
+        accept(session, note("Stable memory. " * 1000))
+        saved = copy.deepcopy(prepare(session))
+        # Existing journals put revision before goal and cells.
+        assert list(saved["state"]) == ["schema", "id", "revision", "goal", "cells", "runtime"]
+
+    provider = FakeProvider([response([]), response([conclude()])])
+    with Store(path) as store:
+        session = Session(store)
+        assert await run(Owner(session), provider, "fake")
+        assert session.data["turns"][saved["id"]]["state"] == saved["state"]
+        assert len(provider.calls) == 2
+        first, second = [call[2][0].content for call in provider.calls]
+        assert json.loads(first) == saved["state"]
+        assert list(json.loads(first)) == ["schema", "id", "goal", "cells", "revision", "runtime"]
+        assert json.loads(first)["revision"] != json.loads(second)["revision"]
+        assert json.loads(first)["runtime"] != json.loads(second)["runtime"]
+        prefix = first.split(',"revision":', 1)[0]
+        assert len(prefix.encode()) > 14000
+        assert second.startswith(prefix + ',"revision":')
+
+
 async def test_base_owner_recovers_started_cells_as_unknown(session):
     accept(session, code())
     session.authorize(1)
