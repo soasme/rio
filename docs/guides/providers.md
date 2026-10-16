@@ -28,10 +28,12 @@ Unknown providers and invalid models are configuration errors. Configure custom
 endpoints in `~/.rio/catalog.toml`, including [local servers](local-llama-server.md).
 Each run selects one provider and model. `~/.rio/providers.json` holds saved
 preferences only, such as the default provider and model; it cannot define
-providers.
+providers. Login updates only `default_provider`, preserving other saved keys.
+The retired `thinking_defaults` and `inference_providers` preferences are ignored.
+Use `--thinking` to select a thinking level for a run.
 
-Saving preferences or logging in never writes `catalog.toml`, so comments and
-formatting are preserved. Older informational keys (`display_name`, `docs_url`,
+Logging in never writes `catalog.toml`, so comments and formatting are preserved.
+Older informational keys (`display_name`, `docs_url`,
 `context_windows`, `auth_methods`, and model `name`, `cost`, `cost_tiers`,
 `context_window`) are accepted but ignored. Model data comes from the bundled
 snapshot and your catalog; the old `models-store.json` cache is no longer read.

@@ -111,11 +111,13 @@ theorem invalid_model_does_not_choose_another_provider (name model : String) :
     resolveProvider [(name, [])] name model = .error "unknown model" := by
   simp [resolveProvider]
 
-/-- Old model-cycling preferences are discarded while loading provider settings. -/
+/-- Retired preferences are ignored while loading provider settings. -/
 structure LegacyPreferences where
   defaultProvider : String
   defaultModel : String
   scopedModels : List (String × String)
+  thinkingDefaults : List (String × String)
+  inferenceProviders : List (String × String)
 
 def loadPreferences (saved : LegacyPreferences) : String × String :=
   (saved.defaultProvider, saved.defaultModel)
@@ -125,8 +127,36 @@ theorem legacy_scopes_do_not_change_selection (saved : LegacyPreferences)
     loadPreferences { saved with scopedModels := scopes } = loadPreferences saved := rfl
 
 theorem migration_preserves_defaults (provider model : String)
-    (scopes : List (String × String)) :
-    loadPreferences ⟨provider, model, scopes⟩ = (provider, model) := rfl
+    (scopes thinking routes : List (String × String)) :
+    loadPreferences ⟨provider, model, scopes, thinking, routes⟩ = (provider, model) := rfl
+
+theorem retired_preferences_do_not_change_selection (saved : LegacyPreferences)
+    (thinking routes : List (String × String)) :
+    loadPreferences { saved with thinkingDefaults := thinking, inferenceProviders := routes } =
+      loadPreferences saved := rfl
+
+/-- Startup uses an explicit supported level, otherwise preferred, catalog, then first. -/
+def startupThinking (levels : List String) (preferred : String)
+    (catalog override : Option String) : Except String (Option String) :=
+  match override with
+  | some level =>
+    if level ∈ levels then .ok (some level) else .error "unsupported thinking level"
+  | none => .ok (([preferred] ++ catalog.toList ++ ["medium"] ++ levels).find? (· ∈ levels))
+
+theorem explicit_thinking_wins (levels : List String) (preferred level : String)
+    (catalog : Option String) (h : level ∈ levels) :
+    startupThinking levels preferred catalog (some level) = .ok (some level) := by
+  simp [startupThinking, h]
+
+theorem unsupported_explicit_thinking_is_error (levels : List String) (preferred level : String)
+    (catalog : Option String) (h : level ∉ levels) :
+    startupThinking levels preferred catalog (some level) =
+      .error "unsupported thinking level" := by
+  simp [startupThinking, h]
+
+theorem no_levels_means_no_default_thinking (preferred : String) (catalog : Option String) :
+    startupThinking [] preferred catalog none = .ok none := by
+  simp [startupThinking]
 
 /-- A terminal resume recovers and replays; only an active run needs a provider. -/
 def needsProvider (terminal : Bool) : Bool := !terminal
@@ -179,18 +209,6 @@ theorem loaded_providers_are_catalog_providers (catalog names loaded : List Stri
 theorem legacy_provider_definitions_are_rejected (catalog : List String) :
     loadProviders catalog .legacyProviders = .error "move providers[] to catalog.toml" := rfl
 
-/-- Saving preferences leaves the original catalog bytes, including comments, untouched. -/
-structure ProviderFiles where
-  catalog : String
-  preferences : List String
-  deriving DecidableEq, Repr
-
-def savePreferences (files : ProviderFiles) (names : List String) : ProviderFiles :=
-  { files with preferences := names }
-
-theorem preference_save_preserves_catalog (files : ProviderFiles) (names : List String) :
-    (savePreferences files names).catalog = files.catalog := rfl
-
 /-- The resolver alone decides when to refresh: only an expired credential is refreshed. -/
 def resolveCredential (expired : Bool) (stored refreshed : Nat) : Nat :=
   if expired then refreshed else stored
@@ -233,6 +251,7 @@ theorem interrupt_exits_130 : exitCode .interrupted = 130 := rfl
 structure LoginSettings where
   defaultProvider : String
   preferences : List (String × String)
+  extraKeys : List (String × String)
   catalog : List String
 
 def loginDefault (settings : LoginSettings) (provider : String) : LoginSettings :=
@@ -243,5 +262,11 @@ theorem login_preserves_catalog (settings : LoginSettings) (provider : String) :
 
 theorem login_preserves_explicit_preferences (settings : LoginSettings) (provider : String) :
     (loginDefault settings provider).preferences = settings.preferences := rfl
+
+theorem login_preserves_unknown_keys (settings : LoginSettings) (provider : String) :
+    (loginDefault settings provider).extraKeys = settings.extraKeys := rfl
+
+theorem login_sets_default (settings : LoginSettings) (provider : String) :
+    (loginDefault settings provider).defaultProvider = provider := rfl
 
 end RioCli

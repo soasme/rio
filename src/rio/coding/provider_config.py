@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from json import JSONDecodeError, dumps, loads
@@ -57,7 +56,6 @@ from rio.coding.thinking import (
 
 DEFAULT_PROVIDER_NAME = "openai"
 DEFAULT_MODEL = "gpt-5.4"
-PROVIDER_SETTINGS_SCHEMA_VERSION = 2
 
 _Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
@@ -102,8 +100,6 @@ class ProviderConfig:
     thinking_models: tuple[str, ...] = ()
     thinking_default: ThinkingLevel | None = None
     thinking_parameter: ThinkingParameter | None = None
-    thinking_defaults: dict[str, ThinkingLevel] = field(default_factory=dict)
-    inference_providers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,16 +118,6 @@ class ProviderSettings:
             if provider.name == target:
                 return provider
         raise ProviderConfigError(f"Unknown provider: {target}")
-
-    def to_json(self) -> dict[str, Any]:
-        """Serialize runtime preferences to JSON-compatible data."""
-        return {
-            "schema_version": PROVIDER_SETTINGS_SCHEMA_VERSION,
-            "default_provider": self.default_provider,
-            "provider_preferences": {
-                provider.name: _provider_preference_to_json(provider) for provider in self.providers
-            },
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,15 +216,6 @@ def load_provider_settings(paths: RioPaths | None = None) -> ProviderSettings:
     return _with_catalog_providers(settings, paths=resolved_paths)
 
 
-def save_provider_settings(settings: ProviderSettings, paths: RioPaths | None = None) -> Path:
-    """Write durable provider preferences and return the path."""
-    resolved_paths = paths or RioPaths()
-    path = provider_settings_path(resolved_paths)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _write_provider_settings(settings, path=path, backup=True)
-    return path
-
-
 def save_default_provider(name: str, paths: RioPaths | None = None) -> None:
     """Change the login default without serializing resolved catalog values."""
     resolved_paths = paths or RioPaths()
@@ -247,58 +224,8 @@ def save_default_provider(name: str, paths: RioPaths | None = None) -> None:
     raw = loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     raw["default_provider"] = name
     path.parent.mkdir(parents=True, exist_ok=True)
-    _backup_provider_settings(path, strict=False)
+    _backup_provider_settings(path)
     atomic_write_text(path, dumps(raw, indent=2, sort_keys=True) + "\n")
-
-
-def upsert_saved_provider(
-    provider: ProviderConfig,
-    *,
-    set_default: bool = False,
-    paths: RioPaths | None = None,
-    fallback_settings: ProviderSettings | None = None,
-) -> ProviderSettings:
-    """Reload settings, upsert one provider entry, persist them, and return them."""
-    settings = _load_provider_settings_for_write(paths, fallback_settings=fallback_settings)
-    updated = upsert_provider(settings, provider, set_default=set_default)
-    save_provider_settings(updated, paths)
-    return updated
-
-
-def _load_provider_settings_for_write(
-    paths: RioPaths | None,
-    *,
-    fallback_settings: ProviderSettings | None = None,
-) -> ProviderSettings:
-    """Load the latest on-disk settings, falling back only when no file exists."""
-    resolved_paths = paths or RioPaths()
-    if provider_settings_path(resolved_paths).exists():
-        return load_provider_settings(resolved_paths)
-    if fallback_settings is not None:
-        return fallback_settings
-    return load_provider_settings(resolved_paths)
-
-
-def upsert_provider(
-    settings: ProviderSettings,
-    provider: ProviderConfig,
-    *,
-    set_default: bool = False,
-) -> ProviderSettings:
-    """Return settings with a provider added or replaced."""
-    providers_by_name = {item.name: item for item in settings.providers}
-    builtin_names = {entry.name for entry in builtin_catalog()}
-    if provider.name in providers_by_name and provider.name in builtin_names:
-        provider = _merge_provider_config(providers_by_name[provider.name], provider)
-    providers_by_name[provider.name] = provider
-    default_provider = provider.name if set_default else settings.default_provider
-    providers = tuple(providers_by_name[name] for name in sorted(providers_by_name))
-    updated = ProviderSettings(
-        default_provider=default_provider,
-        providers=providers,
-    )
-    updated.get_provider(default_provider)
-    return updated
 
 
 def _with_catalog_providers(
@@ -318,28 +245,12 @@ def _with_catalog_providers(
     )
 
 
-def _backup_provider_settings(path: Path, *, strict: bool) -> None:
-    """Copy existing settings to the recovery path, optionally requiring success."""
+def _backup_provider_settings(path: Path) -> None:
+    """Copy existing settings to the recovery path when possible."""
     if not path.exists():
-        return
-    if strict:
-        copy2(path, path.with_suffix(path.suffix + ".bak"))
         return
     with suppress(OSError):
         copy2(path, path.with_suffix(path.suffix + ".bak"))
-
-
-def _write_provider_settings(
-    settings: ProviderSettings,
-    *,
-    path: Path,
-    backup: bool,
-) -> None:
-    """Atomically write preferences, optionally retaining the previous file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if backup:
-        _backup_provider_settings(path, strict=False)
-    atomic_write_text(path, dumps(settings.to_json(), indent=2, sort_keys=True) + "\n")
 
 
 def _effective_provider_configs(paths: RioPaths | None = None) -> tuple[ProviderConfig, ...]:
@@ -369,88 +280,6 @@ def _append_catalog_providers(
     return tuple(appended)
 
 
-def _merge_provider_config(existing: ProviderConfig, incoming: ProviderConfig) -> ProviderConfig:
-    """Merge a replacement provider config without losing local customizations.
-
-    ``incoming`` supplies the definition; ``existing`` keeps the user's runtime
-    preferences, extra headers/compat/metadata, and (as one group) thinking setup.
-    Codex keeps the incoming model list; other kinds union both lists.
-    """
-    if existing.kind != incoming.kind:
-        return incoming
-    if incoming.kind == "openai-codex":
-        models = incoming.models
-    else:
-        models = _unique_strings((*incoming.models, *existing.models))
-    thinking = existing if existing.thinking_levels is not None else incoming
-    changes: dict[str, Any] = {
-        "models": models,
-        "default_model": (
-            existing.default_model if existing.default_model in models else incoming.default_model
-        ),
-        "headers": {**incoming.headers, **existing.headers},
-        "model_metadata": _merge_provider_model_metadata(
-            incoming.model_metadata,
-            existing.model_metadata,
-        ),
-        "timeout_seconds": existing.timeout_seconds,
-        "max_retries": existing.max_retries,
-        "max_retry_delay_seconds": existing.max_retry_delay_seconds,
-        "thinking_levels": thinking.thinking_levels,
-        "thinking_models": thinking.thinking_models,
-        "thinking_default": thinking.thinking_default,
-        "thinking_parameter": thinking.thinking_parameter,
-        "thinking_defaults": existing.thinking_defaults,
-    }
-    changes["compat"] = {**incoming.compat, **existing.compat}
-    changes["inference_providers"] = existing.inference_providers
-    return replace(incoming, **changes)
-
-
-def _merge_provider_model_metadata(
-    incoming: dict[str, ProviderModelMetadata],
-    existing: dict[str, ProviderModelMetadata],
-) -> dict[str, ProviderModelMetadata]:
-    merged = dict(incoming)
-    for model, metadata in existing.items():
-        if model not in merged:
-            merged[model] = metadata
-            continue
-        base = merged[model]
-        merged[model] = replace(
-            base,
-            api=metadata.api or base.api,
-            base_url=metadata.base_url or base.base_url,
-            reasoning=metadata.reasoning if metadata.reasoning is not None else base.reasoning,
-            input=metadata.input or base.input,
-            max_tokens=metadata.max_tokens or base.max_tokens,
-            headers={**base.headers, **metadata.headers},
-            compat={**base.compat, **metadata.compat},
-            thinking_level_map={**base.thinking_level_map, **metadata.thinking_level_map},
-        )
-    return merged
-
-
-def _unique_strings(values: tuple[str, ...]) -> tuple[str, ...]:
-    """Return values with duplicates removed while preserving order."""
-    return tuple(dict.fromkeys(values))
-
-
-def _provider_preference_to_json(provider: ProviderConfig) -> dict[str, Any]:
-    """Serialize only runtime preferences for one provider."""
-    preference = {
-        "default_model": provider.default_model,
-        "headers": dict(provider.headers),
-        "timeout_seconds": provider.timeout_seconds,
-        "max_retries": provider.max_retries,
-        "max_retry_delay_seconds": provider.max_retry_delay_seconds,
-        "thinking_defaults": dict(provider.thinking_defaults),
-    }
-    if provider.inference_providers:
-        preference["inference_providers"] = dict(provider.inference_providers)
-    return preference
-
-
 class _Preference(BaseModel):
     """Runtime overrides for one catalog provider. Newer Rio versions may add keys."""
 
@@ -461,8 +290,6 @@ class _Preference(BaseModel):
     timeout_seconds: PositiveFloat | None = None
     max_retries: NonNegativeInt | None = None
     max_retry_delay_seconds: NonNegativeFloat | None = None
-    thinking_defaults: dict[_Text, _Text] | None = None
-    inference_providers: dict[_Text, _Text] | None = None
 
 
 class _SettingsFile(BaseModel):
@@ -507,31 +334,7 @@ def _apply_provider_preference(provider: ProviderConfig, preference: _Preference
     changes = preference.model_dump(exclude_none=True)
     if changes.get("default_model") not in provider.models:
         changes.pop("default_model", None)
-    if "thinking_defaults" in changes:
-        changes["thinking_defaults"] = _available_thinking_defaults(
-            provider, changes["thinking_defaults"]
-        )
-    routes = changes.pop("inference_providers", None)
-    if routes is not None:
-        routes = {model: route for model, route in routes.items() if model in provider.models}
-        _validate_inference_providers(provider.name, provider.models, routes)
-        changes["inference_providers"] = routes
     return replace(provider, **changes)
-
-
-def _available_thinking_defaults(
-    provider: ProviderConfig, defaults: dict[str, str]
-) -> dict[str, ThinkingLevel]:
-    """Keep saved defaults the provider still offers; catalogs change between runs."""
-    valid: dict[str, ThinkingLevel] = {}
-    for model, value in defaults.items():
-        try:
-            level = normalize_thinking_level(value)
-        except ValueError as exc:
-            raise ProviderConfigError(str(exc)) from exc
-        if model in provider.models and level in provider_thinking_levels(provider, model=model):
-            valid[model] = level
-    return valid
 
 
 def resolve_provider_selection(
@@ -727,20 +530,11 @@ def resolve_startup_thinking_level(
     preferred: ThinkingLevel = DEFAULT_THINKING_LEVEL,
     cli_override: ThinkingLevel | None = None,
 ) -> ThinkingLevel | None:
-    """Pick a valid startup thinking level for a provider/model pair.
+    """Resolve thinking for a run: CLI override, preferred level, then catalog default.
 
-    Startup (TUI and print mode) must never crash just because the remembered
-    default model does not support the global default level. The level is
-    resolved with the same precedence used when switching models mid-session:
-    the remembered per-model preference wins, then the global ``preferred``
-    level, then the provider/catalog default, then the first available level.
-
-    An explicit ``cli_override`` (from ``--thinking``) takes precedence over
-    everything, and unlike the fallback chain it is strict: requesting a level
-    the model does not support raises :class:`ProviderConfigError` instead of
-    silently falling back.
-
-    Returns ``None`` when the model has no configurable thinking levels.
+    Explicit ``--thinking`` values must be supported by the selected model.
+    Without an override, fall back to the first supported level if needed,
+    or return ``None`` when the model has no configurable thinking levels.
     """
     levels = provider_thinking_levels(provider, model=model)
     if cli_override is not None:
@@ -755,9 +549,6 @@ def resolve_startup_thinking_level(
         return cli_override
     if not levels:
         return None
-    remembered = provider.thinking_defaults.get(model)
-    if remembered in levels:
-        return remembered
     if preferred in levels:
         return preferred
     return provider_default_thinking_level(provider, model=model) or levels[0]
@@ -1043,37 +834,3 @@ def _api_key_from_provider(
                 return oauth_credential.access
 
     return environ.get(provider.api_key_env, "") if provider.api_key_env else ""
-
-
-_HF_INFERENCE_PROVIDER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-
-
-def validate_huggingface_inference_provider(value: str) -> str:
-    """Return a normalized explicit Hugging Face provider suffix."""
-    normalized = value.strip()
-    if not _HF_INFERENCE_PROVIDER_PATTERN.fullmatch(normalized):
-        raise ProviderConfigError(
-            "Hugging Face inference provider must contain only letters, numbers, '.', '_', or '-'"
-        )
-    if normalized in {"fastest", "cheapest", "preferred"}:
-        raise ProviderConfigError(
-            f"Hugging Face inference provider must be explicit, not routing policy: {normalized}"
-        )
-    return normalized
-
-
-def _validate_inference_providers(
-    provider_name: str,
-    models: tuple[str, ...],
-    inference_providers: dict[str, str],
-) -> None:
-    if inference_providers and provider_name != "huggingface":
-        raise ProviderConfigError(
-            "inference_providers preferences are only supported for the huggingface provider"
-        )
-    for model, route in inference_providers.items():
-        if model not in models:
-            raise ProviderConfigError(
-                f"Inference-provider preference references unknown model: {model}"
-            )
-        validate_huggingface_inference_provider(route)

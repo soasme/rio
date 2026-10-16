@@ -44,8 +44,7 @@ from rio.coding.provider_config import (
     provider_thinking_levels,
     resolve_provider_selection,
     resolve_startup_thinking_level,
-    save_provider_settings,
-    upsert_provider,
+    save_default_provider,
 )
 from rio.coding.provider_runtime import (
     OAuthRuntimeCredentialResolver,
@@ -83,33 +82,24 @@ def test_stale_preferences_cannot_restore_removed_codex_alias(tmp_path: Path) ->
 
     assert codex.default_model == "gpt-5.5"
     assert "gpt-5.6" not in codex.models
-    assert "gpt-5.6" not in codex.thinking_defaults
 
 
-def test_load_provider_settings_accepts_huggingface_inference_provider_preferences(
-    tmp_path: Path,
-) -> None:
-    rio_home = tmp_path / ".rio"
-    rio_home.mkdir()
-    (rio_home / "providers.json").write_text(
+@pytest.mark.parametrize("key", ["thinking_defaults", "inference_providers"])
+@pytest.mark.parametrize("value", [{"gpt-5.4": "low"}, {"removed-model": "invalid"}, None, 42])
+def test_load_provider_settings_ignores_retired_preferences(tmp_path: Path, key, value) -> None:
+    paths = RioPaths(home=tmp_path)
+    (paths.home / "providers.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
-                "default_provider": "huggingface",
-                "provider_preferences": {
-                    "huggingface": {
-                        "default_model": "zai-org/GLM-5.2",
-                        "inference_providers": {"zai-org/GLM-5.2": "deepinfra"},
-                    }
-                },
+                "default_provider": "openai",
+                "provider_preferences": {"openai": {key: value}},
             }
         )
     )
 
-    provider = load_provider_settings(RioPaths(home=rio_home)).get_provider("huggingface")
+    provider = load_provider_settings(paths).get_provider("openai")
 
-    assert isinstance(provider, ProviderConfig)
-    assert provider.inference_providers == {"zai-org/GLM-5.2": "deepinfra"}
+    assert provider == provider_config_from_catalog_entry("openai")
 
 
 def test_load_provider_settings_rejects_malformed_json(tmp_path: Path) -> None:
@@ -298,7 +288,6 @@ docs_url = "http://localhost:11434/v1"
     assert provider.default_model == "qwen"
     assert provider.headers == {"X-Test": "yes"}
     assert provider.timeout_seconds == 12.0
-    assert "scoped_models" not in settings.to_json()
 
 
 def test_provider_settings_ignore_unknown_fields(tmp_path: Path) -> None:
@@ -394,81 +383,55 @@ docs_url = "https://example.test/legacy-llama-cpp"
     assert dashed.provider.base_url == "http://127.0.0.1:8081/v1"
 
 
-def test_save_provider_settings_writes_backup_when_replacing(tmp_path: Path) -> None:
+def test_save_default_provider_creates_only_default(tmp_path: Path) -> None:
     paths = RioPaths(home=tmp_path / ".rio")
-    initial = ProviderSettings(
-        providers=(
-            ProviderConfig(
-                name="openai",
-                models=("gpt-5",),
-                default_model="gpt-5",
-            ),
-        ),
-    )
-    updated = ProviderSettings(
-        providers=(
-            ProviderConfig(
-                name="openai",
-                models=("gpt-5-mini",),
-                default_model="gpt-5-mini",
-            ),
-        ),
-    )
 
-    path = save_provider_settings(initial, paths)
-    save_provider_settings(updated, paths)
+    save_default_provider("openai", paths)
 
-    backup = path.with_suffix(path.suffix + ".bak")
-    assert backup.exists()
-    assert load_provider_settings(paths).get_provider("openai").default_model == "gpt-5-mini"
-    assert (
-        provider_settings_from_json(json.loads(backup.read_text()))
-        .get_provider("openai")
-        .default_model
-        == "gpt-5"
-    )
+    path = paths.home / "providers.json"
+    assert json.loads(path.read_text()) == {"default_provider": "openai"}
+    assert not path.with_suffix(".json.bak").exists()
 
 
-def test_save_and_load_provider_settings_round_trip(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    # Isolate provider_config from the host environment so built-in provider
-    # discovery (credential filtering) is deterministic and the loaded settings
-    # contain only the user-saved providers.
-    monkeypatch.setattr(provider_config, "environ", {})
+def test_save_default_provider_preserves_preferences_and_backs_up(tmp_path: Path) -> None:
+    paths = RioPaths(home=tmp_path)
+    raw = {
+        "schema_version": 2,
+        "default_provider": "openai",
+        "future_option": ["keep"],
+        "provider_preferences": {
+            "openai": {"headers": {"X-Test": "yes"}, "timeout_seconds": 42},
+            "anthropic": {},
+            "huggingface": {
+                "thinking_defaults": {"zai-org/GLM-5.2": "medium"},
+                "inference_providers": {"zai-org/GLM-5.2": "deepinfra"},
+            },
+        },
+    }
+    path = paths.home / "providers.json"
+    original = json.dumps(raw).encode()
+    path.write_bytes(original)
 
-    paths = RioPaths(home=tmp_path / ".rio")
-    paths.home.mkdir()
-    (paths.home / "catalog.toml").write_text(
-        'schema_version = 1\n[[providers]]\nname = "local"\n'
-        'base_url = "http://localhost:11434/v1"\napi_key_env = "LOCAL_API_KEY"\n'
-        'models = ["qwen", "llama"]\n'
-    )
-    settings = ProviderSettings(
-        default_provider="local",
-        providers=(
-            ProviderConfig(
-                name="local",
-                credential_name="local",
-                base_url="http://localhost:11434/v1",
-                api_key_env="LOCAL_API_KEY",
-                models=("qwen", "llama"),
-                default_model="qwen",
-                headers={"X-Test": "enabled"},
-                timeout_seconds=120,
-                max_retries=2,
-                max_retry_delay_seconds=0.5,
-            ),
-        ),
-    )
+    save_default_provider("anthropic", paths)
 
-    path = save_provider_settings(settings, paths)
-    loaded = load_provider_settings(paths)
+    assert json.loads(path.read_text()) == {**raw, "default_provider": "anthropic"}
+    assert path.with_suffix(".json.bak").read_bytes() == original
+    settings = load_provider_settings(paths)
+    assert settings.default_provider == "anthropic"
+    assert settings.get_provider("openai").timeout_seconds == 42
 
-    assert path == tmp_path / ".rio" / "providers.json"
-    assert json.loads(path.read_text())["schema_version"] == 2
-    assert loaded == settings
+
+@pytest.mark.parametrize("contents", ['{"default_provider": "openai"}', "{invalid"])
+def test_save_default_provider_validation_leaves_file_untouched(tmp_path: Path, contents) -> None:
+    paths = RioPaths(home=tmp_path)
+    path = paths.home / "providers.json"
+    path.write_text(contents)
+
+    with pytest.raises(ProviderConfigError):
+        save_default_provider("unknown-provider", paths)
+
+    assert path.read_text() == contents
+    assert not path.with_suffix(".json.bak").exists()
 
 
 @pytest.mark.parametrize(
@@ -488,38 +451,7 @@ def test_provider_settings_ignores_legacy_scoped_models(scopes) -> None:
         }
     )
 
-    assert "scoped_models" not in settings.to_json()
     assert resolve_provider_selection(settings).provider.name == "openai"
-
-
-def test_upsert_provider_replaces_and_sets_default() -> None:
-    settings = ProviderSettings()
-    provider = ProviderConfig(
-        name="local",
-        base_url="http://localhost:11434/v1",
-        api_key_env="LOCAL_API_KEY",
-        models=("qwen",),
-        default_model="qwen",
-    )
-
-    updated = upsert_provider(settings, provider, set_default=True)
-    replaced = upsert_provider(
-        updated,
-        ProviderConfig(
-            name="local",
-            base_url="http://localhost:11434/v1",
-            api_key_env="LOCAL_API_KEY",
-            models=("llama",),
-            default_model="llama",
-        ),
-        set_default=True,
-    )
-
-    assert updated.default_provider == "local"
-    assert [item.name for item in updated.providers] == sorted(
-        [provider.name for provider in settings.providers] + ["local"]
-    )
-    assert replaced.get_provider("local").default_model == "llama"
 
 
 # ---------------------------------------------------------------------------
@@ -596,20 +528,10 @@ def test_resolve_startup_thinking_level_uses_k3_max_default() -> None:
     assert resolve_startup_thinking_level(provider, "k3") == "xhigh"
 
 
-def test_resolve_startup_thinking_level_prefers_remembered_model_default() -> None:
-    provider = _kimi_code_like_provider()
-    remembered = ProviderConfig(
-        name=provider.name,
-        models=provider.models,
-        default_model=provider.default_model,
-        thinking_levels=provider.thinking_levels,
-        thinking_default=provider.thinking_default,
-        thinking_parameter=provider.thinking_parameter,
-        thinking_defaults={"k3": "xhigh"},
-        model_metadata=provider.model_metadata,
-    )
+def test_resolve_startup_thinking_level_uses_first_level_without_supported_defaults() -> None:
+    provider = ProviderConfig(name="local", thinking_levels=("low", "high"))
 
-    assert resolve_startup_thinking_level(remembered, "k3") == "xhigh"
+    assert resolve_startup_thinking_level(provider, provider.default_model) == "low"
 
 
 def test_resolve_startup_thinking_level_keeps_supported_default() -> None:
@@ -630,20 +552,10 @@ def test_resolve_startup_thinking_level_returns_none_without_levels() -> None:
     assert resolve_startup_thinking_level(provider, "qwen") is None
 
 
-def test_resolve_startup_thinking_level_cli_override_wins_over_remembered() -> None:
+def test_resolve_startup_thinking_level_cli_override_wins_over_default() -> None:
     provider = _kimi_code_like_provider()
-    remembered = ProviderConfig(
-        name=provider.name,
-        models=provider.models,
-        default_model=provider.default_model,
-        thinking_levels=provider.thinking_levels,
-        thinking_default=provider.thinking_default,
-        thinking_parameter=provider.thinking_parameter,
-        thinking_defaults={"k3": "xhigh"},
-        model_metadata=provider.model_metadata,
-    )
 
-    assert resolve_startup_thinking_level(remembered, "k3", cli_override="low") == "low"
+    assert resolve_startup_thinking_level(provider, "k3", cli_override="low") == "low"
 
 
 def test_resolve_startup_thinking_level_cli_override_errors_for_unsupported() -> None:
@@ -673,18 +585,8 @@ def test_resolve_startup_thinking_level_cli_override_errors_without_levels() -> 
 
 def test_resolve_startup_thinking_level_cli_override_none_preserves_behavior() -> None:
     provider = _kimi_code_like_provider()
-    remembered = ProviderConfig(
-        name=provider.name,
-        models=provider.models,
-        default_model=provider.default_model,
-        thinking_levels=provider.thinking_levels,
-        thinking_default=provider.thinking_default,
-        thinking_parameter=provider.thinking_parameter,
-        thinking_defaults={"k3": "xhigh"},
-        model_metadata=provider.model_metadata,
-    )
 
-    assert resolve_startup_thinking_level(remembered, "k3", cli_override=None) == "xhigh"
+    assert resolve_startup_thinking_level(provider, "k3", cli_override=None) == "xhigh"
 
 
 def test_resolve_provider_selection_rejects_model_not_declared_for_provider() -> None:
@@ -968,7 +870,6 @@ def test_stale_saved_glm_thinking_default_is_ignored(tmp_path: Path) -> None:
 
     provider = load_provider_settings(RioPaths(home=rio_home)).get_provider("huggingface")
 
-    assert provider.thinking_defaults == {}
     assert resolve_startup_thinking_level(provider, "zai-org/GLM-5.2") == "off"
 
 
@@ -1334,7 +1235,7 @@ def test_anthropic_config_from_provider_includes_compat(
     assert config.compat.get("supportsStrictMode") is True
 
 
-def test_huggingface_runtime_pins_backing_provider_with_model_alias(tmp_path: Path) -> None:
+def test_huggingface_runtime_uses_catalog_model_without_alias(tmp_path: Path) -> None:
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set("huggingface", "hf-test")
     config = provider_config_from_catalog_entry("huggingface")
@@ -1343,24 +1244,10 @@ def test_huggingface_runtime_pins_backing_provider_with_model_alias(tmp_path: Pa
         config,
         credential_store=store,
         model="zai-org/GLM-5.2",
-        inference_provider="deepinfra",
     )
 
     assert isinstance(provider, OpenAICompatibleProvider)
-    assert provider._config.model_aliases == {"zai-org/GLM-5.2": "zai-org/GLM-5.2:deepinfra"}
-
-
-def test_huggingface_runtime_rejects_policy_suffix(tmp_path: Path) -> None:
-    store = FileCredentialStore(tmp_path / "credentials.json")
-    store.set("huggingface", "hf-test")
-
-    with pytest.raises(ProviderConfigError, match="explicit"):
-        create_model_provider(
-            provider_config_from_catalog_entry("huggingface"),
-            credential_store=store,
-            model="zai-org/GLM-5.2",
-            inference_provider="fastest",
-        )
+    assert not provider._config.model_aliases
 
 
 def test_create_model_provider_uses_anthropic_oauth_runtime_auth(tmp_path: Path) -> None:
@@ -1878,7 +1765,7 @@ def test_builtin_oauth_registry_matches_supported_subscription_providers() -> No
     assert anthropic.name == "Anthropic (Claude Pro/Max)"
 
 
-def test_catalog_descriptive_metadata_survives_runtime_preference_save(tmp_path, monkeypatch):
+def test_catalog_descriptive_metadata_survives_default_provider_save(tmp_path, monkeypatch):
 
     monkeypatch.setattr(provider_config, "environ", {})
     paths = RioPaths(home=tmp_path / ".rio")
@@ -1912,10 +1799,9 @@ cacheWrite = 0.2
     provider = load_provider_settings(paths).get_provider("local")
     assert provider_model_max_tokens(provider, "qwen") == 4096
     assert provider_model_supports_images(provider, "qwen")
-    changed = replace(provider, headers={"X-Custom": "value"}, timeout_seconds=42)
-    save_provider_settings(ProviderSettings(default_provider="local", providers=(changed,)), paths)
+    save_default_provider("local", paths)
     assert catalog_path.read_bytes() == before
-    assert load_provider_settings(paths).get_provider("local") == changed
+    assert load_provider_settings(paths).get_provider("local") == provider
 
 
 @pytest.mark.parametrize("credential_name", [None, "shared-local-key"])
