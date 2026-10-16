@@ -41,3 +41,23 @@ def test_assistant_message_exposes_text_and_tool_calls():
 
     assert message.text == "thinking"
     assert message.tool_calls == (call,)
+
+
+def test_saved_responses_from_older_journals_still_validate():
+    saved = {
+        "content": [
+            {"type": "thinking", "thinking": "t", "thinkingSignature": "sig", "redacted": False},
+            {"type": "text", "text": "x", "textSignature": None},
+            {
+                "type": "toolCall",
+                "id": "c",
+                "name": "step",
+                "arguments": {},
+                "thoughtSignature": None,
+            },
+        ]
+    }
+    message = AssistantMessage.model_validate(saved)
+
+    assert [block.type for block in message.content] == ["thinking", "text", "toolCall"]
+    assert "Signature" not in str(message.model_dump(mode="json"))

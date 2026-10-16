@@ -129,6 +129,10 @@ class AssistantMessageDiagnostic(WireModel):
     details: dict[str, JSONValue] | None = None
 
 
+_LEGACY_REPLAY_FIELDS = frozenset(
+    {"textSignature", "thinkingSignature", "redacted", "thoughtSignature"}
+)
+
 StopReason = Literal["stop", "length", "toolUse", "error"]
 
 
@@ -165,6 +169,14 @@ class AssistantMessage(WireModel):
         content = data.get("content")
         if isinstance(content, str):
             data["content"] = [TextContent(text=content)] if content else []
+        elif isinstance(content, list):
+            # Journals from Rio 0.9.1 and earlier save replay fields on every block.
+            data["content"] = [
+                {k: v for k, v in block.items() if k not in _LEGACY_REPLAY_FIELDS}
+                if isinstance(block, dict)
+                else block
+                for block in content
+            ]
         usage = data.get("usage")
         if usage is None:
             data["usage"] = Usage()
