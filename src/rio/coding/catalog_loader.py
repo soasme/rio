@@ -35,7 +35,7 @@ CATALOG_SCHEMA_VERSION = 1
 USER_CATALOG_FILENAME = "catalog.toml"
 
 # Thinking fields are merged as a group: an overlay that sets thinking_levels
-# replaces all four, mirroring _merge_provider_config in provider_config.
+# replaces all four.
 _THINKING_FIELDS = ("thinking_levels", "thinking_models", "thinking_default", "thinking_parameter")
 
 _NonEmptyString = Annotated[
