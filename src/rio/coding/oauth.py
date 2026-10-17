@@ -153,7 +153,7 @@ def error_detail(response: httpx.Response, *, secrets: Iterable[str] = ()) -> st
     the raw body stays out of the message because a failing request can echo
     the token it was sent. Those fields are server-controlled too, so anything
     we sent is scrubbed back out and the result is truncated before it reaches
-    a log or the TUI.
+    a log or the CLI.
     """
     try:
         raw = response.json()
