@@ -1,8 +1,12 @@
 """Authentication persistence and cross-process refresh regressions."""
 
+from __future__ import annotations
+
 import json
 import subprocess
 import sys
+from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -14,7 +18,9 @@ from rio.coding.oauth_openai_codex import _post_openai_codex_token, _token_expir
 
 
 @pytest.mark.parametrize("existing", [False, True])
-async def test_login_only_changes_default_provider(tmp_path, monkeypatch, existing):
+async def test_login_only_changes_default_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bool
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     home = tmp_path / ".rio"
     home.mkdir()
@@ -29,7 +35,7 @@ X-Catalog = "current"
 """
     catalog.write_text(original)
     settings = home / "providers.json"
-    raw = {"default_provider": "local"}
+    raw: dict[str, Any] = {"default_provider": "local"}
     if existing:
         raw.update(schema_version=2, provider_preferences={"local": {"timeout_seconds": 42}})
         settings.write_text(json.dumps(raw))
@@ -40,7 +46,9 @@ X-Catalog = "current"
     assert FileCredentialStore().get("local") == "secret-key"
 
 
-async def test_login_does_not_pin_builtin_catalog_defaults(tmp_path, monkeypatch):
+async def test_login_does_not_pin_builtin_catalog_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr("rio.coding.auth_commands.getpass", lambda _: "secret-key")
     await login_provider("openai", method="api-key")
@@ -62,8 +70,8 @@ async def test_login_does_not_pin_builtin_catalog_defaults(tmp_path, monkeypatch
         "raw rotating-refresh-secret access-secret",
     ],
 )
-async def test_codex_http_errors_redact_response_and_request_tokens(body):
-    def handle(request):
+async def test_codex_http_errors_redact_response_and_request_tokens(body: str) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
         return (
             httpx.Response(400, json=body)
             if isinstance(body, dict)
@@ -81,8 +89,8 @@ async def test_codex_http_errors_redact_response_and_request_tokens(body):
 
 
 @pytest.mark.parametrize("field", ["access_token", "refresh_token"])
-def test_missing_token_errors_do_not_include_other_tokens(field):
-    raw = {"access_token": "access-secret", "refresh_token": "refresh-secret"}
+def test_missing_token_errors_do_not_include_other_tokens(field: str) -> None:
+    raw: dict[str, Any] = {"access_token": "access-secret", "refresh_token": "refresh-secret"}
     raw.pop(field)
     with pytest.raises(OAuthError) as error:
         required_string(raw, field, "OpenAI Codex token exchange")
@@ -90,8 +98,8 @@ def test_missing_token_errors_do_not_include_other_tokens(field):
 
 
 @pytest.mark.parametrize("expiry", [None, "bad"])
-def test_expiry_errors_do_not_include_tokens(expiry):
-    raw = {"access_token": "access-secret", "refresh_token": "refresh-secret"}
+def test_expiry_errors_do_not_include_tokens(expiry: object) -> None:
+    raw: dict[str, Any] = {"access_token": "access-secret", "refresh_token": "refresh-secret"}
     if expiry is not None:
         raw["expires_in"] = expiry
     with pytest.raises(OAuthError) as error:
@@ -99,7 +107,7 @@ def test_expiry_errors_do_not_include_tokens(expiry):
     assert "secret" not in str(error.value)
 
 
-def test_two_processes_spend_rotating_refresh_token_once(tmp_path):
+def test_two_processes_spend_rotating_refresh_token_once(tmp_path: Path) -> None:
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_oauth(
         "openai-codex",
@@ -152,10 +160,12 @@ asyncio.run(main())
                 process.kill()
                 process.wait()
     assert (tmp_path / "spent").read_text() == "old-refresh\n"
-    assert store.get_oauth("openai-codex").refresh == "new-refresh"
+    credential = store.get_oauth("openai-codex")
+    assert credential is not None
+    assert credential.refresh == "new-refresh"
 
 
-def test_parallel_credential_writes_keep_all_providers(tmp_path):
+def test_parallel_credential_writes_keep_all_providers(tmp_path: Path) -> None:
     path = tmp_path / "credentials.json"
     script = """
 import sys, time

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from platform import machine, release, system
 
@@ -65,10 +65,10 @@ class OpenAICodexProvider(HTTPProvider[OpenAICodexConfig]):
         system: str,
         messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[ProviderEvent]:
+    ) -> AsyncGenerator[ProviderEvent]:
         """Stream one Codex Responses request as provider-neutral events."""
 
-        async def iterator() -> AsyncIterator[ProviderEvent]:
+        async def iterator() -> AsyncGenerator[ProviderEvent]:
             client = self._get_client()
             payload = _build_codex_payload(
                 model=model,
@@ -90,7 +90,7 @@ class OpenAICodexProvider(HTTPProvider[OpenAICodexConfig]):
 
             async def parse(
                 response: httpx.Response, attempt: RetryAttempt
-            ) -> AsyncIterator[ProviderEvent]:
+            ) -> AsyncGenerator[ProviderEvent]:
                 # Thinking alone still allows a network retry, not a stream-error retry.
                 emitted_thinking = False
                 async for event in _codex_provider_events(response):
@@ -171,7 +171,7 @@ def _tool_to_codex(tool: AgentTool) -> dict[str, JSONValue]:
     }
 
 
-async def _codex_provider_events(response: httpx.Response) -> AsyncIterator[ProviderEvent]:
+async def _codex_provider_events(response: httpx.Response) -> AsyncGenerator[ProviderEvent]:
     parser = _ResponsesStreamParser(codex=True)
     async for chunk in _iter_sse_data(response):
         events, stop = parser.feed(chunk)
@@ -184,7 +184,7 @@ async def _codex_provider_events(response: httpx.Response) -> AsyncIterator[Prov
             yield event
 
 
-async def _iter_sse_data(response: httpx.Response) -> AsyncIterator[str]:
+async def _iter_sse_data(response: httpx.Response) -> AsyncGenerator[str]:
     data_lines: list[str] = []
     async for line in response.aiter_lines():
         stripped = line.strip()

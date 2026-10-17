@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from typing import Any, NoReturn
 
 import pytest
 
@@ -24,7 +25,7 @@ async def _canonicalize(events: list[ProviderEvent]) -> AssistantMessage:
 
 
 @pytest.mark.asyncio
-async def test_truncation_wins_over_tool_use_in_the_stop_reason():
+async def test_truncation_wins_over_tool_use_in_the_stop_reason() -> None:
     """A run cut off mid tool call is `length`, not `toolUse`.
 
     Truncation almost always lands inside a tool call, so a `has_tools` check
@@ -48,7 +49,7 @@ async def test_truncation_wins_over_tool_use_in_the_stop_reason():
 
 
 @pytest.mark.asyncio
-async def test_a_complete_tool_call_is_still_reported_as_tool_use():
+async def test_a_complete_tool_call_is_still_reported_as_tool_use() -> None:
     call = ToolCall(id="call-0", name="skill_step", arguments={"action": {"name": "advance"}})
     message = await _canonicalize(
         [
@@ -63,11 +64,13 @@ async def test_a_complete_tool_call_is_still_reported_as_tool_use():
 
 
 @pytest.mark.asyncio
-async def test_collector_preserves_order_and_usage_without_snapshots(monkeypatch):
+async def test_collector_preserves_order_and_usage_without_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from rio.ai._provider_events import ProviderTextDeltaEvent, ProviderThinkingDeltaEvent
     from rio.ai.messages import ThinkingContent, Usage
 
-    def reject_copy(*args, **kwargs):
+    def reject_copy(*args: Any, **kwargs: Any) -> NoReturn:
         raise AssertionError("partial messages must never be copied")
 
     monkeypatch.setattr(AssistantMessage, "model_copy", reject_copy)
@@ -91,25 +94,26 @@ async def test_collector_preserves_order_and_usage_without_snapshots(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_collector_returns_an_error_when_stream_has_no_terminal_event():
+async def test_collector_returns_an_error_when_stream_has_no_terminal_event() -> None:
     from rio.ai._provider_events import ProviderTextDeltaEvent
 
-    async def source():
+    async def source() -> AsyncGenerator[ProviderEvent, None]:
         yield ProviderTextDeltaEvent(delta="partial")
 
     message = await collect_response(source(), api="a", provider="p", model="m")
     assert message.stop_reason == "error"
     assert message.text == "partial"
+    assert message.error_message is not None
     assert "terminal event" in message.error_message
 
 
 @pytest.mark.asyncio
-async def test_collector_reads_the_stream_to_its_end_and_keeps_the_first_terminal_event():
+async def test_collector_reads_the_stream_to_its_end_and_keeps_the_first_terminal_event() -> None:
     finished = []
 
-    async def source():
+    async def source() -> AsyncGenerator[ProviderEvent, None]:
         yield ProviderResponseEndEvent(message=AssistantMessage())
-        yield ProviderResponseEndEvent(message=AssistantMessage(content="late"))
+        yield ProviderResponseEndEvent(message=AssistantMessage.model_validate({"content": "late"}))
         finished.append(True)
 
     message = await collect_response(source(), api="a", provider="p", model="m")

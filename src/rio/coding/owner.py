@@ -13,16 +13,16 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from pathlib import Path
-from typing import NotRequired, TypedDict
+from typing import Self
 
 import psutil
 
 import rio.coding.worker as worker
 from rio.agent.runner import Owner, RecoveryFailure
 from rio.agent.session import Session
-from rio.agent.shapes import ValidatorResult
+from rio.agent.shapes import RecordModel, ValidatorResult
 from rio.agent.store import StorageFailure
 from rio.coding.cells import COMMANDS
 from rio.truncate import format_size, tail_notice, truncate_bytes_tail, truncate_tail
@@ -34,7 +34,7 @@ LOG_BYTES = 64 * 1024 * 1024
 class Stream:
     """One Cell output stream: a bounded tail, running totals, and a log within a budget."""
 
-    def __init__(self, path: Path, tail_bytes: int):
+    def __init__(self, path: Path, tail_bytes: int) -> None:
         self.path = path
         self.log = path.open("wb")
         self.tail_bytes = tail_bytes
@@ -60,25 +60,25 @@ class Stream:
         return len(logged)
 
 
-class WorkerIdentity(TypedDict):
+class WorkerIdentity(RecordModel):
     # A "workers" record keyed "cell:<id>" or "validator:<key>". pid and birth are added once
     # the gated supervisor is spawned, and stopped once its process group is gone. A validator
     # worker keeps its result before it is stopped, so recovery reuses it instead of rerunning.
     token: str
-    pid: NotRequired[int]
-    birth: NotRequired[float]
-    stopped: NotRequired[bool]
-    result: NotRequired[ValidatorResult]
+    pid: int | None = None
+    birth: float | None = None
+    stopped: bool = False
+    result: ValidatorResult | None = None
 
 
 def stop_worker(identity: WorkerIdentity) -> None:
     """Verify a durable identity before signaling; never trust a recycled PID."""
-    pid = identity.get("pid")
+    pid = identity.pid
     if pid is None:
         # A supervisor spawned before identity commit remains gated and cannot run code.
         matches = []
         for process in psutil.process_iter(["cmdline", "create_time"]):
-            if identity["token"] in (process.info["cmdline"] or []):
+            if identity.token in (process.info["cmdline"] or []):
                 matches.append(process)
     else:
         try:
@@ -95,7 +95,7 @@ def stop_worker(identity: WorkerIdentity) -> None:
                 except (ProcessLookupError, psutil.NoSuchProcess):
                     pass
             return
-        if process.create_time() != identity["birth"]:
+        if process.create_time() != identity.birth:
             raise RecoveryFailure("Worker PID was reused; cannot establish local termination")
         matches = [process]
     for process in matches:
@@ -140,7 +140,7 @@ class ProcessOwner(Owner):
         session: Session,
         commands: Mapping[str, Callable[[dict, Path], list[str]]] = COMMANDS,
         log_bytes: int = LOG_BYTES,
-    ):
+    ) -> None:
         super().__init__(session)
         self.commands = commands
         # Logs live in the owner's temporary directory and are removed when the owner exits.
@@ -152,14 +152,14 @@ class ProcessOwner(Owner):
         self.temporary: tempfile.TemporaryDirectory | None = None
         self.socket_path = ""
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         await super().__aenter__()
         self.temporary = tempfile.TemporaryDirectory(prefix="rio-owner-")
         self.socket_path = str(Path(self.temporary.name) / "timer.sock")
         self.server = await asyncio.start_unix_server(self._timer, path=self.socket_path)
         return self
 
-    async def __aexit__(self, *args):
+    async def __aexit__(self, *args: object) -> None:
         try:
             await super().__aexit__(*args)
         finally:
@@ -169,11 +169,11 @@ class ProcessOwner(Owner):
             if self.temporary:
                 self.temporary.cleanup()
 
-    async def _timer(self, reader, writer):
+    async def _timer(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             request = json.loads(await reader.readline())
             self.session.register_timer(request["id"], request["deadline"], request["payload"])
-            response = {"ok": True}
+            response: dict[str, object] = {"ok": True}
         except (ValueError, KeyError, TypeError) as exc:
             response = {"error": str(exc)}
         except StorageFailure:
@@ -188,16 +188,18 @@ class ProcessOwner(Owner):
         # Cleanup is required even for terminal runs. No dispatch happens before this finishes.
         if os.name != "posix":
             raise RecoveryFailure("Durable worker containment currently requires POSIX")
-        for key, identity in list(self.session.data.get("workers", {}).items()):
+        for key, identity in list(self.session.store.data.get("workers", {}).items()):
             if not identity.get("stopped"):
-                await asyncio.to_thread(stop_worker, identity)
+                await asyncio.to_thread(stop_worker, WorkerIdentity.model_validate(identity))
                 self.session.record("workers", key, {"stopped": True})
             kind, _, name = key.partition(":")
-            if kind == "validator" and name not in self.session.data["validator_results"]:
+            if kind == "validator" and name not in self.session.data.validator_results:
                 self.session.record_validator_result(
                     name,
-                    identity.get("result")
-                    or {"passed": False, "exit": None, "output": "Unknown validator execution"},
+                    ValidatorResult.model_validate(
+                        identity.get("result")
+                        or {"passed": False, "exit": None, "output": "Unknown validator execution"}
+                    ),
                 )
         # The base Owner finishes started Cells as UnknownExecution.
         await super().recover()
@@ -213,15 +215,15 @@ class ProcessOwner(Owner):
         if process:
             await process.wait()
 
-    def launch(self, cell_id: int) -> Awaitable[None]:
+    def launch(self, cell_id: int) -> Coroutine[None, None, None]:
         self.session.authorize(cell_id)
         self._register(f"cell:{cell_id}")
         return self._execute(cell_id)
 
     def _register(self, key: str) -> None:
         """Journal a worker token before spawning, so recovery can find a gated supervisor."""
-        self.key, self.identity = key, {"token": uuid.uuid4().hex}
-        self.session.record("workers", key, self.identity)
+        self.key, self.identity = key, WorkerIdentity(token=uuid.uuid4().hex)
+        self.session.record("workers", key, self.identity.model_dump(exclude_unset=True))
 
     async def _stop(self) -> None:
         """Stop the current worker and mark it, so recovery never signals a reused PID."""
@@ -235,12 +237,13 @@ class ProcessOwner(Owner):
         self, command: list[str], env: dict | None = None
     ) -> asyncio.subprocess.Process:
         """Start a gated worker in its own process group; it waits for "start" on stdin."""
+        assert self.identity is not None
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             str(Path(worker.__file__)),
-            self.identity["token"],
+            self.identity.token,
             *command,
-            cwd=self.session.meta["owner_config"].get("cwd"),
+            cwd=self.session.meta.owner_config.get("cwd"),
             env=env,
             start_new_session=True,
             stdin=asyncio.subprocess.PIPE,
@@ -248,16 +251,19 @@ class ProcessOwner(Owner):
             stderr=asyncio.subprocess.PIPE,
         )
         birth = psutil.Process(process.pid).create_time()
-        self.identity = {**self.identity, "pid": process.pid, "birth": birth}
-        self.session.record("workers", self.key, self.identity)
+        self.identity = self.identity.model_copy(update={"pid": process.pid, "birth": birth})
+        self.session.record("workers", self.key, self.identity.model_dump(exclude_unset=True))
         return process
 
     async def validate(self, key: str, validator: object) -> ValidatorResult:
         """Run a validator argv; exit status 0 passes."""
         self._register(f"validator:{key}")
+        if not isinstance(validator, list) or not all(isinstance(arg, str) for arg in validator):
+            raise ValueError("Validator must be an argv list of strings")
         process = await self._spawn(validator)
         result = None
         try:
+            assert process.stdin is not None
             process.stdin.write(b"start\n")
             await process.stdin.drain()
             output = ""
@@ -279,7 +285,7 @@ class ProcessOwner(Owner):
                 self.session.record("workers", self.key, {"result": result})
             await self._stop()
             await process.wait()
-        return result
+        return ValidatorResult.model_validate(result)
 
     async def _read_output(
         self,
@@ -291,6 +297,7 @@ class ProcessOwner(Owner):
         decoders = {
             name: codecs.getincrementaldecoder("utf-8")("replace") for name in ("stdout", "stderr")
         }
+        assert process.stdout is not None
         deadline = time.monotonic() + self.session.limits.flush_seconds
         line_task = asyncio.create_task(process.stdout.readline())
         try:
@@ -322,6 +329,7 @@ class ProcessOwner(Owner):
                     append(name, decoder.decode(b"", final=True))
 
     async def _cell_output(self, cell_id: int, process: asyncio.subprocess.Process) -> int | None:
+        assert self.temporary is not None
         limit = self.session.limits.output_bytes
         buffers = {"stdout": "", "stderr": ""}
         streams: dict[str, Stream] = {}
@@ -387,11 +395,15 @@ class ProcessOwner(Owner):
 
     async def _execute(self, cell_id: int) -> None:
         session = self.session
-        cell = session.data["cells"][str(cell_id)]
+        cell = session.data.cells[str(cell_id)]
+        assert self.temporary is not None
         env = self._cell_env()
         try:
-            command = self.commands[cell["kind"]](cell, Path(self.temporary.name))
+            command = self.commands[cell.kind](
+                cell.model_dump(exclude_unset=True), Path(self.temporary.name)
+            )
             self.process = process = await self._spawn(command, env)
+            assert process.stdin is not None
             process.stdin.write(b"start\n")
             await process.stdin.drain()
             exit_code = await self._cell_output(cell_id, process)

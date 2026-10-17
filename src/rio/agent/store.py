@@ -7,9 +7,13 @@ import json
 import sqlite3
 import time
 from collections.abc import Callable
+from functools import cached_property
 from pathlib import Path
+from typing import Any, Self
 
-from rio.agent.shapes import EventKind, JournalEvent
+from pydantic import BaseModel
+
+from rio.agent.shapes import EventKind, JournalEvent, Projection
 from rio.truncate import truncate_bytes_tail
 
 
@@ -18,7 +22,15 @@ class StorageFailure(RuntimeError):
 
 
 def encode(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), allow_nan=False, default=_model_json
+    )
+
+
+def _model_json(value: object) -> dict[str, Any]:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raise TypeError(f"Cannot serialize {type(value).__name__}")
 
 
 def reduce_event(projection: dict, changes: dict) -> dict:
@@ -56,7 +68,7 @@ def reduce_event(projection: dict, changes: dict) -> dict:
 class Store:
     """One local owner, one writer, and no authoritative cache or snapshot."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path.resolve()
         # Canonicalize the sidecar too: symlink aliases must share one owner lock.
@@ -106,6 +118,10 @@ class Store:
             raise
         self.rebuild_seconds = time.monotonic() - started
 
+    @cached_property
+    def projection(self) -> Projection:
+        return Projection.model_validate(self.data)
+
     def commit(self, kind: EventKind, changes: dict, *, identity: str | None = None) -> int:
         if self.failed:
             raise StorageFailure("Discard this owner and reopen the journal")
@@ -124,11 +140,13 @@ class Store:
             self.db.execute("COMMIT")
         except sqlite3.Error as exc:
             self.failed = True
+            self.__dict__.pop("projection", None)
             self.data = {}  # The commit may have succeeded. Never guess or keep admitting work.
             raise StorageFailure(f"SQLite commit outcome requires recovery: {exc}") from exc
         self.commit_seconds.append(time.monotonic() - started)
         self.journal_bytes += len(raw.encode())
         self.sequence, self.data = seq, candidate
+        self.__dict__.pop("projection", None)
         if self.on_commit:
             self.on_commit()
         return seq
@@ -143,7 +161,7 @@ class Store:
         if self.failed:
             raise StorageFailure("Cannot publish from an uncertain connection")
         return [
-            {"seq": seq, "type": kind, "timestamp": timestamp, "changes": json.loads(raw)}
+            JournalEvent(seq=seq, type=kind, timestamp=timestamp, changes=json.loads(raw))
             for seq, kind, timestamp, raw in self.db.execute(
                 "SELECT seq, kind, timestamp, changes FROM events WHERE seq > ? ORDER BY seq",
                 (after,),
@@ -155,8 +173,8 @@ class Store:
             self.db.close()
         self.lock.close()
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *args: object) -> None:
         self.close()

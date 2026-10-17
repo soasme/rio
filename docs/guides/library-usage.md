@@ -16,7 +16,7 @@ from rio.coding.provider_config import load_provider_settings, resolve_provider_
 from rio.coding.provider_runtime import create_model_provider
 
 
-async def main():
+async def main() -> None:
     with Store(Path("task.sqlite3")) as store:
         session = (
             Session(store, cells.KINDS)
@@ -29,7 +29,7 @@ async def main():
                 instructions=cells.INSTRUCTIONS,
             )
         )
-        if session.meta["terminal"]:
+        if session.meta.terminal:
             succeeded = await replay(ProcessOwner(session), print)
         else:
             selection = resolve_provider_selection(load_provider_settings())
@@ -44,7 +44,17 @@ async def main():
 asyncio.run(main())
 ```
 
-The callback receives committed event dictionaries. Opening the same database
+The callback receives committed `JournalEvent` Pydantic models. Access fields with
+`event.seq`, `event.type`, and `event.changes`. Sessions expose models through
+`session.state`, `session.meta`, and `session.data`; for example, use
+`turn.id` and `session.data.executions["1"].phase`.
+
+Use `model_dump(mode="json", by_alias=True, exclude_unset=True)` for the journal
+representation. `State.schema_version` serializes as `schema`, and
+`Meta.provider_model_config` serializes as `model_config`. The journal format is
+unchanged; `Store.data` and event changes remain JSON dictionaries.
+
+Opening the same database
 rebuilds state without executing code. `run` recovers interrupted workers before
 continuing; `replay` cleans up recorded workers and publishes a terminal session.
 Cleanup failures stop replay.

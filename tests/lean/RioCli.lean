@@ -326,15 +326,15 @@ theorem explicit_false_overrides_true (config : ProviderCompat) :
 
 /-- Release preparation refreshes models by default, before verification. -/
 def releaseChecks (refreshModels : Option Bool) : List String :=
-  (if refreshModels.getD true then ["refreshModels"] else []) ++ ["ruff", "pytest"]
+  (if refreshModels.getD true then ["refreshModels"] else []) ++ ["ruff", "mypy", "pytest", "lean"]
 
 theorem release_refreshes_by_default :
-    releaseChecks none = ["refreshModels", "ruff", "pytest"] := rfl
+    releaseChecks none = ["refreshModels", "ruff", "mypy", "pytest", "lean"] := rfl
 
 theorem release_explicit_refresh_matches_default :
     releaseChecks (some true) = releaseChecks none := rfl
 
 theorem release_can_skip_refresh_without_skipping_verification :
-    releaseChecks (some false) = ["ruff", "pytest"] := rfl
+    releaseChecks (some false) = ["ruff", "mypy", "pytest", "lean"] := rfl
 
 end RioCli

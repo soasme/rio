@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from rio.ai import (
@@ -14,10 +16,10 @@ from rio.ai import (
 
 
 @pytest.mark.asyncio
-async def test_fake_provider_returns_scripted_messages_then_an_error():
+async def test_fake_provider_returns_scripted_messages_then_an_error() -> None:
     message = AssistantMessage(content=[TextContent(text="hi")], stop_reason="stop")
     provider = FakeProvider([message])
-    request = {
+    request: dict[str, Any] = {
         "model": "fake-model",
         "system": "be nice",
         "messages": [UserMessage(content="hello")],
@@ -35,7 +37,7 @@ async def test_fake_provider_returns_scripted_messages_then_an_error():
     assert tools == []
 
 
-def test_assistant_message_exposes_text_and_tool_calls():
+def test_assistant_message_exposes_text_and_tool_calls() -> None:
     call = ToolCall(id="1", name="do_it", arguments={"x": 1})
     message = AssistantMessage(content=[TextContent(text="thinking"), call], stop_reason="toolUse")
 
@@ -43,7 +45,7 @@ def test_assistant_message_exposes_text_and_tool_calls():
     assert message.tool_calls == (call,)
 
 
-def test_saved_responses_from_older_journals_still_validate():
+def test_saved_responses_from_older_journals_still_validate() -> None:
     saved = {
         "content": [
             {"type": "thinking", "thinking": "t", "thinkingSignature": "sig", "redacted": False},

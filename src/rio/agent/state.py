@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import contextlib
-import copy
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 
-from rio.agent.shapes import Cell, ControlRequest, Execution, State, Usage
+from pydantic import ValidationError
+
+from rio.agent.shapes import Cell, ControlRequest, Execution, Runtime, State, Usage
 from rio.agent.store import encode
 from rio.truncate import DEFAULT_MAX_OUTPUT_BYTES
 
@@ -18,7 +19,7 @@ class InvalidPatch(ValueError):
 
 
 def zero_usage() -> Usage:
-    return {"turns": 0, "attempts": 0, "tokens": 0, "unknown_usage": 0}
+    return Usage.model_validate({"turns": 0, "attempts": 0, "tokens": 0, "unknown_usage": 0})
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,7 @@ class Limits:
     storage_bytes: int = 256_000_000
     flush_seconds: float = 0.1
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         for name, value in asdict(self).items():
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
@@ -181,8 +182,8 @@ def admit(
             ops = json.loads(ops)
     if not isinstance(ops, list):
         raise InvalidPatch(f"ops must be an array. {USAGE}")
-    next_id = state["runtime"]["next_cell_id"]
-    ids = [cell["id"] for cell in state["cells"]]
+    next_id = state.runtime.next_cell_id
+    ids = [cell.id for cell in state.cells]
     replaced: dict[int, Cell] = {}
     removed: set[int] = set()
     new: list[Cell] = []
@@ -200,9 +201,10 @@ def admit(
             body = present(operation["control"]) if isinstance(operation["control"], dict) else None
             try:
                 validate_control(body)
-            except InvalidPatch as exc:
+                request = ControlRequest.model_validate(body)
+            except (InvalidPatch, ValidationError) as exc:
                 raise InvalidPatch(f"ops[{index}]: {exc}") from None
-            controls.append(body)
+            controls.append(request)
             continue
         previous = None
         if operation["op"] != "add":
@@ -220,7 +222,10 @@ def admit(
             if operation["op"] == "remove":
                 removed.add(cell_id)
                 continue
-            if executions.get(str(cell_id), {}).get("phase") in ("queued", "started"):
+            if (execution := executions.get(str(cell_id))) and execution.phase in (
+                "queued",
+                "started",
+            ):
                 raise InvalidPatch(
                     f"ops[{index}]: Cell {cell_id} is queued or running; add a new Cell, "
                     "or cancel it with a cancel control"
@@ -231,21 +236,19 @@ def admit(
             validate_cell(body, kinds)
         except InvalidPatch as exc:
             raise InvalidPatch(f"ops[{index}]: {exc}") from None
-        cell = {"id": next_id + len(new), "previous_id": previous, **body}
+        assert body is not None
+        cell = Cell.model_validate({"id": next_id + len(new), "previous_id": previous, **body})
         if previous is not None:
             replaced[previous] = cell
         new.append(cell)
-    cells = [replaced.get(c["id"], c) for c in state["cells"] if c["id"] not in removed]
-    cells += [cell for cell in new if cell["previous_id"] is None]
-    candidate = copy.deepcopy({**state, "cells": cells})
-    candidate["revision"] += 1
-    candidate["runtime"] = {
-        "next_cell_id": next_id + len(new),
-        "cells": {},
-        "inbox": [],
-        "usage": zero_usage(),
-    }
-    context = {**candidate, "runtime": {}}
+    cells = [replaced.get(c.id, c) for c in state.cells if c.id not in removed]
+    cells += [cell for cell in new if cell.previous_id is None]
+    candidate = state.model_copy(deep=True, update={"cells": cells})
+    candidate.revision += 1
+    candidate.runtime = Runtime(
+        next_cell_id=next_id + len(new), cells={}, inbox=[], usage=zero_usage()
+    )
+    context = {**candidate.model_dump(by_alias=True, exclude_unset=True), "runtime": {}}
     if len(encode(context).encode()) > limit:
         raise InvalidPatch("State exceeds context budget; remove Cells before adding work")
     return candidate, new, controls

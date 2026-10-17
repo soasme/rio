@@ -1,16 +1,20 @@
 """Durability boundaries and recovery behavior, using real SQLite and uv processes."""
 
+from __future__ import annotations
+
 import asyncio
 import copy
 import json
 import math
 import os
+import sqlite3
 import subprocess
 import sys
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import get_args
+from typing import Any, NoReturn, cast, get_args
 
 import pytest
 from pydantic import ValidationError
@@ -19,7 +23,15 @@ from rio.agent.ledger import RESERVED
 from rio.agent.prompt import CONCLUSION, PROTOCOL
 from rio.agent.runner import Owner, RecoveryFailure, replay, run
 from rio.agent.session import RunStopped, Session
-from rio.agent.shapes import ControlType
+from rio.agent.shapes import (
+    ControlType,
+    EventKind,
+    JournalEvent,
+    Observation,
+    Receipt,
+    RunResult,
+    Turn,
+)
 from rio.agent.state import (
     CONTROL_FIELDS,
     CONTROLS,
@@ -32,24 +44,24 @@ from rio.agent.state import (
 )
 from rio.agent.store import StorageFailure, Store, reduce_event
 from rio.ai import FakeProvider
-from rio.ai.messages import AssistantMessage, ToolCall
+from rio.ai.messages import AssistantMessage, AssistantMessageDiagnostic, ToolCall
 from rio.coding.cells import KINDS
-from rio.coding.owner import LOG_BYTES, ProcessOwner, stop_worker
+from rio.coding.owner import LOG_BYTES, ProcessOwner, WorkerIdentity, stop_worker
 
 
 @pytest.fixture
-def session(tmp_path):
+def session(tmp_path: Path) -> Iterator[Session]:
     with Store(tmp_path / "session.sqlite3") as store:
         yield Session.create(
             store, "fix the code", kinds=KINDS, owner_config={"cwd": str(tmp_path)}
         )
 
 
-def note(text="remember", **extra):
+def note(text: str = "remember", **extra: Any) -> dict[str, Any]:
     return {"kind": "note", "text": text, **extra}
 
 
-def code(source="print('hello')", **extra):
+def code(source: str = "print('hello')", **extra: Any) -> dict[str, Any]:
     return {
         "kind": "code",
         "runtime": "python",
@@ -58,41 +70,41 @@ def code(source="print('hello')", **extra):
     }
 
 
-def cmd(*argv, **extra):
+def cmd(*argv: object, **extra: Any) -> dict[str, Any]:
     return {"kind": "cmd", "argv": list(argv), **extra}
 
 
-def prepare(session):
+def prepare(session: Session) -> Turn:
     return session.prepare_turn()
 
 
-def add(cell):
+def add(cell: dict[str, Any]) -> dict[str, Any]:
     return {"op": "add", "cell": cell}
 
 
-def replace_cell(cell_id, cell):
+def replace_cell(cell_id: int, cell: dict[str, Any]) -> dict[str, Any]:
     return {"op": "replace", "id": cell_id, "cell": cell}
 
 
-def remove(cell_id):
+def remove(cell_id: int) -> dict[str, Any]:
     return {"op": "remove", "id": cell_id}
 
 
-def control(kind, reason="because", **fields):
+def control(kind: str, reason: str = "because", **fields: Any) -> dict[str, Any]:
     return {"op": "control", "control": {"type": kind, "reason": reason, **fields}}
 
 
-def conclude(result="success", reason="done"):
+def conclude(result: str = "success", reason: str = "done") -> dict[str, Any]:
     return control("conclusion", reason, result=result)
 
 
-def accept(session, *items):
+def accept(session: Session, *items: dict[str, Any]) -> Receipt:
     """Accept Cells (added) and ops, in order."""
     turn = prepare(session)
-    return session.accept(turn["id"], [i if "op" in i else add(i) for i in items])
+    return session.accept(turn.id, [i if "op" in i else add(i) for i in items])
 
 
-async def settle(owner):
+async def settle(owner: Owner) -> None:
     async with asyncio.timeout(15):
         await owner.tick()
         while owner.session.pending():
@@ -100,7 +112,7 @@ async def settle(owner):
             await owner.tick()
 
 
-def test_sqlite_full_wal_and_exclusive_owner(session):
+def test_sqlite_full_wal_and_exclusive_owner(session: Session) -> None:
     assert session.store.db.execute("PRAGMA synchronous").fetchone() == (2,)
     assert session.store.db.execute("PRAGMA journal_mode").fetchone() == ("wal",)
     with pytest.raises(StorageFailure, match="owner"):
@@ -145,8 +157,15 @@ def test_sqlite_full_wal_and_exclusive_owner(session):
     ],
 )
 def test_runtime_record_updates_preserve_journal_and_replay(
-    tmp_path, monkeypatch, method, args, collection, key, event, fields
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    args: tuple[Any, ...],
+    collection: str,
+    key: str,
+    event: EventKind,
+    fields: dict[str, Any],
+) -> None:
     monkeypatch.setattr("rio.agent.ledger.time.time", lambda: 123.0)
     path = tmp_path / "session.sqlite3"
     with Store(path) as store:
@@ -157,7 +176,7 @@ def test_runtime_record_updates_preserve_journal_and_replay(
         session.finish(1, {"type": "success"})
         session.record("jobs", "v", {"attempts": 1, "result": None})
         session.record("jobs", "other", {"attempts": 2})
-        before = session.data
+        before = session.store.data
         snapshot = copy.deepcopy(before)
         expected = copy.deepcopy(before)
         expected.setdefault(collection, {}).setdefault(key, {}).update(fields)
@@ -165,56 +184,66 @@ def test_runtime_record_updates_preserve_journal_and_replay(
 
         getattr(session, method)(*args)
 
-        assert session.data == expected
+        assert session.store.data == expected
         assert before == snapshot
         assert store.sequence == sequence + 1
         committed = store.events(sequence)
-        assert committed[0]["type"] == event
-        assert committed[0]["changes"] == {collection: {key: expected[collection][key]}}
+        assert committed[0].type == event
+        assert committed[0].changes == {collection: {key: expected[collection][key]}}
 
     with Store(path) as store:
-        assert Session(store, KINDS).data == expected
+        assert store.data == expected
 
 
 @pytest.mark.parametrize("method,args", [("authorize", (99,)), ("truncate_output", (99, {}))])
-def test_runtime_execution_updates_require_existing_record(session, method, args):
+def test_runtime_execution_updates_require_existing_record(
+    session: Session, method: str, args: tuple[Any, ...]
+) -> None:
     sequence = session.store.sequence
-    before = copy.deepcopy(session.data)
+    before = copy.deepcopy(session.store.data)
     with pytest.raises(KeyError):
         getattr(session, method)(*args)
-    assert session.data == before
+    assert session.store.data == before
     assert session.store.sequence == sequence
 
 
-def test_atomic_admission_and_linear_history(session):
+def test_atomic_admission_and_linear_history(session: Session) -> None:
     accept(session, note("a"), note("b"))
     turn = prepare(session)
-    session.accept(turn["id"], [replace_cell(1, note("new"))])
-    assert [c["id"] for c in session.state["cells"]] == [3, 2]
-    assert session.state["cells"][0] == {"id": 3, "previous_id": 1, **note("new")}
-    assert session.data["cells"]["1"] == {"id": 1, "previous_id": None, **note("a")}
+    session.accept(turn.id, [replace_cell(1, note("new"))])
+    assert [c.id for c in session.state.cells] == [3, 2]
+    assert session.state.cells[0].model_dump(exclude_unset=True) == {
+        "id": 3,
+        "previous_id": 1,
+        **note("new"),
+    }
+    assert session.data.cells["1"].model_dump(exclude_unset=True) == {
+        "id": 1,
+        "previous_id": None,
+        **note("a"),
+    }
     turn = prepare(session)
-    before = copy.deepcopy(session.data)
+    before = copy.deepcopy(session.store.data)
     with pytest.raises(InvalidPatch):
-        session.accept(turn["id"], [add(note()), replace_cell(3, {"kind": "note", "text": 1})])
-    assert session.data == before
+        session.accept(turn.id, [add(note()), replace_cell(3, {"kind": "note", "text": 1})])
+    assert session.store.data == before
 
 
-def test_runtime_assigns_ids_positions_and_order_free_removal(session):
+def test_runtime_assigns_ids_positions_and_order_free_removal(session: Session) -> None:
     accept(session, note("a"), note("b"), note("c"), note("d"))
     turn = prepare(session)
     session.accept(
-        turn["id"],
+        turn.id,
         [remove(1), add(note("e")), replace_cell(3, note("c2")), remove(4), add(note("f"))],
     )
-    cells = session.state["cells"]
-    assert [(c["id"], c["previous_id"], c["text"]) for c in cells] == [
+    cells = session.state.cells
+    assert [(c.id, c.previous_id, c.text) for c in cells] == [
         (2, None, "b"),
         (6, 3, "c2"),
         (5, None, "e"),
         (7, None, "f"),
     ]
-    assert session.state["runtime"]["next_cell_id"] == 8
+    assert session.state.runtime.next_cell_id == 8
 
 
 @pytest.mark.parametrize(
@@ -244,11 +273,11 @@ def test_runtime_assigns_ids_positions_and_order_free_removal(session):
         control("resolution", target_cell_id=1, evidence_refs=[]),
     ],
 )
-def test_restricted_ops(session, operation):
+def test_restricted_ops(session: Session, operation: dict[str, Any]) -> None:
     accept(session, note())
     turn = prepare(session)
     with pytest.raises(InvalidPatch):
-        session.accept(turn["id"], [operation])
+        session.accept(turn.id, [operation])
 
 
 @pytest.mark.parametrize(
@@ -264,39 +293,47 @@ def test_restricted_ops(session, operation):
         (add(note(role="cancel")), r"Unknown Cell fields: \['role'\]"),
     ],
 )
-def test_control_rejections_name_the_fix(session, operation, message):
+def test_control_rejections_name_the_fix(
+    session: Session, operation: dict[str, Any], message: str
+) -> None:
     turn = prepare(session)
     with pytest.raises(InvalidPatch, match=message):
-        session.accept(turn["id"], [operation])
+        session.accept(turn.id, [operation])
 
 
-def test_ops_sent_as_a_json_string_are_decoded(session):
+def test_ops_sent_as_a_json_string_are_decoded(session: Session) -> None:
     turn = prepare(session)
-    session.accept(turn["id"], json.dumps([add(note("a"))]))
-    assert session.state["cells"] == [{"id": 1, "previous_id": None, **note("a")}]
+    session.accept(turn.id, json.dumps([add(note("a"))]))
+    assert [c.model_dump(exclude_unset=True) for c in session.state.cells] == [
+        {"id": 1, "previous_id": None, **note("a")}
+    ]
 
 
-def test_conclusion_cannot_share_a_step_with_runnable_cells(session):
+def test_conclusion_cannot_share_a_step_with_runnable_cells(session: Session) -> None:
     turn = prepare(session)
     with pytest.raises(InvalidPatch, match="conclude in a later step"):
-        session.accept(turn["id"], [add(cmd("ls")), conclude("failure")])
-    receipt = session.accept(turn["id"], [add(note("summary")), conclude()])
-    assert receipt["control_ids"] == [1]
+        session.accept(turn.id, [add(cmd("ls")), conclude("failure")])
+    receipt = session.accept(turn.id, [add(note("summary")), conclude()])
+    assert receipt.control_ids == [1]
 
 
-def test_null_fields_from_strict_providers_are_omitted(session):
+def test_null_fields_from_strict_providers_are_omitted(session: Session) -> None:
     accept(session, cmd("ls"))
     turn = prepare(session)
     stop = {"type": "cancel", "target_cell_id": 1, "reason": "stale", "result": None}
     session.accept(
-        turn["id"],
+        turn.id,
         [
             {"op": "add", "id": None, "cell": note(argv=None), "control": None},
             {"op": "control", "id": None, "cell": None, "control": stop},
         ],
     )
-    assert session.state["cells"][-1] == {"id": 2, "previous_id": None, **note()}
-    assert session.data["controls"] == {
+    assert session.state.cells[-1].model_dump(exclude_unset=True) == {
+        "id": 2,
+        "previous_id": None,
+        **note(),
+    }
+    assert session.data.model_dump(exclude_unset=True)["controls"] == {
         "1": {
             "control": {"type": "cancel", "target_cell_id": 1, "reason": "stale"},
             "handled": False,
@@ -304,7 +341,7 @@ def test_null_fields_from_strict_providers_are_omitted(session):
     }
 
 
-def test_controls_stay_out_of_cells_and_take_their_own_ids(session):
+def test_controls_stay_out_of_cells_and_take_their_own_ids(session: Session) -> None:
     accept(session, cmd("ls"), cmd("ls"))
     receipt = accept(
         session,
@@ -312,135 +349,147 @@ def test_controls_stay_out_of_cells_and_take_their_own_ids(session):
         note("kept"),
         control("cancel", target_cell_id=1),
     )
-    assert receipt["cell_ids"] == [3] and receipt["control_ids"] == [1, 2]
-    assert [c["kind"] for c in session.state["cells"]] == ["cmd", "cmd", "note"]
-    assert session.state["runtime"]["next_cell_id"] == 4
-    assert accept(session, conclude())["control_ids"] == [3]
+    assert receipt.cell_ids == [3] and receipt.control_ids == [1, 2]
+    assert [c.kind for c in session.state.cells] == ["cmd", "cmd", "note"]
+    assert session.state.runtime.next_cell_id == 4
+    assert accept(session, conclude()).control_ids == [3]
     turn = prepare(session)
     # A control is no Cell, so it cannot be replaced or removed.
     with pytest.raises(InvalidPatch, match="not in cells"):
-        session.accept(turn["id"], [remove(4)])
+        session.accept(turn.id, [remove(4)])
 
 
-def test_unknown_id_names_current_ids(session):
+def test_unknown_id_names_current_ids(session: Session) -> None:
     accept(session, note(), note())
     turn = prepare(session)
-    session.accept(turn["id"], [remove(1)])
+    session.accept(turn.id, [remove(1)])
     turn = prepare(session)
     with pytest.raises(InvalidPatch, match=r"Cell 1 is not in cells \(ids: \[2\]\)"):
-        session.accept(turn["id"], [remove(1)])
+        session.accept(turn.id, [remove(1)])
     with pytest.raises(InvalidPatch, match=r"Cell 3 is not in cells .*new Cells get ids"):
-        session.accept(turn["id"], [add(note()), replace_cell(3, note())])
+        session.accept(turn.id, [add(note()), replace_cell(3, note())])
 
 
-def test_second_op_on_a_cell_names_the_cell(session):
+def test_second_op_on_a_cell_names_the_cell(session: Session) -> None:
     accept(session, note(), note())
     turn = prepare(session)
     with pytest.raises(InvalidPatch, match=r"ops\[1\]: Cell 1 already has an op"):
-        session.accept(turn["id"], [replace_cell(1, note()), replace_cell(1, note())])
+        session.accept(turn.id, [replace_cell(1, note()), replace_cell(1, note())])
     with pytest.raises(InvalidPatch, match=r"ops\[1\]: Cell 1 already has an op"):
-        session.accept(turn["id"], [remove(1), remove(1)])
+        session.accept(turn.id, [remove(1), remove(1)])
 
 
-def test_stale_turn_is_rejected(session):
+def test_stale_turn_is_rejected(session: Session) -> None:
     turn = prepare(session)
-    state = session.meta["state"]
-    session.store.commit("test_drift", {"meta": {"state": {**state, "revision": 99}}})
+    state = session.meta.state
+    session.store.commit(
+        "owner_record",
+        {
+            "meta": {
+                "state": {**state.model_dump(by_alias=True, exclude_unset=True), "revision": 99}
+            }
+        },
+    )
     with pytest.raises(InvalidPatch, match="Stale turn"):
-        session.accept(turn["id"], [add(note())])
-    assert not session.data["cells"]
+        session.accept(turn.id, [add(note())])
+    assert not session.data.cells
 
 
-def test_old_protocol_session_is_rejected(tmp_path):
+def test_old_protocol_session_is_rejected(tmp_path: Path) -> None:
     path = tmp_path / "old.sqlite3"
     with Store(path) as store:
         session = Session.create(store, "goal")
-        state = {**session.meta["state"], "schema": "rio.state/1"}
-        store.commit("test_downgrade", {"meta": {"state": state}})
+        state = {
+            **session.meta.state.model_dump(by_alias=True, exclude_unset=True),
+            "schema": "rio.state/1",
+        }
+        store.commit("owner_record", {"meta": {"state": state}})
     with Store(path) as store, pytest.raises(ValueError, match="rio.state/1.*new session"):
         Session(store)
 
 
-def test_deduplication_and_conflicting_turn(session):
+def test_deduplication_and_conflicting_turn(session: Session) -> None:
     turn = prepare(session)
     operations = [add(code())]
-    receipt = session.accept(turn["id"], operations)
+    receipt = session.accept(turn.id, operations)
     seq = session.store.sequence
-    assert session.accept(turn["id"], operations) == receipt
+    assert session.accept(turn.id, operations) == receipt
     assert session.store.sequence == seq
-    assert len(session.data["executions"]) == 1
+    assert len(session.data.executions) == 1
     with pytest.raises(InvalidPatch, match="Conflicting"):
-        session.accept(turn["id"], [])
+        session.accept(turn.id, [])
 
 
-def test_busy_replace_rejected_removal_keeps_work(session):
+def test_busy_replace_rejected_removal_keeps_work(session: Session) -> None:
     accept(session, code())
     turn = prepare(session)
     with pytest.raises(InvalidPatch, match="Cell 1 is queued or running.*cancel"):
-        session.accept(turn["id"], [replace_cell(1, code())])
-    session.accept(turn["id"], [remove(1)])
-    assert not session.state["cells"]
-    assert session.state["runtime"] == {
+        session.accept(turn.id, [replace_cell(1, code())])
+    session.accept(turn.id, [remove(1)])
+    assert not session.state.cells
+    assert session.state.runtime.model_dump() == {
         "next_cell_id": 2,
         "cells": {},
         "inbox": [],
-        "usage": zero_usage(),
+        "usage": zero_usage().model_dump(),
     }
-    assert session.pending()[0]["cell_id"] == 1
-    assert "1" in prepare(session)["state"]["runtime"]["cells"]
+    assert session.pending()[0].cell_id == 1
+    assert "1" in prepare(session).state.runtime.cells
 
 
-def test_unchanged_successor_requests_new_execution(session):
+def test_unchanged_successor_requests_new_execution(session: Session) -> None:
     accept(session, code())
     session.finish(1, {"type": "success"})
     turn = prepare(session)
-    session.accept(turn["id"], [replace_cell(1, code())])
-    assert session.data["executions"]["2"]["phase"] == "queued"
-    assert "result" not in session.data["executions"]["2"]
+    session.accept(turn.id, [replace_cell(1, code())])
+    assert session.data.executions["2"].phase == "queued"
+    assert "result" not in session.data.executions["2"].model_fields_set
 
 
-def test_fixed_snapshot_and_unrelated_response_cannot_clear_pause(session):
+def test_fixed_snapshot_and_unrelated_response_cannot_clear_pause(session: Session) -> None:
     accept(session, code(), code())
     turn = prepare(session)
     session.finish(1, {"type": "error"})
     assert prepare(session) == turn
-    session.accept(turn["id"], [])
-    assert session.meta["pause"] == "execution:1"
+    session.accept(turn.id, [])
+    assert session.meta.pause == "execution:1"
     turn = prepare(session)
-    assert turn["delivered"] == ["execution:1"]
-    session.accept(turn["id"], [])
-    assert session.meta["pause"] is None
+    assert turn.delivered == ["execution:1"]
+    session.accept(turn.id, [])
+    assert session.meta.pause is None
 
 
-def test_inbox_deduplication_and_acknowledgment(session):
+def test_inbox_deduplication_and_acknowledgment(session: Session) -> None:
     session.receive("external:1", "external", {"fact": 1})
     session.receive("external:1", "external", {"fact": 1})
     with pytest.raises(ValueError, match="Conflicting"):
         session.receive("external:1", "external", {"fact": 2})
     turn = prepare(session)
     with pytest.raises(InvalidPatch):
-        session.accept(turn["id"], [remove(1)])
-    assert not session.data["inbox"]["external:1"]["consumed"]
-    session.accept(turn["id"], [])
-    assert session.data["inbox"]["external:1"]["consumed"]
+        session.accept(turn.id, [remove(1)])
+    assert not session.data.inbox["external:1"].consumed
+    session.accept(turn.id, [])
+    assert session.data.inbox["external:1"].consumed
 
 
-def test_rebuild_is_pure_and_preserves_usage(session, monkeypatch):
+def test_rebuild_is_pure_and_preserves_usage(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     accept(session, code())
     session.finish(1, {"type": "UnknownExecution"})
     turn = prepare(session)
-    session.start_attempt(turn["id"])
-    expected = copy.deepcopy(session.data)
+    session.start_attempt(turn.id)
+    expected = copy.deepcopy(session.store.data)
     events = session.store.events()
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: pytest.fail("reducer spawned work"))
-    replay = {}
+    replay: dict[str, Any] = {}
     for event in events:
-        replay = reduce_event(replay, event["changes"])
+        replay = reduce_event(replay, event.changes)
     assert replay == expected
     assert replay["meta"]["usage"]["unknown_usage"] == 1
 
 
-def test_timer_generation_fires_once_after_restart(tmp_path):
+def test_timer_generation_fires_once_after_restart(tmp_path: Path) -> None:
     path = tmp_path / "timer.sqlite3"
     with Store(path) as store:
         session = Session.create(store, "wait")
@@ -450,7 +499,7 @@ def test_timer_generation_fires_once_after_restart(tmp_path):
         session.fire_timers(11)
         session.fire_timers(12)
         session.register_timer("alarm:1", 10, {"wake": True})
-        assert len(session.data["inbox"]) == 1
+        assert len(session.data.inbox) == 1
         with pytest.raises(ValueError, match="Conflicting"):
             session.register_timer("alarm:1", 12, {})
 
@@ -469,7 +518,9 @@ def test_timer_generation_fires_once_after_restart(tmp_path):
         None,
     ],
 )
-async def test_timer_rejects_invalid_requests_without_committing(session, timer_request):
+async def test_timer_rejects_invalid_requests_without_committing(
+    session: Session, timer_request: tuple[Any, ...]
+) -> None:
     if isinstance(timer_request, dict) and timer_request:
         with pytest.raises(ValueError):
             session.register_timer(
@@ -485,10 +536,10 @@ async def test_timer_rejects_invalid_requests_without_committing(session, timer_
         await writer.wait_closed()
         assert "error" in response
         assert session.store.sequence == sequence
-        assert not session.data["timers"]
+        assert not session.data.timers
 
 
-async def test_serial_uv_runs_and_independent_variables(session):
+async def test_serial_uv_runs_and_independent_variables(session: Session) -> None:
     accept(
         session,
         code("from pathlib import Path\nx = 7\nPath('order').write_text('1')"),
@@ -499,23 +550,29 @@ async def test_serial_uv_runs_and_independent_variables(session):
     )
     async with ProcessOwner(session) as owner:
         await settle(owner)
-    assert (Path(session.meta["owner_config"]["cwd"]) / "order").read_text() == "12"
-    assert session.data["executions"]["2"]["output"]["stdout"] == "ok\n"
-    assert all(e["result"]["type"] == "success" for e in session.data["executions"].values())
+    assert (Path(session.meta.owner_config["cwd"]) / "order").read_text() == "12"
+    assert session.data.executions["2"].output["stdout"] == "ok\n"
+    assert all(
+        e.result is not None and e.result.type == "success"
+        for e in session.data.executions.values()
+    )
 
 
-async def test_cmd_runs_argv_without_shell(session):
+async def test_cmd_runs_argv_without_shell(session: Session) -> None:
     accept(session, cmd(sys.executable, "-c", "import sys; print(sys.argv[1])", "$HOME"))
     accept(session, cmd("rio-missing-command"))
     async with ProcessOwner(session) as owner:
         await settle(owner)
-    assert session.data["executions"]["1"]["output"]["stdout"] == "$HOME\n"
-    assert session.data["executions"]["2"]["result"]["exit_code"] == 127
-    assert session.meta["pause"] == "execution:2"
+    assert session.data.executions["1"].output["stdout"] == "$HOME\n"
+    assert session.data.executions["2"].result is not None
+    assert (session.data.executions["2"].result.model_extra or {})["exit_code"] == 127
+    assert session.meta.pause == "execution:2"
 
 
 @pytest.mark.parametrize("venv", [None, "/project/.venv"])
-async def test_active_venv_keeps_uv_run_from_syncing_it(session, monkeypatch, venv):
+async def test_active_venv_keeps_uv_run_from_syncing_it(
+    session: Session, monkeypatch: pytest.MonkeyPatch, venv: str | None
+) -> None:
     if venv:
         monkeypatch.setenv("VIRTUAL_ENV", venv)
     else:
@@ -529,107 +586,111 @@ async def test_active_venv_keeps_uv_run_from_syncing_it(session, monkeypatch, ve
     accept(session, {**script, "source": script["source"].replace("[]", '["iniconfig"]')})
     async with ProcessOwner(session) as owner:
         await settle(owner)
-    executions = session.data["executions"]
-    assert executions["1"]["output"]["stdout"] == ("1 " + venv if venv else "None None") + "\n"
-    assert executions["2"]["output"] == {"stdout": "ok\n"}
+    executions = session.data.executions
+    assert executions["1"].output["stdout"] == ("1 " + venv if venv else "None None") + "\n"
+    assert executions["2"].output == {"stdout": "ok\n"}
 
 
-async def test_error_pauses_queue_then_cancel_before_dispatch(session):
+async def test_error_pauses_queue_then_cancel_before_dispatch(session: Session) -> None:
     accept(session, code("raise RuntimeError('bad')"), code("assert False"))
     async with ProcessOwner(session) as owner:
         async with asyncio.timeout(15):
-            while session.meta["pause"] is None:
+            while session.meta.pause is None:
                 await owner.tick()
                 await asyncio.sleep(0.02)
-        assert session.data["executions"]["2"]["phase"] == "queued"
+        assert session.data.executions["2"].phase == "queued"
         accept(session, control("cancel", target_cell_id=2))
         await owner.tick()
-    assert session.data["executions"]["2"]["result"]["type"] == "cancelled"
-    assert "cell:2" not in session.data.get("workers", {})
+    assert session.data.executions["2"].result is not None
+    assert session.data.executions["2"].result.type == "cancelled"
+    assert "cell:2" not in session.store.data.get("workers", {})
 
 
-async def test_started_recovery_never_reexecutes(session):
+async def test_started_recovery_never_reexecutes(session: Session) -> None:
     accept(session, code("from pathlib import Path\nPath('effect').touch()"))
     session.authorize(1)
     session.record("workers", "cell:1", {"token": "not-a-real-worker"})
     async with ProcessOwner(session):
-        assert session.data["executions"]["1"]["result"]["type"] == "UnknownExecution"
-    assert not (Path(session.meta["owner_config"]["cwd"]) / "effect").exists()
-    assert session.meta["pause"] == "execution:1"
+        assert session.data.executions["1"].result is not None
+        assert session.data.executions["1"].result.type == "UnknownExecution"
+    assert not (Path(session.meta.owner_config["cwd"]) / "effect").exists()
+    assert session.meta.pause == "execution:1"
     seq = session.store.sequence
     async with ProcessOwner(session):
         pass
     assert session.store.sequence == seq
 
 
-async def test_resolution_requires_evidence_and_keeps_original_unknown(session):
+async def test_resolution_requires_evidence_and_keeps_original_unknown(session: Session) -> None:
     accept(session, code())
     session.finish(1, {"type": "UnknownExecution"})
-    original = copy.deepcopy(session.data["executions"]["1"])
+    original = copy.deepcopy(session.data.executions["1"])
     turn = prepare(session)
     with pytest.raises(InvalidPatch):
         session.accept(
-            turn["id"],
+            turn.id,
             [control("resolution", target_cell_id=1, evidence_refs=[])],
         )
     session.receive("inspection", "external", {"file_hash": "verified"})
     ref = f"session:event:{session.store.sequence}"
     session.accept(
-        turn["id"],
+        turn.id,
         [control("resolution", target_cell_id=1, evidence_refs=[ref])],
     )
     async with ProcessOwner(session):
         assert not session.unresolved()
-    assert session.data["executions"]["1"] == original
-    assert prepare(session)["state"]["runtime"]["cells"]["1"]["resolved_by"] == 1
+    assert session.data.executions["1"] == original
+    assert prepare(session).state.runtime.cells["1"].resolved_by == 1
 
 
-def folded(store):
-    data = {}
+def folded(store: Store) -> dict[str, Any]:
+    data: dict[str, Any] = {}
     for event in store.events():
-        data = reduce_event(data, event["changes"])
+        data = reduce_event(data, event.changes)
     return data
 
 
-async def test_runtime_cells_leave_the_live_projection_a_fold_of_events(session, monkeypatch):
+async def test_runtime_cells_leave_the_live_projection_a_fold_of_events(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     accept(session, code(), code())
     session.authorize(1)
     session.finish(1, {"type": "UnknownExecution"})
     turn = prepare(session)
     session.receive("inspection", "external", {"file_hash": "verified"})
     ref = f"session:event:{session.store.sequence}"
-    session.accept(turn["id"], [control("resolution", target_cell_id=1, evidence_refs=[ref])])
+    session.accept(turn.id, [control("resolution", target_cell_id=1, evidence_refs=[ref])])
     async with Owner(session) as owner:
         await owner.handle_controls()
     turn = prepare(session)
-    assert turn["state"]["runtime"]["cells"]["1"]["resolved_by"] == 1
-    assert "resolved_by" not in session.data["executions"]["1"]
-    assert session.data == folded(session.store)
-    session.accept(turn["id"], [control("cancel", target_cell_id=2)])
+    assert turn.state.runtime.cells["1"].resolved_by == 1
+    assert "resolved_by" not in session.data.executions["1"].model_fields_set
+    assert session.store.data == folded(session.store)
+    session.accept(turn.id, [control("cancel", target_cell_id=2)])
     prepared = Session.prepare_turn
 
-    def checked(self):
+    def checked(self: Session) -> Turn:
         turn = prepared(self)
-        assert self.data == folded(self.store)
+        assert self.store.data == folded(self.store)
         return turn
 
     monkeypatch.setattr(Session, "prepare_turn", checked)
     assert await run(Owner(session), FakeProvider([response([conclude()])]), "fake")
-    expected = copy.deepcopy(session.data)
+    expected = copy.deepcopy(session.store.data)
     assert expected == folded(session.store)
     session.store.close()
     with Store(session.store.path) as reopened:
         assert reopened.data == expected
 
 
-def test_live_projection_holds_journaled_json(tmp_path):
+def test_live_projection_holds_journaled_json(tmp_path: Path) -> None:
     with Store(tmp_path / "s.db") as store:
         Session.create(store, "goal", validators=(("check", 1),))
         assert store.data["meta"]["validators"] == [["check", 1]]
         assert store.data == folded(store)
 
 
-async def test_cancel_requires_started_cell_to_be_active(session):
+async def test_cancel_requires_started_cell_to_be_active(session: Session) -> None:
     accept(session, code())
     session.authorize(1)
     accept(session, control("cancel", target_cell_id=1))
@@ -637,31 +698,32 @@ async def test_cancel_requires_started_cell_to_be_active(session):
         await Owner(session).handle_controls()
 
 
-async def test_success_rejected_for_new_input_and_failure_is_terminal(session):
+async def test_success_rejected_for_new_input_and_failure_is_terminal(session: Session) -> None:
     turn = prepare(session)
     session.receive("arrived", "external", {"updated": True})
-    session.accept(turn["id"], [conclude()])
+    session.accept(turn.id, [conclude()])
     async with ProcessOwner(session) as owner:
-        assert not session.meta["terminal"]
+        assert not session.meta.terminal
         accept(session, conclude("failure"))
         await owner.handle_controls()
-    assert session.meta["terminal"]["result"] == "failure"
+    assert session.meta.terminal is not None
+    assert session.meta.terminal.result == "failure"
     ending = session.store.events()[-1]
-    assert ending["type"] == "run_ended"
-    assert all(record["handled"] for record in session.data["controls"].values())
-    assert ending["changes"]["controls"]
+    assert ending.type == "run_ended"
+    assert all(record.handled for record in session.data.controls.values())
+    assert ending.changes["controls"]
     # The rejected success names itself, since controls never enter State.
-    rejected = session.data["inbox"]["control:1"]
-    assert rejected["kind"] == "control_rejected"
-    assert rejected["payload"]["control"] == conclude()["control"]
-    assert rejected["payload"]["reason"].startswith("New observations")
+    rejected = session.data.inbox["control:1"]
+    assert rejected.kind == "control_rejected"
+    assert rejected.payload["control"] == conclude()["control"]
+    assert rejected.payload["reason"].startswith("New observations")
     seq = session.store.sequence
     async with ProcessOwner(session):
         pass
     assert session.store.sequence == seq
 
 
-async def test_cancel_running_worker_and_children(session):
+async def test_cancel_running_worker_and_children(session: Session) -> None:
     accept(
         session,
         code(
@@ -671,7 +733,7 @@ async def test_cancel_running_worker_and_children(session):
     )
     async with ProcessOwner(session) as owner:
         await owner.tick()
-        path = Path(session.meta["owner_config"]["cwd"]) / "child"
+        path = Path(session.meta.owner_config["cwd"]) / "child"
         async with asyncio.timeout(15):
             while not path.exists():
                 await asyncio.sleep(0.02)
@@ -684,17 +746,18 @@ async def test_cancel_running_worker_and_children(session):
         not psutil.pid_exists(child_pid)
         or psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE
     )
-    assert session.data["executions"]["1"]["result"]["type"] == "UnknownExecution"
+    assert session.data.executions["1"].result is not None
+    assert session.data.executions["1"].result.type == "UnknownExecution"
 
 
-def response(operations):
+def response(operations: list[dict[str, Any]]) -> AssistantMessage:
     message = AssistantMessage(
-        content=[ToolCall(id="call", name="step", arguments={"ops": operations})]
+        content=[ToolCall(id="call", name="step", arguments={"ops": list(operations)})]
     )
     return message
 
 
-async def test_public_loop_finishes_and_reopens_without_model_call(session):
+async def test_public_loop_finishes_and_reopens_without_model_call(session: Session) -> None:
     provider = FakeProvider(
         [
             response([add(code())]),
@@ -705,40 +768,47 @@ async def test_public_loop_finishes_and_reopens_without_model_call(session):
             ),
         ]
     )
-    published = []
+    published: list[JournalEvent] = []
     assert await run(ProcessOwner(session), provider, "fake", published.append)
     assert len(provider.calls) == 2
-    assert any(e["type"] == "run_ended" for e in published)
+    assert any(e.type == "run_ended" for e in published)
     assert await run(ProcessOwner(session), FakeProvider([]), "fake")
 
 
-async def test_base_owner_runs_note_only_sessions_without_processes(tmp_path):
+async def test_base_owner_runs_note_only_sessions_without_processes(tmp_path: Path) -> None:
     provider = FakeProvider([response([conclude()])])
     with Store(tmp_path / "notes.sqlite3") as store:
         session = Session.create(store, "say hello")
         ok = await run(Owner(session), provider, "fake")
-        print([e["changes"] for e in store.events() if e["type"] == "patch_rejected"])
+        print([e.changes for e in store.events() if e.type == "patch_rejected"])
         assert ok
         assert await replay(Owner(session))
 
 
-async def test_model_state_keeps_stable_prefix_after_resume(tmp_path):
+async def test_model_state_keeps_stable_prefix_after_resume(tmp_path: Path) -> None:
     path = tmp_path / "prefix.sqlite3"
     with Store(path) as store:
         session = Session.create(store, "Remember café and 日本語.")
         accept(session, note("Stable memory. " * 1000))
         saved = copy.deepcopy(prepare(session))
         # Existing journals put revision before goal and cells.
-        assert list(saved["state"]) == ["schema", "id", "revision", "goal", "cells", "runtime"]
+        assert list(saved.state.model_dump(by_alias=True)) == [
+            "schema",
+            "id",
+            "revision",
+            "goal",
+            "cells",
+            "runtime",
+        ]
 
     provider = FakeProvider([response([]), response([conclude()])])
     with Store(path) as store:
         session = Session(store)
         assert await run(Owner(session), provider, "fake")
-        assert session.data["turns"][saved["id"]]["state"] == saved["state"]
+        assert session.data.turns[saved.id].state == saved.state
         assert len(provider.calls) == 2
         first, second = [call[2][0].content for call in provider.calls]
-        assert json.loads(first) == saved["state"]
+        assert json.loads(first) == saved.state.model_dump(by_alias=True, exclude_unset=True)
         assert list(json.loads(first)) == ["schema", "id", "goal", "cells", "revision", "runtime"]
         assert json.loads(first)["revision"] != json.loads(second)["revision"]
         assert json.loads(first)["runtime"] != json.loads(second)["runtime"]
@@ -747,39 +817,42 @@ async def test_model_state_keeps_stable_prefix_after_resume(tmp_path):
         assert second.startswith(prefix + ',"revision":')
 
 
-async def test_base_owner_recovers_started_cells_as_unknown(session):
+async def test_base_owner_recovers_started_cells_as_unknown(session: Session) -> None:
     accept(session, code())
     session.authorize(1)
     async with Owner(session):
-        result = session.data["executions"]["1"]["result"]
-    assert result["type"] == "UnknownExecution"
-    assert result["reason"] == "owner_lost_before_result_commit"
+        result = session.data.executions["1"].result
+    assert result is not None
+    assert result.type == "UnknownExecution"
+    assert result is not None
+    assert result.reason == "owner_lost_before_result_commit"
 
 
-def test_owner_records_merge_outside_session_collections(session):
+def test_owner_records_merge_outside_session_collections(session: Session) -> None:
     session.record("workers", "cell:1", {"token": "t"})
     session.record("workers", "cell:1", {"stopped": True})
-    assert session.data["workers"] == {"cell:1": {"token": "t", "stopped": True}}
-    assert session.store.events()[-1]["type"] == "owner_record"
+    assert session.store.data["workers"] == {"cell:1": {"token": "t", "stopped": True}}
+    assert session.store.events()[-1].type == "owner_record"
     for collection in ("executions", "meta", "output_chunks"):
         with pytest.raises(ValueError, match="Session collection"):
             session.record(collection, "1", {})
 
 
-async def test_interrupted_validator_blocks_success_after_restart(tmp_path):
+async def test_interrupted_validator_blocks_success_after_restart(tmp_path: Path) -> None:
     with Store(tmp_path / "s.db") as store:
         session = Session.create(store, "goal", validators=[["true"]])
         accept(session, conclude())
         # A validator worker was registered, then the owner died before its result committed.
         session.record("workers", "validator:1:0", {"token": "lost-validator-token"})
         async with ProcessOwner(session):
-            assert session.data["workers"]["validator:1:0"]["stopped"]
-            assert not session.data["validator_results"]["1:0"]["passed"]
-            assert session.data["controls"]["1"]["outcome"].startswith("Required validator 0")
-            assert session.meta["terminal"] is None
+            assert session.store.data["workers"]["validator:1:0"]["stopped"]
+            assert not session.data.validator_results["1:0"].passed
+            assert session.data.controls["1"].outcome is not None
+            assert session.data.controls["1"].outcome.startswith("Required validator 0")
+            assert session.meta.terminal is None
 
 
-async def test_finished_validator_result_is_reused_after_restart(tmp_path):
+async def test_finished_validator_result_is_reused_after_restart(tmp_path: Path) -> None:
     with Store(tmp_path / "s.db") as store:
         session = Session.create(store, "goal", validators=[["false"]])
         accept(session, conclude())
@@ -789,18 +862,21 @@ async def test_finished_validator_result_is_reused_after_restart(tmp_path):
             "workers", "validator:1:0", {"token": "t", "result": result, "stopped": True}
         )
         async with ProcessOwner(session):
-            assert session.data["validator_results"]["1:0"] == result
-            assert session.meta["terminal"]["result"] == "success"
+            assert session.data.validator_results["1:0"].model_dump() == result
+            assert session.meta.terminal is not None
+            assert session.meta.terminal.result == "success"
 
 
-async def test_base_owner_cannot_launch_runnable_cells(session):
+async def test_base_owner_cannot_launch_runnable_cells(session: Session) -> None:
     accept(session, code())
     async with Owner(session) as owner:
         with pytest.raises(NotImplementedError):
             await owner.tick()
 
 
-async def test_successful_completions_wake_the_model_once_after_the_queue_drains(session):
+async def test_successful_completions_wake_the_model_once_after_the_queue_drains(
+    session: Session,
+) -> None:
     provider = FakeProvider(
         [
             response(
@@ -821,7 +897,7 @@ async def test_successful_completions_wake_the_model_once_after_the_queue_drains
     assert [m["id"] for m in state["runtime"]["inbox"]] == ["execution:1", "execution:2"]
 
 
-async def test_instructions_extend_system_prompt(tmp_path):
+async def test_instructions_extend_system_prompt(tmp_path: Path) -> None:
     with Store(tmp_path / "session.sqlite3") as store:
         session = Session.create(store, "goal", instructions="\n\nUse tabs.")
         provider = FakeProvider([response([conclude()])])
@@ -830,24 +906,24 @@ async def test_instructions_extend_system_prompt(tmp_path):
         assert provider.calls[0][1] == PROTOCOL + NOTE.prompt + CONCLUSION + "\n\nUse tabs."
 
 
-def test_note_only_agent_rejects_runnable_cells(tmp_path):
+def test_note_only_agent_rejects_runnable_cells(tmp_path: Path) -> None:
     with Store(tmp_path / "s.db") as store:
         session = Session.create(store, "goal")
         with pytest.raises(InvalidPatch, match="Cell kind must be one of: note$"):
             accept(session, code())
         with pytest.raises(InvalidPatch, match="Cell kind must be"):
             accept(session, {**note(), "kind": ["note"]})
-        assert accept(session, note())["cell_ids"] == [1]
+        assert accept(session, note()).cell_ids == [1]
 
 
-def test_control_types_match_control_table():
+def test_control_types_match_control_table() -> None:
     # Session admits and Owner handles every declared type; the Literal mirrors the table.
     assert get_args(ControlType) == tuple(CONTROLS) == tuple(Owner.CONTROL_HANDLERS)
     assert Session.CONTROL_CHECKS.keys() <= CONTROLS.keys()
     assert {f for kind in CONTROLS.values() for f in kind.fields} < CONTROL_FIELDS.keys()
 
 
-def test_note_is_not_an_extension_kind(tmp_path):
+def test_note_is_not_an_extension_kind(tmp_path: Path) -> None:
     with Store(tmp_path / "s.db") as store, pytest.raises(ValueError, match="built-in"):
         Session.create(store, "goal", kinds=[replace(KINDS[0], name="note")])
     with Store(tmp_path / "s.db") as store:
@@ -855,7 +931,7 @@ def test_note_is_not_an_extension_kind(tmp_path):
 
 
 @pytest.mark.parametrize("fields", [{"text": {"type": "integer"}}, {"id": {"type": "integer"}}])
-def test_kind_fields_share_one_cell_schema(tmp_path, fields):
+def test_kind_fields_share_one_cell_schema(tmp_path: Path, fields: dict[str, Any]) -> None:
     with Store(tmp_path / "s.db") as store, pytest.raises(ValueError, match="redefines field"):
         Session.create(store, "goal", kinds=[replace(KINDS[0], fields=fields)])
     with Store(tmp_path / "n.db") as store:
@@ -863,19 +939,19 @@ def test_kind_fields_share_one_cell_schema(tmp_path, fields):
         assert cell["properties"]["cell"]["properties"]["kind"]["enum"] == ["note"]
 
 
-async def test_owner_requires_the_recorded_cell_kinds(tmp_path):
+async def test_owner_requires_the_recorded_cell_kinds(tmp_path: Path) -> None:
     path = tmp_path / "s.db"
     with Store(path) as store:
         accept(Session.create(store, "goal", kinds=KINDS), code())
     with Store(path) as store:
-        assert Session(store).state["goal"] == "goal"
+        assert Session(store).state.goal == "goal"
         with pytest.raises(ValueError, match="Cell kinds: code"):
             async with ProcessOwner(Session(store)):
                 pass
 
 
-async def test_caller_extends_agent_with_a_cell_kind(tmp_path):
-    def validate(cell):
+async def test_caller_extends_agent_with_a_cell_kind(tmp_path: Path) -> None:
+    def validate(cell: dict[str, Any]) -> None:
         if not isinstance(cell.get("text"), str):
             raise InvalidPatch("Echo requires text")
 
@@ -886,7 +962,7 @@ async def test_caller_extends_agent_with_a_cell_kind(tmp_path):
         validate=validate,
     )
 
-    def command(cell, scratch):
+    def command(cell: dict[str, Any], scratch: Path) -> list[str]:
         return [sys.executable, "-c", "import sys; print(sys.argv[1])", cell["text"]]
 
     with Store(tmp_path / "s.db") as store:
@@ -897,18 +973,19 @@ async def test_caller_extends_agent_with_a_cell_kind(tmp_path):
         accept(session, {"kind": "echo", "text": "hi"})
         async with ProcessOwner(session, {"echo": command}) as owner:
             await settle(owner)
-        assert session.data["executions"]["1"]["output"]["stdout"] == "hi\n"
+        assert session.data.executions["1"].output["stdout"] == "hi\n"
 
 
-async def test_uv_timer_api_acknowledges_committed_registration(session):
+async def test_uv_timer_api_acknowledges_committed_registration(session: Session) -> None:
     accept(session, code("from rio.coding.api import timer\ntimer('wake:1', 0, {'done':True})"))
     async with ProcessOwner(session) as owner:
         await settle(owner)
-    assert session.data["timers"]["wake:1"]["fired"]
-    assert session.data["executions"]["1"]["result"]["type"] == "success"
+    assert session.data.timers["wake:1"].fired
+    assert session.data.executions["1"].result is not None
+    assert session.data.executions["1"].result.type == "success"
 
 
-async def test_owner_wakes_on_commits_and_deadlines_without_polling(session):
+async def test_owner_wakes_on_commits_and_deadlines_without_polling(session: Session) -> None:
     import time
 
     accept(session, cmd(sys.executable, "-c", "print('done')"))
@@ -921,7 +998,7 @@ async def test_owner_wakes_on_commits_and_deadlines_without_polling(session):
                 await owner.wait()
                 await owner.tick()
                 wakes += 1
-        assert session.data["executions"]["1"]["output"]["stdout"] == "done\n"
+        assert session.data.executions["1"].output["stdout"] == "done\n"
         assert wakes < 10
         # With nothing changing, a wait sleeps until the next timer deadline, then fires it.
         session.register_timer("wake", time.time() + 0.3, {})
@@ -930,7 +1007,7 @@ async def test_owner_wakes_on_commits_and_deadlines_without_polling(session):
         await owner.wait()
         assert 0.25 < time.monotonic() - started < 1
         await owner.tick()
-        assert session.data["timers"]["wake"]["fired"]
+        assert session.data.timers["wake"].fired
         # Input committed while waiting wakes it at once.
         waiting = asyncio.create_task(owner.wait(time.time() + 60))
         await asyncio.sleep(0)
@@ -939,16 +1016,18 @@ async def test_owner_wakes_on_commits_and_deadlines_without_polling(session):
             await waiting
 
 
-async def test_loop_sleeps_until_timer_instead_of_polling(session, monkeypatch):
+async def test_loop_sleeps_until_timer_instead_of_polling(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import time
 
     turn = prepare(session)
-    session.accept(turn["id"], [])
+    session.accept(turn.id, [])
     session.register_timer("wake", time.time() + 0.3, {})
     ticks = 0
     tick = Owner.tick
 
-    async def counted(self):
+    async def counted(self: Owner) -> None:
         nonlocal ticks
         ticks += 1
         await tick(self)
@@ -971,52 +1050,53 @@ async def test_loop_sleeps_until_timer_instead_of_polling(session, monkeypatch):
         ({"context_bytes": 4096, "output_bytes": 1025}, "output_bytes <= context_bytes / 4"),
     ],
 )
-def test_limits_reserve_context(fields, message):
+def test_limits_reserve_context(fields: dict[str, Any], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         Limits(**fields)
 
 
-def test_output_limit_is_explicit(session):
+def test_output_limit_is_explicit(session: Session) -> None:
     accept(session, code())
     session.authorize(1)
     session.limits = replace(session.limits, output_bytes=7)
     session.append_output(1, {"stdout": "old text", "stderr": "old error"})
     session.append_output(1, {"stdout": "é終!", "stderr": "é終!"})
-    output = session.data["executions"]["1"]["output"]
+    output = session.data.executions["1"].output
     assert output == {"stdout": "té終!", "stderr": "ré終!"}
     assert len(output["stdout"].encode()) == session.limits.output_bytes
-    assert session.data["executions"]["1"]["truncated"]
+    assert session.data.executions["1"].truncated
     session.append_output(1, {"stdout": "尾", "stderr": "尾"})
-    assert session.data["executions"]["1"]["output"]["stdout"] == "終!尾"
+    assert session.data.executions["1"].output["stdout"] == "終!尾"
     session.append_output(1, {"stdout": "é"})
-    assert session.data["executions"]["1"]["output"] == {"stdout": "!尾é", "stderr": "終!尾"}
+    assert session.data.executions["1"].output == {"stdout": "!尾é", "stderr": "終!尾"}
 
 
-async def test_truncated_output_keeps_tail_and_full_output_file(session):
+async def test_truncated_output_keeps_tail_and_full_output_file(session: Session) -> None:
     source = "print('\\n'.join(map(str, range(3000))))"
     accept(session, cmd("python3", "-c", source), cmd("true"))
     async with ProcessOwner(session) as owner:
         await settle(owner)
-        execution = session.data["executions"]["1"]
-        assert execution["truncated"]
-        stdout = execution["output"]["stdout"]
+        execution = session.data.executions["1"]
+        assert execution.truncated
+        stdout = execution.output["stdout"]
         assert stdout.startswith("1000\n")
         path = stdout.rsplit("Full output: ", 1)[1].rstrip("]")
         assert stdout.endswith(f"[Showing lines 1001-3000 of 3000. Full output: {path}]")
         assert Path(path).read_text().splitlines() == [str(i) for i in range(3000)]
-        assert not session.data["executions"]["2"]["truncated"]
+        assert not session.data.executions["2"].truncated
         assert sorted(p.name for p in Path(path).parent.glob("*.log")) == ["cell-1-stdout.log"]
     # Logs last as long as the owner.
     assert not Path(path).exists()
 
 
-async def test_output_logs_stay_within_disk_budget(session):
+async def test_output_logs_stay_within_disk_budget(session: Session) -> None:
     session.limits = replace(session.limits, output_bytes=1024)
     source = "import sys; sys.stdout.write('x' * 100_000)"
     accept(session, cmd(sys.executable, "-c", source), cmd(sys.executable, "-c", source))
     async with ProcessOwner(session, log_bytes=150_000) as owner:
         await settle(owner)
-        first, second = (session.data["executions"][k]["output"]["stdout"] for k in "12")
+        first, second = (session.data.executions[k].output["stdout"] for k in "12")
+        assert owner.temporary is not None
         logs = Path(owner.temporary.name)
         assert first.endswith(f"Full output: {logs / 'cell-1-stdout.log'}]")
         path = logs / "cell-2-stdout.log"
@@ -1026,30 +1106,32 @@ async def test_output_logs_stay_within_disk_budget(session):
 
 
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
-async def test_worker_and_validator_output_keep_utf8_tail(session, stream):
+async def test_worker_and_validator_output_keep_utf8_tail(session: Session, stream: str) -> None:
     session.limits = replace(session.limits, output_bytes=7, flush_seconds=60)
     source = f"import sys; sys.{stream}.write('old text' + 'é終!' * 3000)"
     accept(session, cmd(sys.executable, "-c", source))
     async with ProcessOwner(session) as owner:
         await settle(owner)
         result = await owner.validate("tail", [sys.executable, "-c", source])
-        assert result == {"passed": True, "exit": 0, "output": "!é終!"}
+        assert result.model_dump() == {"passed": True, "exit": 0, "output": "!é終!"}
         streamed = [
-            event["changes"]["output_chunks"]["1"]["output"][stream]
+            event.changes["output_chunks"]["1"]["output"][stream]
             for event in session.store.events()
-            if event["type"] == "execution_output"
+            if event.type == "execution_output"
         ]
         assert streamed == ["!é終!"]
-        execution = session.data["executions"]["1"]
-        assert execution["output"][stream].startswith("!é終!")
-        path = execution["output"][stream].rsplit("Full output: ", 1)[1].rstrip("]")
+        execution = session.data.executions["1"]
+        assert execution.output[stream].startswith("!é終!")
+        path = execution.output[stream].rsplit("Full output: ", 1)[1].rstrip("]")
         assert Path(path).read_text() == "old text" + "é終!" * 3000
 
 
 @pytest.mark.parametrize("exit_code", [0, 7, None])
-async def test_worker_reader_decodes_streams_independently_and_flushes_eof(session, exit_code):
+async def test_worker_reader_decodes_streams_independently_and_flushes_eof(
+    session: Session, exit_code: int | None
+) -> None:
     reader = asyncio.StreamReader()
-    messages = [
+    messages: list[dict[str, Any]] = [
         {"stdout": b"old \xc3".hex()},
         {"stderr": b"err \xe7".hex()},
         {"stdout": b"\xa9".hex(), "stderr": b"\xb5\x82".hex()},
@@ -1062,16 +1144,23 @@ async def test_worker_reader_decodes_streams_independently_and_flushes_eof(sessi
     reader.feed_eof()
     output = {"stdout": "", "stderr": ""}
 
-    def append(name, text):
+    def append(name: str, text: str) -> None:
         output[name] += text
 
     owner = ProcessOwner(session)
-    assert await owner._read_output(SimpleNamespace(stdout=reader), append) == exit_code
+    assert (
+        await owner._read_output(
+            cast(asyncio.subprocess.Process, SimpleNamespace(stdout=reader)), append
+        )
+        == exit_code
+    )
     assert output == {"stdout": "old é��", "stderr": "err 終"}
 
 
 @pytest.mark.parametrize("ending", ["eof", "timeout", "cancel"])
-async def test_worker_reader_flushes_while_quiet_and_releases_pending_read(session, ending):
+async def test_worker_reader_flushes_while_quiet_and_releases_pending_read(
+    session: Session, ending: str
+) -> None:
     session.limits = replace(session.limits, flush_seconds=0.01, execution_seconds=0.1)
     reader = asyncio.StreamReader()
     reader.feed_data(b'{"stdout":"6869"}\n')
@@ -1080,7 +1169,9 @@ async def test_worker_reader_flushes_while_quiet_and_releases_pending_read(sessi
     owner = ProcessOwner(session)
     task = asyncio.create_task(
         owner._read_output(
-            SimpleNamespace(stdout=reader), lambda _, text: output.append(text), flushed.set
+            cast(asyncio.subprocess.Process, SimpleNamespace(stdout=reader)),
+            lambda _, text: output.append(text),
+            flushed.set,
         )
     )
     await asyncio.wait_for(flushed.wait(), timeout=1)
@@ -1099,39 +1190,39 @@ async def test_worker_reader_flushes_while_quiet_and_releases_pending_read(sessi
         assert await reader.readline() == b"next\n"
 
 
-async def test_validator_timeout_records_result_and_stops_worker(session):
+async def test_validator_timeout_records_result_and_stops_worker(session: Session) -> None:
     session.limits = replace(session.limits, execution_seconds=0.1)
     async with ProcessOwner(session) as owner:
         result = await owner.validate(
             "timeout", [sys.executable, "-c", "import time; time.sleep(30)"]
         )
-    assert result == {
+    assert result.model_dump() == {
         "passed": False,
         "exit": None,
         "output": "Validator interrupted; inspect effects before retrying",
     }
-    worker = session.data["workers"]["validator:timeout"]
-    assert worker["result"] == result
+    worker = session.store.data["workers"]["validator:timeout"]
+    assert worker["result"] == result.model_dump()
     assert worker["stopped"]
 
 
-async def test_required_validator_blocks_success(tmp_path):
+async def test_required_validator_blocks_success(tmp_path: Path) -> None:
     with Store(tmp_path / "s.db") as store:
         session = Session.create(
             store, "goal", validators=((sys.executable, "-c", "raise SystemExit(1)"),)
         )
         accept(session, conclude())
         async with ProcessOwner(session):
-            assert session.meta["terminal"] is None
-            assert session.data["validator_results"]["1:0"]["exit"] == 1
+            assert session.meta.terminal is None
+            assert (session.data.validator_results["1:0"].model_extra or {})["exit"] == 1
 
 
-def test_recycled_pid_fails_closed():
+def test_recycled_pid_fails_closed() -> None:
     with pytest.raises(RecoveryFailure, match="reused"):
-        stop_worker({"pid": os.getpid(), "birth": 0, "token": "old"})
+        stop_worker(WorkerIdentity(pid=os.getpid(), birth=0, token="old"))
 
 
-def test_commit_uncertainty_reopens_committed_identity(tmp_path):
+def test_commit_uncertainty_reopens_committed_identity(tmp_path: Path) -> None:
     import sqlite3
 
     path = tmp_path / "uncertain.db"
@@ -1141,30 +1232,30 @@ def test_commit_uncertainty_reopens_committed_identity(tmp_path):
         connection = store.db
 
         class UncertainCommit:
-            def execute(self, sql, *args):
+            def execute(self, sql: str, *args: Any) -> sqlite3.Cursor:
                 result = connection.execute(sql, *args)
                 if sql == "COMMIT":
                     raise sqlite3.OperationalError("lost commit acknowledgment")
                 return result
 
-            def close(self):
+            def close(self) -> None:
                 connection.close()
 
-        store.db = UncertainCommit()
+        store.db = cast(sqlite3.Connection, UncertainCommit())
         with pytest.raises(StorageFailure):
-            session.accept(turn["id"], [add(code())])
+            session.accept(turn.id, [add(code())])
         assert store.failed and store.data == {}
         with pytest.raises(StorageFailure):
             store.events()
     with Store(path) as store:
         session = Session(store, KINDS)
-        receipt = session.accept(turn["id"], [add(code())])
-        assert receipt["cell_ids"] == [1]
-        assert len(session.data["executions"]) == 1
+        receipt = session.accept(turn.id, [add(code())])
+        assert receipt.cell_ids == [1]
+        assert len(session.data.executions) == 1
 
 
 @pytest.mark.parametrize("boundary", ["queued", "authorized", "running"])
-async def test_process_kill_at_commit_boundaries(tmp_path, boundary):
+async def test_process_kill_at_commit_boundaries(tmp_path: Path, boundary: str) -> None:
     import signal
     import subprocess
 
@@ -1176,12 +1267,12 @@ from rio.agent.session import Session
 from rio.agent.store import Store
 from rio.coding.owner import ProcessOwner
 from rio.coding.cells import KINDS
-async def main():
+async def main() -> None:
     root=Path(sys.argv[1]); boundary=sys.argv[2]
     with Store(root/'crash.db') as store:
         s=Session.create(store, 'one effect', kinds=KINDS, owner_config={'cwd': str(root)})
         t=s.prepare_turn()
-        s.accept(t['id'], [{'op':'add','cell':{'kind':'code','runtime':'python','source':
+        s.accept(t.id, [{'op':'add','cell':{'kind':'code','runtime':'python','source':
              "# /// script\\n# dependencies = []\\n# ///\\n"
              "from pathlib import Path\\nimport time\\n"
              "p=Path('effects'); p.write_text(p.read_text()+'x' if p.exists() else 'x')\\n"
@@ -1210,12 +1301,13 @@ asyncio.run(main())
         with Store(path) as store:
             session = Session(store, KINDS)
             async with ProcessOwner(session):
-                execution = session.data["executions"]["1"]
+                execution = session.data.executions["1"]
                 if boundary == "queued":
-                    assert execution["phase"] == "queued"
+                    assert execution.phase == "queued"
                 else:
-                    assert execution["result"]["type"] == "UnknownExecution"
-                assert len(session.data["executions"]) == 1
+                    assert execution.result is not None
+                    assert execution.result.type == "UnknownExecution"
+                assert len(session.data.executions) == 1
             effect = tmp_path / "effects"
             assert effect.read_text() == "x" if boundary == "running" else not effect.exists()
     finally:
@@ -1224,25 +1316,27 @@ asyncio.run(main())
             process.wait()
 
 
-def test_retries_use_one_turn_and_keep_prepared_context(session):
+def test_retries_use_one_turn_and_keep_prepared_context(session: Session) -> None:
     session.limits = replace(session.limits, turns=1)
     turn = session.prepare_turn()
-    session.start_attempt(turn["id"])
-    session.reject(turn["id"], "invalid operations")
+    session.start_attempt(turn.id)
+    session.reject(turn.id, "invalid operations")
     session.receive("new", "external", {"text": "arrived during the turn"})
     retry = session.prepare_turn()
-    assert retry["id"] == turn["id"]
-    assert retry["state"] == turn["state"]
-    session.start_attempt(turn["id"])
-    assert session.meta["usage"]["turns"] == 1
-    assert session.meta["usage"]["attempts"] == 2
-    session.accept(turn["id"], [add(note())])
-    assert not session.data["inbox"]["new"]["consumed"]
+    assert retry.id == turn.id
+    assert retry.state == turn.state
+    session.start_attempt(turn.id)
+    assert session.meta.usage.turns == 1
+    assert session.meta.usage.attempts == 2
+    session.accept(turn.id, [add(note())])
+    assert not session.data.inbox["new"].consumed
     with pytest.raises(RunStopped, match="Model budget exhausted"):
         session.prepare_turn()
 
 
-async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch):
+async def test_budget_survives_restart_and_idle_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import rio.agent.runner as runner
 
     monkeypatch.setattr(runner.time, "time", lambda: 1e20)
@@ -1255,11 +1349,11 @@ async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch
             ]
         )
         assert not await run(ProcessOwner(session), provider, "fake")
-        assert session.meta["usage"]["turns"] == 2
+        assert session.meta.usage.turns == 2
     with Store(tmp_path / "budget.db") as store:
         session = Session(store)
         assert not await run(ProcessOwner(session), FakeProvider([]), "fake")
-        assert session.meta["usage"]["turns"] == 2
+        assert session.meta.usage.turns == 2
 
 
 @pytest.mark.parametrize(
@@ -1273,50 +1367,55 @@ async def test_budget_survives_restart_and_idle_is_bounded(tmp_path, monkeypatch
         ("tokens", True, "Token budget exhausted"),
     ],
 )
-async def test_run_stops_at_budget_limits(session, limit, prepared, reason):
+async def test_run_stops_at_budget_limits(
+    session: Session, limit: str, prepared: bool, reason: str
+) -> None:
     if limit == "context_bytes":
         accept(session, note("x" * 5000))
         session.limits = replace(session.limits, context_bytes=4096, output_bytes=1024)
     else:
         if limit in ("turns", "tokens", "invalid_attempts"):
             turn = prepare(session)
-            session.start_attempt(turn["id"])
+            session.start_attempt(turn.id)
             if limit != "invalid_attempts":
-                session.record_response(turn["id"], response([]).model_dump(mode="json"), 1)
-                session.accept(turn["id"], [])
+                session.record_response(turn.id, response([]).model_dump(mode="json"), 1)
+                session.accept(turn.id, [])
                 if prepared:
                     prepare(session)
         session.limits = replace(session.limits, **{limit: 1})
     provider = FakeProvider([])
-    published = []
+    published: list[JournalEvent] = []
 
     assert not await run(Owner(session), provider, "fake", published.append)
 
-    assert session.meta["terminal"]["reason"] == reason
+    assert session.meta.terminal is not None
+    assert session.meta.terminal.reason == reason
     assert not provider.calls
-    assert sum(event["type"] == "run_ended" for event in published) == 1
+    assert sum(event.type == "run_ended" for event in published) == 1
 
 
 @pytest.mark.parametrize("ended", [False, True])
-def test_completed_turn_cannot_attempt_again(session, ended):
+def test_completed_turn_cannot_attempt_again(session: Session, ended: bool) -> None:
     turn = prepare(session)
     if ended:
         session.end("failure", "stopped")
     else:
-        session.accept(turn["id"], [])
+        session.accept(turn.id, [])
     sequence = session.store.sequence
     with pytest.raises(RunStopped, match="Turn already accepted or run ended"):
-        session.start_attempt(turn["id"])
+        session.start_attempt(turn.id)
     assert session.store.sequence == sequence
 
 
 @pytest.mark.parametrize(
     "method", ["prepare_turn", "start_attempt", "record_response", "accept", "request_work"]
 )
-async def test_unexpected_value_error_escapes_run(session, monkeypatch, method):
+async def test_unexpected_value_error_escapes_run(
+    session: Session, monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
     error = ValueError("unexpected conversion error")
 
-    def broken(*args, **kwargs):
+    def broken(*args: Any, **kwargs: Any) -> NoReturn:
         raise error
 
     monkeypatch.setattr(session, method, broken)
@@ -1325,27 +1424,29 @@ async def test_unexpected_value_error_escapes_run(session, monkeypatch, method):
         await run(Owner(session), provider, "fake")
 
     assert raised.value is error
-    assert session.meta["terminal"] is None
-    assert not any(e["type"] in ("run_ended", "patch_rejected") for e in session.store.events())
+    assert session.meta.terminal is None
+    assert not any(e.type in ("run_ended", "patch_rejected") for e in session.store.events())
     assert session.store.on_commit is None
 
 
-async def test_invalid_saved_response_escapes_run(session):
+async def test_invalid_saved_response_escapes_run(session: Session) -> None:
     turn = prepare(session)
-    session.start_attempt(turn["id"])
-    session.record_response(turn["id"], {"content": 123}, 12)
+    session.start_attempt(turn.id)
+    session.record_response(turn.id, {"content": 123}, 12)
     sequence = session.store.sequence
     provider = FakeProvider([])
 
     with pytest.raises(ValidationError):
         await run(Owner(session), provider, "fake")
 
-    assert session.meta["terminal"] is None
+    assert session.meta.terminal is None
     assert session.store.sequence == sequence
     assert not provider.calls
 
 
-async def test_invalid_patch_is_retried_without_ending_run(session, monkeypatch):
+async def test_invalid_patch_is_retried_without_ending_run(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import rio.agent.runner as runner
 
     monkeypatch.setattr(runner.time, "time", lambda: 1e20)
@@ -1353,11 +1454,11 @@ async def test_invalid_patch_is_retried_without_ending_run(session, monkeypatch)
     assert await run(Owner(session), provider, "fake")
     assert len(provider.calls) == 2
     events = session.store.events()
-    assert sum(e["type"] == "patch_rejected" for e in events) == 1
-    assert sum(e["type"] == "run_ended" for e in events) == 1
+    assert sum(e.type == "patch_rejected" for e in events) == 1
+    assert sum(e.type == "run_ended" for e in events) == 1
 
 
-def test_context_keeps_each_output_whole(session):
+def test_context_keeps_each_output_whole(session: Session) -> None:
     accept(session, code(), code())
     for i in (1, 2):
         session.authorize(i)
@@ -1365,12 +1466,12 @@ def test_context_keeps_each_output_whole(session):
         session.finish(i, {"type": "success"})
     turn = prepare(session)
     for key in ("1", "2"):
-        output = turn["state"]["runtime"]["cells"][key]["output"]
+        output = turn.state.runtime.cells[key].output
         assert output == {"stdout": "x" * session.limits.output_bytes}
-    session.accept(turn["id"], [])
+    session.accept(turn.id, [])
 
 
-async def test_oversized_output_shows_marked_tails_and_replays(tmp_path):
+async def test_oversized_output_shows_marked_tails_and_replays(tmp_path: Path) -> None:
     from rio.agent.store import encode
 
     path = tmp_path / "overflow.sqlite3"
@@ -1381,21 +1482,23 @@ async def test_oversized_output_shows_marked_tails_and_replays(tmp_path):
             session.authorize(i)
             session.append_output(i, {"stdout": "x" * 60_000, "stderr": "y" * 60_000})
             session.finish(i, {"type": "success"})
-        executions = copy.deepcopy(session.data["executions"])
+        executions = copy.deepcopy(session.data.executions)
         turn = prepare(session)
-        assert session.data["executions"] == executions
-        state = turn["state"]
+        assert session.data.executions == executions
+        state = turn.state
         assert len(encode(state).encode()) <= session.limits.context_bytes
         for key in ("1", "2"):
-            cell, recorded = state["runtime"]["cells"][key], executions[key]["output"]
-            assert set(cell["omitted"]) == {"stdout", "stderr"}
+            cell, recorded = state.runtime.cells[key], executions[key].output
+            assert cell.omitted is not None
+            assert set(cell.omitted) == {"stdout", "stderr"}
             for name, text in recorded.items():
-                assert text.endswith(cell["output"][name])
-                assert cell["omitted"][name] == len(text) - len(cell["output"][name]) > 0
+                assert text.endswith(cell.output[name])
+                assert cell.omitted[name] == len(text) - len(cell.output[name]) > 0
             # The evidence event keeps the recorded output.
-            seq = int(cell["result"]["evidence_refs"][0].rsplit(":", 1)[1])
+            assert cell.result is not None
+            seq = int(cell.result.evidence_refs[0].rsplit(":", 1)[1])
             event = store.events(seq - 1)[0]
-            assert event["changes"]["executions"][key]["output"] == recorded
+            assert event.changes["executions"][key]["output"] == recorded
         data = copy.deepcopy(store.data)
     with Store(path) as store:
         assert store.data == data
@@ -1406,7 +1509,7 @@ async def test_oversized_output_shows_marked_tails_and_replays(tmp_path):
         assert len(provider.calls) == 1
 
 
-def test_many_large_outputs_share_context(session):
+def test_many_large_outputs_share_context(session: Session) -> None:
     from rio.agent.store import encode
 
     accept(session, *(cmd(str(i)) for i in range(12)))
@@ -1415,21 +1518,21 @@ def test_many_large_outputs_share_context(session):
         text = "small" if i == 12 else "line\n" * 20_000
         session.append_output(i, {"stdout": text})
         session.finish(i, {"type": "success"})
-    state = prepare(session)["state"]
+    state = prepare(session).state
     assert len(encode(state).encode()) <= session.limits.context_bytes
-    cells = state["runtime"]["cells"]
-    assert cells["12"]["output"] == {"stdout": "small"}
-    assert "omitted" not in cells["12"]
+    cells = state.runtime.cells
+    assert cells["12"].output == {"stdout": "small"}
+    assert "omitted" not in cells["12"].model_fields_set
     # Equal tails of the recorded 50 KB; JSON escapes count toward the budget.
-    tails = {cells[str(i)]["output"]["stdout"] for i in range(1, 12)}
+    tails = {cells[str(i)].output["stdout"] for i in range(1, 12)}
     assert len(tails) == 1
     tail = tails.pop()
     assert 10_000 < len(tail) < 20_000
     for i in range(1, 12):
-        assert cells[str(i)]["omitted"] == {"stdout": session.limits.output_bytes - len(tail)}
+        assert cells[str(i)].omitted == {"stdout": session.limits.output_bytes - len(tail)}
 
 
-def test_output_shares_and_json_tails_respect_budget():
+def test_output_shares_and_json_tails_respect_budget() -> None:
     from rio.agent.session import json_tail, shares
 
     assert shares([5, 50, 100], 65) == [5, 30, 30]
@@ -1440,7 +1543,7 @@ def test_output_shares_and_json_tails_respect_budget():
     assert json_tail("é", 1) == ""
 
 
-def test_overflowing_records_keep_outstanding_work_and_notify(session):
+def test_overflowing_records_keep_outstanding_work_and_notify(session: Session) -> None:
     from rio.agent.store import encode
 
     accept(session, *(cmd(str(i)) for i in range(20)))
@@ -1451,50 +1554,55 @@ def test_overflowing_records_keep_outstanding_work_and_notify(session):
     session.finish(19, {"type": "UnknownExecution"})
     session.limits = replace(session.limits, context_bytes=4096, output_bytes=1024)
     turn = prepare(session)
-    state = turn["state"]
+    state = turn.state
     assert len(encode(state).encode()) <= 4096
-    assert list(state["runtime"]["cells"]) == ["19", "20"]
-    notice = state["runtime"]["inbox"][0]
-    assert notice["kind"] == "context"
-    assert notice["payload"]["cell_ids"] == list(range(1, 19))
-    assert notice["id"] not in turn["delivered"]
-    session.accept(turn["id"], [remove(i) for i in range(1, 19)])
-    state = prepare(session)["state"]
-    assert all(m["kind"] != "context" for m in state["runtime"]["inbox"])
-    assert list(state["runtime"]["cells"]) == ["19", "20"]
+    assert list(state.runtime.cells) == ["19", "20"]
+    notice = state.runtime.inbox[0]
+    assert notice.kind == "context"
+    assert notice.payload["cell_ids"] == list(range(1, 19))
+    assert notice.id not in turn.delivered
+    session.accept(turn.id, [remove(i) for i in range(1, 19)])
+    state = prepare(session).state
+    assert all(m.kind != "context" for m in state.runtime.inbox)
+    assert list(state.runtime.cells) == ["19", "20"]
 
 
-async def test_saved_complete_response_is_accepted_without_another_provider_call(session):
+async def test_saved_complete_response_is_accepted_without_another_provider_call(
+    session: Session,
+) -> None:
     turn = prepare(session)
-    session.start_attempt(turn["id"])
+    session.start_attempt(turn.id)
     operations = [conclude()]
     message = response(operations)
-    session.record_response(turn["id"], message.model_dump(mode="json"), 12)
+    session.record_response(turn.id, message.model_dump(mode="json"), 12)
     provider = FakeProvider([])
     assert await run(ProcessOwner(session), provider, "fake")
     assert not provider.calls
-    assert session.meta["usage"]["tokens"] == 12
+    assert session.meta.usage.tokens == 12
 
 
-async def test_lost_and_partial_model_responses_are_bounded(session, monkeypatch):
+async def test_lost_and_partial_model_responses_are_bounded(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import rio.agent.runner as runner
 
     monkeypatch.setattr(runner.time, "time", lambda: 1e20)
     provider = FakeProvider([])
     assert not await run(ProcessOwner(session), provider, "fake")
     assert len(provider.calls) == session.limits.provider_attempts
-    assert not session.data["cells"]
-    assert session.meta["usage"]["unknown_usage"] == session.limits.provider_attempts
-    assert session.meta["terminal"]["reason"] == (
+    assert not session.data.cells
+    assert session.meta.usage.unknown_usage == session.limits.provider_attempts
+    assert session.meta.terminal is not None
+    assert session.meta.terminal.reason == (
         "Provider retry budget exhausted: FakeProvider has no scripted response"
     )
 
 
-def provider_error(message="overloaded", **details):
+def provider_error(message: str = "overloaded", **details: Any) -> AssistantMessage:
     error = AssistantMessage(
         stop_reason="error",
         error_message=message,
-        diagnostics=[{"type": "provider_error", "details": details}],
+        diagnostics=[AssistantMessageDiagnostic(type="provider_error", details=details)],
     )
     return error
 
@@ -1502,15 +1610,17 @@ def provider_error(message="overloaded", **details):
 class Clock:
     """Fake time that jumps to each awaited deadline instead of sleeping."""
 
-    def __init__(self, monkeypatch):
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import rio.agent.runner as runner
 
         self.now = 1000.0
-        self.waits = []
+        self.waits: list[float] = []
         wait = Owner.wait
         monkeypatch.setattr(runner.time, "time", lambda: self.now)
 
-        async def jump(owner, until=math.inf, request=None):
+        async def jump(
+            owner: Owner, until: float = math.inf, request: asyncio.Task[Any] | None = None
+        ) -> None:
             if request is None and until != math.inf:
                 self.waits.append(until - self.now)
                 self.now = max(self.now, until)
@@ -1520,11 +1630,11 @@ class Clock:
 
 
 class Raising(FakeProvider):
-    def __init__(self, streams, failures):
+    def __init__(self, streams: list[AssistantMessage], failures: int) -> None:
         super().__init__(streams)
         self.failures = failures
 
-    async def complete(self, **kwargs):
+    async def complete(self, **kwargs: Any) -> AssistantMessage:
         if self.failures:
             self.failures -= 1
             self.calls.append(tuple(kwargs.values()))
@@ -1532,7 +1642,9 @@ class Raising(FakeProvider):
         return await super().complete(**kwargs)
 
 
-async def test_provider_failures_back_off_outside_invalid_budget(session, monkeypatch):
+async def test_provider_failures_back_off_outside_invalid_budget(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     clock = Clock(monkeypatch)
     provider = Raising(
         [
@@ -1547,25 +1659,27 @@ async def test_provider_failures_back_off_outside_invalid_budget(session, monkey
     assert len(provider.calls) == 6
     assert [round(w) for w in clock.waits] == [2, 4, 8, 16, 2]
     events = session.store.events()
-    failed = [e for e in events if e["type"] == "provider_failed"]
-    assert [next(iter(e["changes"]["turns"].values()))["provider_error"] for e in failed] == [
+    failed = [e for e in events if e.type == "provider_failed"]
+    assert [next(iter(e.changes["turns"].values()))["provider_error"] for e in failed] == [
         "connection reset",
         "connection reset",
         "overloaded",
         "stream ended",
     ]
-    assert sum(e["type"] == "patch_rejected" for e in events) == 1
+    assert sum(e.type == "patch_rejected" for e in events) == 1
     texts = [[m.content for m in call[2][1:]] for call in provider.calls]
     assert texts == [[], [], [], [], [], ["Rejected step: Invalid ops[0]. " + USAGE]]
-    turn = next(iter(session.data["turns"].values()))
-    assert turn["attempts"] == 2
-    assert turn["provider_failures"] == 4
-    assert session.meta["usage"]["attempts"] == 6
+    turn = next(iter(session.data.turns.values()))
+    assert turn.attempts == 2
+    assert turn.provider_failures == 4
+    assert session.meta.usage.attempts == 6
     # Fake responses report no tokens, and failed requests never do.
-    assert session.meta["usage"]["unknown_usage"] == 6
+    assert session.meta.usage.unknown_usage == 6
 
 
-async def test_provider_backoff_honors_retry_after_within_cap(session, monkeypatch):
+async def test_provider_backoff_honors_retry_after_within_cap(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     clock = Clock(monkeypatch)
     provider = FakeProvider(
         [
@@ -1578,36 +1692,44 @@ async def test_provider_backoff_honors_retry_after_within_cap(session, monkeypat
     assert [round(w) for w in clock.waits] == [30, 120]
 
 
-async def test_invalid_model_output_still_uses_invalid_budget(session, monkeypatch):
+async def test_invalid_model_output_still_uses_invalid_budget(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     Clock(monkeypatch)
-    text = AssistantMessage(content="done")
+    text = AssistantMessage.model_validate({"content": "done"})
     provider = FakeProvider([text, response([{"op": "invalid"}]), text])
     assert not await run(Owner(session), provider, "fake")
     assert len(provider.calls) == session.limits.invalid_attempts
-    assert session.meta["terminal"]["reason"] == "Model retry budget exhausted"
-    assert not any(e["type"] == "provider_failed" for e in session.store.events())
+    assert session.meta.terminal is not None
+    assert session.meta.terminal.reason == "Model retry budget exhausted"
+    assert not any(e.type == "provider_failed" for e in session.store.events())
 
 
 @pytest.mark.parametrize("status", [400, 401, 404])
-async def test_final_provider_errors_fail_promptly(session, monkeypatch, status):
+async def test_final_provider_errors_fail_promptly(
+    session: Session, monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
     clock = Clock(monkeypatch)
     provider = FakeProvider([provider_error("bad key", status_code=status)])
     assert not await run(Owner(session), provider, "fake")
     assert len(provider.calls) == 1
     assert not clock.waits
-    assert session.meta["terminal"]["reason"] == "Provider request failed: bad key"
+    assert session.meta.terminal is not None
+    assert session.meta.terminal.reason == "Provider request failed: bad key"
 
 
-async def test_provider_backoff_resumes_after_restart(tmp_path, monkeypatch):
+async def test_provider_backoff_resumes_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     clock = Clock(monkeypatch)
     path = tmp_path / "backoff.db"
     with Store(path) as store:
         session = Session.create(store, "goal")
         turn = session.prepare_turn()
-        session.start_attempt(turn["id"])
-        session.provider_failed(turn["id"], "rate limited")
-        session.start_attempt(turn["id"])
-        session.provider_failed(turn["id"], "rate limited")
+        session.start_attempt(turn.id)
+        session.provider_failed(turn.id, "rate limited")
+        session.start_attempt(turn.id)
+        session.provider_failed(turn.id, "rate limited")
     clock.now += 1
     with Store(path) as store:
         session = Session(store)
@@ -1615,20 +1737,22 @@ async def test_provider_backoff_resumes_after_restart(tmp_path, monkeypatch):
         assert await run(Owner(session), provider, "fake")
         assert [round(w) for w in clock.waits] == [3]
         assert len(provider.calls[0][2]) == 1
-        turn = session.data["turns"][turn["id"]]
-        assert (turn["attempts"], turn["provider_failures"]) == (1, 2)
-        assert turn["error"] is None
+        turn = session.data.turns[turn.id]
+        assert (turn.attempts, turn.provider_failures) == (1, 2)
+        assert turn.error is None
 
 
-def test_success_receipt_and_ending_share_a_transaction(session):
+def test_success_receipt_and_ending_share_a_transaction(session: Session) -> None:
     accept(session, conclude())
     session.end("success", "done", control_id="1")
     ending = session.store.events()[-1]
-    assert ending["changes"]["meta"]["terminal"]["result"] == "success"
-    assert ending["changes"]["controls"]["1"]["handled"]
+    assert ending.changes["meta"]["terminal"]["result"] == "success"
+    assert ending.changes["controls"]["1"]["handled"]
 
 
-async def test_uncertain_output_commit_stops_worker_before_more_effects(session, monkeypatch):
+async def test_uncertain_output_commit_stops_worker_before_more_effects(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     accept(
         session,
         code(
@@ -1639,7 +1763,7 @@ async def test_uncertain_output_commit_stops_worker_before_more_effects(session,
     )
     commit = session.store.commit
 
-    def uncertain(kind, changes, **kwargs):
+    def uncertain(kind: EventKind, changes: dict[str, Any], **kwargs: Any) -> int:
         if kind == "execution_output":
             commit(kind, changes, **kwargs)
             session.store.failed = True
@@ -1654,13 +1778,15 @@ async def test_uncertain_output_commit_stops_worker_before_more_effects(session,
     assert not (session.store.path.parent / "late-effect").exists()
 
 
-def test_cli_defaults_to_durable_and_resume_needs_no_new_goal(monkeypatch):
+def test_cli_defaults_to_durable_and_resume_needs_no_new_goal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from rio.cli import app
     from rio.cli import run as run_module
 
     calls = []
 
-    async def run_session(*args, **kwargs):
+    async def run_session(*args: Any, **kwargs: Any) -> tuple[bool, str]:
         calls.append((args, kwargs))
         return True, "abc"
 
@@ -1671,7 +1797,9 @@ def test_cli_defaults_to_durable_and_resume_needs_no_new_goal(monkeypatch):
 
 
 @pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
-def test_database_alias_cannot_acquire_a_second_owner(session, tmp_path, alias_kind):
+def test_database_alias_cannot_acquire_a_second_owner(
+    session: Session, tmp_path: Path, alias_kind: str
+) -> None:
     alias = tmp_path / "alias.sqlite3"
     if alias_kind == "symlink":
         alias.symlink_to(session.store.path)
@@ -1681,24 +1809,24 @@ def test_database_alias_cannot_acquire_a_second_owner(session, tmp_path, alias_k
         pass
 
 
-async def test_provider_name_does_not_make_missing_usage_known(session):
+async def test_provider_name_does_not_make_missing_usage_known(session: Session) -> None:
     operations = [
         conclude(),
     ]
     message = response(operations)
     message.api = "provider-without-usage"
     assert await run(ProcessOwner(session), FakeProvider([message]), "fake")
-    assert session.meta["usage"]["unknown_usage"] == 1
+    assert session.meta.usage.unknown_usage == 1
 
 
-def test_terminal_run_cannot_prepare_an_unaccepted_request(session):
+def test_terminal_run_cannot_prepare_an_unaccepted_request(session: Session) -> None:
     prepare(session)
     session.end("failure", "stopped")
     with pytest.raises(RunStopped, match="Terminal"):
         prepare(session)
 
 
-def test_runtime_selector_is_removed():
+def test_runtime_selector_is_removed() -> None:
     from rio.cli import build_parser
 
     with pytest.raises(SystemExit) as error:
@@ -1707,7 +1835,7 @@ def test_runtime_selector_is_removed():
 
 
 @pytest.mark.parametrize("prefix", RESERVED)
-def test_external_ids_cannot_overwrite_harness_observations(session, prefix):
+def test_external_ids_cannot_overwrite_harness_observations(session: Session, prefix: str) -> None:
     before = session.store.sequence
     with pytest.raises(ValueError, match="reserved"):
         session.receive(f"{prefix}:1", "external", {"fact": "new"})
@@ -1717,8 +1845,12 @@ def test_external_ids_cannot_overwrite_harness_observations(session, prefix):
 @pytest.mark.parametrize("cell_kind", ["code", "cmd"])
 @pytest.mark.parametrize("output_mode", ["human", "json"])
 async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
-    tmp_path, monkeypatch, capsys, output_mode, cell_kind
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    output_mode: str,
+    cell_kind: str,
+) -> None:
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -1747,7 +1879,8 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
             ),
         ]
     )
-    provider.aclose = AsyncMock()
+    close_mock = AsyncMock()
+    monkeypatch.setattr(provider, "aclose", close_mock)
     monkeypatch.setattr(cli, "create_model_provider", lambda *a, **kw: provider)
     ok, session_id = await cli.run_persistent_session(
         "write a file",
@@ -1775,7 +1908,7 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
         assert "Cell" not in transcript
     path = paths.sessions_dir / f"{session_id}.sqlite3"
     with Store(path) as store:
-        assert Session(store).state["goal"] == "write a file"
+        assert Session(store).state.goal == "write a file"
         assert len(store.data["executions"]) == 1
     (tmp_path / "effect").write_text("changed after completion")
     assert await cli.run_persistent_session(
@@ -1786,10 +1919,10 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
     assert capsys.readouterr().out == transcript
     assert len(provider.calls) == 2
     assert (tmp_path / "effect").read_text() == "changed after completion"
-    assert provider.aclose.await_count == 1
+    assert close_mock.await_count == 1
 
 
-def test_idle_decision_and_budget_survive_reopen(session):
+def test_idle_decision_and_budget_survive_reopen(session: Session) -> None:
     from rio.agent.runner import _idle_action
 
     owner = ProcessOwner(session)
@@ -1803,18 +1936,18 @@ def test_idle_decision_and_budget_survive_reopen(session):
     assert _idle_action(ProcessOwner(Session(session.store, KINDS))) == "fail"
     accept(session, code())
     session.request_work()
-    assert session.meta["idle"] == 0
+    assert session.meta.idle == 0
     assert _idle_action(owner) == "wait"
 
 
 @pytest.mark.parametrize("source", ["worker", "timer", "external"])
-def test_idle_waits_for_wakeup_sources(session, source):
+def test_idle_waits_for_wakeup_sources(session: Session, source: str) -> None:
     from rio.agent.runner import _idle_action
 
     accept(session)
     owner = ProcessOwner(session)
     if source == "worker":
-        owner.task = object()
+        owner.task = cast(asyncio.Task[None], object())
     elif source == "timer":
         session.register_timer("later", 1e20, {})
     else:
@@ -1825,7 +1958,7 @@ def test_idle_waits_for_wakeup_sources(session, source):
 
 
 @pytest.mark.parametrize("result", ["success", "error"])
-def test_idle_batches_only_successful_execution_observations(session, result):
+def test_idle_batches_only_successful_execution_observations(session: Session, result: str) -> None:
     from rio.agent.runner import _idle_action
 
     accept(session, code(), code())
@@ -1836,7 +1969,7 @@ def test_idle_batches_only_successful_execution_observations(session, result):
     assert _idle_action(ProcessOwner(session)) == "ready"
 
 
-def test_external_wakeup_policy_survives_reopen(tmp_path):
+def test_external_wakeup_policy_survives_reopen(tmp_path: Path) -> None:
     path = tmp_path / "wakeup.db"
     with Store(path) as store:
         Session.create(store, "goal", external_wakeup=True)
@@ -1847,32 +1980,34 @@ def test_external_wakeup_policy_survives_reopen(tmp_path):
 
 
 @pytest.mark.parametrize("spare", [-1, 0])
-def test_context_budget_counts_utf8_and_inbox_commas(session, spare):
+def test_context_budget_counts_utf8_and_inbox_commas(session: Session, spare: int) -> None:
     from rio.agent.store import encode
 
     session.receive("first", "external", {"text": "é" * 1200})
     session.receive("second", "external", {"text": "é" * 1200})
     expected = session.state
-    expected["revision"] += 1
-    expected["runtime"]["usage"] = dict(session.meta["usage"])
-    expected["runtime"]["inbox"] = [
-        {k: v for k, v in m.items() if k != "consumed"} for m in session.data["inbox"].values()
+    expected.revision += 1
+    expected.runtime.usage = session.meta.usage.model_copy()
+    expected.runtime.inbox = [
+        Observation.model_validate(m.model_dump(exclude={"consumed"}))
+        for m in session.data.inbox.values()
     ]
     budget = len(encode(expected).encode()) + spare
     session.limits = replace(session.limits, context_bytes=budget, output_bytes=128)
     turn = prepare(session)
-    assert turn["delivered"] == (["first"] if spare == -1 else ["first", "second"])
-    assert len(encode(turn["state"]).encode()) <= budget
-    session.accept(turn["id"], [])
+    assert turn.delivered == (["first"] if spare == -1 else ["first", "second"])
+    assert len(encode(turn.state).encode()) <= budget
+    session.accept(turn.id, [])
     if spare == -1:
-        assert prepare(session)["delivered"] == ["second"]
+        assert prepare(session).delivered == ["second"]
 
 
-def test_run_end_records_metrics_once(session):
+def test_run_end_records_metrics_once(session: Session) -> None:
     session.end("success", "done")
     seq = session.store.sequence
     assert session.store.event_kind(seq) == "run_ended"
-    assert set(session.data["metrics"]) == {
+    assert session.data.metrics is not None
+    assert set(session.data.metrics) == {
         "commit_p50_seconds",
         "commit_max_seconds",
         "rebuild_seconds",
@@ -1883,22 +2018,26 @@ def test_run_end_records_metrics_once(session):
 
 
 @pytest.mark.parametrize("ref", ["session:event:99999", "session:event:1"])
-def test_resolution_rejects_missing_events_and_non_observations(session, ref):
+def test_resolution_rejects_missing_events_and_non_observations(session: Session, ref: str) -> None:
     accept(session, code())
     session.authorize(1)
     session.finish(1, {"type": "UnknownExecution"})
     turn = prepare(session)
     before = session.store.sequence
     with pytest.raises(InvalidPatch, match="recorded observation"):
-        session.accept(turn["id"], [control("resolution", target_cell_id=1, evidence_refs=[ref])])
+        session.accept(turn.id, [control("resolution", target_cell_id=1, evidence_refs=[ref])])
     assert session.store.sequence == before
 
 
 @pytest.mark.parametrize("result", ["success", "failure"])
 @pytest.mark.parametrize("output_mode", ["human", "json"])
 async def test_terminal_cli_resume_needs_no_provider_or_project(
-    tmp_path, monkeypatch, capsys, result, output_mode
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    result: RunResult,
+    output_mode: str,
+) -> None:
     import rio.coding.owner as owner_module
     from rio.cli import run as cli
     from rio.coding.paths import RioPaths
@@ -1906,7 +2045,7 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
     paths = RioPaths(home=tmp_path / "home")
     monkeypatch.setattr(cli, "RioPaths", lambda: paths)
 
-    def unavailable(*args, **kwargs):
+    def unavailable(*args: Any, **kwargs: Any) -> NoReturn:
         raise AssertionError("terminal replay must not configure a provider")
 
     monkeypatch.setattr(cli, "load_provider_settings", unavailable)
@@ -1935,7 +2074,7 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
         result == "success",
         session_id,
     )
-    assert stopped == [{"token": "leftover"}]
+    assert stopped == [WorkerIdentity(token="leftover")]
     transcript = capsys.readouterr().out
     if output_mode == "json":
         events = [json.loads(line) for line in transcript.splitlines()]
@@ -1948,14 +2087,18 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
         assert store.data["meta"]["terminal"]["result"] == result
 
 
-async def test_replay_requires_posix_before_cleanup(session, monkeypatch):
+async def test_replay_requires_posix_before_cleanup(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     session.end("failure", "stopped")
     monkeypatch.setattr("rio.coding.owner.os.name", "nt")
     with pytest.raises(RecoveryFailure, match="POSIX"):
         await replay(ProcessOwner(session), lambda event: None)
 
 
-async def test_terminal_replay_propagates_cleanup_failure(session, monkeypatch):
+async def test_terminal_replay_propagates_cleanup_failure(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import rio.coding.owner as owner_module
     from rio.agent.runner import replay
 
@@ -1965,85 +2108,88 @@ async def test_terminal_replay_propagates_cleanup_failure(session, monkeypatch):
     session.finish(1, {"type": "success"})
     session.end("success", "done")
 
-    def fail(identity):
+    def fail(identity: WorkerIdentity) -> None:
         raise RecoveryFailure("cannot stop worker")
 
     monkeypatch.setattr(owner_module, "stop_worker", fail)
-    published = []
+    published: list[JournalEvent] = []
     with pytest.raises(RecoveryFailure, match="cannot stop"):
         await replay(ProcessOwner(session), published.append)
     assert not published
-    assert not session.data["workers"]["cell:1"].get("stopped")
+    assert not session.store.data["workers"]["cell:1"].get("stopped")
 
 
-async def test_replay_without_workers_writes_nothing(session):
+async def test_replay_without_workers_writes_nothing(session: Session) -> None:
     from rio.agent.runner import replay
 
     session.end("success", "done")
     seq = session.store.sequence
-    published = []
+    published: list[JournalEvent] = []
     assert await replay(ProcessOwner(session), published.append)
     assert session.store.sequence == seq
-    assert published[-1]["type"] == "run_ended"
+    assert published[-1].type == "run_ended"
 
 
-async def test_replay_rejects_active_session(session):
+async def test_replay_rejects_active_session(session: Session) -> None:
     from rio.agent.runner import replay
 
     with pytest.raises(ValueError, match="terminal"):
         await replay(ProcessOwner(session))
 
 
-def test_turn_records_do_not_implicitly_update_state(session):
-    before = copy.deepcopy(session.data)
-    turn_state = {**session.state, "revision": 42}
-    changes = {"turns": {"turn": {"state": turn_state}}}
-    reduced = reduce_event(session.data, changes)
+def test_turn_records_do_not_implicitly_update_state(session: Session) -> None:
+    before = copy.deepcopy(session.store.data)
+    turn_state = {**session.state.model_dump(by_alias=True, exclude_unset=True), "revision": 42}
+    changes: dict[str, Any] = {"turns": {"turn": {"state": turn_state}}}
+    reduced = reduce_event(session.store.data, changes)
     assert reduced["meta"] == before["meta"]
     assert reduced["turns"]["turn"]["state"] == turn_state
 
     changes["meta"] = {"state": {"revision": 7}}
-    reduced = reduce_event(session.data, changes)
+    reduced = reduce_event(session.store.data, changes)
     assert reduced["meta"]["state"] == {**before["meta"]["state"], "revision": 7}
-    assert session.data == before
+    assert session.store.data == before
 
 
-def test_prepared_turn_state_survives_reopen(tmp_path):
+def test_prepared_turn_state_survives_reopen(tmp_path: Path) -> None:
     path = tmp_path / "session.sqlite3"
     with Store(path) as store:
         session = Session.create(store, "goal")
         session.receive("external:1", "external", {"fact": 1})
         turn = session.prepare_turn()
-        expected = copy.deepcopy(session.data)
+        expected = copy.deepcopy(session.store.data)
     with Store(path) as store:
         session = Session(store)
-        assert session.data == expected
-        assert session.state == turn["state"]
+        assert session.store.data == expected
+        assert session.state == turn.state
         sequence = store.sequence
         assert session.prepare_turn() == turn
         assert store.sequence == sequence
-        session.accept(turn["id"], [add(note())])
+        session.accept(turn.id, [add(note())])
         assert store.data["inbox"]["external:1"]["consumed"]
 
 
-def test_turn_events_store_explicit_state_and_replay_deltas(session):
+def test_turn_events_store_explicit_state_and_replay_deltas(session: Session) -> None:
     turn = session.prepare_turn()
-    turn_id = turn["id"]
+    turn_id = turn.id
     prepared = session.store.events()[-1]
-    assert prepared["changes"]["meta"]["state"] == turn["state"] == session.state
+    assert turn.state == session.state
+    assert prepared.changes["meta"]["state"] == turn.state.model_dump(
+        by_alias=True, exclude_unset=True
+    )
     session.start_attempt(turn_id)
     session.record_response(turn_id, {"text": "first"}, 5)
     session.reject(turn_id, "retry")
     session.start_attempt(turn_id)
     session.record_response(turn_id, {"text": "second"}, 7)
     session.accept(turn_id, [add(note())])
-    for event in session.store.events(after=prepared["seq"]):
-        fields = event["changes"].get("turns", {}).get(turn_id, {})
+    for event in session.store.events(after=prepared.seq):
+        fields = event.changes.get("turns", {}).get(turn_id, {})
         assert not {"state", "system", "tool_schema", "model_config"} & fields.keys()
-        state_delta = event["changes"].get("meta", {}).get("state", {})
+        state_delta = event.changes.get("meta", {}).get("state", {})
         assert not {"goal", "schema", "id"} & state_delta.keys()
         assert state_delta.get("runtime", {}).get("usage", {}) == {}
-    expected = copy.deepcopy(session.data)
+    expected = copy.deepcopy(session.store.data)
     path = session.store.path
     session.store.close()
     with Store(path) as reopened:
@@ -2052,7 +2198,7 @@ def test_turn_events_store_explicit_state_and_replay_deltas(session):
         assert reopened.data["meta"]["usage"]["tokens"] == 12
 
 
-def test_output_journal_grows_linearly_and_replays(session):
+def test_output_journal_grows_linearly_and_replays(session: Session) -> None:
     accept(session, cmd("true"))
     session.authorize(1)
     sizes = []
@@ -2062,7 +2208,7 @@ def test_output_journal_grows_linearly_and_replays(session):
         sizes.append(session.store.journal_bytes - before)
     assert len(set(sizes)) == 1
     assert max(sizes) < 250
-    expected = copy.deepcopy(session.data)
+    expected = copy.deepcopy(session.store.data)
     session.store.close()
     with Store(session.store.path) as reopened:
         assert reopened.data == expected
@@ -2070,7 +2216,9 @@ def test_output_journal_grows_linearly_and_replays(session):
 
 
 @pytest.mark.parametrize("failure", ["timeout", "oserror"])
-async def test_worker_failure_flushes_last_output_and_cleans_logs(session, monkeypatch, failure):
+async def test_worker_failure_flushes_last_output_and_cleans_logs(
+    session: Session, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
     session.limits = replace(session.limits, execution_seconds=0.5, flush_seconds=10)
     accept(
         session,
@@ -2085,44 +2233,48 @@ async def test_worker_failure_flushes_last_output_and_cleans_logs(session, monke
     if failure == "oserror":
         readline = asyncio.StreamReader.readline
 
-        async def fail_after_output(reader):
+        async def fail_after_output(reader: asyncio.StreamReader) -> bytes:
             line = await readline(reader)
             if b"stderr" in line:
                 # Return this buffered chunk, then fail the next read.
                 monkeypatch.setattr(reader, "readline", fail_read)
             return line
 
-        async def fail_read():
+        async def fail_read() -> bytes:
             raise OSError("read failed")
 
         monkeypatch.setattr(asyncio.StreamReader, "readline", fail_after_output)
     async with ProcessOwner(session) as owner:
         await settle(owner)
+        assert owner.temporary is not None
         assert not list(Path(owner.temporary.name).glob("*.log"))
         assert owner.log_budget == LOG_BYTES
-    execution = session.data["executions"]["1"]
-    assert execution["output"] == {"stdout": "last stdout\n", "stderr": "last stderr\n"}
-    assert execution["result"]["type"] == "UnknownExecution"
+    execution = session.data.executions["1"]
+    assert execution.output == {"stdout": "last stdout\n", "stderr": "last stderr\n"}
+    assert execution.result is not None
+    assert execution.result.type == "UnknownExecution"
 
 
-async def test_cells_preserve_existing_pythonpath(session, monkeypatch):
-    module_dir = Path(session.meta["owner_config"]["cwd"]) / "modules"
+async def test_cells_preserve_existing_pythonpath(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_dir = Path(session.meta.owner_config["cwd"]) / "modules"
     module_dir.mkdir()
     (module_dir / "user_module.py").write_text("value = 42\n")
     monkeypatch.setenv("PYTHONPATH", str(module_dir))
     accept(session, cmd(sys.executable, "-c", "import user_module; print(user_module.value)"))
     async with ProcessOwner(session) as owner:
         await settle(owner)
-    assert session.data["executions"]["1"]["output"]["stdout"] == "42\n"
+    assert session.data.executions["1"].output["stdout"] == "42\n"
 
 
-def test_output_chunks_replay_rolling_utf8_tails(session):
+def test_output_chunks_replay_rolling_utf8_tails(session: Session) -> None:
     session.limits = replace(session.limits, output_bytes=7)
     accept(session, cmd("true"))
     session.authorize(1)
     for text in ("old text", "é終!", "é終!"):
         session.append_output(1, {"stdout": text, "stderr": text})
-    expected = copy.deepcopy(session.data)
+    expected = copy.deepcopy(session.store.data)
     assert expected["executions"]["1"]["output"] == {"stdout": "!é終!", "stderr": "!é終!"}
     assert expected["executions"]["1"]["truncated"]
     session.store.close()

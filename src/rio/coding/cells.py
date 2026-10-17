@@ -76,7 +76,8 @@ Python strings so newline escaping does not break the script.
 Scripts can use `from rio.coding.api import timer, records`. timer(request_id,
 unix_deadline, payload) durably registers one timer generation; it does not suspend or rerun
 the process. records(after=0) retrieves journal events as data; records(N - 1)[0] is
-session:event:N.
+session:event:N. records() returns Pydantic models with seq, kind, and changes attributes;
+include "pydantic>=2.11" in PEP 723 dependencies when reading records.
 Files and package caches are not durable State.
 """,
     validate=_validate_code,
