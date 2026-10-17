@@ -270,6 +270,20 @@ def test_control_rejections_name_the_fix(session, operation, message):
         session.accept(turn["id"], [operation])
 
 
+def test_ops_sent_as_a_json_string_are_decoded(session):
+    turn = prepare(session)
+    session.accept(turn["id"], json.dumps([add(note("a"))]))
+    assert session.state["cells"] == [{"id": 1, "previous_id": None, **note("a")}]
+
+
+def test_conclusion_cannot_share_a_step_with_runnable_cells(session):
+    turn = prepare(session)
+    with pytest.raises(InvalidPatch, match="conclude in a later step"):
+        session.accept(turn["id"], [add(cmd("ls")), conclude("failure")])
+    receipt = session.accept(turn["id"], [add(note("summary")), conclude()])
+    assert receipt["control_ids"] == [1]
+
+
 def test_null_fields_from_strict_providers_are_omitted(session):
     accept(session, cmd("ls"))
     turn = prepare(session)

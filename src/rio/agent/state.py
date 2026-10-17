@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 
@@ -173,6 +175,10 @@ def admit(
 
     Controls are returned in op order and never enter State.
     """
+    if isinstance(ops, str):
+        # Some models send the array JSON-encoded inside a string.
+        with contextlib.suppress(ValueError):
+            ops = json.loads(ops)
     if not isinstance(ops, list):
         raise InvalidPatch(f"ops must be an array. {USAGE}")
     next_id = state["runtime"]["next_cell_id"]
