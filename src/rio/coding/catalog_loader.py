@@ -27,7 +27,6 @@ from rio.coding.provider_catalog import (
     ModelInput,
     ProviderApi,
     ProviderCatalogEntry,
-    ProviderKind,
 )
 from rio.coding.thinking import ThinkingLevel, ThinkingParameter, normalize_thinking_levels
 
@@ -80,7 +79,6 @@ class _CatalogProvider(BaseModel):
 
     name: _NonEmptyString
     base_url: _NonEmptyString
-    kind: ProviderKind = "openai-compatible"
     api_key_env: _NonEmptyString | None = None
     credential_name: _NonEmptyString | None = None
     models: _NonEmptyStringTuple | None = None
@@ -399,7 +397,6 @@ def _entry_from_provider(provider: _CatalogProvider, *, source: str) -> Provider
     }
     return ProviderCatalogEntry(
         name=provider.name,
-        kind=provider.kind,
         base_url=provider.base_url,
         api_key_env=provider.api_key_env or "",
         credential_name=provider.credential_name,

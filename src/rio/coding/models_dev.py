@@ -245,9 +245,9 @@ def _model_metadata(
     }
     existing = provider.model_metadata.get(model_id)
     supports_direct_effort = (
-        provider.kind == "openai-compatible"
+        provider.api in {None, "openai-completions", "openai-responses"}
         and provider.thinking_parameter in {"reasoning_effort", "reasoning.effort"}
-        or provider.kind == "anthropic"
+        or provider.api == "anthropic-messages"
         and existing is not None
         and existing.compat.get("forceAdaptiveThinking") is True
     )

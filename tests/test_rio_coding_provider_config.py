@@ -27,7 +27,7 @@ from rio.coding.credentials import FileCredentialStore, OAuthCredential
 from rio.coding.oauth import OAuthLoginCallbacks, OAuthProvider
 from rio.coding.oauth_registry import get_oauth_provider
 from rio.coding.paths import RioPaths
-from rio.coding.provider_catalog import ProviderApi, ProviderKind
+from rio.coding.provider_catalog import ProviderApi
 from rio.coding.provider_config import (
     DEFAULT_MODEL,
     ProviderConfig,
@@ -37,6 +37,7 @@ from rio.coding.provider_config import (
     anthropic_config_from_provider,
     load_provider_settings,
     openai_compatible_config_from_provider,
+    provider_api,
     provider_config_from_catalog_entry,
     provider_config_from_entry,
     provider_default_thinking_level,
@@ -236,7 +237,6 @@ schema_version = 1
 [[providers]]
 name = "local"
 display_name = "local"
-kind = "openai-compatible"
 base_url = "http://localhost:11434/v1"
 api_key_env = "LOCAL_API_KEY"
 models = ["qwen", "llama"]
@@ -328,7 +328,6 @@ schema_version = 1
 [[providers]]
 name = "llama.cpp"
 display_name = "llama.cpp built-in-shaped override"
-kind = "openai-compatible"
 base_url = "http://127.0.0.1:8080/v1"
 api_key_env = "LLAMA_API_KEY"
 models = ["built-in-model"]
@@ -338,7 +337,6 @@ docs_url = "https://github.com/ggml-org/llama.cpp"
 [[providers]]
 name = "llama-cpp"
 display_name = "Existing custom llama.cpp"
-kind = "openai-compatible"
 base_url = "http://127.0.0.1:8081/v1"
 api_key_env = "LEGACY_LLAMA_API_KEY"
 models = ["legacy-model"]
@@ -989,7 +987,7 @@ def test_anthropic_config_from_provider_maps_opus_5_adaptive_thinking(
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     provider = ProviderSettings().get_provider("anthropic")
-    assert provider.kind == "anthropic"
+    assert provider_api(provider) == "anthropic-messages"
 
     off_config = anthropic_config_from_provider(
         provider, model="claude-opus-5", thinking_level="off"
@@ -1014,7 +1012,7 @@ def test_anthropic_config_from_provider_sets_model_max_tokens(
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     provider = ProviderSettings().get_provider("anthropic")
-    assert provider.kind == "anthropic"
+    assert provider_api(provider) == "anthropic-messages"
 
     opus_config = anthropic_config_from_provider(provider, model="claude-opus-5")
     haiku_config = anthropic_config_from_provider(provider, model="claude-haiku-4-5")
@@ -1345,6 +1343,7 @@ def test_copilot_model_metadata_compat_can_enable_cache_breakpoints(tmp_path: Pa
 
     assert isinstance(provider, AnthropicProvider)
     assert provider._config.cache_retention == "long"
+    assert provider._config.oauth_system_prompt is None
 
 
 def test_create_model_provider_uses_model_max_tokens_for_anthropic_protocol_model(
@@ -1891,32 +1890,19 @@ compat = { supportsStore = false, thinkingFormat = "deepseek" }
         assert config.compat["supportsLongCacheRetention"] is False
 
 
-@pytest.mark.parametrize(
-    ("kind", "expected"),
-    [
-        ("openai-compatible", "openai-completions"),
-        ("anthropic", "anthropic-messages"),
-        ("openai-codex", "openai-codex-responses"),
-        ("google-generative-ai", "google-generative-ai"),
-        ("mistral-conversations", "mistral-conversations"),
-    ],
-)
+@pytest.mark.parametrize("api", [None, "openai-responses", "anthropic-messages"])
 def test_provider_api_precedence_is_shared_by_catalog_and_direct_configs(
-    kind: ProviderKind,
-    expected: ProviderApi,
+    api: ProviderApi | None,
 ) -> None:
-    for api in (None, "openai-responses"):
-        entry = replace(builtin_catalog()[0], kind=kind, api=api, model_metadata={})
-        direct = ProviderConfig(name="custom", kind=kind, api=api)
-        for provider in (direct, provider_config_from_entry(entry)):
-            assert openai_compatible_config_from_provider(provider).api == (api or expected)
-            provider = replace(
-                provider,
-                model_metadata={
-                    provider.default_model: ProviderModelMetadata(api="openai-completions"),
-                },
-            )
-            assert openai_compatible_config_from_provider(provider).api == "openai-completions"
-            assert openai_compatible_config_from_provider(provider, model="other").api == (
-                api or expected
-            )
+    entry = replace(builtin_catalog()[0], api=api, model_metadata={})
+    direct = ProviderConfig(name="custom", api=api)
+    for provider in (direct, provider_config_from_entry(entry)):
+        assert provider_api(provider) == (api or "openai-completions")
+        provider = replace(
+            provider,
+            model_metadata={
+                provider.default_model: ProviderModelMetadata(api="openai-completions"),
+            },
+        )
+        assert provider_api(provider) == "openai-completions"
+        assert provider_api(provider, "other") == (api or "openai-completions")

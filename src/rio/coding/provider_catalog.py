@@ -8,13 +8,6 @@ from typing import Literal
 from rio.ai.types import JSONValue
 from rio.coding.thinking import ThinkingLevel, ThinkingParameter
 
-ProviderKind = Literal[
-    "openai-compatible",
-    "anthropic",
-    "openai-codex",
-    "google-generative-ai",
-    "mistral-conversations",
-]
 ProviderApi = Literal[
     "openai-completions",
     "openai-responses",
@@ -46,7 +39,6 @@ class ProviderCatalogEntry:
     """A built-in provider rio can present during login."""
 
     name: str
-    kind: ProviderKind
     base_url: str
     api_key_env: str
     credential_name: str | None

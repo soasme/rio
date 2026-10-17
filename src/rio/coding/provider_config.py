@@ -40,7 +40,6 @@ from rio.coding.provider_catalog import (
     ModelCatalogMetadata,
     ProviderApi,
     ProviderCatalogEntry,
-    ProviderKind,
 )
 from rio.coding.thinking import (
     DEFAULT_THINKING_LEVEL,
@@ -93,7 +92,6 @@ class ProviderConfig:
     """Provider definition validated by the catalog, with saved runtime preferences."""
 
     name: str
-    kind: ProviderKind = "openai-compatible"
     base_url: str = DEFAULT_OPENAI_COMPATIBLE_BASE_URL
     api: ProviderApi | None = None
     api_key_env: str = "OPENAI_API_KEY"
@@ -154,7 +152,6 @@ def provider_config_from_catalog_entry(name: str) -> ProviderConfig:
 def provider_config_from_entry(entry: ProviderCatalogEntry) -> ProviderConfig:
     """Create a durable provider config from a catalog entry."""
     return ProviderConfig(
-        kind=entry.kind,
         api=entry.api,
         compat=dict(entry.compat),
         name=entry.name,
@@ -417,21 +414,13 @@ def _metadata_for_model(provider: ProviderConfig, model: str) -> ProviderModelMe
     return provider.model_metadata.get(model)
 
 
-def _provider_api(provider: ProviderConfig, model: str | None = None) -> ProviderApi:
-    """Resolve API once: model override, provider override, then kind default."""
+def provider_api(provider: ProviderConfig, model: str | None = None) -> ProviderApi:
+    """Resolve API once: model override, provider override, then chat completions."""
     selected_model = model or provider.default_model
     metadata = _metadata_for_model(provider, selected_model)
     if metadata is not None and metadata.api is not None:
         return metadata.api
-    if provider.api is not None:
-        return provider.api
-    return {
-        "openai-compatible": "openai-completions",
-        "anthropic": "anthropic-messages",
-        "openai-codex": "openai-codex-responses",
-        "google-generative-ai": "google-generative-ai",
-        "mistral-conversations": "mistral-conversations",
-    }[provider.kind]
+    return provider.api or "openai-completions"
 
 
 def _model_base_url(provider: ProviderConfig, model: str | None = None) -> str:
@@ -532,7 +521,7 @@ def openai_compatible_config_from_provider(
     return OpenAICompatibleConfig(
         api_key=api_key,
         provider_name=provider.name,
-        api=str(_provider_api(provider, selected_model)),
+        api=str(provider_api(provider, selected_model)),
         base_url=base_url.rstrip("/"),
         headers=_model_headers(provider, selected_model),
         timeout_seconds=provider.timeout_seconds,
@@ -623,19 +612,11 @@ def reasoning_effort_from_provider(
     }:
         return None
 
-    levels = provider_thinking_levels(provider, model=model)
-    if not levels:
-        return None
-
     selected_model = model or provider.default_model
-    normalized = normalize_thinking_level(thinking_level)
-    if normalized not in levels:
-        available = ", ".join(levels)
-        raise ProviderConfigError(
-            f"Thinking mode {normalized} is not available for "
-            f"{provider.name}:{selected_model}. Available modes: {available}"
-        )
-    if provider.kind == "openai-codex":
+    normalized = _supported_thinking_level(provider, selected_model, thinking_level)
+    if normalized is None:
+        return None
+    if provider_api(provider, selected_model) == "openai-codex-responses":
         if normalized == "off":
             return None
         if normalized == "minimal":
@@ -663,18 +644,29 @@ def _anthropic_thinking_budget_from_provider(
     if _anthropic_thinking_mode(provider, selected_model) == "adaptive":
         return None
 
-    levels = provider_thinking_levels(provider, model=selected_model)
+    normalized = _supported_thinking_level(provider, selected_model, thinking_level)
+    if normalized is None:
+        return None
+    return anthropic_thinking_budget_for_level(normalized)
+
+
+def _supported_thinking_level(
+    provider: ProviderConfig,
+    model: str,
+    thinking_level: ThinkingLevel,
+) -> ThinkingLevel | None:
+    """Normalize a requested level; None when the model has no thinking levels."""
+    levels = provider_thinking_levels(provider, model=model)
     if not levels:
         return None
-
     normalized = normalize_thinking_level(thinking_level)
     if normalized not in levels:
         available = ", ".join(levels)
         raise ProviderConfigError(
             f"Thinking mode {normalized} is not available for "
-            f"{provider.name}:{selected_model}. Available modes: {available}"
+            f"{provider.name}:{model}. Available modes: {available}"
         )
-    return anthropic_thinking_budget_for_level(normalized)
+    return normalized
 
 
 def _metadata_thinking_value(
@@ -721,11 +713,10 @@ def _reasoning_effort_from_anthropic_provider(
 ) -> str | None:
     if thinking_level is None:
         return None
-    selected_model = model
     normalized = normalize_thinking_level(thinking_level)
     if normalized == "off":
         return None
-    mapped = _metadata_thinking_value(provider, selected_model, normalized)
+    mapped = _metadata_thinking_value(provider, model, normalized)
     return mapped or normalized
 
 

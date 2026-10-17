@@ -41,15 +41,13 @@ snapshot and your catalog; the old `models-store.json` cache is no longer read.
 ## Catalog keys
 
 A catalog has `schema_version = 1` and one or more `[[providers]]` tables.
-Only `name` and `base_url` are required for a new provider. The catalog uses
-`kind` for the provider type; omitting it selects `openai-compatible`.
+Only `name` and `base_url` are required for a new provider.
 
 | Provider key | Meaning and default |
 | --- | --- |
 | `name` | Required provider ID. |
 | `base_url` | Required API base URL. |
-| `kind` | `openai-compatible` (default), `anthropic`, `openai-codex`, `google-generative-ai`, or `mistral-conversations`. |
-| `api` | Protocol override: `openai-completions`, `openai-responses`, `anthropic-messages`, `openai-codex-responses`, `google-generative-ai`, or `mistral-conversations`. Defaults to the protocol for `kind`. |
+| `api` | Protocol: `openai-completions` (default), `openai-responses`, `anthropic-messages`, `openai-codex-responses`, `google-generative-ai`, or `mistral-conversations`. |
 | `api_key_env` | Environment variable containing the API key. When omitted or unset, Rio uses a blank key. |
 | `credential_name` | Name of a saved credential to check before the environment variable; defaults to the provider `name`. |
 | `models` | Nonempty list of model IDs; defaults to `[default_model]` when set, otherwise `[name]`. |
@@ -81,8 +79,8 @@ When overriding a built-in provider, you can supply just the fields to change.
 Model lists are combined, and `headers`, `compat`, and
 `model_metadata` tables merge with the built-in values.
 
-API selection uses the model's `api`, then the provider's `api`, then the default
-for `kind`. Compatibility settings use protocol defaults, then provider `compat`,
+API selection uses the model's `api`, then the provider's `api`, then
+`openai-completions`. Compatibility settings use protocol defaults, then provider `compat`,
 then model `compat`. Built-in provider quirks are declared in `catalog.toml`.
 Custom providers must declare their quirks in `compat`; names and URLs do not
 select compatibility behavior. Anthropic cache control is disabled by default;
