@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from dataclasses import asdict
 from typing import cast
 
-from rio.agent.ledger import RuntimeLedger, runtime_id
+from rio.agent.ledger import RuntimeLedger, inbox_view, runtime_id
 from rio.agent.prompt import schema, system
 from rio.agent.shapes import (
     ControlRequest,
@@ -200,9 +200,11 @@ class Session(RuntimeLedger):
             key for key, e in executions.items() if e["phase"] != "finished" or key in unresolved
         ]
         shown = [key for key in executions if key in selected or key in outstanding]
-        # Reserve each record with all output omitted. If even that overflows, show only
-        # outstanding work, then none, with a notice naming the Cells left out.
+        # Reserve each record with all output omitted, plus the oldest message so the inbox
+        # always drains. If that overflows, show only outstanding work, then none, with a
+        # notice naming the Cells left out.
         limit = self.limits.context_bytes
+        waiting = [inbox_view(m) for m in self.data["inbox"].values() if not m["consumed"]]
         for kept in (shown, outstanding, []):
             outputs = {key: dict.fromkeys(executions[key]["output"], "") for key in kept}
             state["runtime"]["cells"] = {key: self._runtime_cell(key, outputs[key]) for key in kept}
@@ -211,19 +213,17 @@ class Session(RuntimeLedger):
                 [context_notice(self.store.sequence + 1, missing)] if missing else []
             )
             context_bytes = size(state)
-            if context_bytes <= limit:
+            head = size(waiting[0]) + bool(missing) if waiting else 0
+            if context_bytes + head <= limit:
                 break
         else:
             raise RunStopped("Goal and Cells exceed context without runtime facts")
         delivered = []
-        for message in self.data["inbox"].values():
-            if message["consumed"]:
-                continue
-            compact = {k: v for k, v in message.items() if k != "consumed"}
-            message_bytes = size(compact) + bool(state["runtime"]["inbox"])
+        for message in waiting:
+            message_bytes = size(message) + bool(state["runtime"]["inbox"])
             if context_bytes + message_bytes > limit:
                 break
-            state["runtime"]["inbox"].append(compact)
+            state["runtime"]["inbox"].append(message)
             delivered.append(message["id"])
             context_bytes += message_bytes
         # Output fills the rest: streams within an equal share stay whole, larger ones keep

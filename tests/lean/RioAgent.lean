@@ -302,6 +302,22 @@ theorem minimal_state_fits_without_stop (limit records outstanding minimal : Nat
   simp only [firstFit]
   by_cases h1 : records ≤ limit <;> by_cases h2 : outstanding ≤ limit <;> simp [h1, h2, h]
 
+/-- Admission bounds the whole observation by the output budget. A prepared turn reserves
+   the oldest waiting message, so with Goal and Cells within half the context, the minimal
+   state (no runtime records, one notice) still has room for it. -/
+def admitObservation (observation output : Nat) : Bool := observation ≤ output
+
+theorem admitted_head_fits_minimal_state (limit goalCells notice head output : Nat)
+    (hState : goalCells ≤ limit / 2) (hOutput : output ≤ limit / 4)
+    (hNotice : notice ≤ limit / 4) (hAdmit : admitObservation head output = true) :
+    goalCells + notice + head ≤ limit := by
+  simp only [admitObservation, decide_eq_true_eq] at hAdmit
+  omega
+
+theorem oversized_observation_is_rejected (observation output : Nat) (h : output < observation) :
+    admitObservation observation output = false := by
+  simp [admitObservation]; omega
+
 def fireTimer (fired expired : Bool) : Bool × Nat :=
   if !fired && expired then (true, 1) else (fired, 0)
 
