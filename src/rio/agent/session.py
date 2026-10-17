@@ -180,28 +180,19 @@ class Session(RuntimeLedger):
         cell: RuntimeCell = {**execution, "output": output}
         if key in self.data["resolutions"]:
             cell["resolved_by"] = self.data["resolutions"][key]
-        omitted = {
-            name: len(text.encode()) - len(output[name].encode())
+        if omitted := {
+            name: count
             for name, text in execution["output"].items()
-        }
-        if omitted := {name: count for name, count in omitted.items() if count}:
+            if (count := len(text.encode()) - len(output[name].encode()))
+        }:
             cell["omitted"] = omitted
         return cell
 
-    def prepare_turn(self) -> Turn:
-        if self.meta["terminal"]:
-            raise RunStopped("Terminal runs cannot resume")
-        for turn in self.data["turns"].values():
-            if turn["receipt"] is None:
-                return copy.deepcopy(turn)
-        if self.store.journal_bytes >= self.limits.storage_bytes:
-            raise RunStopped("Session storage budget exhausted")
-        usage = self.meta["usage"]
-        if usage["turns"] >= self.limits.turns or usage["tokens"] >= self.limits.tokens:
-            raise RunStopped("Model budget exhausted")
-        state = self.state
-        state["revision"] += 1
-        state["runtime"]["usage"] = dict(usage)
+    def _fit_runtime(self, state: State) -> list[str]:
+        """Fill state's runtime cells and inbox within the context budget.
+
+        Returns the ids of the inbox messages delivered.
+        """
         executions = self.data["executions"]
         selected = {str(c["id"]) for c in state["cells"]}
         unresolved = {str(cell_id) for cell_id in self.unresolved()}
@@ -243,6 +234,23 @@ class Session(RuntimeLedger):
         for (key, name), text, cap in zip(streams, texts, caps, strict=True):
             outputs[key][name] = json_tail(text, cap)
         state["runtime"]["cells"] = {key: self._runtime_cell(key, outputs[key]) for key in kept}
+        return delivered
+
+    def prepare_turn(self) -> Turn:
+        if self.meta["terminal"]:
+            raise RunStopped("Terminal runs cannot resume")
+        for turn in self.data["turns"].values():
+            if turn["receipt"] is None:
+                return copy.deepcopy(turn)
+        if self.store.journal_bytes >= self.limits.storage_bytes:
+            raise RunStopped("Session storage budget exhausted")
+        usage = self.meta["usage"]
+        if usage["turns"] >= self.limits.turns or usage["tokens"] >= self.limits.tokens:
+            raise RunStopped("Model budget exhausted")
+        state = self.state
+        state["revision"] += 1
+        state["runtime"]["usage"] = dict(usage)
+        delivered = self._fit_runtime(state)
         turn_id = uuid.uuid4().hex
         turn: Turn = {
             "id": turn_id,

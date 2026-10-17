@@ -133,7 +133,7 @@ class Turn(TypedDict):
     response: dict | None  # AssistantMessage JSON
     ops: NotRequired[list]  # set on acceptance
     provider_failures: NotRequired[int]  # set by provider_failed; never shown to the model
-    provider_error: NotRequired[str]
+    provider_error: NotRequired[str]  # set by provider_failed: the last provider error
 
 
 class Control(TypedDict):
