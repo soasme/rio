@@ -36,16 +36,32 @@ class RuntimeProviderAuth:
 type RuntimeProviderAuthResolver = Callable[[], Awaitable[RuntimeProviderAuth]]
 
 
-@dataclass(frozen=True, slots=True)
-class OpenAICompatibleConfig:
-    """Configuration for an OpenAI-compatible chat completions endpoint."""
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HTTPConfig:
+    """Transport settings every HTTP adapter shares.
 
-    api_key: str = field(repr=False)
-    base_url: str = DEFAULT_OPENAI_COMPATIBLE_BASE_URL
+    Protocol settings (payload knobs, auth scheme) belong to each adapter's
+    own config subclass, not here.
+
+    ``max_retries`` bounds transport retries inside one ``complete()`` call.
+    Callers that already retry provider calls, such as the durable agent
+    runner, set it to 0 so a single owner schedules retries.
+    """
+
+    base_url: str
     headers: Mapping[str, str] | None = field(default=None, repr=False)
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     max_retries: int = DEFAULT_MAX_RETRIES
     max_retry_delay_seconds: float = DEFAULT_MAX_RETRY_DELAY_SECONDS
+    provider_name: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OpenAICompatibleConfig(HTTPConfig):
+    """Configuration for an OpenAI-compatible chat completions endpoint."""
+
+    api_key: str = field(repr=False)
+    base_url: str = DEFAULT_OPENAI_COMPATIBLE_BASE_URL
     api: str = "openai-completions"
     max_tokens: int | None = None
     reasoning_effort: str | None = None
@@ -59,17 +75,13 @@ class OpenAICompatibleConfig:
     credential_resolver: RuntimeProviderAuthResolver | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class AnthropicConfig:
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AnthropicConfig(HTTPConfig):
     """Configuration for Anthropic's Messages API."""
 
-    api_key: str
+    api_key: str = field(repr=False)
     bearer_auth: bool = False
     base_url: str = DEFAULT_ANTHROPIC_BASE_URL
-    headers: Mapping[str, str] | None = None
-    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
-    max_retries: int = DEFAULT_MAX_RETRIES
-    max_retry_delay_seconds: float = DEFAULT_MAX_RETRY_DELAY_SECONDS
     max_tokens: int | None = None
     thinking_budget_tokens: int | None = None
     thinking_effort: str | None = None

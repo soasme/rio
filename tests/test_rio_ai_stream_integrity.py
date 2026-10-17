@@ -7,8 +7,8 @@ import pytest
 
 from rio.ai.anthropic import AnthropicProvider
 from rio.ai.env import AnthropicConfig, OpenAICompatibleConfig
-from rio.ai.google import GoogleGenerativeAIProvider
-from rio.ai.mistral import MistralConversationsProvider
+from rio.ai.google import GoogleGenerativeAIConfig, GoogleGenerativeAIProvider
+from rio.ai.mistral import MistralConfig, MistralConversationsProvider
 from rio.ai.openai_compatible import OpenAICompatibleProvider
 
 
@@ -20,13 +20,11 @@ def provider(kind, client):
     config = dict(api_key="secret-api-key", max_retries=1, max_retry_delay_seconds=0)
     if kind == "anthropic":
         return AnthropicProvider(AnthropicConfig(**config), client=client)
-    cls = {
-        "chat": OpenAICompatibleProvider,
-        "google": GoogleGenerativeAIProvider,
-        "mistral": MistralConversationsProvider,
-        "responses": OpenAICompatibleProvider,
-    }[kind]
-    return cls(
+    if kind == "google":
+        return GoogleGenerativeAIProvider(GoogleGenerativeAIConfig(**config), client=client)
+    if kind == "mistral":
+        return MistralConversationsProvider(MistralConfig(**config), client=client)
+    return OpenAICompatibleProvider(
         OpenAICompatibleConfig(
             **config, api="openai-responses" if kind == "responses" else "openai-completions"
         ),

@@ -32,11 +32,10 @@ increment that count. `Limits.invalid_attempts` caps attempts per turn, includin
 the first, and also bounds invalid idle decisions. Reusing a saved response
 starts no new attempt.
 
-The provider may retry a transport request inside one model attempt. That retry
-budget is local to `rio.ai`; it does not increment the session's attempt count.
-When the request still fails, the session records `provider_failed`, refunds the
-turn's attempt, and retries after a backoff. `Limits.provider_attempts` caps these
-failures per turn.
+The runner owns provider retries for agent runs; `rio.coding` turns off `rio.ai`
+transport retries. When a request fails, the session records `provider_failed`,
+refunds the turn's attempt, and retries after a backoff that honors `Retry-After`.
+`Limits.provider_attempts` caps these failures per turn.
 
 ## Supporting terms
 

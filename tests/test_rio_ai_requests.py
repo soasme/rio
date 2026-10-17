@@ -8,7 +8,9 @@ import pytest
 from rio.ai import (
     AnthropicConfig,
     AnthropicProvider,
+    GoogleGenerativeAIConfig,
     GoogleGenerativeAIProvider,
+    MistralConfig,
     MistralConversationsProvider,
     OpenAICodexConfig,
     OpenAICodexCredentials,
@@ -51,15 +53,18 @@ def provider(kind, client, **kwargs):
         )
     if kind == "anthropic":
         return AnthropicProvider(AnthropicConfig(api_key="token", **common), client=client)
-    cls = {"google": GoogleGenerativeAIProvider, "mistral": MistralConversationsProvider}.get(
-        kind, OpenAICompatibleProvider
-    )
+    if kind == "google":
+        return GoogleGenerativeAIProvider(
+            GoogleGenerativeAIConfig(api_key="token", **common), client=client
+        )
+    if kind == "mistral":
+        return MistralConversationsProvider(MistralConfig(api_key="token", **common), client=client)
     config = OpenAICompatibleConfig(
         api_key="token",
         api="openai-responses" if kind == "responses" else "openai-completions",
         **common,
     )
-    return cls(config, client=client)
+    return OpenAICompatibleProvider(config, client=client)
 
 
 def success(kind):

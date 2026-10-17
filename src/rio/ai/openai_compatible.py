@@ -179,27 +179,6 @@ class OpenAICompatibleProvider(HTTPProvider[OpenAICompatibleConfig]):
             if not has_authorization and api_key is not None:
                 headers["Authorization"] = f"Bearer {api_key}"
 
-            async def parse(
-                response: httpx.Response, attempt: RetryAttempt
-            ) -> AsyncIterator[ProviderEvent]:
-                parser = parser_factory()
-                async for line in response.aiter_lines():
-                    event = parse_sse_line(line)
-                    if event is None:
-                        continue
-
-                    events, stop = parser.feed(event)
-                    for parser_event in events:
-                        yield parser_event
-                    attempt.emitted_content = parser.emitted_content
-                    if stop:
-                        break
-
-                if parser.fatal:
-                    return
-                for parser_event in parser.finalize():
-                    yield parser_event
-
             async for event in request_with_retries(
                 client,
                 url=request_url,
@@ -207,7 +186,8 @@ class OpenAICompatibleProvider(HTTPProvider[OpenAICompatibleConfig]):
                 headers=headers,
                 model=model,
                 config=self._config,
-                parse=parse,
+                parse=lambda response, attempt: _parse_sse(response, attempt, parser_factory()),
+                response_provider_header=self._config.response_provider_header,
             ):
                 yield event
 
@@ -231,6 +211,26 @@ class _StreamParser(Protocol):
     def finalize(self) -> list[ProviderEvent]:
         """Return the trailing tool-call and response-end events."""
         ...
+
+
+async def _parse_sse(
+    response: httpx.Response, attempt: RetryAttempt, parser: _StreamParser
+) -> AsyncIterator[ProviderEvent]:
+    """Drive ``parser`` over a chat-style SSE body, recording emitted content."""
+    async for line in response.aiter_lines():
+        event = parse_sse_line(line)
+        if event is None:
+            continue
+        events, stop = parser.feed(event)
+        for parser_event in events:
+            yield parser_event
+        attempt.emitted_content = parser.emitted_content
+        if stop:
+            break
+    if parser.fatal:
+        return
+    for parser_event in parser.finalize():
+        yield parser_event
 
 
 class _ChatStreamParser:

@@ -335,10 +335,22 @@ class Session(RuntimeLedger):
             },
         )
 
-    def provider_failed(self, turn_id: str, error: str, *, retryable: bool = True) -> None:
-        """Record a failed provider request; it does not use the invalid-step budget."""
+    def provider_failed(
+        self,
+        turn_id: str,
+        error: str,
+        *,
+        retryable: bool = True,
+        retry_after: float | None = None,
+    ) -> None:
+        """Record a failed provider request; it does not use the invalid-step budget.
+
+        The runner owns provider retries: each failure and its backoff is journaled
+        here. A provider's Retry-After lengthens the backoff, within the same cap.
+        """
         turn = self.data["turns"][turn_id]
         failures = turn.get("provider_failures", 0) + 1
+        backoff = min(max(2**failures, retry_after or 0), PROVIDER_BACKOFF_SECONDS)
         self.store.commit(
             "provider_failed",
             {
@@ -349,7 +361,7 @@ class Session(RuntimeLedger):
                         "provider_failures": failures,
                         "provider_error": error,
                         "response": None,
-                        "retry_at": time.time() + min(2**failures, PROVIDER_BACKOFF_SECONDS),
+                        "retry_at": time.time() + backoff,
                     }
                 },
             },

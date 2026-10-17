@@ -617,8 +617,8 @@ def test_openai_compatible_config_from_provider_uses_configured_env_var(
     assert config.base_url == "http://localhost:11434/v1"
     assert config.headers == {}
     assert config.timeout_seconds == 60.0
-    assert config.max_retries == 2
-    assert config.max_retry_delay_seconds == 1.0
+    # The durable runner owns retries for agent runs.
+    assert config.max_retries == 0
     assert config.response_provider_header is None
 
 
@@ -681,15 +681,11 @@ def test_openai_compatible_config_from_provider_uses_configured_timeout(
         models=("qwen",),
         default_model="qwen",
         timeout_seconds=180,
-        max_retries=3,
-        max_retry_delay_seconds=0.25,
     )
 
     config = openai_compatible_config_from_provider(provider)
 
     assert config.timeout_seconds == 180
-    assert config.max_retries == 3
-    assert config.max_retry_delay_seconds == 0.25
 
 
 def test_openai_compatible_config_from_provider_uses_configured_headers(
@@ -1135,7 +1131,6 @@ def test_provider_settings_from_json_rejects_unknown_schema_version() -> None:
         ({"headers": {"X-Test": 123}}, "headers.X-Test"),
         ({"timeout_seconds": 0}, "timeout_seconds: Input should be greater than 0"),
         ({"timeout_seconds": True}, "timeout_seconds"),
-        ({"max_retries": -1}, "max_retries: Input should be greater than or equal to 0"),
         ({"default_model": " "}, "default_model"),
     ],
 )
@@ -1165,6 +1160,42 @@ def test_create_model_provider_returns_openai_codex_provider(tmp_path: Path) -> 
     )
 
     assert isinstance(provider, OpenAICodexProvider)
+
+
+@pytest.mark.parametrize(
+    "api",
+    [
+        "openai-codex-responses",
+        "openai-completions",
+        "anthropic-messages",
+        "google-generative-ai",
+        "mistral-conversations",
+    ],
+)
+def test_create_model_provider_applies_model_endpoint_overrides(api, tmp_path: Path) -> None:
+    """Model-level base_url and headers win over provider values for every adapter."""
+    store = FileCredentialStore(tmp_path / "credentials.json")
+    store.set("custom", "key")
+    config = ProviderConfig(
+        name="custom",
+        api=api,
+        base_url="https://provider.example/v1",
+        headers={"X-Provider": "p", "X-Shared": "provider"},
+        models=("m",),
+        default_model="m",
+        model_metadata={
+            "m": ProviderModelMetadata(
+                base_url="https://model.example/v1",
+                headers={"X-Model": "m", "X-Shared": "model"},
+            )
+        },
+    )
+
+    provider = create_model_provider(config, credential_store=store, model="m")
+
+    assert provider._config.base_url == "https://model.example/v1"
+    assert provider._config.headers == {"X-Provider": "p", "X-Model": "m", "X-Shared": "model"}
+    assert provider._config.max_retries == 0
 
 
 def test_anthropic_config_from_provider_includes_compat(

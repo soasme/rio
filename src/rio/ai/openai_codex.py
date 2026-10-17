@@ -15,11 +15,7 @@ from rio.ai._provider_events import (
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
-from rio.ai.env import (
-    DEFAULT_MAX_RETRIES,
-    DEFAULT_MAX_RETRY_DELAY_SECONDS,
-    DEFAULT_TIMEOUT_SECONDS,
-)
+from rio.ai.env import HTTPConfig
 from rio.ai.http import HTTPProvider, request_with_retries
 from rio.ai.messages import UserMessage
 from rio.ai.openai_compatible import _ResponsesStreamParser, _stream_error_details
@@ -45,16 +41,12 @@ class OpenAICodexCredentials:
 type OpenAICodexCredentialResolver = Callable[[], Awaitable[OpenAICodexCredentials]]
 
 
-@dataclass(frozen=True, slots=True)
-class OpenAICodexConfig:
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OpenAICodexConfig(HTTPConfig):
     """Configuration for the OpenAI Codex subscription Responses endpoint."""
 
     credential_resolver: OpenAICodexCredentialResolver
     base_url: str = DEFAULT_OPENAI_CODEX_BASE_URL
-    headers: Mapping[str, str] | None = None
-    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
-    max_retries: int = DEFAULT_MAX_RETRIES
-    max_retry_delay_seconds: float = DEFAULT_MAX_RETRY_DELAY_SECONDS
     originator: str = "tau"
     reasoning_effort: str | None = None
     provider_name: str = "OpenAI Codex"

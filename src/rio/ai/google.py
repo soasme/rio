@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -15,7 +16,7 @@ from rio.ai._provider_events import (
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
-from rio.ai.env import OpenAICompatibleConfig
+from rio.ai.env import HTTPConfig
 from rio.ai.http import HTTPProvider, request_with_retries
 from rio.ai.messages import (
     AssistantMessage,
@@ -31,8 +32,21 @@ from rio.ai.retry import (
 from rio.ai.tools import AgentTool, ToolCall
 from rio.ai.types import JSONValue
 
+DEFAULT_GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
-class GoogleGenerativeAIProvider(HTTPProvider[OpenAICompatibleConfig]):
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GoogleGenerativeAIConfig(HTTPConfig):
+    """Configuration for Google's Generative Language API."""
+
+    api_key: str = field(repr=False)
+    base_url: str = DEFAULT_GOOGLE_BASE_URL
+    reasoning_effort: str | None = None
+    max_tokens: int | None = None
+    provider_name: str = "Google"
+
+
+class GoogleGenerativeAIProvider(HTTPProvider[GoogleGenerativeAIConfig]):
     """Provider adapter for Google's Generative Language streaming API."""
 
     def _labels(self) -> tuple[str, str]:
