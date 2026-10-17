@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, Mapping
 from dataclasses import dataclass, field
 
 import httpx
@@ -59,10 +59,10 @@ class GoogleGenerativeAIProvider(HTTPProvider[GoogleGenerativeAIConfig]):
         system: str,
         messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[ProviderEvent]:
+    ) -> AsyncGenerator[ProviderEvent]:
         """Stream one Gemini response as provider-neutral events."""
 
-        async def iterator() -> AsyncIterator[ProviderEvent]:
+        async def iterator() -> AsyncGenerator[ProviderEvent]:
             client = self._get_client()
             payload = _build_google_payload(
                 model=model,
@@ -83,7 +83,7 @@ class GoogleGenerativeAIProvider(HTTPProvider[GoogleGenerativeAIConfig]):
 
             async def parse(
                 response: httpx.Response, attempt: RetryAttempt
-            ) -> AsyncIterator[ProviderEvent]:
+            ) -> AsyncGenerator[ProviderEvent]:
                 parser = _GoogleStreamParser()
                 async for line in response.aiter_lines():
                     event = parse_sse_line(line)
@@ -96,7 +96,9 @@ class GoogleGenerativeAIProvider(HTTPProvider[GoogleGenerativeAIConfig]):
                         return
                 final_events = parser.finalize()
                 if not parser.has_finish_reason:
-                    raise RetryableFailure("stream ended without finishReason", final_events[0])
+                    error = final_events[0]
+                    assert isinstance(error, ProviderErrorEvent)
+                    raise RetryableFailure("stream ended without finishReason", error)
                 for parser_event in final_events:
                     yield parser_event
 

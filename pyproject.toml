@@ -43,7 +43,21 @@ target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "TID251"]
+ignore = ["ANN401"]  # Dynamic JSON and forwarding keyword arguments may use Any.
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"typing.TypedDict".msg = "Use a Pydantic model for structured records."
+"typing_extensions.TypedDict".msg = "Use a Pydantic model for structured records."
+
+[tool.mypy]
+files = ["src", "tests", "scripts", "evals"]
+exclude = ["^evals/cases/"]  # Independent grading fixtures include deliberately broken code.
+mypy_path = "src"
+explicit_package_bases = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+warn_unused_ignores = true
 
 [tool.ruff.format]
 quote-style = "double"
@@ -51,7 +65,9 @@ indent-style = "space"
 
 [dependency-groups]
 dev = [
+    "mypy>=2.4.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "ruff>=0.5",
+    "types-psutil>=7.2.2.20260906",
 ]

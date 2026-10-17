@@ -1,7 +1,9 @@
 # AGENTS.md
 
 * When implementing, follow YAGNI pattern.
-* After implementing, update lean verification and make sure the verification passes.
+* Use Pydantic models for structured records instead of TypedDict. Keep dictionaries for JSON payloads and journal deltas.
+* All Python functions and methods must annotate parameters and return values (except implicit self and cls).
+* After implementing, update Lean verification and pass `uv run ruff check .`, `uv run mypy`, `uv run pytest`, and `lake build` in `tests/lean`.
 * Before changing code, create `.worktrees/<name>`.
 * When commiting code and creating a PR, use conventional message.
 * When raise a PR, summarize the current topic visually. Pick the smallest view that makes the key point clear.

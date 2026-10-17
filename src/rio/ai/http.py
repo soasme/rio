@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Mapping
 from contextlib import aclosing, contextmanager
 from typing import Any
 
@@ -121,7 +121,7 @@ class HTTPProvider[ConfigT: HTTPConfig]:
         system: str,
         messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[ProviderEvent]:
+    ) -> AsyncGenerator[ProviderEvent]:
         raise NotImplementedError
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -138,13 +138,13 @@ async def request_with_retries(
     headers: Mapping[str, str] | Callable[[], Awaitable[Mapping[str, str]]],
     model: str,
     config: HTTPConfig,
-    parse: Callable[[httpx.Response, RetryAttempt], AsyncIterator[ProviderEvent]],
+    parse: Callable[[httpx.Response, RetryAttempt], AsyncGenerator[ProviderEvent]],
     is_retryable: Callable[[int, str], bool] | None = None,
     response_provider_header: str | None = None,
-) -> AsyncIterator[ProviderEvent]:
+) -> AsyncGenerator[ProviderEvent]:
     """Own the streaming request, HTTP errors, and retry lifetime for every adapter."""
 
-    async def attempt(state: RetryAttempt) -> AsyncIterator[ProviderEvent]:
+    async def attempt(state: RetryAttempt) -> AsyncGenerator[ProviderEvent]:
         request_headers = await headers() if callable(headers) else headers
         async with client.stream("POST", url, json=payload, headers=request_headers) as response:
             response_provider = (

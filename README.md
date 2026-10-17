@@ -62,6 +62,7 @@ reference, and an explanation of Rio's architecture.
 ```bash
 uv run pytest
 uv run ruff check .
+uv run mypy
 ```
 
 To run the Lean 4 verification, install [elan](https://github.com/leanprover/elan)

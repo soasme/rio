@@ -8,7 +8,7 @@ from json import JSONDecodeError, dumps, loads
 from os import environ
 from pathlib import Path
 from shutil import copy2
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import (
     BaseModel,
@@ -31,7 +31,7 @@ from rio.ai.env import (
 from rio.ai.google import GoogleGenerativeAIConfig
 from rio.ai.mistral import MistralConfig
 from rio.coding.catalog_loader import builtin_catalog, effective_catalog
-from rio.coding.credentials import FileCredentialStore, credentials_path
+from rio.coding.credentials import FileCredentialStore, OAuthCredential, credentials_path
 from rio.coding.oauth_registry import get_oauth_provider
 from rio.coding.paths import RioPaths, atomic_write_text
 from rio.coding.provider_catalog import (
@@ -48,6 +48,13 @@ from rio.coding.thinking import (
     normalize_thinking_level,
     reasoning_effort_for_level,
 )
+
+
+class CredentialReader(Protocol):
+    def get(self, name: str) -> str | None: ...
+
+    def get_oauth(self, name: str) -> OAuthCredential | None: ...
+
 
 DEFAULT_PROVIDER_NAME = "openai"
 # The durable runner owns retries for agent runs (``Limits.provider_attempts``),
@@ -505,7 +512,7 @@ def resolve_startup_thinking_level(
 def openai_compatible_config_from_provider(
     provider: ProviderConfig,
     *,
-    credential_reader: FileCredentialStore | None = None,
+    credential_reader: CredentialReader | None = None,
     model: str | None = None,
     thinking_level: ThinkingLevel | None = None,
 ) -> OpenAICompatibleConfig:
@@ -547,7 +554,7 @@ def openai_compatible_config_from_provider(
 def anthropic_config_from_provider(
     provider: ProviderConfig,
     *,
-    credential_reader: FileCredentialStore | None = None,
+    credential_reader: CredentialReader | None = None,
     model: str | None = None,
     thinking_level: ThinkingLevel | None = None,
 ) -> AnthropicConfig:
@@ -588,7 +595,7 @@ def anthropic_config_from_provider(
 def google_config_from_provider(
     provider: ProviderConfig,
     *,
-    credential_reader: FileCredentialStore | None = None,
+    credential_reader: CredentialReader | None = None,
     model: str | None = None,
     thinking_level: ThinkingLevel | None = None,
 ) -> GoogleGenerativeAIConfig:
@@ -611,7 +618,7 @@ def google_config_from_provider(
 def mistral_config_from_provider(
     provider: ProviderConfig,
     *,
-    credential_reader: FileCredentialStore | None = None,
+    credential_reader: CredentialReader | None = None,
     model: str | None = None,
     thinking_level: ThinkingLevel | None = None,
 ) -> MistralConfig:
@@ -634,7 +641,7 @@ def mistral_config_from_provider(
 def provider_has_usable_credentials(
     provider: ProviderConfig,
     *,
-    credential_reader: FileCredentialStore | None = None,
+    credential_reader: CredentialReader | None = None,
 ) -> bool:
     """Return whether rio can attempt calls for this provider without prompting setup."""
     if provider.credential_name and credential_reader is not None:
@@ -815,7 +822,7 @@ def anthropic_cache_settings(
 def _api_key_from_provider(
     provider: ProviderConfig,
     *,
-    credential_reader: FileCredentialStore | None,
+    credential_reader: CredentialReader | None,
 ) -> str:
     if provider.credential_name and credential_reader is not None:
         credential = credential_reader.get(provider.credential_name)

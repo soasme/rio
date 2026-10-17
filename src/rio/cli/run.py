@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from contextlib import ExitStack
 from pathlib import Path
 
 from rio.agent.runner import replay, run
 from rio.agent.session import Session
-from rio.agent.store import Store
+from rio.agent.shapes import JournalEvent
+from rio.agent.store import Store, encode
 from rio.cli.render import PlainEventRenderer
 from rio.coding import cells
 from rio.coding.context import load_agents_md
@@ -22,6 +22,7 @@ from rio.coding.provider_config import (
 )
 from rio.coding.provider_runtime import create_model_provider
 from rio.coding.system_prompt import format_project_context
+from rio.coding.thinking import ThinkingLevel
 
 
 async def run_persistent_session(
@@ -30,7 +31,7 @@ async def run_persistent_session(
     cwd: Path | None = None,
     provider_name: str | None = None,
     model: str | None = None,
-    thinking_level: str | None = None,
+    thinking_level: ThinkingLevel | None = None,
     resume: str | None = None,
     output_mode: str = "human",
     agents_md: Path | None = None,
@@ -39,21 +40,29 @@ async def run_persistent_session(
     path = _session_path(resume, session_id)
     renderer = PlainEventRenderer()
 
-    def publish(event):
+    def publish(event: JournalEvent) -> None:
         if output_mode == "json":
-            print(json.dumps({"session_id": session_id, **event}), flush=True)
+            print(
+                encode(
+                    {
+                        "session_id": session_id,
+                        **event.model_dump(by_alias=True, exclude_unset=True),
+                    }
+                ),
+                flush=True,
+            )
         else:
-            renderer.render(event)
+            renderer.render(event.model_dump(by_alias=True, exclude_unset=True))
 
     with ExitStack() as stack:
         if resume:
             store = stack.enter_context(Store(path))
             session = Session(store, cells.KINDS)
             _check_resume(session, prompt, cwd, provider_name, model, agents_md)
-            if session.meta["terminal"]:
+            if session.meta.terminal:
                 return await replay(ProcessOwner(session), publish), session_id
-            config = session.meta["model_config"]
-            cwd = Path(session.meta["owner_config"]["cwd"])
+            config = session.meta.provider_model_config
+            cwd = Path(session.meta.owner_config["cwd"])
             provider_name, model = config["provider"], config["model"]
             thinking_level = config.get("thinking")
         else:
@@ -112,11 +121,11 @@ def _check_resume(
     agents_md: Path | None,
 ) -> None:
     """A resumed Session keeps its goal, project, model, and instructions."""
-    if cwd is not None and cwd.resolve() != Path(session.meta["owner_config"]["cwd"]):
+    if cwd is not None and cwd.resolve() != Path(session.meta.owner_config["cwd"]):
         raise ValueError("--cwd must match the resumed Session")
-    if prompt and prompt != session.state["goal"]:
+    if prompt and prompt != session.state.goal:
         raise ValueError("Resume preserves the original goal; omit TASK or start a new run")
-    saved = session.meta["model_config"]
+    saved = session.meta.provider_model_config
     if provider_name and provider_name != saved["provider"]:
         raise ValueError("Resume preserves the configured provider")
     if model and model != saved["model"]:

@@ -1,19 +1,25 @@
 """Human transcript regressions for the durable event stream."""
 
+from __future__ import annotations
+
+from typing import Any
+
 import pytest
 
 from rio.cli.render import PlainEventRenderer
 
 
-def emit(renderer, kind, **changes):
+def emit(renderer: PlainEventRenderer, kind: str, **changes: dict[str, Any]) -> None:
     renderer.render({"type": kind, "changes": changes})
 
 
-def execution(stdout="", stderr="", **extra):
+def execution(stdout: str = "", stderr: str = "", **extra: Any) -> dict[str, Any]:
     return {"cell_id": 2, "output": {"stdout": stdout, "stderr": stderr}, **extra}
 
 
-def test_committed_cells_show_literal_source_notes_and_successors(capsys):
+def test_committed_cells_show_literal_source_notes_and_successors(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     renderer = PlainEventRenderer()
     cells = {
         "10": {"id": 10, "previous_id": 2, "kind": "code", "source": "print('[red]')\n"},
@@ -27,7 +33,9 @@ def test_committed_cells_show_literal_source_notes_and_successors(capsys):
     assert capsys.readouterr().out == ("• Inspect files.\n  Then test.\n\n• print('[red]')\n")
 
 
-def test_streamed_snapshots_preserve_partial_lines_and_do_not_repeat(capsys):
+def test_streamed_snapshots_preserve_partial_lines_and_do_not_repeat(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     renderer = PlainEventRenderer()
     emit(renderer, "execution_started", executions={"2": execution()})
     emit(renderer, "execution_output", executions={"2": execution("hel")})
@@ -43,7 +51,9 @@ def test_streamed_snapshots_preserve_partial_lines_and_do_not_repeat(capsys):
     assert capsys.readouterr().out == "lo\n    world\n  └ success (exit 0)\n"
 
 
-def test_interleaved_notes_and_stderr_keep_separate_entries(capsys):
+def test_interleaved_notes_and_stderr_keep_separate_entries(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     renderer = PlainEventRenderer()
     emit(renderer, "execution_started", executions={"2": execution()})
     emit(renderer, "execution_output", executions={"2": execution("one")})
@@ -71,13 +81,17 @@ def test_interleaved_notes_and_stderr_keep_separate_entries(capsys):
         ({"type": "UnknownExecution", "reason": "worker lost"}, "UnknownExecution: worker lost"),
     ],
 )
-def test_silent_executions_still_show_outcome(result, expected, capsys):
+def test_silent_executions_still_show_outcome(
+    result: str, expected: str, capsys: pytest.CaptureFixture[str]
+) -> None:
     emit(PlainEventRenderer(), "execution_finished", executions={"2": execution(result=result)})
     assert capsys.readouterr().out == f"  └ {expected}\n"
 
 
 @pytest.mark.parametrize("durable_truncation", [False, True])
-def test_truncation_is_explicit_and_only_reported_once(durable_truncation, capsys):
+def test_truncation_is_explicit_and_only_reported_once(
+    durable_truncation: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
     renderer = PlainEventRenderer()
     record = execution("x" * (20 if durable_truncation else 8_001), truncated=durable_truncation)
     emit(renderer, "execution_output", executions={"2": record})
@@ -91,7 +105,9 @@ def test_truncation_is_explicit_and_only_reported_once(durable_truncation, capsy
     assert output.endswith("  └ success\n")
 
 
-def test_conclusion_request_does_not_claim_success_and_retries_are_visible(capsys):
+def test_conclusion_request_does_not_claim_success_and_retries_are_visible(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     renderer = PlainEventRenderer()
     emit(
         renderer,
@@ -110,7 +126,9 @@ def test_conclusion_request_does_not_claim_success_and_retries_are_visible(capsy
     )
 
 
-def test_command_arguments_are_quoted_without_cell_metadata(capsys):
+def test_command_arguments_are_quoted_without_cell_metadata(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     renderer = PlainEventRenderer()
     emit(
         renderer,
@@ -127,7 +145,9 @@ def test_command_arguments_are_quoted_without_cell_metadata(capsys):
     assert capsys.readouterr().out == "• printf %s 'a b' '$HOME' '' '[red]'\n"
 
 
-def test_output_chunks_then_final_snapshot_do_not_repeat(capsys):
+def test_output_chunks_then_final_snapshot_do_not_repeat(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     renderer = PlainEventRenderer()
     emit(renderer, "execution_output", output_chunks={"2": execution("hel")})
     emit(renderer, "execution_output", output_chunks={"2": execution("lo\n")})

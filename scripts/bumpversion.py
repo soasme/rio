@@ -120,7 +120,9 @@ def prepare_release(root: Path, part: str, *, refresh_models: bool = True) -> st
             "uv", "run", "--no-sync", "python", "scripts/vendor_bundled_models.py", cwd=root
         )
     run_checked("uv", "run", "--no-sync", "ruff", "check", ".", cwd=root)
+    run_checked("uv", "run", "--no-sync", "mypy", cwd=root)
     run_checked("uv", "run", "--no-sync", "pytest", cwd=root)
+    run_checked("lake", "build", cwd=root / "tests" / "lean")
     return version
 
 

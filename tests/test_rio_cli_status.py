@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import io
+from typing import Any
 
 import pytest
 
@@ -32,7 +33,13 @@ def osc(state: str) -> str:
         ("yes", io.StringIO(), "xterm", False),
     ],
 )
-def test_override_beats_detection(monkeypatch, override, stream, term, expected):
+def test_override_beats_detection(
+    monkeypatch: pytest.MonkeyPatch,
+    override: str | None,
+    stream: io.StringIO,
+    term: str,
+    expected: bool,
+) -> None:
     monkeypatch.setenv("TERM", term)
     if override is None:
         monkeypatch.delenv("RIO_PROGRAM_STATUS", raising=False)
@@ -41,7 +48,7 @@ def test_override_beats_detection(monkeypatch, override, stream, term, expected)
     assert status.enabled(stream) is expected
 
 
-def test_report_writes_osc_7501(monkeypatch):
+def test_report_writes_osc_7501(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RIO_PROGRAM_STATUS", "1")
     stream = io.StringIO()
     status.report("working", stream)
@@ -52,8 +59,14 @@ def test_report_writes_osc_7501(monkeypatch):
     ("result", "final", "code"),
     [((True, "s"), "done", None), ((False, "s"), "error", 1)],
 )
-def test_run_reports_working_then_outcome(monkeypatch, capsys, result, final, code):
-    async def fake_run(*args, **kwargs):
+def test_run_reports_working_then_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    result: tuple[bool, str],
+    final: str,
+    code: int | None,
+) -> None:
+    async def fake_run(*args: Any, **kwargs: Any) -> tuple[bool, str]:
         return result
 
     monkeypatch.setenv("RIO_PROGRAM_STATUS", "1")
@@ -67,8 +80,13 @@ def test_run_reports_working_then_outcome(monkeypatch, capsys, result, final, co
 
 
 @pytest.mark.parametrize(("error", "final"), [(KeyboardInterrupt, "idle"), (RuntimeError, "error")])
-def test_run_reports_interrupt_and_failure(monkeypatch, capsys, error, final):
-    async def fake_run(*args, **kwargs):
+def test_run_reports_interrupt_and_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: Exception,
+    final: str,
+) -> None:
+    async def fake_run(*args: Any, **kwargs: Any) -> tuple[bool, str]:
         raise error
 
     monkeypatch.setenv("RIO_PROGRAM_STATUS", "1")
@@ -82,8 +100,10 @@ def test_run_reports_interrupt_and_failure(monkeypatch, capsys, error, final):
     assert capsys.readouterr().err == expected
 
 
-def test_json_stdout_stays_clean(monkeypatch, capsys):
-    async def fake_run(*args, **kwargs):
+def test_json_stdout_stays_clean(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def fake_run(*args: Any, **kwargs: Any) -> tuple[bool, str]:
         return True, "s"
 
     monkeypatch.setenv("RIO_PROGRAM_STATUS", "1")

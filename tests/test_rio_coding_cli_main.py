@@ -71,10 +71,13 @@ def test_load_agents_md_resolves_cwd_or_explicit_path(tmp_path: Path) -> None:
 
     assert load_agents_md(tmp_path) is None
     (tmp_path / "AGENTS.md").write_text("cwd rules")
-    assert load_agents_md(tmp_path).content == "cwd rules"
+    loaded = load_agents_md(tmp_path)
+    assert loaded is not None
+    assert loaded.content == "cwd rules"
     explicit = tmp_path / "rules.md"
     explicit.write_text("explicit rules")
     loaded = load_agents_md(tmp_path, explicit)
+    assert loaded is not None
     assert (loaded.path, loaded.content) == (str(explicit.resolve()), "explicit rules")
     with pytest.raises(ValueError, match="Cannot read AGENTS.md"):
         load_agents_md(tmp_path, tmp_path / "missing.md")

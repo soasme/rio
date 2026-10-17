@@ -45,12 +45,12 @@ def encode_state(state: State) -> str:
     """Keep stable content ahead of per-turn fields, including in resumed sessions."""
     return encode(
         {
-            "schema": state["schema"],
-            "id": state["id"],
-            "goal": state["goal"],
-            "cells": state["cells"],
-            "revision": state["revision"],
-            "runtime": state["runtime"],
+            "schema": state.schema_version,
+            "id": state.id,
+            "goal": state.goal,
+            "cells": state.cells,
+            "revision": state.revision,
+            "runtime": state.runtime,
         }
     )
 
@@ -74,7 +74,7 @@ def schema(kinds: Iterable[CellKind]) -> dict:
     the runtime checks the exact fields of each kind and control type.
     """
     kinds = list(kinds)
-    fields = {}
+    fields: dict[str, dict] = {}
     for kind in kinds:
         fields.update(kind.fields)
     cell = {

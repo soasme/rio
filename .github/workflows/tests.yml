@@ -38,5 +38,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --dev
 
+      - name: Lint and check function annotations
+        run: uv run --no-sync ruff check .
+
+      - name: Type check
+        run: uv run --no-sync mypy
+
       - name: Run tests
         run: uv run --no-sync pytest
