@@ -150,21 +150,18 @@ def truncate_bytes_tail(text: str, max_bytes: int) -> str:
     return clipped.decode(errors="ignore")
 
 
-def tail_notice(truncation: TruncationResult, full_output_path: str) -> str:
-    """The notice appended to tail-truncated command output."""
+def tail_notice(truncation: TruncationResult, pointer: str) -> str:
+    """The notice appended to tail-truncated command output; `pointer` says where the rest is."""
     start_line = truncation.total_lines - truncation.output_lines + 1
     end_line = truncation.total_lines
     if truncation.last_line_partial:
         return (
             f"\n\n[Showing last {format_size(truncation.output_bytes)} of line {end_line}. "
-            f"Full output: {full_output_path}]"
+            f"{pointer}]"
         )
     if truncation.truncated_by == "lines":
-        return (
-            f"\n\n[Showing lines {start_line}-{end_line} of {truncation.total_lines}. "
-            f"Full output: {full_output_path}]"
-        )
+        return f"\n\n[Showing lines {start_line}-{end_line} of {truncation.total_lines}. {pointer}]"
     return (
         f"\n\n[Showing lines {start_line}-{end_line} of {truncation.total_lines} "
-        f"({format_size(truncation.max_bytes)} limit). Full output: {full_output_path}]"
+        f"({format_size(truncation.max_bytes)} limit). {pointer}]"
     )

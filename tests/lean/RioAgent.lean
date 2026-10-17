@@ -302,6 +302,24 @@ theorem minimal_state_fits_without_stop (limit records outstanding minimal : Nat
   simp only [firstFit]
   by_cases h1 : records ≤ limit <;> by_cases h2 : outstanding ≤ limit <;> simp [h1, h2, h]
 
+/-- Streaming output logs a chunk only up to the owner's remaining disk budget. -/
+def logChunk (budget chunk : Nat) : Nat × Nat :=
+  let logged := min chunk budget
+  (logged, budget - logged)
+
+theorem logged_within_budget (budget chunk : Nat) : (logChunk budget chunk).1 ≤ budget :=
+  Nat.min_le_right _ _
+
+theorem logged_plus_remaining_is_budget (budget chunk : Nat) :
+    (logChunk budget chunk).1 + (logChunk budget chunk).2 = budget := by
+  simp only [logChunk]; omega
+
+/-- The streamed tail never grows past its cap, however much output arrives. -/
+def streamTail (cap tail chunk : Nat) : Nat := min (tail + chunk) cap
+
+theorem stream_tail_bounded (cap tail chunk : Nat) : streamTail cap tail chunk ≤ cap :=
+  Nat.min_le_right _ _
+
 def fireTimer (fired expired : Bool) : Bool × Nat :=
   if !fired && expired then (true, 1) else (fired, 0)
 

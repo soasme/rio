@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import contextlib
+import dataclasses
 import json
 import os
 import signal
@@ -24,7 +25,39 @@ from rio.agent.session import Session
 from rio.agent.shapes import ValidatorResult
 from rio.agent.store import StorageFailure
 from rio.coding.cells import COMMANDS
-from rio.truncate import tail_notice, truncate_bytes_tail, truncate_tail
+from rio.truncate import format_size, tail_notice, truncate_bytes_tail, truncate_tail
+
+# Disk budget for the full logs of truncated Cell output, shared by an owner's Cells.
+LOG_BYTES = 64 * 1024 * 1024
+
+
+class Stream:
+    """One Cell output stream: a bounded tail, running totals, and a log within a budget."""
+
+    def __init__(self, path: Path, tail_bytes: int):
+        self.path = path
+        self.log = path.open("wb")
+        self.tail_bytes = tail_bytes
+        self.tail = ""
+        self.total_bytes = 0
+        self.logged_bytes = 0
+        self.newlines = 0
+        self.ends_with_newline = False
+
+    def append(self, text: str, budget: int) -> int:
+        """Record `text`, writing at most `budget` bytes to the log. Returns bytes logged."""
+        if not text:
+            return 0
+        encoded = text.encode()
+        # Keep 4 spare bytes so a clipped tail always exceeds the shown limit.
+        self.tail = truncate_bytes_tail(self.tail + text, self.tail_bytes + 4)
+        self.total_bytes += len(encoded)
+        self.newlines += text.count("\n")
+        self.ends_with_newline = text.endswith("\n")
+        logged = encoded[:budget].decode("utf-8", "ignore").encode()
+        self.log.write(logged)
+        self.logged_bytes += len(logged)
+        return len(logged)
 
 
 class WorkerIdentity(TypedDict):
@@ -106,9 +139,12 @@ class ProcessOwner(Owner):
         self,
         session: Session,
         commands: Mapping[str, Callable[[dict, Path], list[str]]] = COMMANDS,
+        log_bytes: int = LOG_BYTES,
     ):
         super().__init__(session)
         self.commands = commands
+        # Logs live in the owner's temporary directory and are removed when the owner exits.
+        self.log_budget = log_bytes
         self.process: asyncio.subprocess.Process | None = None
         self.key = ""
         self.identity: WorkerIdentity | None = None
@@ -286,14 +322,13 @@ class ProcessOwner(Owner):
                     append(name, decoder.decode(b"", final=True))
 
     async def _cell_output(self, cell_id: int, process: asyncio.subprocess.Process) -> int | None:
+        limit = self.session.limits.output_bytes
         buffers = {"stdout": "", "stderr": ""}
-        files = {}
+        streams: dict[str, Stream] = {}
 
         def append(name: str, text: str) -> None:
-            files[name].write(text)
-            buffers[name] = truncate_bytes_tail(
-                buffers[name] + text, self.session.limits.output_bytes
-            )
+            self.log_budget -= streams[name].append(text, self.log_budget)
+            buffers[name] = truncate_bytes_tail(buffers[name] + text, limit)
 
         def flush() -> None:
             self.session.append_output(cell_id, buffers)
@@ -302,32 +337,35 @@ class ProcessOwner(Owner):
         try:
             with contextlib.ExitStack() as stack:
                 for name in buffers:
-                    files[name] = stack.enter_context(
-                        tempfile.NamedTemporaryFile(
-                            "w", encoding="utf-8", prefix="rio-output-", suffix=".log", delete=False
-                        )
-                    )
+                    path = Path(self.temporary.name) / f"cell-{cell_id}-{name}.log"
+                    streams[name] = Stream(path, limit)
+                    stack.callback(streams[name].log.close)
                 return await self._read_output(process, append, flush)
         finally:
-            # Flush even on timeout/read failure; close handles before reading the tail.
+            # Flush even on timeout/read failure; close logs before keeping or deleting them.
             try:
                 if not self.session.store.failed:
                     flush()
             finally:
-                self._retain_output(cell_id, files)
+                self._retain_output(cell_id, streams)
 
-    def _retain_output(self, cell_id: int, files: dict) -> None:
-        """Keep truncated output files and link to them from the retained tails."""
+    def _retain_output(self, cell_id: int, streams: dict[str, Stream]) -> None:
+        """Link truncated output to its log; delete the logs of output shown whole."""
+        limit = self.session.limits.output_bytes
         truncated = {}
-        for name, file in files.items():
-            path = Path(file.name)
-            truncation = truncate_tail(
-                path.read_text(encoding="utf-8"), max_bytes=self.session.limits.output_bytes
+        for name, stream in streams.items():
+            truncation = truncate_tail(stream.tail, max_bytes=limit)
+            total_lines = stream.newlines + (
+                stream.total_bytes > 0 and not stream.ends_with_newline
+            )
+            truncation = dataclasses.replace(
+                truncation, total_bytes=stream.total_bytes, total_lines=total_lines
             )
             if truncation.truncated and not self.session.store.failed:
-                truncated[name] = truncation.content + tail_notice(truncation, str(path))
+                truncated[name] = truncation.content + tail_notice(truncation, log_pointer(stream))
             else:
-                path.unlink()
+                self.log_budget += stream.logged_bytes
+                stream.path.unlink()
         if truncated:
             self.session.truncate_output(cell_id, truncated)
 
@@ -378,3 +416,15 @@ class ProcessOwner(Owner):
                     "reason": str(exc) or "execution timeout",
                 },
             )
+
+
+def log_pointer(stream: Stream) -> str:
+    """Where the notice sends the reader for more of a truncated stream."""
+    if stream.logged_bytes == stream.total_bytes:
+        return f"Full output: {stream.path}"
+    if stream.logged_bytes:
+        return (
+            f"First {format_size(stream.logged_bytes)} of {format_size(stream.total_bytes)}, "
+            f"log budget reached: {stream.path}"
+        )
+    return "Full output not kept: log budget reached"

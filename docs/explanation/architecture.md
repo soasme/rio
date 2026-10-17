@@ -81,7 +81,11 @@ The owner commits launch permission and the supervisor's identity before allowin
 code to start. It commits output before printing it, normally every 100 ms.
 Output over 2000 lines or 50 KB keeps its tail, ends with a
 `[Showing lines X-Y of Z. Full output: PATH]` notice, and sets the truncation flag.
-The full output stays in a temporary file. An idle session has no script process.
+The owner keeps a rolling tail and byte and line counts while streaming, so memory
+stays bounded. The full output goes to a log in the owner's temporary directory,
+within a 64 MB disk budget shared by all Cells; once it runs out, the notice says
+how much was kept. Logs are deleted when the owner exits. An idle session has no
+script process.
 
 Each model turn fits runtime records into the context budget. Streams within an
 equal share of the remaining bytes stay whole; larger ones show a tail, and the
