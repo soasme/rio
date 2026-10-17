@@ -37,6 +37,36 @@ owner-named streams and finished with a result. Validator specs and `owner_confi
 are opaque JSON that only the `Owner` interprets. Owner-specific records, such as
 worker identities, live in owner collections written with `Session.record`.
 
+## Design principles
+
+Follow these when changing or reviewing this package. A scan that proposes
+breaking one must say why the principle no longer holds.
+
+- **The journal is the only truth.** Every projection must be rebuildable by
+  folding events in order. Never add a cache, snapshot or in-memory field that a
+  rebuild cannot reproduce. `Store.commit` folds the encoded form on purpose, so
+  live and rebuilt projections are identical.
+- **Journaled shapes are a format, not an implementation detail.** Changing what
+  an event records or how `reduce_event` folds it changes how existing sessions
+  replay. Do that only together with a `STATE_SCHEMA` bump.
+- **Events record deltas, not totals.** `output_chunks` appends new text, so
+  the journal grows linearly with output. Do not "simplify" an event by
+  recording the whole value on every change.
+- **Admission is pure.** `admit()` and the `validate_*` helpers take values and
+  return values or raise `InvalidPatch`. Session state, clocks and I/O stay in
+  `Session` and `RuntimeLedger`.
+- **Rejections teach the fix.** Every `InvalidPatch` message names what to send
+  instead, because the model reads it on its next attempt.
+- **Tolerate model encoding, not model intent.** Accept a harmless encoding
+  variant, such as null fields from strict-schema providers. Reject steps whose
+  meaning is unsafe instead of guessing what the model wanted.
+- **Budgets are separate counters.** Invalid steps, provider failures, turns,
+  tokens and storage each have their own limit. A failure attributed to one must
+  not consume another.
+- **One extension point per concept.** New behaviour arrives as a `CellKind`,
+  a `CONTROLS` entry with its handler, or an `Owner` subclass. Do not add
+  kind-specific branches to the core.
+
 ## Responsibilities
 
 | Module | Responsibility |

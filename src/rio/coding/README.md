@@ -4,6 +4,24 @@
 agent. Each task uses one configured provider and model. Local model servers
 are started separately and configured as HTTP endpoints.
 
+## Design principles
+
+Follow these when changing or reviewing this package.
+
+- **Extend the agent, do not fork it.** Coding behaviour arrives through
+  `CellKind` values and the `ProcessOwner` subclass. If a feature needs a change in
+  `rio.agent`, make it a general extension point there, not a coding special case.
+- **Owner records stay in owner collections.** Worker identities and other
+  process facts are written with `Session.record`, never into core collections.
+- **Commit before effects.** A worker starts user code only after its identity
+  is durable, so recovery can always find and stop it.
+- **Effects are not undone.** Recovery stops leftover work and reports
+  `UnknownExecution`; it never assumes an effect rolled back.
+- **Configuration is data.** Provider names, costs, tiers and context windows live in
+  the catalog. Runtime provider objects carry only request settings and auth.
+- **Secrets never reach logs or the model.** Credentials stay in the credential
+  store, and OAuth errors are redacted before they are surfaced.
+
 ## Coding cells
 
 [cells.py](cells.py) defines two `CellKind` values:
