@@ -283,23 +283,23 @@ async def run(
 
 def _idle_action(owner: Owner) -> Literal["ready", "wait", "invalid", "fail"]:
     session = owner.session
-    if not session.data["turns"] or any(
-        t["receipt"] is None for t in session.data["turns"].values()
-    ):
-        return "ready"
+    turns = session.data["turns"].values()
+    awaiting_step = not turns or any(t["receipt"] is None for t in turns)
     # Successful completions wait for the queue to drain; a failure pauses it and wakes.
     batching = bool(session.pending()) and not session.meta["pause"]
-    if any(
+    has_news = any(
         not m["consumed"] and not (batching and m["kind"] == "execution")
         for m in session.data["inbox"].values()
-    ):
+    )
+    if awaiting_step or has_news:
         return "ready"
-    if (
+    has_wake_source = (
         owner.task
         or batching
         or any(not t["fired"] for t in session.data["timers"].values())
         or session.external_wakeup
-    ):
+    )
+    if has_wake_source:
         return "wait"
     if session.meta["idle"] >= session.limits.invalid_attempts:
         return "fail"
