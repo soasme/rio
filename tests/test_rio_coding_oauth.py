@@ -16,8 +16,10 @@ from __future__ import annotations
 import asyncio
 import base64
 from json import dumps
+from pathlib import Path
 from stat import S_IMODE
 from time import time
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -71,7 +73,7 @@ def _callbacks(
 
 
 def _jwt(account_id: str, *, expires: int | None = None) -> str:
-    payload = {OPENAI_CODEX_ACCOUNT_CLAIM: {"chatgpt_account_id": account_id}}
+    payload: dict[str, object] = {OPENAI_CODEX_ACCOUNT_CLAIM: {"chatgpt_account_id": account_id}}
     if expires is not None:
         payload["exp"] = expires
     return ".".join(
@@ -90,7 +92,7 @@ def _base64url(value: bytes) -> str:
 # -- credentials.py -----------------------------------------------------
 
 
-def test_file_credential_store_round_trips_and_sets_private_permissions(tmp_path) -> None:
+def test_file_credential_store_round_trips_and_sets_private_permissions(tmp_path: Path) -> None:
     path = tmp_path / "credentials.json"
     store = FileCredentialStore(path)
 
@@ -100,14 +102,14 @@ def test_file_credential_store_round_trips_and_sets_private_permissions(tmp_path
     assert S_IMODE(path.stat().st_mode) == 0o600
 
 
-def test_file_credential_store_rejects_empty_values(tmp_path) -> None:
+def test_file_credential_store_rejects_empty_values(tmp_path: Path) -> None:
     store = FileCredentialStore(tmp_path / "credentials.json")
 
     with pytest.raises(CredentialStoreError, match="must not be empty"):
         store.set("openai", "")
 
 
-def test_file_credential_store_round_trips_oauth_credentials(tmp_path) -> None:
+def test_file_credential_store_round_trips_oauth_credentials(tmp_path: Path) -> None:
     path = tmp_path / "credentials.json"
     store = FileCredentialStore(path)
     credential = OAuthCredential(
@@ -124,7 +126,7 @@ def test_file_credential_store_round_trips_oauth_credentials(tmp_path) -> None:
     assert '"type": "oauth"' in path.read_text(encoding="utf-8")
 
 
-def test_file_credential_store_round_trips_extensible_oauth_metadata(tmp_path) -> None:
+def test_file_credential_store_round_trips_extensible_oauth_metadata(tmp_path: Path) -> None:
     path = tmp_path / "credentials.json"
     store = FileCredentialStore(path)
     credential = OAuthCredential(
@@ -144,7 +146,7 @@ def test_file_credential_store_round_trips_extensible_oauth_metadata(tmp_path) -
     assert not list(tmp_path.glob(".credentials.json.*"))
 
 
-def test_file_credential_store_loads_legacy_codex_oauth_shape(tmp_path) -> None:
+def test_file_credential_store_loads_legacy_codex_oauth_shape(tmp_path: Path) -> None:
     path = tmp_path / "credentials.json"
     path.write_text(
         '{"openai-codex":{"type":"oauth","access":"a","refresh":"r",'
@@ -481,7 +483,7 @@ def test_builtin_oauth_registry_matches_supported_subscription_providers() -> No
 # -- rio-specific: credential path moved under ~/.rio --------------------
 
 
-def test_credentials_path_is_rooted_under_rio_home(tmp_path) -> None:
+def test_credentials_path_is_rooted_under_rio_home(tmp_path: Path) -> None:
     from rio.coding.credentials import credentials_path
     from rio.coding.paths import RioPaths
 
@@ -493,7 +495,9 @@ def test_credentials_path_is_rooted_under_rio_home(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
-async def test_cancelling_login_closes_callback_server(provider, monkeypatch):
+async def test_cancelling_login_closes_callback_server(
+    provider: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from rio.coding import oauth_anthropic
     from rio.coding import oauth_openai_codex as oauth
 
@@ -502,16 +506,16 @@ async def test_cancelling_login_closes_callback_server(provider, monkeypatch):
     class Server:
         closed = False
 
-        async def wait_for_code(self):
+        async def wait_for_code(self) -> str:
             started.set()
-            await asyncio.Future()
+            return await asyncio.Future[str]()
 
-        def close(self):
+        def close(self) -> None:
             self.closed = True
 
     server = Server()
 
-    async def start_server(*args, **kwargs):
+    async def start_server(*args: Any, **kwargs: Any) -> Server:
         return server
 
     module = oauth if provider == "openai" else oauth_anthropic
@@ -527,10 +531,10 @@ async def test_cancelling_login_closes_callback_server(provider, monkeypatch):
     assert server.closed
 
 
-async def test_device_poll_supports_task_cancellation():
+async def test_device_poll_supports_task_cancellation() -> None:
     started = asyncio.Event()
 
-    async def poll():
+    async def poll() -> DevicePollResult[str]:
         started.set()
         return DevicePollResult(status="pending")
 

@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from itertools import count
 
-from rio.ai._provider_events import ProviderErrorEvent, ProviderResponseEndEvent
+from rio.ai._provider_events import ProviderErrorEvent, ProviderEvent, ProviderResponseEndEvent
+from rio.ai.messages import ToolCall
 from rio.ai.openai_compatible import _ResponsesStreamParser, _tool_to_openai, _tool_to_responses
 from rio.ai.tools import AgentTool
 
@@ -24,31 +25,33 @@ def _read_like_tool() -> AgentTool:
     )
 
 
-def test_tool_to_openai_keeps_the_supplied_schema():
+def test_tool_to_openai_keeps_the_supplied_schema() -> None:
     payload = _tool_to_openai(_read_like_tool(), {})
 
     function = payload["function"]
+    assert isinstance(function, dict)
     assert function["strict"] is False
     assert function["parameters"] == _read_like_tool().parameters
 
 
-def test_tool_to_openai_omits_strict_field_when_compat_opts_out():
+def test_tool_to_openai_omits_strict_field_when_compat_opts_out() -> None:
     payload = _tool_to_openai(_read_like_tool(), {"supportsStrictMode": False})
 
     function = payload["function"]
+    assert isinstance(function, dict)
     assert "strict" not in function
     # Falls back to the plain schema, unchanged.
     assert function["parameters"] == _read_like_tool().parameters
 
 
-def test_tool_to_responses_keeps_the_supplied_schema():
+def test_tool_to_responses_keeps_the_supplied_schema() -> None:
     payload = _tool_to_responses(_read_like_tool(), {})
 
     assert payload["strict"] is False
     assert payload["parameters"] == _read_like_tool().parameters
 
 
-def test_tool_to_responses_omits_strict_field_when_compat_opts_out():
+def test_tool_to_responses_omits_strict_field_when_compat_opts_out() -> None:
     payload = _tool_to_responses(_read_like_tool(), {"supportsStrictMode": False})
 
     assert "strict" not in payload
@@ -101,7 +104,7 @@ def _function_call_events(output_index: int, name: str, arguments: str) -> list[
     ]
 
 
-def _parse(chunks: list[dict]):
+def _parse(chunks: list[dict]) -> tuple[ToolCall, ...]:
     parser = _ResponsesStreamParser()
     for chunk in [*chunks, {"type": "response.completed", "response": {"status": "completed"}}]:
         parser.feed(json.dumps(chunk))
@@ -109,7 +112,7 @@ def _parse(chunks: list[dict]):
     return end.message.tool_calls
 
 
-def test_rotating_item_ids_still_build_one_tool_call_per_output_index():
+def test_rotating_item_ids_still_build_one_tool_call_per_output_index() -> None:
     """Copilot re-encrypts `item_id` per event; `output_index` is the identity.
 
     Keying builders by the id split one call into four -- two nameless
@@ -127,7 +130,7 @@ def test_rotating_item_ids_still_build_one_tool_call_per_output_index():
     assert tool_calls[1].arguments == {"action": {"name": "read"}}
 
 
-def test_arguments_events_alone_carry_name_and_are_ordered_by_output_index():
+def test_arguments_events_alone_carry_name_and_are_ordered_by_output_index() -> None:
     """A provider that streams no `output_item` events still yields whole calls."""
     chunks = [
         chunk
@@ -142,14 +145,14 @@ def test_arguments_events_alone_carry_name_and_are_ordered_by_output_index():
     assert [call.arguments for call in tool_calls] == [{"a": 1}, {"b": 2}]
 
 
-def _finalize(chunks: list[dict]):
+def _finalize(chunks: list[dict]) -> list[ProviderEvent]:
     parser = _ResponsesStreamParser()
     for chunk in chunks:
         parser.feed(json.dumps(chunk))
     return parser.finalize()
 
 
-def test_stream_without_terminal_event_ends_with_error():
+def test_stream_without_terminal_event_ends_with_error() -> None:
     events = _finalize(_function_call_events(0, "read", '{"path": "a"}'))
 
     assert len(events) == 1
@@ -157,7 +160,7 @@ def test_stream_without_terminal_event_ends_with_error():
     assert "terminal response event" in events[0].message
 
 
-def test_tool_call_without_done_event_ends_with_error():
+def test_tool_call_without_done_event_ends_with_error() -> None:
     """Servers that omit output_index (llama.cpp) can leave calls mixed up; don't run them."""
     chunks = [
         chunk
@@ -173,7 +176,7 @@ def test_tool_call_without_done_event_ends_with_error():
     assert "unfinished tool call: read (call-0)" in events[0].message
 
 
-def test_incomplete_responses_preserve_raw_reason_with_tools():
+def test_incomplete_responses_preserve_raw_reason_with_tools() -> None:
     events = _finalize(
         [
             *_function_call_events(0, "read", '{"path":'),
@@ -181,5 +184,6 @@ def test_incomplete_responses_preserve_raw_reason_with_tools():
         ]
     )
     # The shared collector maps the raw reason to length before checking tool use.
+    assert isinstance(events[-1], ProviderResponseEndEvent)
     assert events[-1].finish_reason == "incomplete"
     assert events[-1].message.tool_calls[0].arguments == {"_raw_arguments": '{"path":'}

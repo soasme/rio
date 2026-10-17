@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from importlib.resources import files
 from pathlib import Path
-from typing import get_args
+from typing import Any, get_args
 
 import pytest
 
@@ -29,6 +29,7 @@ from rio.coding.provider_catalog import (
     ModelCatalogMetadata,
     ModelInput,
     ProviderApi,
+    ProviderCatalogEntry,
 )
 from rio.coding.provider_config import (
     ProviderSettings,
@@ -108,7 +109,7 @@ FIXTURE: dict[str, object] = {
 }
 
 
-def _fixture() -> dict[str, object]:
+def _fixture() -> dict[str, Any]:
     return json.loads(json.dumps(FIXTURE))
 
 
@@ -220,7 +221,7 @@ def test_missing_bundled_catalog_falls_back_silently(
 # ---------------------------------------------------------------------------
 
 
-def builtin_provider_entry(name: str):
+def builtin_provider_entry(name: str) -> ProviderCatalogEntry | None:
     return next((entry for entry in builtin_catalog() if entry.name == name), None)
 
 
@@ -716,7 +717,7 @@ def test_user_catalog_rejects_malformed_toml(tmp_path: Path) -> None:
         "[providers.model_metadata.local]\nmax_tokens = true",
     ],
 )
-def test_user_catalog_validates_runtime_fields(tmp_path, fields):
+def test_user_catalog_validates_runtime_fields(tmp_path: Path, fields: str) -> None:
     paths = _write_user_catalog(
         tmp_path / ".rio",
         '[[providers]]\nname = "local"\nbase_url = "http://localhost"\n' + fields,
@@ -725,7 +726,7 @@ def test_user_catalog_validates_runtime_fields(tmp_path, fields):
         effective_catalog(paths)
 
 
-def test_obsolete_cache_does_not_override_catalog(tmp_path):
+def test_obsolete_cache_does_not_override_catalog(tmp_path: Path) -> None:
     paths = RioPaths(home=tmp_path)
     document = models_dev_catalog_document(
         _fixture(), builtin_source_catalog(), generated_at=10**15

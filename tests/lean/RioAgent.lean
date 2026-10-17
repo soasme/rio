@@ -660,4 +660,48 @@ theorem state_prompt_retains_dynamic_fields
     (schema id goal cells revision runtime : String) :
     (statePrompt schema id goal cells revision runtime).drop 4 = [revision, runtime] := rfl
 
+/-- Pydantic records retain whether a nullable field was supplied. JSON serialization
+    with exclude_unset preserves absence separately from an explicit null. -/
+inductive WireTextField where
+  | absent | null | text (value : String)
+  deriving DecidableEq, Repr
+
+inductive ModelTextField where
+  | unset | supplied (value : Option String)
+  deriving DecidableEq, Repr
+
+def decodeTextField : WireTextField → ModelTextField
+  | .absent => .unset
+  | .null => .supplied none
+  | .text value => .supplied (some value)
+
+def encodeTextField : ModelTextField → WireTextField
+  | .unset => .absent
+  | .supplied none => .null
+  | .supplied (some value) => .text value
+
+theorem optional_field_round_trip (field : WireTextField) :
+    encodeTextField (decodeTextField field) = field := by
+  cases field <;> rfl
+
+theorem omitted_field_is_not_null :
+    encodeTextField .unset ≠ encodeTextField (.supplied none) := by decide
+
+/-- Strict integer fields reject booleans and numeric strings instead of coercing them. -/
+inductive WireInteger where
+  | integer (value : Int) | boolean (value : Bool) | text (value : String)
+
+def decodeInteger : WireInteger → Option Int
+  | .integer value => some value
+  | .boolean _ | .text _ => none
+
+theorem strict_integer_preserves_value (value : Int) :
+    decodeInteger (.integer value) = some value := rfl
+
+theorem strict_integer_rejects_boolean (value : Bool) :
+    decodeInteger (.boolean value) = none := rfl
+
+theorem strict_integer_rejects_string (value : String) :
+    decodeInteger (.text value) = none := rfl
+
 end RioAgent

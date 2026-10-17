@@ -28,3 +28,8 @@ The current user-facing contracts are described in the
 `RioCli.lean` models provider-free terminal replay only after cleanup succeeds.
 
 See the [glossary](../../docs/glossary.md) for turns, attempts, and operations.
+
+`RioAgent.lean` also models strict integer decoding and preservation of omitted versus
+explicitly null fields through record serialization. Python model tests cover aliases,
+extension fields, replay, and validation errors. Release checks include lint, mypy,
+pytest, and Lean whether bundled model refresh is enabled or skipped.

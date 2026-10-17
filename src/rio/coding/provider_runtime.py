@@ -77,15 +77,18 @@ def create_model_provider(
                 ),
             )
         )
-    builder_args = {
-        "credential_reader": credentials,
-        "model": model,
-        "thinking_level": thinking_level,
-    }
     if api == "google-generative-ai":
-        return GoogleGenerativeAIProvider(google_config_from_provider(provider, **builder_args))
+        return GoogleGenerativeAIProvider(
+            google_config_from_provider(
+                provider, credential_reader=credentials, model=model, thinking_level=thinking_level
+            )
+        )
     if api == "mistral-conversations":
-        return MistralConversationsProvider(mistral_config_from_provider(provider, **builder_args))
+        return MistralConversationsProvider(
+            mistral_config_from_provider(
+                provider, credential_reader=credentials, model=model, thinking_level=thinking_level
+            )
+        )
     credential = _oauth_credential(provider, credentials)
     runtime_auth = (
         _required_oauth_provider(provider.name).runtime_auth(credential)
@@ -93,7 +96,9 @@ def create_model_provider(
         else None
     )
     if api == "anthropic-messages":
-        config = anthropic_config_from_provider(provider, **builder_args)
+        config = anthropic_config_from_provider(
+            provider, credential_reader=credentials, model=model, thinking_level=thinking_level
+        )
         if runtime_auth is not None:
             oauth_retention, _ = anthropic_cache_settings(provider, model, oauth=True)
             config = replace(
@@ -110,7 +115,9 @@ def create_model_provider(
                 ),
             )
         return AnthropicProvider(config)
-    compatible_config = openai_compatible_config_from_provider(provider, **builder_args)
+    compatible_config = openai_compatible_config_from_provider(
+        provider, credential_reader=credentials, model=model, thinking_level=thinking_level
+    )
     if runtime_auth is not None:
         compatible_config = replace(
             compatible_config,

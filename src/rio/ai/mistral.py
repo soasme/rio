@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -61,7 +61,7 @@ class MistralConversationsProvider(HTTPProvider[MistralConfig]):
         system: str,
         messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[ProviderEvent]:
+    ) -> AsyncGenerator[ProviderEvent]:
         """Stream one Mistral response as provider-neutral events."""
         payload = _build_mistral_payload(
             model=model,
@@ -162,13 +162,16 @@ def _build_mistral_payload(
     reasoning_effort: str | None,
     max_tokens: int | None,
 ) -> dict[str, JSONValue]:
+    user_messages: list[JSONValue] = [
+        {"role": "user", "content": message.content} for message in messages
+    ]
     payload: dict[str, JSONValue] = {
         "model": model,
         "stream": True,
         "stream_options": {"include_usage": True},
         "messages": [
             *_system_messages(system),
-            *({"role": "user", "content": message.content} for message in messages),
+            *user_messages,
         ],
     }
     if max_tokens is not None:

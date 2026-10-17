@@ -1,5 +1,7 @@
 """Release preparation keeps model refresh optional and includes its output."""
 
+from __future__ import annotations
+
 from pathlib import Path
 from unittest.mock import Mock, call
 
@@ -11,12 +13,14 @@ from scripts import bumpversion
     "flags, refresh", [([], True), (["--refresh-models"], True), (["--no-refresh-models"], False)]
 )
 @pytest.mark.parametrize("publish", [False, True])
-def test_release_model_refresh(monkeypatch, tmp_path, flags, refresh, publish):
+def test_release_model_refresh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, flags: list[str], refresh: bool, publish: bool
+) -> None:
     catalog = "src/rio/coding/data/models-dev-catalog.json"
     commands = []
     snapshots = []
 
-    def run_checked(*args, cwd):
+    def run_checked(*args: str, cwd: Path) -> None:
         commands.append((args, cwd))
         if args[:2] == ("git", "clone"):
             clone = Path(args[-1])
@@ -53,7 +57,9 @@ def test_release_model_refresh(monkeypatch, tmp_path, flags, refresh, publish):
         ("uv", "sync", "--locked", "--dev"),
         *([refresh_command] if refresh else []),
         ("uv", "run", "--no-sync", "ruff", "check", "."),
+        ("uv", "run", "--no-sync", "mypy"),
         ("uv", "run", "--no-sync", "pytest"),
+        ("lake", "build"),
     ]
     if publish:
         expected += [
@@ -63,7 +69,10 @@ def test_release_model_refresh(monkeypatch, tmp_path, flags, refresh, publish):
             ("git", "push"),
             ("git", "push", "origin", "v1.2.4"),
         ]
-    assert commands[1:] == [(command, clone) for command in expected]
+    assert commands[1:] == [
+        (command, clone / "tests" / "lean" if command == ("lake", "build") else clone)
+        for command in expected
+    ]
     assert snapshots == ["refreshed" if refresh else "original"]
     assert diff.call_args == call(
         "git", "diff", "--", "CHANGELOG.md", "pyproject.toml", "uv.lock", catalog, cwd=clone

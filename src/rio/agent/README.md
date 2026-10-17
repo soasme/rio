@@ -81,6 +81,13 @@ breaking one must say why the principle no longer holds.
 
 Import `Store` from `rio.agent.store` and `Session` from `rio.agent.session`.
 `Session` inherits runtime operations from `RuntimeLedger`, keeping one public entry point.
+Session records and published events are Pydantic models with attribute access.
+`Store.projection` validates and caches the current JSON fold until the next commit;
+`Store.data` retains the JSON representation used by the reducer. Serialize models
+with `model_dump(mode="json", by_alias=True, exclude_unset=True)` to retain wire
+keys and omitted fields. Custom Cell and result fields and owner collections survive
+validation.
+
 Single-record updates share `_patch`; multi-record transitions commit atomically.
 Create or open a `Store`, then create or open a `Session` with the same cell
 kinds. Notes are built in; runnable kinds come from the caller. Pass a
