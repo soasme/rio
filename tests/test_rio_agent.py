@@ -34,7 +34,7 @@ from rio.agent.store import StorageFailure, Store, reduce_event
 from rio.ai import FakeProvider
 from rio.ai.messages import AssistantMessage, ToolCall
 from rio.coding.cells import KINDS
-from rio.coding.owner import ProcessOwner, stop_worker
+from rio.coding.owner import LOG_BYTES, ProcessOwner, stop_worker
 
 
 @pytest.fixture
@@ -997,14 +997,32 @@ async def test_truncated_output_keeps_tail_and_full_output_file(session):
     accept(session, cmd("python3", "-c", source), cmd("true"))
     async with ProcessOwner(session) as owner:
         await settle(owner)
-    execution = session.data["executions"]["1"]
-    assert execution["truncated"]
-    stdout = execution["output"]["stdout"]
-    assert stdout.startswith("1000\n")
-    path = stdout.rsplit("Full output: ", 1)[1].rstrip("]")
-    assert stdout.endswith(f"[Showing lines 1001-3000 of 3000. Full output: {path}]")
-    assert Path(path).read_text().splitlines() == [str(i) for i in range(3000)]
-    assert not session.data["executions"]["2"]["truncated"]
+        execution = session.data["executions"]["1"]
+        assert execution["truncated"]
+        stdout = execution["output"]["stdout"]
+        assert stdout.startswith("1000\n")
+        path = stdout.rsplit("Full output: ", 1)[1].rstrip("]")
+        assert stdout.endswith(f"[Showing lines 1001-3000 of 3000. Full output: {path}]")
+        assert Path(path).read_text().splitlines() == [str(i) for i in range(3000)]
+        assert not session.data["executions"]["2"]["truncated"]
+        assert sorted(p.name for p in Path(path).parent.glob("*.log")) == ["cell-1-stdout.log"]
+    # Logs last as long as the owner.
+    assert not Path(path).exists()
+
+
+async def test_output_logs_stay_within_disk_budget(session):
+    session.limits = replace(session.limits, output_bytes=1024)
+    source = "import sys; sys.stdout.write('x' * 100_000)"
+    accept(session, cmd(sys.executable, "-c", source), cmd(sys.executable, "-c", source))
+    async with ProcessOwner(session, log_bytes=150_000) as owner:
+        await settle(owner)
+        first, second = (session.data["executions"][k]["output"]["stdout"] for k in "12")
+        logs = Path(owner.temporary.name)
+        assert first.endswith(f"Full output: {logs / 'cell-1-stdout.log'}]")
+        path = logs / "cell-2-stdout.log"
+        assert second.endswith(f"First 48.8KB of 97.7KB, log budget reached: {path}]")
+        assert path.stat().st_size == 50_000
+        assert owner.log_budget == 0
 
 
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
@@ -1015,18 +1033,17 @@ async def test_worker_and_validator_output_keep_utf8_tail(session, stream):
     async with ProcessOwner(session) as owner:
         await settle(owner)
         result = await owner.validate("tail", [sys.executable, "-c", source])
-    assert result == {"passed": True, "exit": 0, "output": "!é終!"}
-    streamed = [
-        event["changes"]["output_chunks"]["1"]["output"][stream]
-        for event in session.store.events()
-        if event["type"] == "execution_output"
-    ]
-    assert streamed == ["!é終!"]
-    execution = session.data["executions"]["1"]
-    assert execution["output"][stream].startswith("!é終!")
-    path = execution["output"][stream].rsplit("Full output: ", 1)[1].rstrip("]")
-    assert Path(path).read_text() == "old text" + "é終!" * 3000
-    Path(path).unlink()
+        assert result == {"passed": True, "exit": 0, "output": "!é終!"}
+        streamed = [
+            event["changes"]["output_chunks"]["1"]["output"][stream]
+            for event in session.store.events()
+            if event["type"] == "execution_output"
+        ]
+        assert streamed == ["!é終!"]
+        execution = session.data["executions"]["1"]
+        assert execution["output"][stream].startswith("!é終!")
+        path = execution["output"][stream].rsplit("Full output: ", 1)[1].rstrip("]")
+        assert Path(path).read_text() == "old text" + "é終!" * 3000
 
 
 @pytest.mark.parametrize("exit_code", [0, 7, None])
@@ -2041,14 +2058,6 @@ def test_output_journal_grows_linearly_and_replays(session):
 
 @pytest.mark.parametrize("failure", ["timeout", "oserror"])
 async def test_worker_failure_flushes_last_output_and_cleans_logs(session, monkeypatch, failure):
-    import tempfile
-
-    logs = Path(session.meta["owner_config"]["cwd"]) / "logs"
-    logs.mkdir()
-    original = tempfile.NamedTemporaryFile
-    monkeypatch.setattr(
-        tempfile, "NamedTemporaryFile", lambda *a, **kw: original(*a, dir=logs, **kw)
-    )
     session.limits = replace(session.limits, execution_seconds=0.5, flush_seconds=10)
     accept(
         session,
@@ -2076,10 +2085,11 @@ async def test_worker_failure_flushes_last_output_and_cleans_logs(session, monke
         monkeypatch.setattr(asyncio.StreamReader, "readline", fail_after_output)
     async with ProcessOwner(session) as owner:
         await settle(owner)
+        assert not list(Path(owner.temporary.name).glob("*.log"))
+        assert owner.log_budget == LOG_BYTES
     execution = session.data["executions"]["1"]
     assert execution["output"] == {"stdout": "last stdout\n", "stderr": "last stderr\n"}
     assert execution["result"]["type"] == "UnknownExecution"
-    assert not list(logs.iterdir())
 
 
 async def test_cells_preserve_existing_pythonpath(session, monkeypatch):
