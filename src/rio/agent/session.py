@@ -395,6 +395,11 @@ class Session(RuntimeLedger):
         runs = [cell for cell in new if cell["kind"] != "note"]
         if len(self.pending()) + len(self.unresolved()) + len(runs) > self.limits.pending_cells:
             raise InvalidPatch("Too much outstanding work or uncertainty")
+        if runs and any(control["type"] == "conclusion" for control in requests):
+            raise InvalidPatch(
+                "A conclusion ends the run before Cells added in this step can run; "
+                "conclude in a later step, after their observations arrive"
+            )
         for control in requests:
             target = control.get("target_cell_id")
             targets = "target_cell_id" in CONTROLS[control["type"]].fields
