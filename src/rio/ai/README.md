@@ -19,6 +19,24 @@ Providers describe tool calls; the caller decides how to execute them. Rio's
 agent runtime supplies the `step` tool and owns its acceptance protocol.
 Close network providers with `await provider.aclose()` when finished.
 
+## Design principles
+
+Follow these when changing or reviewing this package.
+
+- **No upward imports.** `rio.ai` imports nothing from `rio.agent`, `rio.coding`
+  or `rio.cli`. It knows nothing about sessions, cells, catalogs or credentials.
+- **One request, one final message.** Providers do not loop, run tools or keep
+  conversation state. Anything that needs memory across requests belongs to
+  the caller.
+- **Failures are values.** A failed request returns a message with
+  `stop_reason == "error"` instead of raising for provider or transport errors.
+  Task cancellation still propagates.
+- **Share by contract, not by inheritance depth.** New providers reuse the
+  existing parsers and `HTTPProvider` lifecycle where the wire format matches,
+  and keep provider quirks inside their own module.
+- **Send what the caller gave.** Tool schemas and messages pass through without
+  rewriting, so behaviour is the same across providers.
+
 ## Modules
 
 | Module | Responsibility |

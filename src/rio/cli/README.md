@@ -25,6 +25,20 @@ Cleanup failures stop replay. Start a new session for a new task.
 Human output shows committed content, execution results and the session ID.
 JSON output emits one journal event per line, including `session_id`.
 
+## Design principles
+
+Follow these when changing or reviewing this package.
+
+- **Thin by design.** The CLI parses arguments, wires `rio.coding` and
+  `rio.agent` together, and renders events. Session, provider and execution
+  logic belongs in those packages, where library callers can use it too.
+- **Render the journal, never a side channel.** Human and JSON output come only
+  from committed events, so a replay prints what the live run printed.
+- **Resume uses what was recorded.** A resumed session takes its goal,
+  provider, model and instructions from the journal, not from current flags or
+  configuration.
+- **Nothing imports `rio.cli`.** It is the top of the dependency graph.
+
 ## Modules
 
 | Module | Responsibility |
