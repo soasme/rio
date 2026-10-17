@@ -1565,6 +1565,19 @@ async def test_provider_failures_back_off_outside_invalid_budget(session, monkey
     assert session.meta["usage"]["unknown_usage"] == 6
 
 
+async def test_provider_backoff_honors_retry_after_within_cap(session, monkeypatch):
+    clock = Clock(monkeypatch)
+    provider = FakeProvider(
+        [
+            provider_error(status_code=429, retry_after_seconds=30),
+            provider_error(status_code=429, retry_after_seconds=3600),
+            response([conclude()]),
+        ]
+    )
+    assert await run(Owner(session), provider, "fake")
+    assert [round(w) for w in clock.waits] == [30, 120]
+
+
 async def test_invalid_model_output_still_uses_invalid_budget(session, monkeypatch):
     Clock(monkeypatch)
     text = AssistantMessage(content="done")

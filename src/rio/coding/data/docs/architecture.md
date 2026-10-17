@@ -51,8 +51,10 @@ use bounded retries; missing token usage stays unknown.
 Invalid steps and provider failures retry the same turn on separate budgets.
 `Limits.invalid_attempts` covers model output the runtime rejects; the next attempt
 shows the model the rejection. `Limits.provider_attempts` covers failed requests,
-error responses and missing responses; these back off for up to two minutes, are
-journaled as `provider_failed`, and are not shown to the model. An HTTP error that
+error responses and missing responses; these back off for up to two minutes
+(longer when `Retry-After` asks, within that cap), are journaled as
+`provider_failed`, and are not shown to the model. Each failure is one HTTP request:
+transport retries inside `rio.ai` are off for agent runs. An HTTP error that
 retrying cannot fix, such as 401 or 404, fails the run at once. The owner keeps
 running work, timers and controls during either backoff, and a restart resumes the
 saved backoff.

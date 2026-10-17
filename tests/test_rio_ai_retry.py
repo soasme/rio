@@ -122,11 +122,16 @@ def _sse_response(status_code: int, body: str, headers=None) -> httpx.Response:
     return httpx.Response(status_code, content=body.encode(), headers=headers)
 
 
-async def _stream_openai(responses: list[httpx.Response], *, max_delay: float = 0.0):
+async def _stream_openai(
+    responses: list[httpx.Response], *, max_delay: float = 0.0, max_retries: int = 2
+):
     calls = iter(responses)
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: next(calls)))
     provider = OpenAICompatibleProvider(
-        OpenAICompatibleConfig(api_key="key", max_retry_delay_seconds=max_delay), client=client
+        OpenAICompatibleConfig(
+            api_key="key", max_retries=max_retries, max_retry_delay_seconds=max_delay
+        ),
+        client=client,
     )
     return [
         event
@@ -165,6 +170,17 @@ async def test_adapter_reports_terminal_http_status_without_retry():
             data={"status_code": 400, "body": '{"error":{"message":"bad"}}', "attempts": 1},
         )
     ]
+
+
+async def test_retry_after_reaches_the_error_when_transport_retries_are_off():
+    """A caller that owns retries, such as the durable runner, still sees Retry-After."""
+    events = await _stream_openai(
+        [_sse_response(429, "slow down", headers={"retry-after": "30"})], max_retries=0
+    )
+
+    assert len(events) == 1
+    assert events[0].data["status_code"] == 429
+    assert events[0].data["retry_after_seconds"] == 30.0
 
 
 def test_parse_retry_after_accepts_seconds_and_http_dates():

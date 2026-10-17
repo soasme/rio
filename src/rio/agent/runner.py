@@ -26,9 +26,10 @@ class RecoveryFailure(RuntimeError):
 class ProviderFailure(RuntimeError):
     """The provider, not the model, failed to return a step."""
 
-    def __init__(self, error: str, *, retryable: bool = True):
+    def __init__(self, error: str, *, retryable: bool = True, retry_after: float | None = None):
         super().__init__(error)
         self.retryable = retryable
+        self.retry_after = retry_after
 
 
 class Owner:
@@ -267,7 +268,9 @@ async def run(
                 try:
                     ops = await _request_ops(owner, turn, provider, model, flush)
                 except ProviderFailure as exc:
-                    session.provider_failed(turn["id"], str(exc), retryable=exc.retryable)
+                    session.provider_failed(
+                        turn["id"], str(exc), retryable=exc.retryable, retry_after=exc.retry_after
+                    )
                 else:
                     session.accept(turn["id"], ops)
                     session.request_work()
@@ -360,8 +363,14 @@ async def _request_ops(
             turn["id"], response.model_dump(mode="json"), max(0, tokens), known=tokens > 0
         )
     if response.stop_reason == "error":
+        details = _error_details(response)
+        status = details.get("status_code")
+        retry_after = details.get("retry_after_seconds")
         raise ProviderFailure(
-            response.error_message or "Provider failed", retryable=_retryable(response)
+            response.error_message or "Provider failed",
+            # Only an HTTP error status that retrying cannot fix, such as 401 or 404, is final.
+            retryable=not isinstance(status, int) or is_transient_status(status),
+            retry_after=float(retry_after) if isinstance(retry_after, int | float) else None,
         )
     if len(response.tool_calls) != 1 or response.tool_calls[0].name != "step":
         raise InvalidPatch("Call exactly one step tool")
@@ -371,10 +380,10 @@ async def _request_ops(
     return arguments["ops"]
 
 
-def _retryable(response: AssistantMessage) -> bool:
-    """Only an HTTP error status that retrying cannot fix, such as 401 or 404, is final."""
+def _error_details(response: AssistantMessage) -> dict:
+    """Return the provider error details carrying an HTTP status, if any."""
     for diagnostic in response.diagnostics or ():
-        status = (diagnostic.details or {}).get("status_code")
-        if isinstance(status, int):
-            return is_transient_status(status)
-    return True
+        details = diagnostic.details or {}
+        if isinstance(details.get("status_code"), int):
+            return details
+    return {}

@@ -25,12 +25,15 @@ from rio.coding.oauth import OAuthProvider, oauth_credential_is_expired
 from rio.coding.oauth_openai_codex import account_id_from_access_token
 from rio.coding.oauth_registry import get_oauth_provider
 from rio.coding.provider_config import (
+    AGENT_TRANSPORT_RETRIES,
     ProviderConfig,
     anthropic_cache_settings,
     anthropic_config_from_provider,
+    google_config_from_provider,
+    mistral_config_from_provider,
     openai_compatible_config_from_provider,
-    provider_api,
     reasoning_effort_from_provider,
+    resolve_model_endpoint,
     validate_provider_model,
 )
 from rio.coding.thinking import ThinkingLevel
@@ -52,7 +55,9 @@ def create_model_provider(
     if model is not None:
         validate_provider_model(provider, model)
     credentials = credential_store or FileCredentialStore()
-    api = provider_api(provider, model)
+    # Resolve model/provider precedence once; every branch reads the result.
+    endpoint = resolve_model_endpoint(provider, model)
+    api = endpoint.api
     if api == "openai-codex-responses":
         return OpenAICodexProvider(
             OpenAICodexConfig(
@@ -60,12 +65,11 @@ def create_model_provider(
                     provider,
                     credential_store=credentials,
                 ),
-                base_url=provider.base_url,
+                base_url=endpoint.base_url,
                 provider_name=provider.name,
-                headers=provider.headers,
+                headers=endpoint.headers,
                 timeout_seconds=provider.timeout_seconds,
-                max_retries=provider.max_retries,
-                max_retry_delay_seconds=provider.max_retry_delay_seconds,
+                max_retries=AGENT_TRANSPORT_RETRIES,
                 reasoning_effort=reasoning_effort_from_provider(
                     provider,
                     model=model,
@@ -73,6 +77,15 @@ def create_model_provider(
                 ),
             )
         )
+    builder_args = {
+        "credential_reader": credentials,
+        "model": model,
+        "thinking_level": thinking_level,
+    }
+    if api == "google-generative-ai":
+        return GoogleGenerativeAIProvider(google_config_from_provider(provider, **builder_args))
+    if api == "mistral-conversations":
+        return MistralConversationsProvider(mistral_config_from_provider(provider, **builder_args))
     credential = _oauth_credential(provider, credentials)
     runtime_auth = (
         _required_oauth_provider(provider.name).runtime_auth(credential)
@@ -80,12 +93,7 @@ def create_model_provider(
         else None
     )
     if api == "anthropic-messages":
-        config = anthropic_config_from_provider(
-            provider,
-            credential_reader=credentials,
-            model=model,
-            thinking_level=thinking_level,
-        )
+        config = anthropic_config_from_provider(provider, **builder_args)
         if runtime_auth is not None:
             oauth_retention, _ = anthropic_cache_settings(provider, model, oauth=True)
             config = replace(
@@ -102,12 +110,7 @@ def create_model_provider(
                 ),
             )
         return AnthropicProvider(config)
-    compatible_config = openai_compatible_config_from_provider(
-        provider,
-        credential_reader=credentials,
-        model=model,
-        thinking_level=thinking_level,
-    )
+    compatible_config = openai_compatible_config_from_provider(provider, **builder_args)
     if runtime_auth is not None:
         compatible_config = replace(
             compatible_config,
@@ -122,10 +125,6 @@ def create_model_provider(
                 credential_store=credentials,
             ),
         )
-    if api == "google-generative-ai":
-        return GoogleGenerativeAIProvider(compatible_config)
-    if api == "mistral-conversations":
-        return MistralConversationsProvider(compatible_config)
     return OpenAICompatibleProvider(compatible_config)
 
 
