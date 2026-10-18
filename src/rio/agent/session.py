@@ -84,7 +84,10 @@ def by_name(kinds: Iterable[CellKind]) -> dict[str, CellKind]:
     fields: dict[str, dict] = {}
     for kind in named.values():
         for field, spec in kind.fields.items():
-            if field in ("kind", "id", "previous_id") or fields.setdefault(field, spec) != spec:
+            if (
+                field in ("kind", "title", "id", "previous_id")
+                or fields.setdefault(field, spec) != spec
+            ):
                 raise ValueError(f"Cell kind {kind.name} redefines field {field}")
     return named
 

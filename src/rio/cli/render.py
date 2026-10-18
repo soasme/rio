@@ -10,7 +10,8 @@ _OUTPUT_CHARS = 8_000
 class PlainEventRenderer:
     """Show code, notes, control reasons, and streaming results without internal metadata."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, verbose: bool = False) -> None:
+        self._verbose = verbose
         self._has_entries = False
         self._line_open = False
         self._stream: tuple[str, str] | None = None
@@ -23,7 +24,9 @@ class PlainEventRenderer:
         if kind == "patch_accepted":
             # Only new versions, in allocated ID order; State also contains old cells.
             for cell in sorted(changes["cells"].values(), key=lambda cell: cell["id"]):
-                if cell["kind"] == "cmd":
+                if cell.get("title") and not self._verbose:
+                    body = cell["title"]
+                elif cell["kind"] == "cmd":
                     body = shlex.join(cell["argv"])
                 else:
                     body = cell["source"] if cell["kind"] == "code" else cell["text"]

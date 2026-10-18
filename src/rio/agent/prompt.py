@@ -14,6 +14,9 @@ to keep context small. The goal and runtime are read-only. A step is a list of o
 Cell ops name Cells by id: {"op":"add","cell":CELL} appends; {"op":"replace","id":N,"cell":CELL}
 puts a new version in place; {"op":"remove","id":N} drops it from context. Use at most one op
 per existing Cell. The runtime assigns ids and previous_id. Never replace a queued or started Cell.
+Give each Cell a title: a very brief summary, usually around five words.
+The console shows the title instead of the body unless verbose output is enabled.
+Keep the full content in the Cell body.
 Controls are actions, not Cells: {"op":"control","control":CONTROL}. They never enter State.
 """
 
@@ -35,6 +38,8 @@ Resolve uncertainty: {"type":"resolution","target_cell_id":N,"evidence_refs":["s
 """
 
 CONCLUSION = """To finish: {"type":"conclusion","result":"success" or "failure","reason":"..."}.
+The conclusion reason is the full final message to the user; include the outcome and relevant
+details, not just a title or a reference to a note.
 Ordinary text does not end the run. Success requires no outstanding work or unresolved
 uncertainty, consumed observations, and passing configured validators.
 If no work, timer or external wake-up remains, conclude; an idle step is invalid.
@@ -81,6 +86,10 @@ def schema(kinds: Iterable[CellKind]) -> dict:
         "type": "object",
         "properties": {
             "kind": {"type": "string", "enum": [kind.name for kind in kinds]},
+            "title": {
+                "type": "string",
+                "description": "Very brief summary of this Cell, usually around five words",
+            },
             **fields,
         },
         "required": ["kind"],

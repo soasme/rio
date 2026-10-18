@@ -23,6 +23,7 @@ def test_thinking_flag_reaches_thinking_level_param(monkeypatch: pytest.MonkeyPa
         thinking_level: object | None = None,
         resume: str | None = None,
         output_mode: object | None = None,
+        verbose: bool = False,
         agents_md: Path | None = None,
     ) -> tuple[bool, str]:
         captured["thinking_level"] = thinking_level
@@ -186,6 +187,7 @@ def test_unrelated_value_error_does_not_blame_cwd(
         thinking_level: object | None = None,
         resume: str | None = None,
         output_mode: object | None = None,
+        verbose: bool = False,
         agents_md: Path | None = None,
     ) -> tuple[bool, str]:
         raise ValueError("Unknown provider: bonsai2")
@@ -199,3 +201,18 @@ def test_unrelated_value_error_does_not_blame_cwd(
     stderr = capsys.readouterr().err
     assert "Unknown provider: bonsai2" in stderr
     assert "error: --cwd" not in stderr
+
+
+@pytest.mark.parametrize("flags", [[], ["-v"], ["-vv"], ["--verbose"]])
+def test_verbosity_reaches_session_runner(
+    monkeypatch: pytest.MonkeyPatch, flags: list[str]
+) -> None:
+    captured = {}
+
+    async def fake_run(*args: object, **kwargs: object) -> tuple[bool, str]:
+        captured.update(kwargs)
+        return True, "session-id"
+
+    monkeypatch.setattr(run_module, "run_persistent_session", fake_run)
+    app(["run", *flags, "do it"])
+    assert captured["verbose"] is bool(flags)

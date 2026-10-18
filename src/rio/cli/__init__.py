@@ -49,6 +49,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="human",
         help="Output format (default: human).",
     )
+    run_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Show full cell content instead of titles (-v or -vv).",
+    )
     run_parser.set_defaults(handler=_run, parser=run_parser)
 
     login_parser = commands.add_parser(
@@ -89,6 +96,7 @@ def _run(args: argparse.Namespace) -> None:
                 thinking_level=level,
                 resume=args.resume,
                 output_mode=args.output,
+                verbose=bool(args.verbose),
                 agents_md=args.agents_md,
             ),
         )

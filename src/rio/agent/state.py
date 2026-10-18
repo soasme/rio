@@ -50,7 +50,8 @@ class Limits:
 class CellKind:
     """A Cell kind. The built-in note never runs; callers add runnable kinds to act.
 
-    ``fields`` maps each field besides ``kind`` to its JSON schema for the step tool.
+    ``fields`` maps each field besides ``kind`` and the optional common ``title``
+    to its JSON schema for the step tool.
     ``validate`` raises InvalidPatch for a malformed Cell body. The Owner decides how a
     Cell version runs.
     """
@@ -127,8 +128,10 @@ def validate_cell(cell: object, kinds: Mapping[str, CellKind]) -> None:
     name = cell.get("kind")
     if not isinstance(name, str) or name not in kinds:
         raise InvalidPatch(f"Cell kind must be one of: {', '.join(kinds)}")
+    if "title" in cell and (not isinstance(cell["title"], str) or not cell["title"].strip()):
+        raise InvalidPatch("Cell title must be a nonblank string")
     kinds[name].validate(cell)
-    if unknown := set(cell) - {"kind", *kinds[name].fields}:
+    if unknown := set(cell) - {"kind", "title", *kinds[name].fields}:
         raise InvalidPatch(f"Unknown Cell fields: {sorted(unknown)}")
 
 

@@ -301,6 +301,41 @@ def test_control_rejections_name_the_fix(
         session.accept(turn.id, [operation])
 
 
+@pytest.mark.parametrize("cell", [note(), code(), cmd("echo", "hello")])
+def test_cell_titles_survive_admission_replacement_and_reopen(
+    session: Session, cell: dict[str, Any]
+) -> None:
+    title = "Inspect project files and tests"
+    accept(session, {**cell, "title": title})
+    saved = Session(session.store, KINDS)
+    assert saved.state.cells[0].title == title
+    assert {key: saved.state.cells[0].model_dump()[key] for key in cell} == cell
+    if cell["kind"] != "note":
+        saved.authorize(1)
+        saved.finish(1, {"type": "success"})
+    accept(saved, replace_cell(1, note("Full updated content", title="Updated findings")))
+    assert saved.state.cells[0].title == "Updated findings"
+    assert saved.data.cells["1"].title == title
+    properties = saved.schema["properties"]["ops"]["items"]["properties"]["cell"]["properties"]
+    assert properties["title"]["type"] == "string"
+    assert "around five words" in saved.system
+
+
+@pytest.mark.parametrize("title", ["", " ", 42, False, [], {}])
+def test_invalid_cell_title_rejects_whole_step(session: Session, title: Any) -> None:
+    turn = prepare(session)
+    before = session.store.sequence
+    with pytest.raises(InvalidPatch, match="Cell title must be a nonblank string"):
+        session.accept(turn.id, [add(note()), add(note(title=title))])
+    assert session.store.sequence == before
+    assert session.state.cells == []
+
+
+def test_null_title_is_omitted_for_strict_schema_providers(session: Session) -> None:
+    accept(session, note(title=None))
+    assert "title" not in session.state.cells[0].model_fields_set
+
+
 def test_ops_sent_as_a_json_string_are_decoded(session: Session) -> None:
     turn = prepare(session)
     session.accept(turn.id, json.dumps([add(note("a"))]))
@@ -930,7 +965,10 @@ def test_note_is_not_an_extension_kind(tmp_path: Path) -> None:
         assert not store.data
 
 
-@pytest.mark.parametrize("fields", [{"text": {"type": "integer"}}, {"id": {"type": "integer"}}])
+@pytest.mark.parametrize(
+    "fields",
+    [{"text": {"type": "integer"}}, {"id": {"type": "integer"}}, {"title": {"type": "string"}}],
+)
 def test_kind_fields_share_one_cell_schema(tmp_path: Path, fields: dict[str, Any]) -> None:
     with Store(tmp_path / "s.db") as store, pytest.raises(ValueError, match="redefines field"):
         Session.create(store, "goal", kinds=[replace(KINDS[0], fields=fields)])
@@ -970,7 +1008,7 @@ async def test_caller_extends_agent_with_a_cell_kind(tmp_path: Path) -> None:
         assert echo.prompt in session.system
         with pytest.raises(InvalidPatch, match="Echo requires text"):
             accept(session, {"kind": "echo"})
-        accept(session, {"kind": "echo", "text": "hi"})
+        accept(session, {"kind": "echo", "text": "hi", "title": "Echo a greeting"})
         async with ProcessOwner(session, {"echo": command}) as owner:
             await settle(owner)
         assert session.data.executions["1"].output["stdout"] == "hi\n"
@@ -2029,6 +2067,7 @@ def test_resolution_rejects_missing_events_and_non_observations(session: Session
     assert session.store.sequence == before
 
 
+@pytest.mark.parametrize("verbose", [False, True])
 @pytest.mark.parametrize("result", ["success", "failure"])
 @pytest.mark.parametrize("output_mode", ["human", "json"])
 async def test_terminal_cli_resume_needs_no_provider_or_project(
@@ -2037,6 +2076,7 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
     capsys: pytest.CaptureFixture[str],
     result: RunResult,
     output_mode: str,
+    verbose: bool,
 ) -> None:
     import rio.coding.owner as owner_module
     from rio.cli import run as cli
@@ -2062,7 +2102,7 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
             owner_config={"cwd": str(project)},
             model_config={"provider": "removed", "model": "retired"},
         )
-        accept(session, code())
+        accept(session, code(title="Print a greeting"))
         session.authorize(1)
         session.record("workers", "cell:1", {"token": "leftover"})
         session.finish(1, {"type": "success"})
@@ -2070,7 +2110,9 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
     project.rmdir()
     stopped = []
     monkeypatch.setattr(owner_module, "stop_worker", lambda identity: stopped.append(identity))
-    assert await cli.run_persistent_session("", resume=session_id, output_mode=output_mode) == (
+    assert await cli.run_persistent_session(
+        "", resume=session_id, output_mode=output_mode, verbose=verbose
+    ) == (
         result == "success",
         session_id,
     )
@@ -2078,13 +2120,20 @@ async def test_terminal_cli_resume_needs_no_provider_or_project(
     transcript = capsys.readouterr().out
     if output_mode == "json":
         events = [json.loads(line) for line in transcript.splitlines()]
+        accepted = next(e for e in events if e["type"] == "patch_accepted")
+        cell = accepted["changes"]["cells"]["1"]
+        assert cell["title"] == "Print a greeting"
+        assert cell["source"] == code()["source"]
         assert any(e["type"] == "owner_record" for e in events)
         assert "durability_metrics" not in {e["type"] for e in events}
     else:
-        assert "done" in transcript
+        assert transcript.endswith(f"• {result.capitalize()}: done\n")
+        assert ("Print a greeting" in transcript) is not verbose
+        assert ("print('hello')" in transcript) is verbose
     with Store(path) as store:
         assert store.data["workers"]["cell:1"]["stopped"]
-        assert store.data["meta"]["terminal"]["result"] == result
+        assert store.projection.meta.terminal is not None
+        assert store.projection.meta.terminal.result == result
 
 
 async def test_replay_requires_posix_before_cleanup(

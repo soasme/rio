@@ -46,6 +46,7 @@ class Cell(RecordModel):
     id: int
     previous_id: int | None
     kind: str  # Caller-provided CellKind.name, or the built-in "note".
+    title: str | None = None  # Brief model-written summary for console display.
     text: str | None = None
 
 

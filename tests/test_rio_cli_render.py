@@ -157,3 +157,46 @@ def test_output_chunks_then_final_snapshot_do_not_repeat(
         executions={"2": execution("hello\n", result={"type": "success", "exit_code": 0})},
     )
     assert capsys.readouterr().out == "  └ hello\n  └ success (exit 0)\n"
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+@pytest.mark.parametrize(
+    "body, full",
+    [
+        ({"kind": "note", "text": "Checked files.\nTests pass."}, "Checked files.\n  Tests pass."),
+        ({"kind": "code", "source": "print('hello')"}, "print('hello')"),
+        ({"kind": "cmd", "argv": ["echo", "hello world"]}, "echo 'hello world'"),
+    ],
+)
+def test_titles_summarize_cells_only_in_default_output(
+    capsys: pytest.CaptureFixture[str], verbose: bool, body: dict[str, Any], full: str
+) -> None:
+    renderer = PlainEventRenderer(verbose=verbose)
+    emit(
+        renderer,
+        "patch_accepted",
+        cells={
+            "1": {"id": 1, "previous_id": None, "title": "Inspect project files and tests", **body}
+        },
+    )
+    expected = full if verbose else "Inspect project files and tests"
+    assert capsys.readouterr().out == f"• {expected}\n"
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+@pytest.mark.parametrize("result", ["success", "failure"])
+def test_final_message_keeps_full_reason_after_titled_note(
+    capsys: pytest.CaptureFixture[str], verbose: bool, result: str
+) -> None:
+    renderer = PlainEventRenderer(verbose=verbose)
+    reason = "Updated the parser.\nVerified the regression tests."
+    emit(
+        renderer,
+        "patch_accepted",
+        cells={"1": {"id": 1, "kind": "note", "title": "Parser updated", "text": reason}},
+        controls={"1": {"control": {"type": "conclusion", "result": result, "reason": reason}}},
+    )
+    emit(renderer, "run_ended", meta={"terminal": {"result": result, "reason": reason}})
+    assert capsys.readouterr().out.endswith(
+        f"• {result.capitalize()}: Updated the parser.\n  Verified the regression tests.\n"
+    )

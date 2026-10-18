@@ -34,11 +34,12 @@ async def run_persistent_session(
     thinking_level: ThinkingLevel | None = None,
     resume: str | None = None,
     output_mode: str = "human",
+    verbose: bool = False,
     agents_md: Path | None = None,
 ) -> tuple[bool, str]:
     session_id = resume or uuid.uuid4().hex
     path = _session_path(resume, session_id)
-    renderer = PlainEventRenderer()
+    renderer = PlainEventRenderer(verbose=verbose)
 
     def publish(event: JournalEvent) -> None:
         if output_mode == "json":

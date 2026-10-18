@@ -32,6 +32,7 @@ Providers come from the configured catalog; each run selects one provider and mo
 | `-t`, `--thinking LEVEL` | Reasoning-effort level. |
 | `--agents-md PATH` | Project instructions file. Defaults to `AGENTS.md` in the working directory when present. |
 | `-r`, `--resume SESSION_ID` | Resume a durable session. |
+| `-v`, `--verbose` | Show full cell content instead of titles; `-vv` also enables this. |
 | `--output human\|json` | Output format; defaults to `human`. |
 
 Omit TASK when resuming. Resume keeps the original goal, project instructions,
@@ -40,9 +41,11 @@ project directory. A completed session cleans up recorded workers and replays it
 journal without provider setup or the original directory. Cleanup failures stop
 replay. See [sessions](../guides/sessions.md).
 
-`human` prints accepted content (notes, commands, Python source, and control reasons), execution output and
-outcomes, and the session ID. Cell labels and numbers are not displayed. Resume replays the committed
-transcript before showing new progress. See the [message design](../design/coding-tui-messages.md).
+`human` prints each accepted cell's title when present, usually a summary of around five words.
+Cells without titles show their full content (notes, commands, or Python source).
+Use `-v` or `-vv` to show full cell content for every cell. Control reasons, execution output,
+outcomes, the full final message, and the session ID are always displayed.
+Cell labels and numbers are not displayed. Resume replays the committed transcript before showing new progress. See the [message design](../design/coding-tui-messages.md).
 `json` emits one JSON event per line and is intended for programmatic consumers.
 
 `rio run` reports its status to the terminal with

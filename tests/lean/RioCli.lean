@@ -15,6 +15,7 @@ theorem selected_command_is_dispatched (command : String) :
 structure Cell where
   id : Nat
   body : String
+  title : Option String := none
   deriving DecidableEq, Repr
 
 inductive Event where
@@ -22,25 +23,44 @@ inductive Event where
   | proposed (cells : List Cell)
   | snapshot (cells : List Cell)
   | rejected
+  | ended (result reason : String)
   deriving DecidableEq, Repr
 
-def visibleCells : Event → List String
-  | .accepted cells => cells.map Cell.body
+def cellContent (verbose : Bool) (cell : Cell) : String :=
+  if verbose then cell.body else cell.title.getD cell.body
+
+def visibleCells (event : Event) (verbose : Bool := false) : List String :=
+  match event with
+  | .accepted cells => cells.map (cellContent verbose)
+  | .ended result reason => [result ++ ": " ++ reason]
   | _ => []
 
+theorem title_replaces_body_by_default (id : Nat) (body title : String) :
+    visibleCells (.accepted [⟨id, body, some title⟩]) = [title] := rfl
+
+theorem verbose_shows_full_body (id : Nat) (body : String) (title : Option String) :
+    visibleCells (.accepted [⟨id, body, title⟩]) true = [body] := rfl
+
+theorem untitled_cells_show_body (id : Nat) (body : String) (verbose : Bool) :
+    visibleCells (.accepted [⟨id, body, none⟩]) verbose = [body] := by
+  cases verbose <;> rfl
+
+theorem final_message_is_full (result reason : String) (verbose : Bool) :
+    visibleCells (.ended result reason) verbose = [result ++ ": " ++ reason] := rfl
+
 theorem accepted_source_is_visible (id : Nat) (source : String) :
-    visibleCells (.accepted [⟨id, source⟩]) = [source] := by rfl
+    visibleCells (.accepted [⟨id, source, none⟩]) = [source] := by rfl
 
 -- Command presentation joins quoted argv; quoting is supplied by Python shlex.
 -- This models visibility, not shell parsing or execution.
 theorem accepted_command_is_visible (id : Nat) (argv : List String)
     (quote : String → String) :
-    visibleCells (.accepted [⟨id, String.intercalate " " (argv.map quote)⟩]) =
+    visibleCells (.accepted [⟨id, String.intercalate " " (argv.map quote), none⟩]) =
       [String.intercalate " " (argv.map quote)] := by rfl
 
 theorem cell_ids_do_not_affect_content (first second : Nat) (body : String) :
-    visibleCells (.accepted [⟨first, body⟩]) =
-      visibleCells (.accepted [⟨second, body⟩]) := by rfl
+    visibleCells (.accepted [⟨first, body, none⟩]) =
+      visibleCells (.accepted [⟨second, body, none⟩]) := by rfl
 
 theorem proposals_are_not_published (cells : List Cell) :
     visibleCells (.proposed cells) = [] := by rfl
