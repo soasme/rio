@@ -1,3 +1,23 @@
+# 0.9.2
+
+* fix(evals): isolate grading and expand validated scenario coverage ([#189](https://github.com/soasme/rio/pull/189))
+* fix(agent): bound whole inbox observations and reserve the oldest message ([#184](https://github.com/soasme/rio/pull/184))
+* refactor: use Pydantic records and enforce Python typing ([#187](https://github.com/soasme/rio/pull/187))
+* fix(coding): resolve model endpoint once and give retries one owner ([#186](https://github.com/soasme/rio/pull/186))
+* fix(coding): bound Cell output memory and log disk use ([#185](https://github.com/soasme/rio/pull/185))
+* docs: add design principles to package READMEs ([#183](https://github.com/soasme/rio/pull/183))
+* refactor(agent): split context fitting out of prepare_turn ([#182](https://github.com/soasme/rio/pull/182))
+* fix(agent): decode string-encoded step ops and reject same-step conclusions ([#181](https://github.com/soasme/rio/pull/181))
+* refactor(ai): share provider client lifecycle in HTTPProvider ([#180](https://github.com/soasme/rio/pull/180))
+* refactor(coding)!: select providers by api, drop provider kind ([#179](https://github.com/soasme/rio/pull/179))
+* refactor: share chat tool-call parsing and drop stale catalog shims ([#178](https://github.com/soasme/rio/pull/178))
+* refactor(ai): make providers a single request with a final message ([#177](https://github.com/soasme/rio/pull/177))
+* feat(release): add optional bundled model refresh ([#176](https://github.com/soasme/rio/pull/176))
+* fix(agent): preserve stable state prompt prefix ([#175](https://github.com/soasme/rio/pull/175))
+* refactor(coding): declare provider quirks in the catalog ([#174](https://github.com/soasme/rio/pull/174))
+* refactor(coding): simplify process owner execution ([#173](https://github.com/soasme/rio/pull/173))
+* fix(coding): remove unused provider configuration paths ([#172](https://github.com/soasme/rio/pull/172))
+
 # 0.9.1
 
 * fix(coding): keep uv run from re-syncing the active venv ([#171](https://github.com/soasme/rio/pull/171))
