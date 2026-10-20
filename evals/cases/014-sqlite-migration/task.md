@@ -1,0 +1,1 @@
+Implement migrate(connection): add users.active INTEGER NOT NULL DEFAULT 1 if absent. Preserve all existing rows and other columns. Calling it repeatedly must succeed. Use the supplied sqlite3 connection; do not close it.

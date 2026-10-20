@@ -1,0 +1,13 @@
+{
+  "split": "regression",
+  "category": "resume",
+  "editable": [
+    "ledger.txt",
+    "receipt.txt"
+  ],
+  "tests": [
+    "grade.py::test_single_effect"
+  ],
+  "expected_terminal": "success",
+  "scenario": "resume"
+}

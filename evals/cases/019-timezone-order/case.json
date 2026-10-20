@@ -1,0 +1,12 @@
+{
+  "split": "holdout",
+  "category": "data-processing",
+  "editable": [
+    "events.py"
+  ],
+  "tests": [
+    "grade.py::test_offsets_and_stability"
+  ],
+  "expected_terminal": "success",
+  "scenario": "coding"
+}

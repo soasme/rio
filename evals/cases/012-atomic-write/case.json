@@ -1,0 +1,12 @@
+{
+  "split": "regression",
+  "category": "filesystem",
+  "editable": [
+    "storage.py"
+  ],
+  "tests": [
+    "grade.py::test_atomic_write"
+  ],
+  "expected_terminal": "success",
+  "scenario": "coding"
+}

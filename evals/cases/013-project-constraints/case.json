@@ -1,0 +1,12 @@
+{
+  "split": "regression",
+  "category": "instruction-scope",
+  "editable": [
+    "public_api.py"
+  ],
+  "tests": [
+    "grade.py::test_api_and_scope"
+  ],
+  "expected_terminal": "success",
+  "scenario": "coding"
+}

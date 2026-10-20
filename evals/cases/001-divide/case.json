@@ -1,0 +1,10 @@
+{
+  "category": "smoke",
+  "editable": [
+    "calculator.py"
+  ],
+  "tests": [
+    "grade.py::test_division",
+    "grade.py::test_zero_division"
+  ]
+}

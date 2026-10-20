@@ -1,105 +1,144 @@
-# Rio coding evals
+# Rio coding evaluations
 
-These are end-to-end checks of Rio's one-shot coding workflow. Each trial copies a
-small starting project into a fresh temporary directory, runs the public `rio run`
-command there, then runs a test file that was kept outside that directory. A pass
-requires both Rio to finish successfully and the test to pass. The runner saves
-Rio's JSON event stream, stderr, grader output, final workspace (or `agent.diff`
-for repository cases), and a machine-readable summary.
+The suite contains 20 scenarios: two smoke tasks, two SWE-bench repository fixes,
+and 16 focused engineering and runtime scenarios. The new tasks are synthetic;
+they are not a measured sample of production Rio work. Add anonymized real failures
+as they become available. The suite measures this workload, not general coding ability.
 
-Run with an already configured provider and model:
+## Run
 
-```bash
-uv run --dev python -m evals.run --provider PROVIDER --model MODEL
-```
-
-Use `--trials 3` to see how often each task succeeds across independent attempts.
-Use `--case 001-divide` to run one case, or `--timeout 600` for a slower model. Results
-go to `.eval-results/` by default. This is a manual eval; it is not part of CI
-because it makes model calls and outcomes can vary.
-
-Cases `003` and `004` are SWE-bench Verified instances from the two short
-difficulty buckets, so each trial finishes in a few minutes:
-
-| case | instance | difficulty |
-|---|---|---|
-| 003-flask-blueprint-name | pallets__flask-5014 | <15 min fix |
-| 004-pytest-caplog-level | pytest-dev__pytest-7571 | 15 min - 1 hour |
-
-A SWE-bench case has `task.md` (the issue text), `swebench.json`, and `test.patch`
-instead of `workspace/` and `grade.py`. The runner keeps a bare mirror of the
-repository in `.eval-cache/`, exports the base commit into a fresh one-commit git
-repository (so the fix is not in history), and installs `install` into
-`workspace/.venv` with `uv`, which Rio's shell uses as its active environment. To
-grade, it restores the patched test files, applies `test.patch`, and runs the
-listed `tests` (FAIL_TO_PASS plus PASS_TO_PASS) with pytest. Setup needs network
-access and `uv`; it is not counted in the agent's time. Each `result.json` lists
-lockfiles the agent changed (`lockfiles_changed`) and `.venv` distributions it
-added or removed (`venv_added`, `venv_removed`); grading still uses that environment.
-
-The local cases are deliberately small. They check the runner and provide an
-initial signal, not a reliable comparison between models. Grow the suite from
-real Rio failures and representative user tasks. Prefix each case directory with
-a numeric id, such as `003-name`. For each new case, make the task unambiguous, keep the grader outside `workspace/`, check that the starting
-files fail, and confirm a known good solution passes. Record the model, provider,
-Rio revision, trial count, and pass rate when comparing runs. Inspect failed
-event streams before changing the agent; a setup or grading error can look like
-an agent failure. Workspace copies separate trials, but they are not a security
-sandbox; use a container for untrusted agents or private benchmark tasks.
-
-This design follows the guidance to use isolated trials, verify the resulting
-environment, prefer deterministic graders, and repeat trials for variable
-agents: [Anthropic, *Demystifying evals for AI agents*](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents).
-Trace inspection complements outcome scoring:
-[OpenAI, *Evaluate agent workflows*](https://developers.openai.com/api/docs/guides/agent-evals).
-For larger repository tasks, use issue-style fixtures and tests as in
-[SWE-bench](https://arxiv.org/abs/2310.06770), while reviewing grader quality.
-
-## Compare revisions on all four cases
-
-Run the baseline and candidate in separate Git worktrees with the same provider,
-model, timeout, and trial count. Keep the first summary outside those worktrees.
-For example, run this on the baseline revision:
+Docker must be running. Validate every grader without credentials or model calls:
 
 ```sh
-uv run python -m evals.run --trials 3 --timeout 600 \
-  --provider PROVIDER --model MODEL --output-dir /tmp/rio-baseline
+uv run python -m evals.run --validate --split all --output-dir .eval-results/validation
 ```
 
-Then run this on the candidate revision:
+Run repeated model trials (three per case by default):
 
 ```sh
-uv run python -m evals.run --trials 3 --timeout 600 \
-  --provider PROVIDER --model MODEL --output-dir /tmp/rio-candidate \
-  --compare /tmp/rio-baseline/summary.json
+uv run python -m evals.run --provider anthropic --model claude-sonnet-4-6 \
+  --trials 3 --timeout 300 --split all --output-dir .eval-results/candidate
 ```
 
-Each trial gets a fresh workspace and hidden grading. `summary.json` records
-per-case completion rate, median time, median successful time, model turns,
-and context bytes. `comparison.json` reports each case's pass-rate delta and
-successful latency ratio (below 1 means faster). Faster failures do not count
-as improvements. Summaries checkpoint after each trial.
+Use `--case 018-resume-side-effect` to select a scenario. `--thinking` fixes reasoning
+effort explicitly; otherwise the resolved value is recorded and passed to Rio.
+Output directories must be new. Each run checkpoints every scheduled trial, including
+setup failures. A stopped batch remains `complete: false, valid: false`.
 
-The manifest records model, provider, timeout, source and fixture hashes, Git
-revision, Python, and platform. Comparisons require matching settings, fixtures,
-cases, and trial counts. Editing source during a run invalidates the result.
-Token usage stays unknown when the provider does not report it. Context bytes
-measure serialized state, not tokens or the full prompt. SQLite commit and
-rebuild times are also recorded.
+The runner validates graders before making any model calls. Every case includes:
 
-Repeat trials on both revisions, alternate revision order across batches, and
-inspect failures before attributing differences to the change. Small samples
-are descriptive; they do not establish statistical significance. Historical
-results in `results/` keep their original revision and runtime labels.
+- `task.md`: requirements visible to the agent.
+- `case.json`: allowed changes, required test IDs, split, and expected terminal result.
+- `workspace/`, or a pinned repository base in `swebench.json`.
+- Hidden `grade.py`, or a SWE-bench `test.patch` and selected tests.
+- `reference/` or `reference.patch`: a passing solution.
+- `mutants/`: incomplete solutions or grading-tampering controls that must fail.
 
-Measure local durability costs without model calls:
+Calibration requires the broken start to fail, the reference to pass, and every
+negative control to fail. For the deliberately blocked task, an unchanged workspace
+is correct; the model must additionally conclude failure, not claim success.
+CI runs calibration for both splits without model credentials.
+
+## Isolation and grading
+
+The runtime image contains Rio and its locked dependencies, without eval fixtures.
+Each agent runs in a new container with a fresh project and a separate home containing
+only the selected provider credential and provider configuration. Host home, sessions,
+reference solutions, graders, and Docker socket are not mounted. OAuth refresh happens
+on the host before copying the selected credential. Agent containers have network
+access for provider calls and normal development; public answer retrieval is not
+technically blocked. This remains a limitation for public benchmark tasks.
+
+The grader uses a new container from the original task image, no network, a read-only
+filesystem, and a non-root user. Changes outside the explicitly allowed task paths and
+changed symlinks are rejected. Submitted changes to installed packages do not carry into
+grading. Original tests, configuration, and generated installation metadata are preserved.
+The agent sees the same allowed-file restriction in its task.
+
+A trusted pytest plugin checks the exact collected test IDs and final outcomes, including
+teardown. Every required test must execute and pass: skips, xfails, missing results, and
+zero exits without a complete report fail. This is defense against accidental or simple
+bypasses, not a proof that arbitrary malicious Python cannot attack its own test process.
+Review traces and patches, including sampled passes.
+
+Git artifacts compare original and final file trees using a private index. Staging,
+committing, deleting, and adding files cannot hide submitted changes. Setup commands,
+agent execution, and grading have deadlines; timed-out Docker containers are removed.
+Containers have 2 CPUs, 2 GiB RAM, and a 256-process limit.
+
+## Coverage and splits
+
+| Cases | Coverage |
+| --- | --- |
+| 001–004 | Division, ASCII slugification, Flask blueprint validation, pytest logging restoration |
+| 005–009 | Multi-file inventory, exact CSV totals, recursive configuration, CLI streams, optional dependencies |
+| 010–012 | Large diagnostic output, transient provider failure plus retry behavior, atomic file writes |
+| 013–016 | Project constraints and misleading data, SQLite migration, falsey caches, confined paths |
+| 017–018 | Honest blocked-task failure, interrupted side effects and evidence-based resolution |
+| 019–020 | Reserved cases: timezone ordering and pagination with falsey cursors |
+
+`--split regression` is the default. The `holdout` cases are reserved from prompt tuning;
+they are public fixtures, not secret or guaranteed contamination-free. Their reference
+grading can be validated without using their model outcomes to tune Rio. If a reserved
+case drives a prompt change, move it to regression and replace it before claiming a
+held-out result. Do not pool repeated trials as if they were distinct tasks.
+
+The resume scenario seeds a committed launch whose side effect happened but whose
+completion was not recorded. A real model must inspect evidence, resolve UnknownExecution,
+and finish without duplicating the effect. It is a controlled interruption, not a power-loss
+test. Process-kill and protocol failure tests remain in `tests/test_rio_agent.py`.
+The provider-retry scenario injects one connection failure before delegating to the real
+provider, using the public CLI and normal retry loop. Provider wire formats are separately
+covered by deterministic adapter tests; run selected scenarios on each provider used in
+production when changing adapters or models.
+
+## Results and comparisons
+
+Each trial retains `agent.jsonl`, `agent.stderr`, `agent.diff`, `grade.json`, and
+`result.json`. Per-case calibration artifacts include every probe and grader log.
+`summary.json` records the exact source, harness, fixtures, dependency hashes, revision,
+dirty status, resolved settings, image IDs, installed task packages, platform, budgets,
+all scheduled results, and input stability. Edits during a run invalidate the saved summary.
+
+```sh
+uv run python -m evals.run --provider PROVIDER --model MODEL --trials 3 \
+  --output-dir .eval-results/candidate --compare .eval-results/baseline/summary.json
+```
+
+Run both revisions with this same harness and fixtures. Comparisons reject missing
+metadata, incomplete batches, duplicate/missing trials, changed graders, and mismatched
+settings or environments. Old version-1 reports are historical only and must be rerun.
+Alternate baseline/candidate order across batches and avoid concurrent performance loads.
+
+The primary metric is success on one attempt, estimated across repeats. Reports include
+per-case 95% Wilson intervals, median and p95 agent latency, successful latency, timeout
+rate, failure categories, and tokens/time per success including failed attempts. With
+three trials, intervals are wide and p95 is essentially the maximum; neither establishes
+statistical significance. Add trials based on the precision needed for a decision.
+Missing usage remains unknown. Dollar cost remains unknown unless reported reliably;
+context bytes are neither tokens nor the full prompt.
+
+The predeclared descriptive regression gate permits no observed success-rate drop and
+at most a 20% increase in successful median latency when both runs pass every attempt.
+This is a regression warning, not a statistical non-inferiority claim or automatic release
+approval. Inspect failures, cost tradeoffs, and uncertainty before drawing conclusions.
+
+## Durability
 
 ```sh
 uv run python -m evals.durability --samples 20
 ```
 
-This records commit percentiles, rebuild time, supervisor startup, a minimal uv
-script's duration, Inbox fold time, idle owner RSS, and recovery at the committed
-launch boundary. Actual process/child termination is covered by
-`tests/test_rio_agent.py`. Host/power failure is a separate deployment test;
-no process-kill result establishes a power-loss guarantee.
+This isolates local commit, rebuild, startup, output-fold, memory, and recovery costs.
+Run it separately from model trials. OS process tests and the Lean behavior models cover
+additional invariants; neither establishes hardware or power-loss guarantees.
+
+## Sources
+
+The workflow follows [Anthropic’s agent-eval guidance](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)
+and [SWE-bench’s isolated patch evaluation](https://www.swebench.com/SWE-bench/guides/evaluation/).
+Grader calibration matters even for established benchmarks: see
+[OpenAI’s coding-evaluation audit](https://openai.com/index/separating-signal-from-noise-coding-evaluations/).
+The repository reference patches contain the source changes from
+[Flask PR 5014](https://github.com/pallets/flask/pull/5014) and
+[pytest PR 7571](https://github.com/pytest-dev/pytest/pull/7571); existing upstream licenses apply.

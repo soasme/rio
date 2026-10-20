@@ -1,0 +1,1 @@
+Implement encode(value) in encoder.py. If optional module fastjson is importable, use its dumps(value). Otherwise fall back to standard-library json.dumps(value, sort_keys=True). Do not swallow errors from an installed fastjson.dumps implementation. The module must import when fastjson is absent.

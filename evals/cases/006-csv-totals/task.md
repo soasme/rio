@@ -1,0 +1,1 @@
+Implement totals(text) for CSV with columns customer,amount. Support quoted customer names, blank lines, duplicate customers, and negative amounts. Sum amounts exactly with Decimal and return dict[str, Decimal]. Empty/header-only input returns {}. Invalid amounts raise ValueError.

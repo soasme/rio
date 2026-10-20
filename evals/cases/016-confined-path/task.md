@@ -1,0 +1,1 @@
+Implement resolve_inside(root, relative): return a resolved pathlib.Path within root. Reject absolute inputs and paths that escape root, including through symlinks, with ValueError. Allow nested paths, existing or missing, and normalize internal dot segments.

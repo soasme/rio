@@ -1,0 +1,1 @@
+Implement retry(operation, attempts). Call the zero-argument operation until it succeeds or attempts are exhausted. Retry only TimeoutError; propagate all other exceptions immediately. Reject attempts < 1 with ValueError. On exhaustion re-raise the last TimeoutError instance. Return successful falsey values unchanged.

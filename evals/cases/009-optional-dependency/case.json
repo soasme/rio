@@ -1,0 +1,13 @@
+{
+  "split": "regression",
+  "category": "dependency-compatibility",
+  "editable": [
+    "encoder.py"
+  ],
+  "tests": [
+    "grade.py::test_fallback",
+    "grade.py::test_installed"
+  ],
+  "expected_terminal": "success",
+  "scenario": "coding"
+}

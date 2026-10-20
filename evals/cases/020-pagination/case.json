@@ -1,0 +1,13 @@
+{
+  "split": "holdout",
+  "category": "multi-step",
+  "editable": [
+    "pages.py"
+  ],
+  "tests": [
+    "grade.py::test_falsey_cursor",
+    "grade.py::test_cycles_and_errors"
+  ],
+  "expected_terminal": "success",
+  "scenario": "coding"
+}

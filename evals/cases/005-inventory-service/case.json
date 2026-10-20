@@ -1,0 +1,14 @@
+{
+  "split": "regression",
+  "category": "multi-file",
+  "editable": [
+    "inventory.py",
+    "service.py"
+  ],
+  "tests": [
+    "grade.py::test_atomic_order",
+    "grade.py::test_validation"
+  ],
+  "expected_terminal": "success",
+  "scenario": "coding"
+}

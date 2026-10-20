@@ -1,0 +1,1 @@
+Implement get_or_load(cache, key, loader). Return any existing value including None, False, 0 and empty strings. On a miss call loader(key) once and cache its result. If loader raises, propagate the exception without caching it.

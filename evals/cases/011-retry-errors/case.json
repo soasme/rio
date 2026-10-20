@@ -1,0 +1,13 @@
+{
+  "split": "regression",
+  "category": "error-handling",
+  "editable": [
+    "retry.py"
+  ],
+  "tests": [
+    "grade.py::test_transient_and_falsey",
+    "grade.py::test_no_extra_attempts"
+  ],
+  "expected_terminal": "success",
+  "scenario": "provider_retry"
+}

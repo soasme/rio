@@ -1,0 +1,1 @@
+Run python diagnose.py to reproduce the failure, then fix parser.py. parse_status(lines) should return the value after the last STATUS= prefix, stripping whitespace; ignore other lines and raise ValueError if no status exists. The diagnostic produces a large log; use its final error to guide the fix. Preserve diagnose.py.

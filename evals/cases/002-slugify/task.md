@@ -1,1 +1,1 @@
-Add a `slugify(text: str) -> str` function to `text_utils.py`. Lowercase the text, replace each run of non-alphanumeric characters with one hyphen, and remove leading and trailing hyphens. An empty input should return an empty string.
+Add slugify(text: str) -> str. Lowercase first, keep only ASCII a-z and 0-9, replace each run of other characters with one hyphen, and trim leading/trailing hyphens. Unicode letters outside ASCII count as separators. Empty input returns an empty string.
