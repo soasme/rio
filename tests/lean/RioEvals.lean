@@ -89,4 +89,12 @@ theorem invalid_script_cannot_seed_a_resume_scenario (committed observed : Bool)
     resumeSeedReady false committed observed = false := by
   simp [resumeSeedReady]
 
+def calibrated (referencePasses : Bool) (alternativePasses negativeRejected : List Bool) : Bool :=
+  referencePasses && alternativePasses.all id && negativeRejected.all id
+
+theorem rejecting_a_valid_alternative_invalidates_calibration (reference : Bool)
+    (negatives : List Bool) :
+    calibrated reference [false] negatives = false := by
+  simp [calibrated]
+
 end RioEvals
