@@ -17,6 +17,8 @@ def trace_metrics(trace: str) -> dict:
     provider_errors = resolutions = 0
     costs: list[float] = []
     unknown_costs = 0
+    conclusions: list[str] = []
+    truncated_observations = 0
     for line in trace.splitlines():
         try:
             event = json.loads(line)
@@ -25,7 +27,12 @@ def trace_metrics(trace: str) -> dict:
         kind = event.get("type")
         changes = event.get("changes", {})
         provider_errors += kind == "provider_failed"
+        truncated_observations += kind == "output_truncated"
         resolutions += len(changes.get("resolutions", {}))
+        for control in changes.get("controls", {}).values():
+            request = control.get("control", {})
+            if request.get("type") == "conclusion":
+                conclusions.append(request["result"])
         ending = changes.get("meta", {}).get("terminal")
         if ending:
             terminal = ending["result"]
@@ -64,6 +71,8 @@ def trace_metrics(trace: str) -> dict:
         "terminal": terminal,
         "provider_errors": provider_errors,
         "resolutions": resolutions,
+        "conclusions": conclusions,
+        "truncated_observations": truncated_observations,
         "dollars": sum(costs)
         if costs and not unknown_costs and usage and not usage["unknown_usage"]
         else None,

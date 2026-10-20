@@ -362,3 +362,43 @@ def test_executable_mode_change_is_part_of_submission(tmp_path: Path) -> None:
     (candidate / "app.py").chmod(0o755)
     spec = Case(category="test", editable=[], tests=["test"])
     assert check_submission(base, candidate, spec) == ["app.py"]
+
+
+def test_blocked_task_requires_an_agent_failure_decision() -> None:
+    from evals.run import trial_status
+    from evals.sandbox import GradeResult
+
+    spec = Case(category="blocked", editable=[], tests=["test"], expected_terminal="failure")
+    process = ProcessResult(returncode=1, seconds=1)
+    graded = GradeResult(status="passed", process=ProcessResult(returncode=0, seconds=1))
+    metrics = {**trace_metrics(""), "terminal": "failure", "provider_errors": 8}
+    assert trial_status(spec, process, metrics, graded) == "agent_failure"
+    metrics["conclusions"] = ["failure"]
+    assert trial_status(spec, process, metrics, graded) == "passed"
+
+
+@pytest.mark.parametrize(
+    "scenario,observations",
+    [
+        ("large_output", {"truncated_observations": 1}),
+        ("provider_retry", {"provider_errors": 1}),
+        ("resume", {"unknown_executions": 1, "resolutions": 1}),
+    ],
+)
+def test_runtime_scenario_must_actually_be_exercised(scenario: str, observations: dict) -> None:
+    from evals.run import trial_status
+    from evals.sandbox import GradeResult
+
+    spec = Case.model_validate(
+        {
+            "category": "runtime",
+            "editable": [],
+            "tests": ["test"],
+            "scenario": scenario,
+        }
+    )
+    process = ProcessResult(returncode=0, seconds=1)
+    graded = GradeResult(status="passed", process=process)
+    metrics = {**trace_metrics(""), "terminal": "success"}
+    assert trial_status(spec, process, metrics, graded) == "agent_failure"
+    assert trial_status(spec, process, {**metrics, **observations}, graded) == "passed"

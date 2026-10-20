@@ -6,7 +6,8 @@
   ],
   "tests": [
     "grade.py::test_transient_and_falsey",
-    "grade.py::test_no_extra_attempts"
+    "grade.py::test_no_extra_attempts",
+    "grade.py::test_fatal_error_is_not_retried"
   ],
   "expected_terminal": "success",
   "scenario": "provider_retry"

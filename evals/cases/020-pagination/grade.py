@@ -20,3 +20,16 @@ def test_cycles_and_errors() -> None:
 
     with pytest.raises(OSError):
         collect(fail)
+
+
+def test_fetch_error_is_not_retried() -> None:
+    calls = []
+    error = OSError("offline")
+
+    def fail(cursor: object) -> dict:
+        calls.append(cursor)
+        raise error
+
+    with pytest.raises(OSError) as caught:
+        collect(fail)
+    assert caught.value is error and calls == [None]

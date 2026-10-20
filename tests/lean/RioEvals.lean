@@ -71,4 +71,15 @@ theorem unknown_cost_is_not_free :
 theorem failed_attempts_still_cost :
     tokenCost 1 [some 10, some 30] = some 40 := by decide
 
+def trialAccepted (testsPass terminalMatches scenarioObserved expectsFailure
+    modelConcludedFailure : Bool) : Bool :=
+  testsPass && terminalMatches && scenarioObserved && (!expectsFailure || modelConcludedFailure)
+
+theorem automatic_failure_is_not_an_honest_failure_decision :
+    trialAccepted true true true true false = false := by decide
+
+theorem unexercised_stress_scenario_never_passes (expectsFailure modelConcludedFailure : Bool) :
+    trialAccepted true true false expectsFailure modelConcludedFailure = false := by
+  simp [trialAccepted]
+
 end RioEvals

@@ -35,8 +35,10 @@ The runner validates graders before making any model calls. Every case includes:
 - `mutants/`: incomplete solutions or grading-tampering controls that must fail.
 
 Calibration requires the broken start to fail, the reference to pass, and every
-negative control to fail. For the deliberately blocked task, an unchanged workspace
-is correct; the model must additionally conclude failure, not claim success.
+negative control to fail. Where supplied, alternative correct implementations must also pass.
+For the deliberately blocked task, an unchanged workspace
+is correct; the model must additionally issue a failure conclusion. Provider outages or budget
+exhaustion alone cannot satisfy that check.
 CI runs calibration for both splits without model credentials.
 
 ## Isolation and grading
@@ -87,7 +89,8 @@ The resume scenario seeds a committed launch whose side effect happened but whos
 completion was not recorded. A real model must inspect evidence, resolve UnknownExecution,
 and finish without duplicating the effect. It is a controlled interruption, not a power-loss
 test. Process-kill and protocol failure tests remain in `tests/test_rio_agent.py`.
-The provider-retry scenario injects one connection failure before delegating to the real
+The large-output scenario must produce an actual truncation event; a correct parser alone
+does not satisfy the stress check. The provider-retry scenario injects one connection failure before delegating to the real
 provider, using the public CLI and normal retry loop. Provider wire formats are separately
 covered by deterministic adapter tests; run selected scenarios on each provider used in
 production when changing adapters or models.

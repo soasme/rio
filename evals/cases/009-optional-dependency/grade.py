@@ -20,3 +20,15 @@ def test_installed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "fastjson", SimpleNamespace(dumps=broken))
     with pytest.raises(ValueError):
         encode({})
+
+
+def test_installed_dependency_errors_are_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    for error in (ImportError("encoder broken"), ModuleNotFoundError("missing subdependency")):
+
+        def broken(value: object, error: Exception = error) -> str:
+            raise error
+
+        monkeypatch.setitem(sys.modules, "fastjson", SimpleNamespace(dumps=broken))
+        with pytest.raises(type(error)) as caught:
+            encode({})
+        assert caught.value is error

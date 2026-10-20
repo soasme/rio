@@ -21,3 +21,4 @@ def test_atomic_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(OSError):
         storage.write_json(path, {})
     assert list(tmp_path.iterdir()) == [path]
+    assert json.loads(path.read_text()) == {"name": "東京"}

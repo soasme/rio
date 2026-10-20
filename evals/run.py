@@ -20,6 +20,7 @@ from evals.sandbox import (
     ROOT,
     Case,
     GradeResult,
+    ProcessResult,
     build_runtime,
     build_task,
     capture_patch,
@@ -287,22 +288,7 @@ def run_case(
         metrics = trace_metrics(process.stdout)
         graded = grade(case, base, workspace, image, timeout=timeout)
         save(output / "grade.json", graded.model_dump())
-        expected_exit = 0 if spec.expected_terminal == "success" else 1
-        if process.timed_out:
-            status = "agent_timeout"
-        elif metrics["terminal"] != spec.expected_terminal or process.returncode != expected_exit:
-            status = "provider_error" if metrics["provider_errors"] else "agent_failure"
-        elif graded.status != "passed":
-            status = graded.status
-        elif (
-            spec.scenario == "resume"
-            and (metrics["unknown_executions"] < 1 or metrics["resolutions"] < 1)
-            or spec.scenario == "provider_retry"
-            and metrics["provider_errors"] < 1
-        ):
-            status = "agent_failure"
-        else:
-            status = "passed"
+        status = trial_status(spec, process, metrics, graded)
         return {
             "case": case.name,
             "status": status,
@@ -314,6 +300,27 @@ def run_case(
             "changed_paths": changed,
             **metrics,
         }
+
+
+def trial_status(spec: Case, process: ProcessResult, metrics: dict, graded: GradeResult) -> str:
+    expected_exit = 0 if spec.expected_terminal == "success" else 1
+    if process.timed_out:
+        return "agent_timeout"
+    if metrics["terminal"] != spec.expected_terminal or process.returncode != expected_exit:
+        return "provider_error" if metrics["provider_errors"] else "agent_failure"
+    if graded.status != "passed":
+        return graded.status
+    if (
+        (spec.expected_terminal == "failure" and "failure" not in metrics["conclusions"])
+        or (
+            spec.scenario == "resume"
+            and (metrics["unknown_executions"] < 1 or metrics["resolutions"] < 1)
+        )
+        or (spec.scenario == "provider_retry" and metrics["provider_errors"] < 1)
+        or (spec.scenario == "large_output" and metrics["truncated_observations"] < 1)
+    ):
+        return "agent_failure"
+    return "passed"
 
 
 def main() -> int:

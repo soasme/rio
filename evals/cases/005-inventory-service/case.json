@@ -7,7 +7,9 @@
   ],
   "tests": [
     "grade.py::test_atomic_order",
-    "grade.py::test_validation"
+    "grade.py::test_validation",
+    "grade.py::test_empty_order_returns_independent_stock",
+    "grade.py::test_reserve_does_not_mutate_stock"
   ],
   "expected_terminal": "success",
   "scenario": "coding"

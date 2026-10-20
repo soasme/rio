@@ -5,7 +5,8 @@
     "config.py"
   ],
   "tests": [
-    "grade.py::test_merge_contract"
+    "grade.py::test_merge_contract",
+    "grade.py::test_unmodified_nested_values_are_independent"
   ],
   "expected_terminal": "success",
   "scenario": "coding"

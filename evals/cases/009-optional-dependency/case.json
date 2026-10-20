@@ -6,7 +6,8 @@
   ],
   "tests": [
     "grade.py::test_fallback",
-    "grade.py::test_installed"
+    "grade.py::test_installed",
+    "grade.py::test_installed_dependency_errors_are_not_swallowed"
   ],
   "expected_terminal": "success",
   "scenario": "coding"

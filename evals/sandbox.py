@@ -30,7 +30,7 @@ class Case(BaseModel):
     editable: list[str]
     tests: list[str] = Field(min_length=1)
     expected_terminal: Literal["success", "failure"] = "success"
-    scenario: Literal["coding", "resume", "provider_retry"] = "coding"
+    scenario: Literal["coding", "resume", "provider_retry", "large_output"] = "coding"
 
     @field_validator("tests")
     @classmethod

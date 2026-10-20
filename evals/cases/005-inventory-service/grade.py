@@ -17,3 +17,18 @@ def test_validation() -> None:
             reserve({"a": 3}, "a", n)
     with pytest.raises(KeyError):
         reserve({}, "missing", 1)
+
+
+def test_empty_order_returns_independent_stock() -> None:
+    stock = {"a": 3}
+    result = checkout(stock, {})
+    assert result == stock and result is not stock
+    result["a"] = 0
+    assert stock == {"a": 3}
+
+
+def test_reserve_does_not_mutate_stock() -> None:
+    stock = {"a": 3}
+    result = reserve(stock, "a", 1)
+    assert result == {"a": 2} and result is not stock
+    assert stock == {"a": 3}

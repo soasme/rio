@@ -8,5 +8,5 @@
     "grade.py::test_last_status"
   ],
   "expected_terminal": "success",
-  "scenario": "coding"
+  "scenario": "large_output"
 }
