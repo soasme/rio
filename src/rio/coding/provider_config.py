@@ -8,13 +8,11 @@ from json import JSONDecodeError, dumps, loads
 from os import environ
 from pathlib import Path
 from shutil import copy2
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import (
     BaseModel,
     ConfigDict,
-    NonNegativeFloat,
-    NonNegativeInt,
     PositiveFloat,
     StringConstraints,
     ValidationError,
@@ -24,16 +22,16 @@ from rio.ai.env import (
     CACHE_RETENTION_LONG,
     CACHE_RETENTION_NONE,
     CACHE_RETENTION_SHORT,
-    DEFAULT_MAX_RETRIES,
-    DEFAULT_MAX_RETRY_DELAY_SECONDS,
     DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
     DEFAULT_TIMEOUT_SECONDS,
     AnthropicConfig,
     CacheRetention,
     OpenAICompatibleConfig,
 )
+from rio.ai.google import GoogleGenerativeAIConfig
+from rio.ai.mistral import MistralConfig
 from rio.coding.catalog_loader import builtin_catalog, effective_catalog
-from rio.coding.credentials import FileCredentialStore, credentials_path
+from rio.coding.credentials import FileCredentialStore, OAuthCredential, credentials_path
 from rio.coding.oauth_registry import get_oauth_provider
 from rio.coding.paths import RioPaths, atomic_write_text
 from rio.coding.provider_catalog import (
@@ -51,7 +49,18 @@ from rio.coding.thinking import (
     reasoning_effort_for_level,
 )
 
+
+class CredentialReader(Protocol):
+    def get(self, name: str) -> str | None: ...
+
+    def get_oauth(self, name: str) -> OAuthCredential | None: ...
+
+
 DEFAULT_PROVIDER_NAME = "openai"
+# The durable runner owns retries for agent runs (``Limits.provider_attempts``),
+# journaling each failure and its backoff. Transport retries stay off here so one
+# turn does not multiply attempts; standalone ``rio.ai`` use keeps its defaults.
+AGENT_TRANSPORT_RETRIES = 0
 DEFAULT_MODEL = "gpt-5.4"
 
 # Protocol defaults are provider-independent; catalog compat declares exceptions.
@@ -102,8 +111,6 @@ class ProviderConfig:
     compat: dict[str, Any] = field(default_factory=dict)
     model_metadata: dict[str, ProviderModelMetadata] = field(default_factory=dict)
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
-    max_retries: int = DEFAULT_MAX_RETRIES
-    max_retry_delay_seconds: float = DEFAULT_MAX_RETRY_DELAY_SECONDS
     thinking_levels: tuple[ThinkingLevel, ...] | None = None
     thinking_models: tuple[str, ...] = ()
     thinking_default: ThinkingLevel | None = None
@@ -279,8 +286,6 @@ class _Preference(BaseModel):
     default_model: _Text | None = None
     headers: dict[_Text, _Text] | None = None
     timeout_seconds: PositiveFloat | None = None
-    max_retries: NonNegativeInt | None = None
-    max_retry_delay_seconds: NonNegativeFloat | None = None
 
 
 class _SettingsFile(BaseModel):
@@ -414,42 +419,47 @@ def _metadata_for_model(provider: ProviderConfig, model: str) -> ProviderModelMe
     return provider.model_metadata.get(model)
 
 
+@dataclass(frozen=True, slots=True)
+class ModelEndpoint:
+    """Effective request settings for one provider/model pair.
+
+    Model metadata overrides provider values. Every adapter reads these, so a
+    setting means the same thing whichever protocol serves the model.
+    """
+
+    api: ProviderApi
+    base_url: str
+    headers: dict[str, str]
+    compat: dict[str, Any]
+    max_tokens: int | None
+
+
+def resolve_model_endpoint(provider: ProviderConfig, model: str | None = None) -> ModelEndpoint:
+    """Resolve model/provider precedence once, before an adapter is selected."""
+    metadata = _metadata_for_model(provider, model or provider.default_model)
+    if metadata is None:
+        metadata = ProviderModelMetadata()
+    return ModelEndpoint(
+        api=metadata.api or provider.api or "openai-completions",
+        base_url=metadata.base_url or provider.base_url,
+        headers={**provider.headers, **metadata.headers},
+        compat={**_DEFAULT_COMPAT, **provider.compat, **metadata.compat},
+        max_tokens=metadata.max_tokens,
+    )
+
+
 def provider_api(provider: ProviderConfig, model: str | None = None) -> ProviderApi:
-    """Resolve API once: model override, provider override, then chat completions."""
-    selected_model = model or provider.default_model
-    metadata = _metadata_for_model(provider, selected_model)
-    if metadata is not None and metadata.api is not None:
-        return metadata.api
-    return provider.api or "openai-completions"
-
-
-def _model_base_url(provider: ProviderConfig, model: str | None = None) -> str:
-    selected_model = model or provider.default_model
-    metadata = _metadata_for_model(provider, selected_model)
-    return metadata.base_url if metadata is not None and metadata.base_url else provider.base_url
-
-
-def _model_headers(provider: ProviderConfig, model: str | None = None) -> dict[str, str]:
-    selected_model = model or provider.default_model
-    metadata = _metadata_for_model(provider, selected_model)
-    return {**provider.headers, **(metadata.headers if metadata is not None else {})}
+    """Resolve API: model override, provider override, then chat completions."""
+    return resolve_model_endpoint(provider, model).api
 
 
 def _model_compat(provider: ProviderConfig, model: str | None = None) -> dict[str, Any]:
-    selected_model = model or provider.default_model
-    metadata = _metadata_for_model(provider, selected_model)
-    return {
-        **_DEFAULT_COMPAT,
-        **provider.compat,
-        **(metadata.compat if metadata is not None else {}),
-    }
+    return resolve_model_endpoint(provider, model).compat
 
 
 def provider_model_max_tokens(provider: ProviderConfig, model: str | None = None) -> int | None:
     """Return the catalog output token limit for a model, or None when it is unset."""
-    selected_model = model or provider.default_model
-    metadata = _metadata_for_model(provider, selected_model)
-    return metadata.max_tokens if metadata is not None else None
+    return resolve_model_endpoint(provider, model).max_tokens
 
 
 def provider_default_thinking_level(
@@ -502,14 +512,15 @@ def resolve_startup_thinking_level(
 def openai_compatible_config_from_provider(
     provider: ProviderConfig,
     *,
-    credential_reader: FileCredentialStore | None = None,
+    credential_reader: CredentialReader | None = None,
     model: str | None = None,
     thinking_level: ThinkingLevel | None = None,
 ) -> OpenAICompatibleConfig:
     """Build OpenAI-compatible runtime config from durable settings."""
     api_key = _api_key_from_provider(provider, credential_reader=credential_reader)
     selected_model = model or provider.default_model
-    base_url = _model_base_url(provider, selected_model)
+    endpoint = resolve_model_endpoint(provider, selected_model)
+    base_url = endpoint.base_url
     if provider.name == DEFAULT_PROVIDER_NAME and provider.api_key_env == "OPENAI_API_KEY":
         base_url = environ.get("OPENAI_BASE_URL", base_url)
     reasoning_effort = reasoning_effort_from_provider(
@@ -517,20 +528,18 @@ def openai_compatible_config_from_provider(
         model=selected_model,
         thinking_level=thinking_level,
     )
-    compat = _model_compat(provider, selected_model)
     return OpenAICompatibleConfig(
         api_key=api_key,
         provider_name=provider.name,
-        api=str(provider_api(provider, selected_model)),
+        api=endpoint.api,
         base_url=base_url.rstrip("/"),
-        headers=_model_headers(provider, selected_model),
+        headers=endpoint.headers,
         timeout_seconds=provider.timeout_seconds,
-        max_retries=provider.max_retries,
-        max_retry_delay_seconds=provider.max_retry_delay_seconds,
+        max_retries=AGENT_TRANSPORT_RETRIES,
         reasoning_effort=reasoning_effort,
         reasoning_effort_parameter=provider.thinking_parameter or "reasoning_effort",
         thinking_format=_thinking_format(provider, selected_model),
-        compat=compat,
+        compat=endpoint.compat,
         response_provider_header=(
             "x-inference-provider" if provider.name == "huggingface" else None
         ),
@@ -545,7 +554,7 @@ def openai_compatible_config_from_provider(
 def anthropic_config_from_provider(
     provider: ProviderConfig,
     *,
-    credential_reader: FileCredentialStore | None = None,
+    credential_reader: CredentialReader | None = None,
     model: str | None = None,
     thinking_level: ThinkingLevel | None = None,
 ) -> AnthropicConfig:
@@ -557,7 +566,8 @@ def anthropic_config_from_provider(
         model=selected_model,
         thinking_level=thinking_level,
     )
-    base_url = _normalize_anthropic_base_url(_model_base_url(provider, selected_model))
+    endpoint = resolve_model_endpoint(provider, selected_model)
+    base_url = _normalize_anthropic_base_url(endpoint.base_url)
     cache_retention, cache_control_on_tools = anthropic_cache_settings(provider, selected_model)
     return AnthropicConfig(
         api_key=api_key,
@@ -565,11 +575,10 @@ def anthropic_config_from_provider(
         base_url=base_url,
         cache_retention=cache_retention,
         cache_control_on_tools=cache_control_on_tools,
-        headers=_model_headers(provider, selected_model),
+        headers=endpoint.headers,
         timeout_seconds=provider.timeout_seconds,
-        max_retries=provider.max_retries,
-        max_retry_delay_seconds=provider.max_retry_delay_seconds,
-        max_tokens=provider_model_max_tokens(provider, selected_model),
+        max_retries=AGENT_TRANSPORT_RETRIES,
+        max_tokens=endpoint.max_tokens,
         thinking_budget_tokens=thinking_budget_tokens,
         thinking_effort=_reasoning_effort_from_anthropic_provider(
             provider,
@@ -579,14 +588,60 @@ def anthropic_config_from_provider(
         thinking_mode=_anthropic_thinking_mode(
             provider, selected_model, thinking_level=thinking_level
         ),
-        compat=_model_compat(provider, selected_model),
+        compat=endpoint.compat,
+    )
+
+
+def google_config_from_provider(
+    provider: ProviderConfig,
+    *,
+    credential_reader: CredentialReader | None = None,
+    model: str | None = None,
+    thinking_level: ThinkingLevel | None = None,
+) -> GoogleGenerativeAIConfig:
+    """Build Google Generative AI runtime config from durable settings."""
+    selected_model = model or provider.default_model
+    endpoint = resolve_model_endpoint(provider, selected_model)
+    return GoogleGenerativeAIConfig(
+        api_key=_api_key_from_provider(provider, credential_reader=credential_reader),
+        provider_name=provider.name,
+        base_url=endpoint.base_url.rstrip("/"),
+        headers=endpoint.headers,
+        timeout_seconds=provider.timeout_seconds,
+        max_retries=AGENT_TRANSPORT_RETRIES,
+        reasoning_effort=reasoning_effort_from_provider(
+            provider, model=selected_model, thinking_level=thinking_level
+        ),
+    )
+
+
+def mistral_config_from_provider(
+    provider: ProviderConfig,
+    *,
+    credential_reader: CredentialReader | None = None,
+    model: str | None = None,
+    thinking_level: ThinkingLevel | None = None,
+) -> MistralConfig:
+    """Build Mistral runtime config from durable settings."""
+    selected_model = model or provider.default_model
+    endpoint = resolve_model_endpoint(provider, selected_model)
+    return MistralConfig(
+        api_key=_api_key_from_provider(provider, credential_reader=credential_reader),
+        provider_name=provider.name,
+        base_url=endpoint.base_url,
+        headers=endpoint.headers,
+        timeout_seconds=provider.timeout_seconds,
+        max_retries=AGENT_TRANSPORT_RETRIES,
+        reasoning_effort=reasoning_effort_from_provider(
+            provider, model=selected_model, thinking_level=thinking_level
+        ),
     )
 
 
 def provider_has_usable_credentials(
     provider: ProviderConfig,
     *,
-    credential_reader: FileCredentialStore | None = None,
+    credential_reader: CredentialReader | None = None,
 ) -> bool:
     """Return whether rio can attempt calls for this provider without prompting setup."""
     if provider.credential_name and credential_reader is not None:
@@ -767,7 +822,7 @@ def anthropic_cache_settings(
 def _api_key_from_provider(
     provider: ProviderConfig,
     *,
-    credential_reader: FileCredentialStore | None,
+    credential_reader: CredentialReader | None,
 ) -> str:
     if provider.credential_name and credential_reader is not None:
         credential = credential_reader.get(provider.credential_name)

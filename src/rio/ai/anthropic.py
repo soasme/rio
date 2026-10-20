@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, Mapping
 from typing import cast
 
 import httpx
@@ -56,10 +56,10 @@ class AnthropicProvider(HTTPProvider[AnthropicConfig]):
         system: str,
         messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[ProviderEvent]:
+    ) -> AsyncGenerator[ProviderEvent]:
         """Stream one Anthropic response as provider-neutral events."""
 
-        async def iterator() -> AsyncIterator[ProviderEvent]:
+        async def iterator() -> AsyncGenerator[ProviderEvent]:
             client = self._get_client()
             api_key = self._config.api_key
             base_url = self._config.base_url
@@ -99,7 +99,7 @@ class AnthropicProvider(HTTPProvider[AnthropicConfig]):
 
             async def parse(
                 response: httpx.Response, attempt: RetryAttempt
-            ) -> AsyncIterator[ProviderEvent]:
+            ) -> AsyncGenerator[ProviderEvent]:
                 content_parts: list[str] = []
                 thinking_parts: list[str] = []
                 tool_builders: dict[int, _AnthropicToolBuilder] = {}

@@ -31,7 +31,7 @@ async def measure(samples: int) -> dict:
                 for _ in range(samples):
                     turn = session.prepare_turn()
                     session.accept(
-                        turn["id"],
+                        turn.id,
                         [
                             {
                                 "op": "add",
@@ -51,9 +51,9 @@ async def measure(samples: int) -> dict:
                         await asyncio.sleep(0.01)
                     await owner.tick()
                     events = store.events(after)
-                    times = {e["type"]: e["timestamp"] for e in events}
+                    times = {e.type: e.timestamp for e in events}
                     # Owner records: worker token, then spawned pid, then stopped.
-                    spawned = [e["timestamp"] for e in events if e["type"] == "owner_record"][1]
+                    spawned = [e.timestamp for e in events if e.type == "owner_record"][1]
                     startup.append(spawned - times["execution_started"])
                     script.append(times["execution_finished"] - spawned)
                     start = time.perf_counter()
@@ -66,7 +66,7 @@ async def measure(samples: int) -> dict:
             # process-kill pytest cases exercise actual surviving workers and child cleanup.
             turn = session.prepare_turn()
             session.accept(
-                turn["id"],
+                turn.id,
                 [
                     {
                         "op": "add",
@@ -85,9 +85,10 @@ async def measure(samples: int) -> dict:
             recovered = Session(store, KINDS)
             start = time.perf_counter()
             async with ProcessOwner(recovered):
-                result = recovered.data["executions"][str(samples + 1)]
-                assert result["result"]["type"] == "UnknownExecution"
-                assert recovered.meta["pause"] is not None
+                result = recovered.data.executions[str(samples + 1)]
+                assert result.result is not None
+                assert result.result.type == "UnknownExecution"
+                assert recovered.meta.pause is not None
             recovery = time.perf_counter() - start
             return {
                 "samples": samples,

@@ -7,14 +7,12 @@ import time
 import uuid
 from collections.abc import Iterable
 from dataclasses import asdict
-from typing import cast
 
 from rio.agent.ledger import RuntimeLedger, inbox_view, runtime_id
 from rio.agent.prompt import schema, system
 from rio.agent.shapes import (
     ControlRequest,
     Observation,
-    Projection,
     Receipt,
     RuntimeCell,
     State,
@@ -63,15 +61,17 @@ def json_tail(text: str, cap: int) -> str:
 
 def context_notice(seq: int, cell_ids: list[int]) -> Observation:
     """An observation, recorded only in its turn_prepared event, naming Cells left out."""
-    return {
-        "id": runtime_id("context", seq),
-        "kind": "context",
-        "payload": {
-            "cell_ids": cell_ids,
-            "reason": "Runtime records of these Cells exceed the context budget; remove Cells",
-        },
-        "seq": seq,
-    }
+    return Observation.model_validate(
+        {
+            "id": runtime_id("context", seq),
+            "kind": "context",
+            "payload": {
+                "cell_ids": cell_ids,
+                "reason": "Runtime records of these Cells exceed the context budget; remove Cells",
+            },
+            "seq": seq,
+        }
+    )
 
 
 def by_name(kinds: Iterable[CellKind]) -> dict[str, CellKind]:
@@ -92,17 +92,17 @@ def by_name(kinds: Iterable[CellKind]) -> dict[str, CellKind]:
 class Session(RuntimeLedger):
     """Create sessions and admit model turns over the runtime ledger."""
 
-    def __init__(self, store: Store, kinds: Iterable[CellKind] = ()):
+    def __init__(self, store: Store, kinds: Iterable[CellKind] = ()) -> None:
         if not store.data:
             raise ValueError("Create a Session before opening it")
-        meta = cast(Projection, store.data)["meta"]
-        if meta["state"]["schema"] != STATE_SCHEMA:
+        meta = store.projection.meta
+        if meta.state.schema_version != STATE_SCHEMA:
             raise ValueError(
-                f"Session uses {meta['state']['schema']}, but this Rio needs "
+                f"Session uses {meta.state.schema_version}, but this Rio needs "
                 f"{STATE_SCHEMA}; start a new session"
             )
-        self.external_wakeup = meta["external_wakeup"]
-        super().__init__(store, Limits(**meta["limits"]))
+        self.external_wakeup = meta.external_wakeup
+        super().__init__(store, Limits(**meta.limits))
         self.kinds = by_name(kinds)
 
     @classmethod
@@ -124,14 +124,16 @@ class Session(RuntimeLedger):
         kinds = list(kinds)
         by_name(kinds)
         limits = limits or Limits()
-        state: State = {
-            "schema": STATE_SCHEMA,
-            "id": uuid.uuid4().hex,
-            "revision": 0,
-            "goal": goal,
-            "cells": [],
-            "runtime": {"next_cell_id": 1, "cells": {}, "inbox": [], "usage": zero_usage()},
-        }
+        state: State = State.model_validate(
+            {
+                "schema": STATE_SCHEMA,
+                "id": uuid.uuid4().hex,
+                "revision": 0,
+                "goal": goal,
+                "cells": [],
+                "runtime": {"next_cell_id": 1, "cells": {}, "inbox": [], "usage": zero_usage()},
+            }
+        )
         if len(encode(state).encode()) > limits.context_bytes // 2:
             raise ValueError("Goal exceeds reserved context")
         store.commit(
@@ -164,11 +166,11 @@ class Session(RuntimeLedger):
 
     @property
     def state(self) -> State:
-        return copy.deepcopy(self.meta["state"])
+        return copy.deepcopy(self.meta.state)
 
     @property
     def system(self) -> str:
-        return system(self.kinds.values()) + self.meta["instructions"]
+        return system(self.kinds.values()) + self.meta.instructions
 
     @property
     def schema(self) -> dict:
@@ -176,16 +178,18 @@ class Session(RuntimeLedger):
 
     def _runtime_cell(self, key: str, output: dict[str, str]) -> RuntimeCell:
         """A copy of an execution showing `output`, which tails its recorded streams."""
-        execution = self.data["executions"][key]
-        cell: RuntimeCell = {**execution, "output": output}
-        if key in self.data["resolutions"]:
-            cell["resolved_by"] = self.data["resolutions"][key]
+        execution = self.data.executions[key]
+        cell: RuntimeCell = RuntimeCell.model_validate(
+            {**execution.model_dump(exclude_unset=True), "output": output}
+        )
+        if key in self.data.resolutions:
+            cell.resolved_by = self.data.resolutions[key]
         if omitted := {
             name: count
-            for name, text in execution["output"].items()
+            for name, text in execution.output.items()
             if (count := len(text.encode()) - len(output[name].encode()))
         }:
-            cell["omitted"] = omitted
+            cell.omitted = omitted
         return cell
 
     def _fit_runtime(self, state: State) -> list[str]:
@@ -193,23 +197,23 @@ class Session(RuntimeLedger):
 
         Returns the ids of the inbox messages delivered.
         """
-        executions = self.data["executions"]
-        selected = {str(c["id"]) for c in state["cells"]}
+        executions = self.data.executions
+        selected = {str(c.id) for c in state.cells}
         unresolved = {str(cell_id) for cell_id in self.unresolved()}
         outstanding = [
-            key for key, e in executions.items() if e["phase"] != "finished" or key in unresolved
+            key for key, e in executions.items() if e.phase != "finished" or key in unresolved
         ]
         shown = [key for key in executions if key in selected or key in outstanding]
         # Reserve each record with all output omitted, plus the oldest message so the inbox
         # always drains. If that overflows, show only outstanding work, then none, with a
         # notice naming the Cells left out.
         limit = self.limits.context_bytes
-        waiting = [inbox_view(m) for m in self.data["inbox"].values() if not m["consumed"]]
+        waiting = [inbox_view(m) for m in self.data.inbox.values() if not m.consumed]
         for kept in (shown, outstanding, []):
-            outputs = {key: dict.fromkeys(executions[key]["output"], "") for key in kept}
-            state["runtime"]["cells"] = {key: self._runtime_cell(key, outputs[key]) for key in kept}
+            outputs = {key: dict.fromkeys(executions[key].output, "") for key in kept}
+            state.runtime.cells = {key: self._runtime_cell(key, outputs[key]) for key in kept}
             missing = [int(key) for key in shown if key not in kept]
-            state["runtime"]["inbox"] = (
+            state.runtime.inbox = (
                 [context_notice(self.store.sequence + 1, missing)] if missing else []
             )
             context_bytes = size(state)
@@ -220,56 +224,58 @@ class Session(RuntimeLedger):
             raise RunStopped("Goal and Cells exceed context without runtime facts")
         delivered = []
         for message in waiting:
-            message_bytes = size(message) + bool(state["runtime"]["inbox"])
+            message_bytes = size(message) + bool(state.runtime.inbox)
             if context_bytes + message_bytes > limit:
                 break
-            state["runtime"]["inbox"].append(message)
-            delivered.append(message["id"])
+            state.runtime.inbox.append(message)
+            delivered.append(message.id)
             context_bytes += message_bytes
         # Output fills the rest: streams within an equal share stay whole, larger ones keep
         # a tail. The journal keeps the recorded output; see prompt.EXECUTION.
-        streams = [(key, name) for key in kept for name in executions[key]["output"]]
-        texts = [executions[key]["output"][name] for key, name in streams]
+        streams = [(key, name) for key in kept for name in executions[key].output]
+        texts = [executions[key].output[name] for key, name in streams]
         caps = shares([size(text) - 2 for text in texts], limit - context_bytes)
         for (key, name), text, cap in zip(streams, texts, caps, strict=True):
             outputs[key][name] = json_tail(text, cap)
-        state["runtime"]["cells"] = {key: self._runtime_cell(key, outputs[key]) for key in kept}
+        state.runtime.cells = {key: self._runtime_cell(key, outputs[key]) for key in kept}
         return delivered
 
     def prepare_turn(self) -> Turn:
-        if self.meta["terminal"]:
+        if self.meta.terminal:
             raise RunStopped("Terminal runs cannot resume")
-        for turn in self.data["turns"].values():
-            if turn["receipt"] is None:
+        for turn in self.data.turns.values():
+            if turn.receipt is None:
                 return copy.deepcopy(turn)
         if self.store.journal_bytes >= self.limits.storage_bytes:
             raise RunStopped("Session storage budget exhausted")
-        usage = self.meta["usage"]
-        if usage["turns"] >= self.limits.turns or usage["tokens"] >= self.limits.tokens:
+        usage = self.meta.usage
+        if usage.turns >= self.limits.turns or usage.tokens >= self.limits.tokens:
             raise RunStopped("Model budget exhausted")
         state = self.state
-        state["revision"] += 1
-        state["runtime"]["usage"] = dict(usage)
+        state.revision += 1
+        state.runtime.usage = usage.model_copy(deep=True)
         delivered = self._fit_runtime(state)
         turn_id = uuid.uuid4().hex
-        turn: Turn = {
-            "id": turn_id,
-            "state": state,
-            "delivered": delivered,
-            "system": self.system,
-            "tool_schema": self.schema,
-            "attempts": 0,
-            "retry_at": 0,
-            "error": None,
-            "receipt": None,
-            "response": None,
-        }
+        turn = Turn.model_validate(
+            {
+                "id": turn_id,
+                "state": state,
+                "delivered": delivered,
+                "system": self.system,
+                "tool_schema": self.schema,
+                "attempts": 0,
+                "retry_at": 0,
+                "error": None,
+                "receipt": None,
+                "response": None,
+            }
+        )
         self.store.commit(
             "turn_prepared",
             {
                 "meta": {
                     "state": state,
-                    "usage": {**usage, "turns": usage["turns"] + 1},
+                    "usage": {**usage.model_dump(), "turns": usage.turns + 1},
                 },
                 "turns": {turn_id: turn},
             },
@@ -277,15 +283,15 @@ class Session(RuntimeLedger):
         return copy.deepcopy(turn)
 
     def start_attempt(self, turn_id: str) -> Turn:
-        turn = self.data["turns"][turn_id]
-        if turn["receipt"] or self.meta["terminal"]:
+        turn = self.data.turns[turn_id]
+        if turn.receipt or self.meta.terminal:
             raise RunStopped("Turn already accepted or run ended")
-        if turn["attempts"] >= self.limits.invalid_attempts:
+        if turn.attempts >= self.limits.invalid_attempts:
             raise RunStopped("Model retry budget exhausted")
-        usage = self.meta["usage"]
-        if usage["tokens"] >= self.limits.tokens:
+        usage = self.meta.usage
+        if usage.tokens >= self.limits.tokens:
             raise RunStopped("Token budget exhausted")
-        changes = {"attempts": turn["attempts"] + 1, "response": None}
+        changes = {"attempts": turn.attempts + 1, "response": None}
         # Until a complete response commits, usage for this attempt is unknown.
         self.store.commit(
             "model_attempt",
@@ -293,35 +299,35 @@ class Session(RuntimeLedger):
                 "turns": {turn_id: changes},
                 "meta": {
                     "usage": {
-                        **usage,
-                        "attempts": usage["attempts"] + 1,
-                        "unknown_usage": usage["unknown_usage"] + 1,
+                        **usage.model_dump(),
+                        "attempts": usage.attempts + 1,
+                        "unknown_usage": usage.unknown_usage + 1,
                     }
                 },
             },
         )
-        return copy.deepcopy(self.data["turns"][turn_id])
+        return copy.deepcopy(self.data.turns[turn_id])
 
     def record_response(
         self, turn_id: str, response: dict, tokens: int, *, known: bool = True
     ) -> None:
-        usage = self.meta["usage"]
+        usage = self.meta.usage
         self.store.commit(
             "model_response",
             {
                 "turns": {turn_id: {"response": response}},
                 "meta": {
                     "usage": {
-                        **usage,
-                        "tokens": usage["tokens"] + tokens,
-                        "unknown_usage": usage["unknown_usage"] - int(known),
+                        **usage.model_dump(),
+                        "tokens": usage.tokens + tokens,
+                        "unknown_usage": usage.unknown_usage - int(known),
                     }
                 },
             },
         )
 
     def reject(self, turn_id: str, reason: str) -> None:
-        turn = self.data["turns"][turn_id]
+        turn = self.data.turns[turn_id]
         self.store.commit(
             "patch_rejected",
             {
@@ -329,27 +335,39 @@ class Session(RuntimeLedger):
                     turn_id: {
                         "error": reason,
                         "response": None,
-                        "retry_at": time.time() + min(2 ** turn["attempts"], 30),
+                        "retry_at": time.time() + min(2**turn.attempts, 30),
                     }
                 },
             },
         )
 
-    def provider_failed(self, turn_id: str, error: str, *, retryable: bool = True) -> None:
-        """Record a failed provider request; it does not use the invalid-step budget."""
-        turn = self.data["turns"][turn_id]
-        failures = turn.get("provider_failures", 0) + 1
+    def provider_failed(
+        self,
+        turn_id: str,
+        error: str,
+        *,
+        retryable: bool = True,
+        retry_after: float | None = None,
+    ) -> None:
+        """Record a failed provider request; it does not use the invalid-step budget.
+
+        The runner owns provider retries: each failure and its backoff is journaled
+        here. A provider's Retry-After lengthens the backoff, within the same cap.
+        """
+        turn = self.data.turns[turn_id]
+        failures = (turn.provider_failures or 0) + 1
+        backoff = min(max(2**failures, retry_after or 0), PROVIDER_BACKOFF_SECONDS)
         self.store.commit(
             "provider_failed",
             {
                 "turns": {
                     turn_id: {
                         # Refund the attempt; its usage stays unknown.
-                        "attempts": turn["attempts"] - 1,
+                        "attempts": turn.attempts - 1,
                         "provider_failures": failures,
                         "provider_error": error,
                         "response": None,
-                        "retry_at": time.time() + min(2**failures, PROVIDER_BACKOFF_SECONDS),
+                        "retry_at": time.time() + backoff,
                     }
                 },
             },
@@ -360,13 +378,14 @@ class Session(RuntimeLedger):
             raise RunStopped(f"Provider retry budget exhausted: {error}")
 
     def _admit_resolution(self, control: ControlRequest) -> None:
-        if control["target_cell_id"] not in self.unresolved():
+        if control.target_cell_id not in self.unresolved():
             raise InvalidPatch(
                 "Resolution applies only to unresolved UnknownExecution. "
                 "For an ordinary error, omit the resolution control; the next accepted "
                 "step consumes the error and resumes dispatch."
             )
-        for ref in control["evidence_refs"]:
+        assert control.evidence_refs is not None
+        for ref in control.evidence_refs:
             if not isinstance(ref, str) or not ref.startswith("session:event:"):
                 raise InvalidPatch("Evidence must reference recorded Session events")
             try:
@@ -383,57 +402,59 @@ class Session(RuntimeLedger):
     # Accept-time checks for state.CONTROLS that need recorded Session state.
     CONTROL_CHECKS = {"resolution": _admit_resolution}
 
-    def accept(self, turn_id: str, ops: list) -> Receipt:
-        turn = self.data["turns"][turn_id]
-        if turn["receipt"] is not None:
-            if turn["ops"] != ops:
+    def accept(self, turn_id: str, ops: object) -> Receipt:
+        turn = self.data.turns[turn_id]
+        if turn.receipt is not None:
+            if turn.ops != ops:
                 raise InvalidPatch("Conflicting submission for an accepted turn")
-            return copy.deepcopy(turn["receipt"])
-        if self.meta["terminal"]:
+            return copy.deepcopy(turn.receipt)
+        if self.meta.terminal:
             raise InvalidPatch("Run has ended")
-        if turn["state"]["revision"] != self.meta["state"]["revision"]:
+        if turn.state.revision != self.meta.state.revision:
             raise InvalidPatch("Stale turn: State changed after this turn was prepared")
         state, new, requests = admit(
-            turn["state"],
+            turn.state,
             ops,
-            self.data["executions"],
+            self.data.executions,
             self.limits.context_bytes // 2,
             self.kinds,
         )
-        runs = [cell for cell in new if cell["kind"] != "note"]
+        runs = [cell for cell in new if cell.kind != "note"]
         if len(self.pending()) + len(self.unresolved()) + len(runs) > self.limits.pending_cells:
             raise InvalidPatch("Too much outstanding work or uncertainty")
-        if runs and any(control["type"] == "conclusion" for control in requests):
+        if runs and any(control.type == "conclusion" for control in requests):
             raise InvalidPatch(
                 "A conclusion ends the run before Cells added in this step can run; "
                 "conclude in a later step, after their observations arrive"
             )
         for control in requests:
-            target = control.get("target_cell_id")
-            targets = "target_cell_id" in CONTROLS[control["type"]].fields
-            if targets and str(target) not in self.data["executions"]:
+            target = control.target_cell_id
+            targets = "target_cell_id" in CONTROLS[control.type].fields
+            if targets and str(target) not in self.data.executions:
                 raise InvalidPatch(
-                    f"{control['type']} control: Cell {target} has no recorded execution; "
+                    f"{control.type} control: Cell {target} has no recorded execution; "
                     "target an accepted runnable Cell"
                 )
-            if check := self.CONTROL_CHECKS.get(control["type"]):
+            if check := self.CONTROL_CHECKS.get(control.type):
                 check(self, control)
         # Controls never leave the journal, so ids count up from the recorded ones.
-        first = len(self.data["controls"]) + 1
+        first = len(self.data.controls) + 1
         controls = {
             str(first + index): {"control": control, "handled": False}
             for index, control in enumerate(requests)
         }
-        receipt: Receipt = {
-            "turn_id": turn_id,
-            "revision": state["revision"],
-            "cell_ids": [c["id"] for c in new],
-            "control_ids": [int(key) for key in controls],
-            "event": self.store.sequence + 1,
-        }
+        receipt: Receipt = Receipt.model_validate(
+            {
+                "turn_id": turn_id,
+                "revision": state.revision,
+                "cell_ids": [c.id for c in new],
+                "control_ids": [int(key) for key in controls],
+                "event": self.store.sequence + 1,
+            }
+        )
         executions = {
-            str(c["id"]): {
-                "cell_id": c["id"],
+            str(c.id): {
+                "cell_id": c.id,
                 "phase": "queued",
                 "output": {},
                 "truncated": False,
@@ -441,8 +462,12 @@ class Session(RuntimeLedger):
             }
             for c in runs
         }
-        messages = {mid: {**self.data["inbox"][mid], "consumed": True} for mid in turn["delivered"]}
-        pause = self.meta["pause"]
+        messages = {
+            mid: {**self.data.inbox[mid].model_dump(), "consumed": True} for mid in turn.delivered
+        }
+        pause = self.meta.pause
+        current = state.model_dump(by_alias=True, exclude_unset=True)
+        previous = turn.state.model_dump(by_alias=True, exclude_unset=True)
         self.store.commit(
             "patch_accepted",
             {
@@ -450,18 +475,18 @@ class Session(RuntimeLedger):
                     "state": {
                         **{
                             key: value
-                            for key, value in state.items()
-                            if key != "runtime" and value != turn["state"][key]
+                            for key, value in current.items()
+                            if key != "runtime" and value != previous[key]
                         },
                         "runtime": {
                             key: value
-                            for key, value in state["runtime"].items()
-                            if value != turn["state"]["runtime"][key]
+                            for key, value in current["runtime"].items()
+                            if value != previous["runtime"][key]
                         },
                     },
                     "pause": None if pause in messages else pause,
                 },
-                "cells": {str(c["id"]): c for c in new},
+                "cells": {str(c.id): c for c in new},
                 "executions": executions,
                 "controls": controls,
                 "inbox": messages,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import contextlib
+import dataclasses
 import json
 import os
 import signal
@@ -12,40 +13,72 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from pathlib import Path
-from typing import NotRequired, TypedDict
+from typing import Self
 
 import psutil
 
 import rio.coding.worker as worker
 from rio.agent.runner import Owner, RecoveryFailure
 from rio.agent.session import Session
-from rio.agent.shapes import ValidatorResult
+from rio.agent.shapes import RecordModel, ValidatorResult
 from rio.agent.store import StorageFailure
 from rio.coding.cells import COMMANDS
-from rio.truncate import tail_notice, truncate_bytes_tail, truncate_tail
+from rio.truncate import format_size, tail_notice, truncate_bytes_tail, truncate_tail
+
+# Disk budget for the full logs of truncated Cell output, shared by an owner's Cells.
+LOG_BYTES = 64 * 1024 * 1024
 
 
-class WorkerIdentity(TypedDict):
+class Stream:
+    """One Cell output stream: a bounded tail, running totals, and a log within a budget."""
+
+    def __init__(self, path: Path, tail_bytes: int) -> None:
+        self.path = path
+        self.log = path.open("wb")
+        self.tail_bytes = tail_bytes
+        self.tail = ""
+        self.total_bytes = 0
+        self.logged_bytes = 0
+        self.newlines = 0
+        self.ends_with_newline = False
+
+    def append(self, text: str, budget: int) -> int:
+        """Record `text`, writing at most `budget` bytes to the log. Returns bytes logged."""
+        if not text:
+            return 0
+        encoded = text.encode()
+        # Keep 4 spare bytes so a clipped tail always exceeds the shown limit.
+        self.tail = truncate_bytes_tail(self.tail + text, self.tail_bytes + 4)
+        self.total_bytes += len(encoded)
+        self.newlines += text.count("\n")
+        self.ends_with_newline = text.endswith("\n")
+        logged = encoded[:budget].decode("utf-8", "ignore").encode()
+        self.log.write(logged)
+        self.logged_bytes += len(logged)
+        return len(logged)
+
+
+class WorkerIdentity(RecordModel):
     # A "workers" record keyed "cell:<id>" or "validator:<key>". pid and birth are added once
     # the gated supervisor is spawned, and stopped once its process group is gone. A validator
     # worker keeps its result before it is stopped, so recovery reuses it instead of rerunning.
     token: str
-    pid: NotRequired[int]
-    birth: NotRequired[float]
-    stopped: NotRequired[bool]
-    result: NotRequired[ValidatorResult]
+    pid: int | None = None
+    birth: float | None = None
+    stopped: bool = False
+    result: ValidatorResult | None = None
 
 
 def stop_worker(identity: WorkerIdentity) -> None:
     """Verify a durable identity before signaling; never trust a recycled PID."""
-    pid = identity.get("pid")
+    pid = identity.pid
     if pid is None:
         # A supervisor spawned before identity commit remains gated and cannot run code.
         matches = []
         for process in psutil.process_iter(["cmdline", "create_time"]):
-            if identity["token"] in (process.info["cmdline"] or []):
+            if identity.token in (process.info["cmdline"] or []):
                 matches.append(process)
     else:
         try:
@@ -62,7 +95,7 @@ def stop_worker(identity: WorkerIdentity) -> None:
                 except (ProcessLookupError, psutil.NoSuchProcess):
                     pass
             return
-        if process.create_time() != identity["birth"]:
+        if process.create_time() != identity.birth:
             raise RecoveryFailure("Worker PID was reused; cannot establish local termination")
         matches = [process]
     for process in matches:
@@ -106,9 +139,12 @@ class ProcessOwner(Owner):
         self,
         session: Session,
         commands: Mapping[str, Callable[[dict, Path], list[str]]] = COMMANDS,
-    ):
+        log_bytes: int = LOG_BYTES,
+    ) -> None:
         super().__init__(session)
         self.commands = commands
+        # Logs live in the owner's temporary directory and are removed when the owner exits.
+        self.log_budget = log_bytes
         self.process: asyncio.subprocess.Process | None = None
         self.key = ""
         self.identity: WorkerIdentity | None = None
@@ -116,14 +152,14 @@ class ProcessOwner(Owner):
         self.temporary: tempfile.TemporaryDirectory | None = None
         self.socket_path = ""
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         await super().__aenter__()
         self.temporary = tempfile.TemporaryDirectory(prefix="rio-owner-")
         self.socket_path = str(Path(self.temporary.name) / "timer.sock")
         self.server = await asyncio.start_unix_server(self._timer, path=self.socket_path)
         return self
 
-    async def __aexit__(self, *args):
+    async def __aexit__(self, *args: object) -> None:
         try:
             await super().__aexit__(*args)
         finally:
@@ -133,11 +169,11 @@ class ProcessOwner(Owner):
             if self.temporary:
                 self.temporary.cleanup()
 
-    async def _timer(self, reader, writer):
+    async def _timer(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             request = json.loads(await reader.readline())
             self.session.register_timer(request["id"], request["deadline"], request["payload"])
-            response = {"ok": True}
+            response: dict[str, object] = {"ok": True}
         except (ValueError, KeyError, TypeError) as exc:
             response = {"error": str(exc)}
         except StorageFailure:
@@ -152,16 +188,18 @@ class ProcessOwner(Owner):
         # Cleanup is required even for terminal runs. No dispatch happens before this finishes.
         if os.name != "posix":
             raise RecoveryFailure("Durable worker containment currently requires POSIX")
-        for key, identity in list(self.session.data.get("workers", {}).items()):
+        for key, identity in list(self.session.store.data.get("workers", {}).items()):
             if not identity.get("stopped"):
-                await asyncio.to_thread(stop_worker, identity)
+                await asyncio.to_thread(stop_worker, WorkerIdentity.model_validate(identity))
                 self.session.record("workers", key, {"stopped": True})
             kind, _, name = key.partition(":")
-            if kind == "validator" and name not in self.session.data["validator_results"]:
+            if kind == "validator" and name not in self.session.data.validator_results:
                 self.session.record_validator_result(
                     name,
-                    identity.get("result")
-                    or {"passed": False, "exit": None, "output": "Unknown validator execution"},
+                    ValidatorResult.model_validate(
+                        identity.get("result")
+                        or {"passed": False, "exit": None, "output": "Unknown validator execution"}
+                    ),
                 )
         # The base Owner finishes started Cells as UnknownExecution.
         await super().recover()
@@ -177,15 +215,15 @@ class ProcessOwner(Owner):
         if process:
             await process.wait()
 
-    def launch(self, cell_id: int) -> Awaitable[None]:
+    def launch(self, cell_id: int) -> Coroutine[None, None, None]:
         self.session.authorize(cell_id)
         self._register(f"cell:{cell_id}")
         return self._execute(cell_id)
 
     def _register(self, key: str) -> None:
         """Journal a worker token before spawning, so recovery can find a gated supervisor."""
-        self.key, self.identity = key, {"token": uuid.uuid4().hex}
-        self.session.record("workers", key, self.identity)
+        self.key, self.identity = key, WorkerIdentity(token=uuid.uuid4().hex)
+        self.session.record("workers", key, self.identity.model_dump(exclude_unset=True))
 
     async def _stop(self) -> None:
         """Stop the current worker and mark it, so recovery never signals a reused PID."""
@@ -199,12 +237,13 @@ class ProcessOwner(Owner):
         self, command: list[str], env: dict | None = None
     ) -> asyncio.subprocess.Process:
         """Start a gated worker in its own process group; it waits for "start" on stdin."""
+        assert self.identity is not None
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             str(Path(worker.__file__)),
-            self.identity["token"],
+            self.identity.token,
             *command,
-            cwd=self.session.meta["owner_config"].get("cwd"),
+            cwd=self.session.meta.owner_config.get("cwd"),
             env=env,
             start_new_session=True,
             stdin=asyncio.subprocess.PIPE,
@@ -212,16 +251,19 @@ class ProcessOwner(Owner):
             stderr=asyncio.subprocess.PIPE,
         )
         birth = psutil.Process(process.pid).create_time()
-        self.identity = {**self.identity, "pid": process.pid, "birth": birth}
-        self.session.record("workers", self.key, self.identity)
+        self.identity = self.identity.model_copy(update={"pid": process.pid, "birth": birth})
+        self.session.record("workers", self.key, self.identity.model_dump(exclude_unset=True))
         return process
 
     async def validate(self, key: str, validator: object) -> ValidatorResult:
         """Run a validator argv; exit status 0 passes."""
         self._register(f"validator:{key}")
+        if not isinstance(validator, list) or not all(isinstance(arg, str) for arg in validator):
+            raise ValueError("Validator must be an argv list of strings")
         process = await self._spawn(validator)
         result = None
         try:
+            assert process.stdin is not None
             process.stdin.write(b"start\n")
             await process.stdin.drain()
             output = ""
@@ -243,7 +285,7 @@ class ProcessOwner(Owner):
                 self.session.record("workers", self.key, {"result": result})
             await self._stop()
             await process.wait()
-        return result
+        return ValidatorResult.model_validate(result)
 
     async def _read_output(
         self,
@@ -255,6 +297,7 @@ class ProcessOwner(Owner):
         decoders = {
             name: codecs.getincrementaldecoder("utf-8")("replace") for name in ("stdout", "stderr")
         }
+        assert process.stdout is not None
         deadline = time.monotonic() + self.session.limits.flush_seconds
         line_task = asyncio.create_task(process.stdout.readline())
         try:
@@ -286,14 +329,14 @@ class ProcessOwner(Owner):
                     append(name, decoder.decode(b"", final=True))
 
     async def _cell_output(self, cell_id: int, process: asyncio.subprocess.Process) -> int | None:
+        assert self.temporary is not None
+        limit = self.session.limits.output_bytes
         buffers = {"stdout": "", "stderr": ""}
-        files = {}
+        streams: dict[str, Stream] = {}
 
         def append(name: str, text: str) -> None:
-            files[name].write(text)
-            buffers[name] = truncate_bytes_tail(
-                buffers[name] + text, self.session.limits.output_bytes
-            )
+            self.log_budget -= streams[name].append(text, self.log_budget)
+            buffers[name] = truncate_bytes_tail(buffers[name] + text, limit)
 
         def flush() -> None:
             self.session.append_output(cell_id, buffers)
@@ -302,32 +345,35 @@ class ProcessOwner(Owner):
         try:
             with contextlib.ExitStack() as stack:
                 for name in buffers:
-                    files[name] = stack.enter_context(
-                        tempfile.NamedTemporaryFile(
-                            "w", encoding="utf-8", prefix="rio-output-", suffix=".log", delete=False
-                        )
-                    )
+                    path = Path(self.temporary.name) / f"cell-{cell_id}-{name}.log"
+                    streams[name] = Stream(path, limit)
+                    stack.callback(streams[name].log.close)
                 return await self._read_output(process, append, flush)
         finally:
-            # Flush even on timeout/read failure; close handles before reading the tail.
+            # Flush even on timeout/read failure; close logs before keeping or deleting them.
             try:
                 if not self.session.store.failed:
                     flush()
             finally:
-                self._retain_output(cell_id, files)
+                self._retain_output(cell_id, streams)
 
-    def _retain_output(self, cell_id: int, files: dict) -> None:
-        """Keep truncated output files and link to them from the retained tails."""
+    def _retain_output(self, cell_id: int, streams: dict[str, Stream]) -> None:
+        """Link truncated output to its log; delete the logs of output shown whole."""
+        limit = self.session.limits.output_bytes
         truncated = {}
-        for name, file in files.items():
-            path = Path(file.name)
-            truncation = truncate_tail(
-                path.read_text(encoding="utf-8"), max_bytes=self.session.limits.output_bytes
+        for name, stream in streams.items():
+            truncation = truncate_tail(stream.tail, max_bytes=limit)
+            total_lines = stream.newlines + (
+                stream.total_bytes > 0 and not stream.ends_with_newline
+            )
+            truncation = dataclasses.replace(
+                truncation, total_bytes=stream.total_bytes, total_lines=total_lines
             )
             if truncation.truncated and not self.session.store.failed:
-                truncated[name] = truncation.content + tail_notice(truncation, str(path))
+                truncated[name] = truncation.content + tail_notice(truncation, log_pointer(stream))
             else:
-                path.unlink()
+                self.log_budget += stream.logged_bytes
+                stream.path.unlink()
         if truncated:
             self.session.truncate_output(cell_id, truncated)
 
@@ -349,11 +395,15 @@ class ProcessOwner(Owner):
 
     async def _execute(self, cell_id: int) -> None:
         session = self.session
-        cell = session.data["cells"][str(cell_id)]
+        cell = session.data.cells[str(cell_id)]
+        assert self.temporary is not None
         env = self._cell_env()
         try:
-            command = self.commands[cell["kind"]](cell, Path(self.temporary.name))
+            command = self.commands[cell.kind](
+                cell.model_dump(exclude_unset=True), Path(self.temporary.name)
+            )
             self.process = process = await self._spawn(command, env)
+            assert process.stdin is not None
             process.stdin.write(b"start\n")
             await process.stdin.drain()
             exit_code = await self._cell_output(cell_id, process)
@@ -378,3 +428,15 @@ class ProcessOwner(Owner):
                     "reason": str(exc) or "execution timeout",
                 },
             )
+
+
+def log_pointer(stream: Stream) -> str:
+    """Where the notice sends the reader for more of a truncated stream."""
+    if stream.logged_bytes == stream.total_bytes:
+        return f"Full output: {stream.path}"
+    if stream.logged_bytes:
+        return (
+            f"First {format_size(stream.logged_bytes)} of {format_size(stream.total_bytes)}, "
+            f"log budget reached: {stream.path}"
+        )
+    return "Full output not kept: log budget reached"

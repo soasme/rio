@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from platform import machine, release, system
 
@@ -15,11 +15,7 @@ from rio.ai._provider_events import (
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
-from rio.ai.env import (
-    DEFAULT_MAX_RETRIES,
-    DEFAULT_MAX_RETRY_DELAY_SECONDS,
-    DEFAULT_TIMEOUT_SECONDS,
-)
+from rio.ai.env import HTTPConfig
 from rio.ai.http import HTTPProvider, request_with_retries
 from rio.ai.messages import UserMessage
 from rio.ai.openai_compatible import _ResponsesStreamParser, _stream_error_details
@@ -45,16 +41,12 @@ class OpenAICodexCredentials:
 type OpenAICodexCredentialResolver = Callable[[], Awaitable[OpenAICodexCredentials]]
 
 
-@dataclass(frozen=True, slots=True)
-class OpenAICodexConfig:
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OpenAICodexConfig(HTTPConfig):
     """Configuration for the OpenAI Codex subscription Responses endpoint."""
 
     credential_resolver: OpenAICodexCredentialResolver
     base_url: str = DEFAULT_OPENAI_CODEX_BASE_URL
-    headers: Mapping[str, str] | None = None
-    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
-    max_retries: int = DEFAULT_MAX_RETRIES
-    max_retry_delay_seconds: float = DEFAULT_MAX_RETRY_DELAY_SECONDS
     originator: str = "tau"
     reasoning_effort: str | None = None
     provider_name: str = "OpenAI Codex"
@@ -73,10 +65,10 @@ class OpenAICodexProvider(HTTPProvider[OpenAICodexConfig]):
         system: str,
         messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[ProviderEvent]:
+    ) -> AsyncGenerator[ProviderEvent]:
         """Stream one Codex Responses request as provider-neutral events."""
 
-        async def iterator() -> AsyncIterator[ProviderEvent]:
+        async def iterator() -> AsyncGenerator[ProviderEvent]:
             client = self._get_client()
             payload = _build_codex_payload(
                 model=model,
@@ -98,7 +90,7 @@ class OpenAICodexProvider(HTTPProvider[OpenAICodexConfig]):
 
             async def parse(
                 response: httpx.Response, attempt: RetryAttempt
-            ) -> AsyncIterator[ProviderEvent]:
+            ) -> AsyncGenerator[ProviderEvent]:
                 # Thinking alone still allows a network retry, not a stream-error retry.
                 emitted_thinking = False
                 async for event in _codex_provider_events(response):
@@ -179,7 +171,7 @@ def _tool_to_codex(tool: AgentTool) -> dict[str, JSONValue]:
     }
 
 
-async def _codex_provider_events(response: httpx.Response) -> AsyncIterator[ProviderEvent]:
+async def _codex_provider_events(response: httpx.Response) -> AsyncGenerator[ProviderEvent]:
     parser = _ResponsesStreamParser(codex=True)
     async for chunk in _iter_sse_data(response):
         events, stop = parser.feed(chunk)
@@ -192,7 +184,7 @@ async def _codex_provider_events(response: httpx.Response) -> AsyncIterator[Prov
             yield event
 
 
-async def _iter_sse_data(response: httpx.Response) -> AsyncIterator[str]:
+async def _iter_sse_data(response: httpx.Response) -> AsyncGenerator[str]:
     data_lines: list[str] = []
     async for line in response.aiter_lines():
         stripped = line.strip()

@@ -1,9 +1,12 @@
 """One-shot CLI checks."""
 
+from __future__ import annotations
+
 import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, NoReturn
 
 import httpx
 import pytest
@@ -12,31 +15,31 @@ from rio.cli import _resolve_task, app
 from rio.coding.paths import RioPaths
 
 
-def test_cli_requires_a_task():
+def test_cli_requires_a_task() -> None:
     with pytest.raises(SystemExit) as error:
         app(["run"])
     assert error.value.code == 2
 
 
-def test_long_task_is_not_treated_as_a_file():
+def test_long_task_is_not_treated_as_a_file() -> None:
     task = "Fix nthroot_mod in README.md " + "x" * 300 + " README.md"
     assert _resolve_task([task]) == task
 
 
-def test_markdown_task_file_is_expanded(tmp_path):
+def test_markdown_task_file_is_expanded(tmp_path: Path) -> None:
     task_file = tmp_path / "task.md"
     task_file.write_text("fix the parser", encoding="utf-8")
     assert _resolve_task([str(task_file)]) == "fix the parser"
 
 
 @pytest.mark.parametrize("option", ["--extension=provider.py", "--approve", "--no-approve"])
-def test_run_rejects_extension_loading_options(option):
+def test_run_rejects_extension_loading_options(option: str) -> None:
     with pytest.raises(SystemExit) as error:
         app(["run", option, "task"])
     assert error.value.code == 2
 
 
-def test_cli_does_not_import_extension_or_project_trust_runtime():
+def test_cli_does_not_import_extension_or_project_trust_runtime() -> None:
     subprocess.run(
         [
             sys.executable,
@@ -63,8 +66,8 @@ for name in sys.modules:
     ],
 )
 async def test_provider_errors_do_not_load_extensions(
-    tmp_path, monkeypatch, provider, model, message
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, model: str, message: str
+) -> None:
     from rio.cli import run as cli
     from rio.coding.provider_config import (
         ProviderConfig,
@@ -116,10 +119,10 @@ async def test_run_uses_catalog_for_local_server(
     project.mkdir()
     requests: list[httpx.Request] = []
 
-    def handler(request: httpx.Request) -> httpx.Response | Exception:
+    def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         if request.method == "GET":
-            return httpx.ConnectError("server is down", request=request)
+            raise httpx.ConnectError("server is down", request=request)
         return httpx.Response(
             200,
             text=(
@@ -189,7 +192,12 @@ async def test_run_uses_catalog_for_local_server(
         ["--provider", "rio-missing-provider"],
     ],
 )
-def test_invalid_new_run_does_not_create_session(tmp_path, monkeypatch, capsys, arguments):
+def test_invalid_new_run_does_not_create_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("RIO_PROGRAM_STATUS", "0")
     with pytest.raises(SystemExit) as error:
@@ -201,11 +209,13 @@ def test_invalid_new_run_does_not_create_session(tmp_path, monkeypatch, capsys, 
     assert not list((tmp_path / ".rio" / "sessions").glob("*"))
 
 
-def test_session_owner_error_is_reported_without_usage(monkeypatch, capsys):
+def test_session_owner_error_is_reported_without_usage(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     from rio.agent.store import StorageFailure
     from rio.cli import run as cli
 
-    async def owned(*args, **kwargs):
+    async def owned(*args: Any, **kwargs: Any) -> NoReturn:
         raise StorageFailure("Session already has an owner")
 
     monkeypatch.setenv("RIO_PROGRAM_STATUS", "0")

@@ -51,8 +51,10 @@ use bounded retries; missing token usage stays unknown.
 Invalid steps and provider failures retry the same turn on separate budgets.
 `Limits.invalid_attempts` covers model output the runtime rejects; the next attempt
 shows the model the rejection. `Limits.provider_attempts` covers failed requests,
-error responses and missing responses; these back off for up to two minutes, are
-journaled as `provider_failed`, and are not shown to the model. An HTTP error that
+error responses and missing responses; these back off for up to two minutes
+(longer when `Retry-After` asks, within that cap), are journaled as
+`provider_failed`, and are not shown to the model. Each failure is one HTTP request:
+transport retries inside `rio.ai` are off for agent runs. An HTTP error that
 retrying cannot fix, such as 401 or 404, fails the run at once. The owner keeps
 running work, timers and controls during either backoff, and a restart resumes the
 saved backoff.
@@ -81,7 +83,11 @@ The owner commits launch permission and the supervisor's identity before allowin
 code to start. It commits output before printing it, normally every 100 ms.
 Output over 2000 lines or 50 KB keeps its tail, ends with a
 `[Showing lines X-Y of Z. Full output: PATH]` notice, and sets the truncation flag.
-The full output stays in a temporary file. An idle session has no script process.
+The owner keeps a rolling tail and byte and line counts while streaming, so memory
+stays bounded. The full output goes to a log in the owner's temporary directory,
+within a 64 MB disk budget shared by all Cells; once it runs out, the notice says
+how much was kept. Logs are deleted when the owner exits. An idle session has no
+script process.
 
 Each model turn fits runtime records into the context budget. Streams within an
 equal share of the remaining bytes stay whole; larger ones show a tail, and the

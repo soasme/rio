@@ -321,8 +321,10 @@ def main() -> int:
             (args.output_dir / "summary.json").write_text(
                 json.dumps(summary, indent=2) + "\n", encoding="utf-8"
             )
+            lockfiles = result["lockfiles_changed"]
+            assert isinstance(lockfiles, list)
             changed = [
-                *result["lockfiles_changed"],
+                *lockfiles,
                 *(["venv"] if result["venv_added"] or result["venv_removed"] else []),
             ]
             print(

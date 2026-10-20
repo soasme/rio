@@ -318,6 +318,24 @@ theorem oversized_observation_is_rejected (observation output : Nat) (h : output
     admitObservation observation output = false := by
   simp [admitObservation]; omega
 
+/-- Streaming output logs a chunk only up to the owner's remaining disk budget. -/
+def logChunk (budget chunk : Nat) : Nat × Nat :=
+  let logged := min chunk budget
+  (logged, budget - logged)
+
+theorem logged_within_budget (budget chunk : Nat) : (logChunk budget chunk).1 ≤ budget :=
+  Nat.min_le_right _ _
+
+theorem logged_plus_remaining_is_budget (budget chunk : Nat) :
+    (logChunk budget chunk).1 + (logChunk budget chunk).2 = budget := by
+  simp only [logChunk]; omega
+
+/-- The streamed tail never grows past its cap, however much output arrives. -/
+def streamTail (cap tail chunk : Nat) : Nat := min (tail + chunk) cap
+
+theorem stream_tail_bounded (cap tail chunk : Nat) : streamTail cap tail chunk ≤ cap :=
+  Nat.min_le_right _ _
+
 def fireTimer (fired expired : Bool) : Bool × Nat :=
   if !fired && expired then (true, 1) else (fired, 0)
 
@@ -657,5 +675,49 @@ theorem state_prompt_prefix_survives_turn_changes
 theorem state_prompt_retains_dynamic_fields
     (schema id goal cells revision runtime : String) :
     (statePrompt schema id goal cells revision runtime).drop 4 = [revision, runtime] := rfl
+
+/-- Pydantic records retain whether a nullable field was supplied. JSON serialization
+    with exclude_unset preserves absence separately from an explicit null. -/
+inductive WireTextField where
+  | absent | null | text (value : String)
+  deriving DecidableEq, Repr
+
+inductive ModelTextField where
+  | unset | supplied (value : Option String)
+  deriving DecidableEq, Repr
+
+def decodeTextField : WireTextField → ModelTextField
+  | .absent => .unset
+  | .null => .supplied none
+  | .text value => .supplied (some value)
+
+def encodeTextField : ModelTextField → WireTextField
+  | .unset => .absent
+  | .supplied none => .null
+  | .supplied (some value) => .text value
+
+theorem optional_field_round_trip (field : WireTextField) :
+    encodeTextField (decodeTextField field) = field := by
+  cases field <;> rfl
+
+theorem omitted_field_is_not_null :
+    encodeTextField .unset ≠ encodeTextField (.supplied none) := by decide
+
+/-- Strict integer fields reject booleans and numeric strings instead of coercing them. -/
+inductive WireInteger where
+  | integer (value : Int) | boolean (value : Bool) | text (value : String)
+
+def decodeInteger : WireInteger → Option Int
+  | .integer value => some value
+  | .boolean _ | .text _ => none
+
+theorem strict_integer_preserves_value (value : Int) :
+    decodeInteger (.integer value) = some value := rfl
+
+theorem strict_integer_rejects_boolean (value : Bool) :
+    decodeInteger (.boolean value) = none := rfl
+
+theorem strict_integer_rejects_string (value : String) :
+    decodeInteger (.text value) = none := rfl
 
 end RioAgent

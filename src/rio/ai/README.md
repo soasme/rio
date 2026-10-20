@@ -55,6 +55,14 @@ Provider selection, catalog metadata and saved credentials belong to
 `FakeProvider` usage.
 
 Tool definitions contain only `name`, `description`, and `parameters`; schemas are
-sent as supplied. Codex reuses the Responses parser while keeping subscription
-authentication and its retry rules. Mistral reuses the chat-completions streaming envelope
-with its own payload and chunk parser.
+sent as supplied. Every adapter config extends `HTTPConfig`, which holds the shared
+transport settings (base URL, headers, timeout, retries). Protocol settings live in
+each adapter's own config: `OpenAICompatibleConfig`, `AnthropicConfig`,
+`GoogleGenerativeAIConfig`, `MistralConfig` and `OpenAICodexConfig`. Codex reuses the
+Responses parser while keeping subscription authentication and its retry rules.
+Mistral reuses the chat-completions SSE parse loop with its own payload and chunk parser.
+
+`max_retries` retries transient transport failures inside one `complete()` call, for
+standalone use. A caller that retries provider calls itself sets it to 0;
+`rio.coding` does, so the durable runner is the single retry owner for agent runs.
+A transient error still carries `retry_after_seconds` when the server sent `Retry-After`.

@@ -10,7 +10,7 @@ the original chat-completions path unchanged.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncGenerator, Callable, Mapping
 from json import dumps
 from typing import Any, Protocol
 
@@ -74,7 +74,7 @@ class OpenAICompatibleProvider(HTTPProvider[OpenAICompatibleConfig]):
         system: str,
         messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[ProviderEvent]:
+    ) -> AsyncGenerator[ProviderEvent]:
         """Stream one model response as provider-neutral events."""
         if self._config.api == "openai-responses" or _use_responses_api(model):
             return self._stream_responses(
@@ -97,7 +97,7 @@ class OpenAICompatibleProvider(HTTPProvider[OpenAICompatibleConfig]):
         system: str,
         messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[ProviderEvent]:
+    ) -> AsyncGenerator[ProviderEvent]:
         """Stream one chat completion response as provider-neutral events."""
         payload = _build_chat_payload(
             model=self._config.model_aliases.get(model, model),
@@ -125,7 +125,7 @@ class OpenAICompatibleProvider(HTTPProvider[OpenAICompatibleConfig]):
         system: str,
         messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[ProviderEvent]:
+    ) -> AsyncGenerator[ProviderEvent]:
         """Stream one `/v1/responses` response as provider-neutral events."""
         payload = _build_responses_payload(
             model=self._config.model_aliases.get(model, model),
@@ -150,7 +150,7 @@ class OpenAICompatibleProvider(HTTPProvider[OpenAICompatibleConfig]):
         url: str,
         payload: Mapping[str, JSONValue],
         parser_factory: Callable[[], _StreamParser],
-    ) -> AsyncIterator[ProviderEvent]:
+    ) -> AsyncGenerator[ProviderEvent]:
         """Run the shared streaming POST + retry envelope for a given endpoint.
 
         The per-endpoint differences (SSE chunk handling and final-message
@@ -159,7 +159,7 @@ class OpenAICompatibleProvider(HTTPProvider[OpenAICompatibleConfig]):
         opening ``response_start`` event — is identical across endpoints.
         """
 
-        async def iterator() -> AsyncIterator[ProviderEvent]:
+        async def iterator() -> AsyncGenerator[ProviderEvent]:
             client = self._get_client()
             api_key = self._config.api_key
             request_url = url
@@ -179,27 +179,6 @@ class OpenAICompatibleProvider(HTTPProvider[OpenAICompatibleConfig]):
             if not has_authorization and api_key is not None:
                 headers["Authorization"] = f"Bearer {api_key}"
 
-            async def parse(
-                response: httpx.Response, attempt: RetryAttempt
-            ) -> AsyncIterator[ProviderEvent]:
-                parser = parser_factory()
-                async for line in response.aiter_lines():
-                    event = parse_sse_line(line)
-                    if event is None:
-                        continue
-
-                    events, stop = parser.feed(event)
-                    for parser_event in events:
-                        yield parser_event
-                    attempt.emitted_content = parser.emitted_content
-                    if stop:
-                        break
-
-                if parser.fatal:
-                    return
-                for parser_event in parser.finalize():
-                    yield parser_event
-
             async for event in request_with_retries(
                 client,
                 url=request_url,
@@ -207,7 +186,8 @@ class OpenAICompatibleProvider(HTTPProvider[OpenAICompatibleConfig]):
                 headers=headers,
                 model=model,
                 config=self._config,
-                parse=parse,
+                parse=lambda response, attempt: _parse_sse(response, attempt, parser_factory()),
+                response_provider_header=self._config.response_provider_header,
             ):
                 yield event
 
@@ -231,6 +211,26 @@ class _StreamParser(Protocol):
     def finalize(self) -> list[ProviderEvent]:
         """Return the trailing tool-call and response-end events."""
         ...
+
+
+async def _parse_sse(
+    response: httpx.Response, attempt: RetryAttempt, parser: _StreamParser
+) -> AsyncGenerator[ProviderEvent]:
+    """Drive ``parser`` over a chat-style SSE body, recording emitted content."""
+    async for line in response.aiter_lines():
+        event = parse_sse_line(line)
+        if event is None:
+            continue
+        events, stop = parser.feed(event)
+        for parser_event in events:
+            yield parser_event
+        attempt.emitted_content = parser.emitted_content
+        if stop:
+            break
+    if parser.fatal:
+        return
+    for parser_event in parser.finalize():
+        yield parser_event
 
 
 class _ChatStreamParser:
@@ -632,12 +632,15 @@ def _build_chat_payload(
     max_tokens_field = _string_compat(
         resolved_compat.get("maxTokensField"), default="max_completion_tokens"
     )
+    user_messages: list[JSONValue] = [
+        {"role": "user", "content": message.content} for message in messages
+    ]
     payload: dict[str, JSONValue] = {
         "model": model,
         "stream": True,
         "messages": [
             {"role": "system", "content": system},
-            *({"role": "user", "content": message.content} for message in messages),
+            *user_messages,
         ],
     }
     if supports_usage:

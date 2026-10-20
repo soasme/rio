@@ -3,23 +3,20 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Mapping
 from contextlib import aclosing, contextmanager
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import httpx
 
 from rio.ai._provider_events import ProviderErrorEvent, ProviderEvent, ProviderResponseStartEvent
-from rio.ai.env import AnthropicConfig, OpenAICompatibleConfig
+from rio.ai.env import HTTPConfig
 from rio.ai.http_errors import provider_http_error_message
 from rio.ai.messages import AssistantMessage, UserMessage
 from rio.ai.provider import collect_response
 from rio.ai.retry import RetryAttempt, check_response_status, stream_with_retries
 from rio.ai.tools import AgentTool
 from rio.ai.types import JSONValue
-
-if TYPE_CHECKING:
-    from rio.ai.openai_codex import OpenAICodexConfig
 
 _PROXY_ENV_VARS = (
     "HTTP_PROXY",
@@ -81,7 +78,7 @@ def create_async_client(**kwargs: Any) -> httpx.AsyncClient:
         return httpx.AsyncClient(**kwargs)
 
 
-class HTTPProvider[ConfigT: OpenAICompatibleConfig | AnthropicConfig | OpenAICodexConfig]:
+class HTTPProvider[ConfigT: HTTPConfig]:
     """Shared provider lifecycle: own the HTTP client and collect one final message.
 
     Subclasses name the ``api`` and ``provider`` recorded on the message and
@@ -124,7 +121,7 @@ class HTTPProvider[ConfigT: OpenAICompatibleConfig | AnthropicConfig | OpenAICod
         system: str,
         messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[ProviderEvent]:
+    ) -> AsyncGenerator[ProviderEvent]:
         raise NotImplementedError
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -140,18 +137,20 @@ async def request_with_retries(
     payload: Mapping[str, JSONValue],
     headers: Mapping[str, str] | Callable[[], Awaitable[Mapping[str, str]]],
     model: str,
-    config: OpenAICompatibleConfig | AnthropicConfig | OpenAICodexConfig,
-    parse: Callable[[httpx.Response, RetryAttempt], AsyncIterator[ProviderEvent]],
+    config: HTTPConfig,
+    parse: Callable[[httpx.Response, RetryAttempt], AsyncGenerator[ProviderEvent]],
     is_retryable: Callable[[int, str], bool] | None = None,
-) -> AsyncIterator[ProviderEvent]:
+    response_provider_header: str | None = None,
+) -> AsyncGenerator[ProviderEvent]:
     """Own the streaming request, HTTP errors, and retry lifetime for every adapter."""
 
-    async def attempt(state: RetryAttempt) -> AsyncIterator[ProviderEvent]:
+    async def attempt(state: RetryAttempt) -> AsyncGenerator[ProviderEvent]:
         request_headers = await headers() if callable(headers) else headers
         async with client.stream("POST", url, json=payload, headers=request_headers) as response:
-            header_name = getattr(config, "response_provider_header", None)
             response_provider = (
-                response.headers.get(header_name, "").strip() or None if header_name else None
+                response.headers.get(response_provider_header, "").strip() or None
+                if response_provider_header
+                else None
             )
             error = await check_response_status(
                 response,

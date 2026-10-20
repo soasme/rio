@@ -16,11 +16,12 @@ from rio.ai.env import (
     DEFAULT_MAX_RETRY_DELAY_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
     AnthropicConfig,
+    HTTPConfig,
     OpenAICompatibleConfig,
     RuntimeProviderAuth,
 )
 from rio.ai.fake import FakeProvider
-from rio.ai.google import GoogleGenerativeAIProvider
+from rio.ai.google import GoogleGenerativeAIConfig, GoogleGenerativeAIProvider
 from rio.ai.messages import (
     AssistantMessage,
     ResponseTiming,
@@ -33,7 +34,7 @@ from rio.ai.messages import (
     malformed_tool_arguments,
     raw_tool_arguments,
 )
-from rio.ai.mistral import MistralConversationsProvider
+from rio.ai.mistral import MistralConfig, MistralConversationsProvider
 from rio.ai.openai_codex import (
     DEFAULT_OPENAI_CODEX_BASE_URL,
     OpenAICodexConfig,

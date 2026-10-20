@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from rio.ai._parsing import first_choice, loads_object
@@ -14,6 +15,8 @@ from rio.ai._provider_events import (
     ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
+from rio.ai.env import HTTPConfig
+from rio.ai.http import HTTPProvider, request_with_retries
 from rio.ai.messages import (
     AssistantMessage,
     ThinkingContent,
@@ -22,8 +25,8 @@ from rio.ai.messages import (
     assistant_content,
 )
 from rio.ai.openai_compatible import (
-    OpenAICompatibleProvider,
     _parse_chunk_usage,
+    _parse_sse,
     _tool_call_deltas,
     _ToolCallBuilder,
 )
@@ -31,8 +34,21 @@ from rio.ai.retry import RetryableFailure
 from rio.ai.tools import AgentTool
 from rio.ai.types import JSONValue
 
+DEFAULT_MISTRAL_BASE_URL = "https://api.mistral.ai/v1"
 
-class MistralConversationsProvider(OpenAICompatibleProvider):
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MistralConfig(HTTPConfig):
+    """Configuration for Mistral's chat completions API."""
+
+    api_key: str = field(repr=False)
+    base_url: str = DEFAULT_MISTRAL_BASE_URL
+    reasoning_effort: str | None = None
+    max_tokens: int | None = None
+    provider_name: str = "Mistral"
+
+
+class MistralConversationsProvider(HTTPProvider[MistralConfig]):
     """Provider adapter for Mistral's streaming chat API."""
 
     def _labels(self) -> tuple[str, str]:
@@ -45,7 +61,7 @@ class MistralConversationsProvider(OpenAICompatibleProvider):
         system: str,
         messages: list[UserMessage],
         tools: list[AgentTool],
-    ) -> AsyncIterator[ProviderEvent]:
+    ) -> AsyncGenerator[ProviderEvent]:
         """Stream one Mistral response as provider-neutral events."""
         payload = _build_mistral_payload(
             model=model,
@@ -55,11 +71,18 @@ class MistralConversationsProvider(OpenAICompatibleProvider):
             reasoning_effort=self._config.reasoning_effort,
             max_tokens=self._config.max_tokens,
         )
-        return self._stream(
-            model=model,
-            url=f"{_mistral_base_url(self._config.base_url)}/chat/completions",
+        url = f"{_mistral_base_url(self._config.base_url)}/chat/completions"
+        headers = {**dict(self._config.headers or {})}
+        if not any(key.casefold() == "authorization" for key in headers):
+            headers["Authorization"] = f"Bearer {self._config.api_key}"
+        return request_with_retries(
+            self._get_client(),
+            url=url,
             payload=payload,
-            parser_factory=_MistralStreamParser,
+            headers=headers,
+            model=model,
+            config=self._config,
+            parse=lambda response, attempt: _parse_sse(response, attempt, _MistralStreamParser()),
         )
 
 
@@ -139,13 +162,16 @@ def _build_mistral_payload(
     reasoning_effort: str | None,
     max_tokens: int | None,
 ) -> dict[str, JSONValue]:
+    user_messages: list[JSONValue] = [
+        {"role": "user", "content": message.content} for message in messages
+    ]
     payload: dict[str, JSONValue] = {
         "model": model,
         "stream": True,
         "stream_options": {"include_usage": True},
         "messages": [
             *_system_messages(system),
-            *({"role": "user", "content": message.content} for message in messages),
+            *user_messages,
         ],
     }
     if max_tokens is not None:

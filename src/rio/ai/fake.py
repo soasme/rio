@@ -29,3 +29,6 @@ class FakeProvider:
                 stop_reason="error", error_message="FakeProvider has no scripted response"
             )
         return self._responses.pop(0)
+
+    async def aclose(self) -> None:
+        """No external resources to close."""

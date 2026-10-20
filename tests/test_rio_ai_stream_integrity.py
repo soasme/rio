@@ -1,5 +1,7 @@
 """Provider completion, truncation, authentication and usage regressions."""
 
+from __future__ import annotations
+
 import json
 
 import httpx
@@ -7,37 +9,50 @@ import pytest
 
 from rio.ai.anthropic import AnthropicProvider
 from rio.ai.env import AnthropicConfig, OpenAICompatibleConfig
-from rio.ai.google import GoogleGenerativeAIProvider
-from rio.ai.mistral import MistralConversationsProvider
+from rio.ai.google import GoogleGenerativeAIConfig, GoogleGenerativeAIProvider
+from rio.ai.messages import AssistantMessage
+from rio.ai.mistral import MistralConfig, MistralConversationsProvider
 from rio.ai.openai_compatible import OpenAICompatibleProvider
+from rio.ai.provider import ModelProvider
 
 
-def sse(*chunks):
+def sse(*chunks: object) -> str:
     return "".join("data: " + (c if isinstance(c, str) else json.dumps(c)) + "\n\n" for c in chunks)
 
 
-def provider(kind, client):
-    config = dict(api_key="secret-api-key", max_retries=1, max_retry_delay_seconds=0)
+def provider(kind: str, client: httpx.AsyncClient) -> ModelProvider:
     if kind == "anthropic":
-        return AnthropicProvider(AnthropicConfig(**config), client=client)
-    cls = {
-        "chat": OpenAICompatibleProvider,
-        "google": GoogleGenerativeAIProvider,
-        "mistral": MistralConversationsProvider,
-        "responses": OpenAICompatibleProvider,
-    }[kind]
-    return cls(
+        return AnthropicProvider(
+            AnthropicConfig(api_key="secret-api-key", max_retries=1, max_retry_delay_seconds=0),
+            client=client,
+        )
+    if kind == "google":
+        return GoogleGenerativeAIProvider(
+            GoogleGenerativeAIConfig(
+                api_key="secret-api-key", max_retries=1, max_retry_delay_seconds=0
+            ),
+            client=client,
+        )
+    if kind == "mistral":
+        return MistralConversationsProvider(
+            MistralConfig(api_key="secret-api-key", max_retries=1, max_retry_delay_seconds=0),
+            client=client,
+        )
+    return OpenAICompatibleProvider(
         OpenAICompatibleConfig(
-            **config, api="openai-responses" if kind == "responses" else "openai-completions"
+            api_key="secret-api-key",
+            max_retries=1,
+            max_retry_delay_seconds=0,
+            api="openai-responses" if kind == "responses" else "openai-completions",
         ),
         client=client,
     )
 
 
-async def collect(kind, body):
+async def collect(kind: str, body: str) -> tuple[AssistantMessage, list[httpx.Request]]:
     requests = []
 
-    def handle(request):
+    def handle(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         return httpx.Response(200, text=body)
 
@@ -50,7 +65,7 @@ async def collect(kind, body):
 
 @pytest.mark.parametrize("kind", ["anthropic", "chat", "mistral", "google"])
 @pytest.mark.parametrize("partial", [False, True])
-async def test_clean_eof_without_finish_is_error(kind, partial):
+async def test_clean_eof_without_finish_is_error(kind: str, partial: bool) -> None:
     chunk = {
         "anthropic": {
             "type": "content_block_delta",
@@ -66,13 +81,13 @@ async def test_clean_eof_without_finish_is_error(kind, partial):
 
 
 @pytest.mark.parametrize("kind", ["chat", "mistral"])
-async def test_done_sentinel_without_finish_reason_is_error(kind):
+async def test_done_sentinel_without_finish_reason_is_error(kind: str) -> None:
     message, _ = await collect(kind, sse("[DONE]"))
     assert message.stop_reason == "error"
 
 
 @pytest.mark.parametrize("kind", ["chat", "mistral", "google", "responses"])
-async def test_token_limit_with_tool_call_reports_length(kind):
+async def test_token_limit_with_tool_call_reports_length(kind: str) -> None:
     call = {"index": 0, "id": "call-1", "function": {"name": "step", "arguments": "{}"}}
     body = sse(
         {"choices": [{"delta": {"tool_calls": [call]}, "finish_reason": "length"}]}, "[DONE]"
@@ -107,7 +122,7 @@ async def test_token_limit_with_tool_call_reports_length(kind):
     assert message.stop_reason == "length"
 
 
-async def test_google_usage_only_chunk_and_header_auth():
+async def test_google_usage_only_chunk_and_header_auth() -> None:
     message, requests = await collect(
         "google",
         sse(
@@ -136,7 +151,7 @@ async def test_google_usage_only_chunk_and_header_auth():
     assert "secret-api-key" not in str(requests[0].url)
 
 
-async def test_mistral_requests_and_parses_trailing_usage():
+async def test_mistral_requests_and_parses_trailing_usage() -> None:
     message, requests = await collect(
         "mistral",
         sse(

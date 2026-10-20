@@ -117,11 +117,15 @@ async def check_response_status(
         is_retryable(status_code, body) if is_retryable else is_transient_status(status_code)
     )
     if retryable:
+        retry_after = parse_retry_after(response.headers.get("retry-after"))
+        if retry_after is not None:
+            # Kept on the error so a caller that owns retries can honor it.
+            event.data = {**(event.data or {}), "retry_after_seconds": retry_after}
         raise RetryableFailure(
             f"HTTP {status_code}",
             event,
             data={"status_code": status_code, "body": body},
-            retry_after_seconds=parse_retry_after(response.headers.get("retry-after")),
+            retry_after_seconds=retry_after,
         )
     return event
 

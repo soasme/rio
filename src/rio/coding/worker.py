@@ -26,6 +26,7 @@ def main() -> None:
         print(json.dumps({"exit": 127}), flush=True)
         sys.stdin.readline()
         return
+    assert child.stdout is not None and child.stderr is not None
     selector = selectors.DefaultSelector()
     selector.register(sys.stdin, selectors.EVENT_READ, "owner")
     selector.register(child.stdout, selectors.EVENT_READ, "stdout")
@@ -35,7 +36,7 @@ def main() -> None:
         for key, _ in selector.select():
             if key.data == "owner":
                 os.killpg(os.getpgrp(), signal.SIGKILL)
-            chunk = os.read(key.fileobj.fileno(), 4096)
+            chunk = os.read(key.fd, 4096)
             if not chunk:
                 selector.unregister(key.fileobj)
                 open_streams -= 1
