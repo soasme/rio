@@ -8,6 +8,21 @@ permissions:
   contents: read
 
 jobs:
+  eval-graders:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+      - run: uv sync --locked --dev
+      - name: Calibrate every grader without model calls
+        run: uv run python -m evals.run --validate --split all --timeout 120 --output-dir .eval-results/validation
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: eval-grader-validation
+          path: .eval-results/validation
+
   lean:
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -1,0 +1,1 @@
+Implement collect(fetch). fetch(cursor) returns {items: list, next: cursor or None}; start with cursor None. Concatenate items in page order without removing duplicates. Stop only when next is None (0 and empty strings are valid cursors). Reject repeated non-None cursors with ValueError to avoid infinite loops. Propagate fetch exceptions.

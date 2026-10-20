@@ -1,0 +1,1 @@
+Implement python app.py [--upper] TEXT. Print TEXT followed by a newline, uppercased only when --upper is present. Accept -- to separate options from text beginning with a dash. Missing TEXT or unknown options must exit 2 with a diagnostic on stderr and no stdout.

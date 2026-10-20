@@ -1,0 +1,1 @@
+Implement write_json(path, value). Serialize JSON first; replace the destination atomically using a temporary file in the same directory and os.replace. Invalid JSON values must leave existing content unchanged. Remove temporary files even if replacement fails. Use UTF-8 and allow pathlib.Path inputs.

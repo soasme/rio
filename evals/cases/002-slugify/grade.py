@@ -9,3 +9,8 @@ def test_slugify() -> None:
     assert slugify("42 times") == "42-times"
     assert slugify("---") == ""
     assert slugify("") == ""
+
+
+def test_ascii_contract() -> None:
+    assert slugify("Café 東京 ABC") == "caf-abc"
+    assert slugify("A\tB\nC") == "a-b-c"

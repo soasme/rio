@@ -1,0 +1,10 @@
+{
+  "category": "smoke",
+  "editable": [
+    "text_utils.py"
+  ],
+  "tests": [
+    "grade.py::test_slugify",
+    "grade.py::test_ascii_contract"
+  ]
+}

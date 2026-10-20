@@ -1,0 +1,12 @@
+{
+  "split": "regression",
+  "category": "regression",
+  "editable": [
+    "cache.py"
+  ],
+  "tests": [
+    "grade.py::test_falsey_and_errors"
+  ],
+  "expected_terminal": "success",
+  "scenario": "coding"
+}

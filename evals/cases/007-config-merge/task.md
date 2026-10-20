@@ -1,0 +1,1 @@
+Implement merge(defaults, overrides). Recursively merge dict values; otherwise overrides replace defaults, including None, lists, False and 0. Return independent copies of all nested values and do not mutate either input.

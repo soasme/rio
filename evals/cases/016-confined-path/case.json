@@ -1,0 +1,12 @@
+{
+  "split": "regression",
+  "category": "security-boundary",
+  "editable": [
+    "paths.py"
+  ],
+  "tests": [
+    "grade.py::test_paths"
+  ],
+  "expected_terminal": "success",
+  "scenario": "coding"
+}

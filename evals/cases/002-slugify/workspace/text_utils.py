@@ -1,1 +1,2 @@
-"""Small text helpers."""
+def slugify(text: str) -> str:
+    raise NotImplementedError

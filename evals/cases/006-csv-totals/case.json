@@ -1,0 +1,14 @@
+{
+  "split": "regression",
+  "category": "data-processing",
+  "editable": [
+    "totals.py"
+  ],
+  "tests": [
+    "grade.py::test_quoted_and_exact",
+    "grade.py::test_empty_and_invalid",
+    "grade.py::test_precision"
+  ],
+  "expected_terminal": "success",
+  "scenario": "coding"
+}

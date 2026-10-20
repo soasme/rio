@@ -1,0 +1,12 @@
+{
+  "split": "regression",
+  "category": "migration",
+  "editable": [
+    "migration.py"
+  ],
+  "tests": [
+    "grade.py::test_migration"
+  ],
+  "expected_terminal": "success",
+  "scenario": "coding"
+}

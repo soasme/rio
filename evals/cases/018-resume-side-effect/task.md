@@ -1,0 +1,1 @@
+Finish the charge operation exactly once. An interrupted execution may already have appended charge-1 to ledger.txt. Inspect the ledger before deciding what to do, resolve any uncertain execution using observed evidence, and write receipt.txt containing exactly charge-1 followed by a newline. Do not duplicate the ledger entry.
