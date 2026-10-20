@@ -307,9 +307,11 @@ def trial_status(spec: Case, process: ProcessResult, metrics: dict, graded: Grad
     if process.timed_out:
         return "agent_timeout"
     if metrics["terminal"] != spec.expected_terminal or process.returncode != expected_exit:
-        return "provider_error" if metrics["provider_errors"] else "agent_failure"
+        return "provider_error" if metrics["provider_failure_unresolved"] else "agent_failure"
     if graded.status != "passed":
         return graded.status
+    if spec.expected_terminal == "failure" and metrics["provider_failure_unresolved"]:
+        return "provider_error"
     if (
         (spec.expected_terminal == "failure" and "failure" not in metrics["conclusions"])
         or (

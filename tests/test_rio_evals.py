@@ -402,3 +402,61 @@ def test_runtime_scenario_must_actually_be_exercised(scenario: str, observations
     metrics = {**trace_metrics(""), "terminal": "success"}
     assert trial_status(spec, process, metrics, graded) == "agent_failure"
     assert trial_status(spec, process, {**metrics, **observations}, graded) == "passed"
+
+
+async def test_resume_fixture_seeds_a_valid_interrupted_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from evals.seed_resume import main
+
+    from rio.agent.session import Session
+    from rio.agent.store import Store
+    from rio.coding.cells import KINDS
+    from rio.coding.owner import ProcessOwner
+
+    home, workspace = tmp_path / "home", tmp_path / "workspace"
+    workspace.mkdir()
+    config = tmp_path / "seed.json"
+    config.write_text(
+        json.dumps(
+            {
+                "task": "Finish the charge",
+                "provider": "fake",
+                "model": "fake",
+                "thinking": None,
+            }
+        )
+    )
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(sys, "argv", ["seed_resume.py", str(config)])
+    main()
+    path = home / ".rio/sessions" / ("a" * 32 + ".sqlite3")
+    with Store(path) as store:
+        session = Session(store, KINDS)
+        assert session.data.executions["1"].phase == "started"
+        async with ProcessOwner(session):
+            result = session.data.executions["1"].result
+            assert result is not None and result.type == "UnknownExecution"
+            assert session.meta.pause is not None
+    assert (workspace / "ledger.txt").read_text() == "charge-1\n"
+
+
+def test_recovered_provider_error_does_not_mask_an_agent_failure() -> None:
+    from evals.run import trial_status
+    from evals.sandbox import GradeResult
+
+    metrics = trace_metrics(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "provider_failed", "changes": {}},
+                {"type": "model_response", "changes": {"turns": {}}},
+            ]
+        )
+    )
+    assert metrics["provider_errors"] == 1 and not metrics["provider_failure_unresolved"]
+    spec = Case(category="coding", editable=[], tests=["test"])
+    process = ProcessResult(returncode=1, seconds=1)
+    grade = GradeResult(status="passed", process=process)
+    assert trial_status(spec, process, metrics, grade) == "agent_failure"

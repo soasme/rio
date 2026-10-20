@@ -19,12 +19,15 @@ def trace_metrics(trace: str) -> dict:
     unknown_costs = 0
     conclusions: list[str] = []
     truncated_observations = 0
+    last_model_event = None
     for line in trace.splitlines():
         try:
             event = json.loads(line)
         except (ValueError, TypeError):
             continue
         kind = event.get("type")
+        if kind in ("provider_failed", "model_response"):
+            last_model_event = kind
         changes = event.get("changes", {})
         provider_errors += kind == "provider_failed"
         truncated_observations += kind == "output_truncated"
@@ -70,6 +73,7 @@ def trace_metrics(trace: str) -> dict:
         "rebuild_seconds": durability.get("rebuild_seconds"),
         "terminal": terminal,
         "provider_errors": provider_errors,
+        "provider_failure_unresolved": last_model_event == "provider_failed",
         "resolutions": resolutions,
         "conclusions": conclusions,
         "truncated_observations": truncated_observations,

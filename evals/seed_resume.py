@@ -15,7 +15,9 @@ def main() -> None:
     config = json.loads(Path(sys.argv[1]).read_text())
     session_id = "a" * 32
     path = Path.home() / ".rio/sessions" / f"{session_id}.sqlite3"
+    workspace = Path.cwd()
     source = (
+        "# /// script\n# dependencies = []\n# ///\n"
         "from pathlib import Path\np=Path('ledger.txt')\np.write_text(p.read_text()+'charge-1\\n')"
     )
     with Store(path) as store:
@@ -23,7 +25,7 @@ def main() -> None:
             store,
             config["task"],
             kinds=KINDS,
-            owner_config={"cwd": "/workspace"},
+            owner_config={"cwd": str(workspace)},
             model_config={k: config[k] for k in ("provider", "model", "thinking")},
             instructions=INSTRUCTIONS,
         )
@@ -42,7 +44,7 @@ def main() -> None:
             ],
         )
         session.authorize(1)
-    Path("/workspace/ledger.txt").write_text("charge-1\n")
+    (workspace / "ledger.txt").write_text("charge-1\n")
     print(session_id)
 
 

@@ -82,4 +82,11 @@ theorem unexercised_stress_scenario_never_passes (expectsFailure modelConcludedF
     trialAccepted true true false expectsFailure modelConcludedFailure = false := by
   simp [trialAccepted]
 
+def resumeSeedReady (scriptValid launchCommitted effectObserved : Bool) : Bool :=
+  scriptValid && launchCommitted && effectObserved
+
+theorem invalid_script_cannot_seed_a_resume_scenario (committed observed : Bool) :
+    resumeSeedReady false committed observed = false := by
+  simp [resumeSeedReady]
+
 end RioEvals
