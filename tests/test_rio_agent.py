@@ -2002,6 +2002,34 @@ def test_context_budget_counts_utf8_and_inbox_commas(session: Session, spare: in
         assert prepare(session).delivered == ["second"]
 
 
+def test_inbox_admission_bounds_the_whole_observation(session: Session) -> None:
+    session.limits = replace(session.limits, context_bytes=4096, output_bytes=1024)
+    with pytest.raises(ValueError, match="output budget"):
+        session.receive("x" * 5000, "external", {})
+    with pytest.raises(ValueError, match="output budget"):
+        session.receive("long-kind", "k" * 5000, {})
+    session.receive("small", "external", {})
+    assert prepare(session).delivered == ["small"]
+
+
+def test_oldest_message_displaces_runtime_records(session: Session) -> None:
+    from rio.agent.store import encode
+
+    accept(session, *(cmd(str(i)) for i in range(12)))
+    for i in range(1, 13):
+        session.authorize(i)
+        session.finish(i, {"type": "success"})
+    accept(session)
+    session.limits = replace(session.limits, context_bytes=4096, output_bytes=1024)
+    session.receive("big", "external", {"text": "x" * 900})
+    turn = prepare(session)
+    state = turn.state
+    assert len(encode(state).encode()) <= 4096
+    assert turn.delivered == ["big"]
+    assert state.runtime.cells == {}
+    assert state.runtime.inbox[0].payload["cell_ids"] == list(range(1, 13))
+
+
 def test_run_end_records_metrics_once(session: Session) -> None:
     session.end("success", "done")
     seq = session.store.sequence

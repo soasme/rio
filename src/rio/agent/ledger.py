@@ -12,6 +12,7 @@ from rio.agent.shapes import (
     Execution,
     InboxMessage,
     Meta,
+    Observation,
     Projection,
     RunResult,
     ValidatorResult,
@@ -32,6 +33,11 @@ def observation(message_id: str, kind: str, payload: dict, seq: int) -> InboxMes
     return InboxMessage.model_validate(
         {"id": message_id, "kind": kind, "payload": payload, "seq": seq, "consumed": False}
     )
+
+
+def inbox_view(message: InboxMessage) -> Observation:
+    """An inbox message as a turn shows it."""
+    return Observation.model_validate(message.model_dump(exclude={"consumed"}))
 
 
 class RuntimeLedger:
@@ -75,17 +81,17 @@ class RuntimeLedger:
             if old.kind != kind or old.payload != payload:
                 raise ValueError("Conflicting message identity")
             return
-        if len(encode(payload).encode()) > self.limits.output_bytes:
+        seq = self.store.sequence + 1
+        message = observation(message_id, kind, payload, seq)
+        # Bound the whole delivered record, not just its payload: prepare_turn reserves room
+        # for the oldest message, so an admitted message always reaches a turn.
+        if len(encode(inbox_view(message)).encode()) > self.limits.output_bytes:
             raise ValueError("Observation exceeds output budget")
         if sum(not m.consumed for m in self.data.inbox.values()) >= self.limits.inbox_messages:
             raise ValueError("Inbox full; sender must retry")
         self.store.commit(
             "inbox_received",
-            {
-                "inbox": {
-                    message_id: observation(message_id, kind, payload, self.store.sequence + 1)
-                }
-            },
+            {"inbox": {message_id: message}},
         )
 
     def invalid_idle(self) -> None:
