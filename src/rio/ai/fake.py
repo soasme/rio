@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from json import dumps
 
+from rio.ai._provider_events import ProviderEvent, ProviderToolCallDeltaEvent
 from rio.ai.messages import AssistantMessage, UserMessage
 from rio.ai.tools import AgentTool
 
@@ -22,13 +24,19 @@ class FakeProvider:
         system: str,
         messages: list[UserMessage],
         tools: list[AgentTool],
+        on_event: Callable[[ProviderEvent], None] | None = None,
     ) -> AssistantMessage:
         self.calls.append((model, system, list(messages), list(tools)))
         if not self._responses:
             return AssistantMessage(
                 stop_reason="error", error_message="FakeProvider has no scripted response"
             )
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        if on_event is not None:
+            # Each scripted tool call streams as one argument fragment.
+            for call in response.tool_calls:
+                on_event(ProviderToolCallDeltaEvent(delta=dumps(call.arguments)))
+        return response
 
     async def aclose(self) -> None:
         """No external resources to close."""

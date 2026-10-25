@@ -11,9 +11,10 @@ returns an `AssistantMessage`. `messages` are `UserMessage`s of plain text: Rio
 sends each turn as fresh State, never a transcript, so providers serialize no
 assistant history, tool results, images or replay signatures. A provider failure
 is a message with `stop_reason == "error"`, an `error_message` and any partial
-content. Transport streaming stays internal: fragments are collected without
-copying the growing message. Normal task cancellation still stops an in-flight
-request.
+content. Fragments are collected without copying the growing message. Pass
+`on_event` to observe stream events as they arrive, such as text and tool-call
+argument deltas; the returned message stays the only result. Normal task
+cancellation still stops an in-flight request.
 
 Providers describe tool calls; the caller decides how to execute them. Rio's
 agent runtime supplies the `step` tool and owns its acceptance protocol.

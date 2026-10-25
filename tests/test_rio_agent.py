@@ -1105,6 +1105,35 @@ async def test_output_logs_stay_within_disk_budget(session: Session) -> None:
         assert owner.log_budget == 0
 
 
+async def test_python_output_commits_before_the_process_exits(session: Session) -> None:
+    # Piped stdout would otherwise stay in Python's buffer until exit.
+    source = "import time; print('ready'); time.sleep(30)"
+    accept(session, cmd(sys.executable, "-c", source))
+    async with ProcessOwner(session) as owner:
+        async with asyncio.timeout(10):
+            await owner.tick()
+            while session.data.executions["1"].output.get("stdout") != "ready\n":
+                await owner.wait()
+                await owner.tick()
+        assert session.data.executions["1"].phase == "started"
+
+
+async def test_run_previews_step_arguments_before_acceptance(session: Session) -> None:
+    previews: list[str] = []
+    provider = FakeProvider([response([add(note("plan")), conclude()])])
+
+    def publish(event: JournalEvent) -> None:
+        if event.type == "patch_accepted":
+            previews.append("accepted")
+
+    def preview(event: Any) -> None:
+        previews.append(event.delta)
+
+    assert await run(Owner(session), provider, "fake", publish, preview)
+    assert previews[0] == json.dumps({"ops": [add(note("plan")), conclude()]})
+    assert previews[1:] == ["accepted"]
+
+
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
 async def test_worker_and_validator_output_keep_utf8_tail(session: Session, stream: str) -> None:
     session.limits = replace(session.limits, output_bytes=7, flush_seconds=60)

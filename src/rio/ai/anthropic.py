@@ -14,6 +14,7 @@ from rio.ai._provider_events import (
     ProviderResponseEndEvent,
     ProviderTextDeltaEvent,
     ProviderThinkingDeltaEvent,
+    ProviderToolCallDeltaEvent,
     ProviderToolCallEvent,
 )
 from rio.ai.env import (
@@ -148,10 +149,11 @@ class AnthropicProvider(HTTPProvider[AnthropicConfig]):
                         elif delta_type == "input_json_delta":
                             index = int(chunk.get("index", 0))
                             builder = tool_builders.setdefault(index, _AnthropicToolBuilder())
-                            builder.arguments_parts.append(
-                                _string_or_empty(delta.get("partial_json"))
-                            )
+                            arguments = _string_or_empty(delta.get("partial_json"))
+                            builder.arguments_parts.append(arguments)
                             attempt.emitted_content = True
+                            if arguments:
+                                yield ProviderToolCallDeltaEvent(delta=arguments)
                     elif event_type == "message_delta":
                         delta = chunk.get("delta")
                         if isinstance(delta, Mapping):

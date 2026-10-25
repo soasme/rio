@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
-from rio.cli.render import PlainEventRenderer
+from rio.ai import ProviderToolCallDeltaEvent
+from rio.cli.render import PlainEventRenderer, StepDraft
 
 
 def emit(renderer: PlainEventRenderer, kind: str, **changes: dict[str, Any]) -> None:
@@ -157,3 +159,86 @@ def test_output_chunks_then_final_snapshot_do_not_repeat(
         executions={"2": execution("hello\n", result={"type": "success", "exit_code": 0})},
     )
     assert capsys.readouterr().out == "  └ hello\n  └ success (exit 0)\n"
+
+
+def stream(renderer: PlainEventRenderer, ops: list[dict[str, Any]], size: int = 3) -> None:
+    raw = json.dumps({"ops": ops})
+    for start in range(0, len(raw), size):
+        renderer.preview(ProviderToolCallDeltaEvent(delta=raw[start : start + size]))
+
+
+def test_step_draft_reads_bodies_from_any_fragmentation() -> None:
+    ops = [
+        {"op": "add", "cell": {"kind": "note", "text": 'say "hi" é 😀\n'}},
+        {"op": "replace", "id": 3, "cell": {"source": "print(1)\n", "kind": "code"}},
+        {"op": "add", "cell": {"kind": "cmd", "argv": ["pytest", "a b"]}},
+        {
+            "op": "control",
+            "control": {"type": "resolution", "evidence_refs": ["e:1"], "reason": "ok"},
+        },
+    ]
+    for raw in (json.dumps({"ops": ops}), json.dumps({"ops": ops}, indent=1)):
+        bodies: dict[int, str] = {}
+        draft = StepDraft()
+        for char in raw:
+            for index, text in draft.feed(char):
+                bodies[index] = bodies.get(index, "") + text
+        assert bodies == {0: 'say "hi" é 😀\n', 1: "print(1)\n", 2: "pytest 'a b'"}
+
+
+def test_streamed_cells_show_as_written_and_are_not_repeated(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    renderer = PlainEventRenderer()
+    source = "# /// script\n# dependencies = []\n# ///\nprint(2)\n"
+    renderer.preview(ProviderToolCallDeltaEvent(delta='{"ops": [{"op": "add", "cell": {"sou'))
+    assert capsys.readouterr().out == ""
+    renderer = PlainEventRenderer()
+    stream(renderer, [{"op": "add", "cell": {"kind": "note", "text": "Check."}}])
+    assert capsys.readouterr().out == "• Check."
+    renderer = PlainEventRenderer()
+    stream(renderer, [{"op": "add", "cell": {"kind": "code", "source": source}}])
+    emit(renderer, "patch_accepted", cells={"5": {"id": 5, "kind": "code", "source": source}})
+    emit(renderer, "execution_output", output_chunks={"5": execution("2\n")})
+    assert capsys.readouterr().out == (
+        "• # /// script\n  # dependencies = []\n  # ///\n  print(2)\n  └ 2\n"
+    )
+
+
+def test_accepted_cells_that_differ_from_the_draft_are_shown(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    renderer = PlainEventRenderer()
+    stream(renderer, [{"op": "add", "cell": {"kind": "note", "text": "draft"}}])
+    emit(
+        renderer,
+        "patch_accepted",
+        cells={
+            "1": {"id": 1, "kind": "note", "text": "final"},
+            "2": {"id": 2, "kind": "cmd", "argv": ["true"]},
+        },
+    )
+    assert capsys.readouterr().out == "• draft\n\n• final\n\n• true\n"
+
+
+def test_rejected_draft_is_followed_by_the_retry_reason(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    renderer = PlainEventRenderer()
+    stream(renderer, [{"op": "add", "cell": {"kind": "code", "source": "print(1)"}}])
+    emit(renderer, "patch_rejected", turns={"1": {"error": "Code requires PEP 723"}})
+    stream(renderer, [{"op": "add", "cell": {"kind": "code", "source": "print(1)"}}])
+    emit(renderer, "patch_accepted", cells={"2": {"id": 2, "kind": "code", "source": "print(1)"}})
+    assert capsys.readouterr().out == (
+        "• print(1)\n\n• Retry: Code requires PEP 723\n\n• print(1)\n"
+    )
+
+
+def test_output_interrupting_a_draft_resumes_it_on_a_new_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    renderer = PlainEventRenderer()
+    renderer.preview(ProviderToolCallDeltaEvent(delta='{"ops":[{"cell":{"text":"one'))
+    emit(renderer, "execution_output", output_chunks={"2": execution("out\n")})
+    renderer.preview(ProviderToolCallDeltaEvent(delta='\\ntwo"}}]}'))
+    assert capsys.readouterr().out == "• one\n  └ out\n  \n  two"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Literal, Protocol
 
 from rio.ai._provider_events import (
@@ -37,8 +37,12 @@ class ModelProvider(Protocol):
         system: str,
         messages: list[UserMessage],
         tools: list[AgentTool],
+        on_event: Callable[[ProviderEvent], None] | None = None,
     ) -> AssistantMessage:
-        """Return the response; a provider failure has ``stop_reason`` "error"."""
+        """Return the response; a provider failure has ``stop_reason`` "error".
+
+        ``on_event`` observes stream events as they arrive, up to the terminal one.
+        """
         ...
 
 
@@ -51,7 +55,12 @@ class ClosableModelProvider(ModelProvider, Protocol):
 
 
 async def collect_response(
-    source: AsyncIterator[ProviderEvent], *, api: str, provider: str, model: str
+    source: AsyncIterator[ProviderEvent],
+    *,
+    api: str,
+    provider: str,
+    model: str,
+    on_event: Callable[[ProviderEvent], None] | None = None,
 ) -> AssistantMessage:
     """Collect ordered blocks once, without exposing or copying partial messages.
 
@@ -74,6 +83,8 @@ async def collect_response(
     async for event in source:
         if result is not None:
             continue
+        if on_event is not None:
+            on_event(event)
         if isinstance(event, ProviderResponseStartEvent):
             partial.response_provider = event.response_provider
         elif isinstance(event, ProviderRetryEvent):
