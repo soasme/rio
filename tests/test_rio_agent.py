@@ -44,7 +44,7 @@ from rio.agent.state import (
 )
 from rio.agent.store import StorageFailure, Store, reduce_event
 from rio.ai import FakeProvider
-from rio.ai.messages import AssistantMessage, AssistantMessageDiagnostic, ToolCall
+from rio.ai.messages import AssistantMessage, AssistantMessageDiagnostic, ToolCall, UserMessage
 from rio.coding.cells import KINDS
 from rio.coding.owner import LOG_BYTES, ProcessOwner, WorkerIdentity, stop_worker
 
@@ -211,8 +211,9 @@ def test_atomic_admission_and_linear_history(session: Session) -> None:
     accept(session, note("a"), note("b"))
     turn = prepare(session)
     session.accept(turn.id, [replace_cell(1, note("new"))])
-    assert [c.id for c in session.state.cells] == [3, 2]
-    assert session.state.cells[0].model_dump(exclude_unset=True) == {
+    assert [c.id for c in session.state.cells] == [1, 2, 3]
+    assert session.state.stale == [1]
+    assert session.state.cells[2].model_dump(exclude_unset=True) == {
         "id": 3,
         "previous_id": 1,
         **note("new"),
@@ -238,12 +239,30 @@ def test_runtime_assigns_ids_positions_and_order_free_removal(session: Session) 
     )
     cells = session.state.cells
     assert [(c.id, c.previous_id, c.text) for c in cells] == [
+        (1, None, "a"),
         (2, None, "b"),
-        (6, 3, "c2"),
+        (3, None, "c"),
+        (4, None, "d"),
         (5, None, "e"),
+        (6, 3, "c2"),
         (7, None, "f"),
     ]
+    assert session.state.stale == [1, 3, 4]
     assert session.state.runtime.next_cell_id == 8
+    # A stale Cell takes no ops.
+    turn = prepare(session)
+    with pytest.raises(InvalidPatch, match="ids: \\[2, 5, 6, 7\\]"):
+        session.accept(turn.id, [remove(3)])
+
+
+def test_stale_cells_compact_once_they_outweigh_live_ones(session: Session) -> None:
+    accept(session, note("a"), note("b"))
+    turn = prepare(session)
+    session.accept(turn.id, [remove(1)])
+    assert ([c.id for c in session.state.cells], session.state.stale) == ([1, 2], [1])
+    turn = prepare(session)
+    session.accept(turn.id, [replace_cell(2, note("b2"))])
+    assert ([c.id for c in session.state.cells], session.state.stale) == ([3], [])
 
 
 @pytest.mark.parametrize(
@@ -750,6 +769,12 @@ async def test_cancel_running_worker_and_children(session: Session) -> None:
     assert session.data.executions["1"].result.type == "UnknownExecution"
 
 
+def sent_state(messages: list[UserMessage]) -> dict[str, Any]:
+    """State as sent: header and Cells, one JSON line each, then the per-turn fields."""
+    header, *cells = map(json.loads, messages[0].text.split("\n"))
+    return {**header, "cells": cells, **json.loads(messages[1].text)}
+
+
 def response(operations: list[dict[str, Any]]) -> AssistantMessage:
     message = AssistantMessage(
         content=[ToolCall(id="call", name="step", arguments={"ops": list(operations)})]
@@ -789,7 +814,7 @@ async def test_model_state_keeps_stable_prefix_after_resume(tmp_path: Path) -> N
     path = tmp_path / "prefix.sqlite3"
     with Store(path) as store:
         session = Session.create(store, "Remember café and 日本語.")
-        accept(session, note("Stable memory. " * 1000))
+        accept(session, note("Stable memory. " * 1000), note("Draft."))
         saved = copy.deepcopy(prepare(session))
         # Existing journals put revision before goal and cells.
         assert list(saved.state.model_dump(by_alias=True)) == [
@@ -798,23 +823,27 @@ async def test_model_state_keeps_stable_prefix_after_resume(tmp_path: Path) -> N
             "revision",
             "goal",
             "cells",
+            "stale",
             "runtime",
         ]
 
-    provider = FakeProvider([response([]), response([conclude()])])
+    provider = FakeProvider(
+        [response([replace_cell(2, note("Newer draft."))]), response([conclude()])]
+    )
     with Store(path) as store:
         session = Session(store)
         assert await run(Owner(session), provider, "fake")
         assert session.data.turns[saved.id].state == saved.state
         assert len(provider.calls) == 2
-        first, second = [call[2][0].content for call in provider.calls]
-        assert json.loads(first) == saved.state.model_dump(by_alias=True, exclude_unset=True)
-        assert list(json.loads(first)) == ["schema", "id", "goal", "cells", "revision", "runtime"]
-        assert json.loads(first)["revision"] != json.loads(second)["revision"]
-        assert json.loads(first)["runtime"] != json.loads(second)["runtime"]
-        prefix = first.split(',"revision":', 1)[0]
-        assert len(prefix.encode()) > 14000
-        assert second.startswith(prefix + ',"revision":')
+        first, second = [call[2] for call in provider.calls]
+        assert sent_state(first) == saved.state.model_dump(by_alias=True, exclude_unset=True)
+        assert [m.cache for m in first] == [True, False]
+        # A replacement appends, so the cached blocks of the first request lead the second.
+        assert isinstance(first[0].content, list) and isinstance(second[0].content, list)
+        assert len(first[0].text.encode()) > 14000
+        assert second[0].content[: len(first[0].content)] == first[0].content
+        assert sent_state(second)["stale"] == [2]
+        assert sent_state(first)["revision"] != sent_state(second)["revision"]
 
 
 async def test_base_owner_recovers_started_cells_as_unknown(session: Session) -> None:
@@ -893,7 +922,7 @@ async def test_successful_completions_wake_the_model_once_after_the_queue_drains
         ]
     )
     assert await run(ProcessOwner(session), provider, "fake")
-    state = json.loads(provider.calls[1][2][0].content)
+    state = sent_state(provider.calls[1][2])
     assert [m["id"] for m in state["runtime"]["inbox"]] == ["execution:1", "execution:2"]
 
 
@@ -1039,7 +1068,7 @@ async def test_loop_sleeps_until_timer_instead_of_polling(
     assert time.monotonic() - started >= 0.25
     # Polling every 50ms would tick about six times before the timer fires.
     assert ticks <= 4
-    state = json.loads(provider.calls[0][2][0].content)
+    state = sent_state(provider.calls[0][2])
     assert [m["id"] for m in state["runtime"]["inbox"]] == ["timer:wake"]
 
 
@@ -1696,7 +1725,7 @@ async def test_provider_failures_back_off_outside_invalid_budget(
         "stream ended",
     ]
     assert sum(e.type == "patch_rejected" for e in events) == 1
-    texts = [[m.content for m in call[2][1:]] for call in provider.calls]
+    texts = [[m.content for m in call[2][2:]] for call in provider.calls]
     assert texts == [[], [], [], [], [], ["Rejected step: Invalid ops[0]. " + USAGE]]
     turn = next(iter(session.data.turns.values()))
     assert turn.attempts == 2
@@ -1765,7 +1794,7 @@ async def test_provider_backoff_resumes_after_restart(
         provider = FakeProvider([response([conclude()])])
         assert await run(Owner(session), provider, "fake")
         assert [round(w) for w in clock.waits] == [3]
-        assert len(provider.calls[0][2]) == 1
+        assert len(provider.calls[0][2]) == 2
         turn = session.data.turns[turn.id]
         assert (turn.attempts, turn.provider_failures) == (1, 2)
         assert turn.error is None

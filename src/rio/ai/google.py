@@ -215,9 +215,7 @@ def _build_google_payload(
 ) -> dict[str, JSONValue]:
     config: dict[str, JSONValue] = {}
     payload: dict[str, JSONValue] = {
-        "contents": [
-            {"role": "user", "parts": [{"text": message.content}]} for message in messages
-        ],
+        "contents": [{"role": "user", "parts": [{"text": message.text}]} for message in messages],
     }
     if system:
         payload["systemInstruction"] = {"parts": [{"text": system}]}

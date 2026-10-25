@@ -174,6 +174,9 @@ def admit(
 ) -> tuple[State, list[Cell], list[ControlRequest]]:
     """Apply id-addressed ops; the runtime assigns ids, lineage, and positions.
 
+    New versions append, and replaced or removed Cells turn stale in place, so the
+    prompt prefix through the last unchanged Cell stays byte-identical. Stale Cells
+    are compacted away once they outweigh live ones or the Cells exceed `limit`.
     Controls are returned in op order and never enter State.
     """
     if isinstance(ops, str):
@@ -183,9 +186,8 @@ def admit(
     if not isinstance(ops, list):
         raise InvalidPatch(f"ops must be an array. {USAGE}")
     next_id = state.runtime.next_cell_id
-    ids = [cell.id for cell in state.cells]
-    replaced: dict[int, Cell] = {}
-    removed: set[int] = set()
+    ids = [cell.id for cell in state.cells if cell.id not in state.stale]
+    retired: set[int] = set()
     new: list[Cell] = []
     controls: list[ControlRequest] = []
     for index, operation in enumerate(ops):
@@ -212,15 +214,15 @@ def admit(
             if type(cell_id) is not int or cell_id not in ids:
                 raise InvalidPatch(
                     f"ops[{index}]: Cell {cell_id} is not in cells (ids: {ids}). "
-                    "Replace or remove an existing Cell; new Cells get ids on acceptance"
+                    "Replace or remove a live Cell; new Cells get ids on acceptance"
                 )
-            if cell_id in replaced or cell_id in removed:
+            if cell_id in retired:
                 raise InvalidPatch(
                     f"ops[{index}]: Cell {cell_id} already has an op in this step; "
                     "use one op per Cell"
                 )
+            retired.add(cell_id)
             if operation["op"] == "remove":
-                removed.add(cell_id)
                 continue
             if (execution := executions.get(str(cell_id))) and execution.phase in (
                 "queued",
@@ -237,13 +239,12 @@ def admit(
         except InvalidPatch as exc:
             raise InvalidPatch(f"ops[{index}]: {exc}") from None
         assert body is not None
-        cell = Cell.model_validate({"id": next_id + len(new), "previous_id": previous, **body})
-        if previous is not None:
-            replaced[previous] = cell
-        new.append(cell)
-    cells = [replaced.get(c.id, c) for c in state.cells if c.id not in removed]
-    cells += [cell for cell in new if cell.previous_id is None]
-    candidate = state.model_copy(deep=True, update={"cells": cells})
+        new.append(Cell.model_validate({"id": next_id + len(new), "previous_id": previous, **body}))
+    candidate = state.model_copy(deep=True)
+    stale = sorted({*state.stale, *retired})
+    cells = [*candidate.cells, *new]
+    live = [cell for cell in cells if cell.id not in stale]
+    candidate.cells, candidate.stale = live, []
     candidate.revision += 1
     candidate.runtime = Runtime(
         next_cell_id=next_id + len(new), cells={}, inbox=[], usage=zero_usage()
@@ -251,4 +252,8 @@ def admit(
     context = {**candidate.model_dump(by_alias=True, exclude_unset=True), "runtime": {}}
     if len(encode(context).encode()) > limit:
         raise InvalidPatch("State exceeds context budget; remove Cells before adding work")
+    # Keep stale Cells in place until they outweigh live ones or overflow the budget.
+    stale_bytes = len(encode([cell for cell in cells if cell.id in stale]).encode())
+    if len(encode(cells).encode()) <= limit and stale_bytes <= len(encode(live).encode()):
+        candidate.cells, candidate.stale = cells, stale
     return candidate, new, controls

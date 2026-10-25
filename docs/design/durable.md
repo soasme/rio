@@ -68,7 +68,7 @@ There is no separate `context` field or State lifecycle `status`. The Harness ow
 
 `cells` is an ordered array of current Cell versions. IDs start at 1 and increase by one for every accepted new version. The Harness allocates them from `runtime.next_cell_id` in op order and advances it in the same transaction. Removed IDs are never reused.
 
-An update replaces a full Cell object at the same array position. The Harness gives it the next ID and sets `previous_id` to the replaced Cell's ID. A new lineage uses `previous_id: null`. Updating Cell 1 in `[1, 2]` produces `[3, 2]`, with Cell 3 pointing to 1. Session retains Cell 1 unchanged. Array order does not imply numeric ID order.
+An update appends a full Cell object. The Harness gives it the next ID and sets `previous_id` to the replaced Cell's ID. A new lineage uses `previous_id: null`. Updating Cell 1 in `[1, 2]` produces `[1, 2, 3]` with `stale: [1]`, and Cell 3 points to 1. Replaced and removed Cells stay in place as stale until admission compacts them, once stale Cells outweigh live ones or exceed the Cell budget, so the provider's cached prompt prefix survives edits. Session retains Cell 1 unchanged.
 
 The predecessor link records history only. It does not grant access to another Cell's code or memory. The first version has linear histories, without branches or merges. Results refer to the exact Cell that ran and never transfer to its successor.
 
@@ -99,7 +99,7 @@ The only model tool takes a list of ops that name existing Cells by ID.
 
 Cells are memory; controls are actions. A `control` op never becomes a Cell, takes no Cell ID, and cannot be replaced or removed. Accepted controls get their own IDs, 1, 2, ..., in accepted order.
 
-The model writes Cell bodies without `id` or `previous_id`. The Harness assigns IDs in op order, sets `previous_id`, keeps a replacement at its position, appends added Cells, and applies removals in any order. Reject an unknown ID, a second op on one Cell, and an op on a Cell added in the same step. The model does not echo the revision: the Harness rejects a turn whose prepared State is no longer current.
+The model writes Cell bodies without `id` or `previous_id`. The Harness assigns IDs in op order, sets `previous_id`, appends replacements and added Cells in op order, marks replaced and removed Cells stale, and applies removals in any order. Reject an unknown ID, a second op on one Cell, and an op on a Cell added in the same step. The model does not echo the revision: the Harness rejects a turn whose prepared State is no longer current.
 
 Validate the complete candidate, including context limits, before committing. One SQLite transaction stores new Cell versions, accepts the step, advances revision and IDs, creates execution records, records control requests, and consumes the turn's delivered messages. Invalid steps have no partial effect.
 

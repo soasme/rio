@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import Literal, Self
 
-from rio.agent.prompt import encode_state, step_tool
+from rio.agent.prompt import state_messages, step_tool
 from rio.agent.session import RunStopped, Session
 from rio.agent.shapes import ControlRequest, JournalEvent, Turn, ValidatorResult
 from rio.agent.state import CONTROLS, InvalidPatch
@@ -336,7 +336,7 @@ async def _request_ops(
             await owner.tick()
             flush()
         turn = session.start_attempt(turn.id)
-        messages = [UserMessage(content=encode_state(turn.state))]
+        messages = state_messages(turn.state)
         if turn.error:
             messages.append(UserMessage(content="Rejected step: " + turn.error))
         # No State changes during generation. Owner work only appends runtime records.

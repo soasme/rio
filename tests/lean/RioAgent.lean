@@ -88,12 +88,27 @@ theorem conclusion_rejects_target :
 theorem resolution_admits_its_fields :
     controlAdmits .resolution ["target_cell_id", "evidence_refs", "reason"] = true := by decide
 
-/-- A replacement keeps its position and points to the old id. -/
-def replaceId (cells : List Cell) (id next : Nat) : List Cell :=
-  cells.map fun c => if c.id == id then successor c next else c
+/-- A replacement appends a successor and leaves the old version, now stale, in place,
+    so the Cells before it keep their positions. -/
+def replaceId (cells : List Cell) (stale : List Nat) (id next : Nat) : List Cell × List Nat :=
+  match cells.find? (·.id == id) with
+  | some old => (cells ++ [successor old next], id :: stale)
+  | none => (cells, stale)
 
-theorem replacement_preserves_position :
-    replaceId [⟨1, none⟩, ⟨2, none⟩] 1 5 = [⟨5, some 1⟩, ⟨2, none⟩] := rfl
+theorem replacement_appends_and_marks_stale :
+    replaceId [⟨1, none⟩, ⟨2, none⟩] [] 1 5 = ([⟨1, none⟩, ⟨2, none⟩, ⟨5, some 1⟩], [1]) := rfl
+
+theorem replacement_keeps_earlier_cells (cells : List Cell) (stale : List Nat) (id next : Nat) :
+    cells <+: (replaceId cells stale id next).1 := by
+  unfold replaceId
+  split <;> simp
+
+/-- Compaction drops exactly the stale Cells. -/
+def compact (cells : List Cell) (stale : List Nat) : List Cell :=
+  cells.filter fun c => c.id ∉ stale
+
+theorem compaction_keeps_live_cells :
+    compact [⟨1, none⟩, ⟨2, none⟩, ⟨5, some 1⟩] [1] = [⟨2, none⟩, ⟨5, some 1⟩] := rfl
 
 /-- Removal is by id, so op order does not matter. -/
 def removeIds (cells : List Cell) (ids : List Nat) : List Cell :=
@@ -662,19 +677,22 @@ theorem explicit_meta_state_wins (projection : TurnProjection) (state turnState 
 theorem prepared_turn_commits_both_states (projection : TurnProjection) (state : Nat) :
     reduceTurnChanges projection (preparedTurnChanges state) = ⟨state, some state⟩ := rfl
 
-/-- Model-facing State puts stable JSON fields before revision and runtime.
-    Fields are already encoded; this models ordering, not provider cache policy. -/
-def statePrompt (schema id goal cells revision runtime : String) : List String :=
-  [schema, id, goal, cells, revision, runtime]
+/-- Model-facing State is a header block and one block per Cell, then a per-turn tail of
+    stale ids, revision, and runtime. Blocks are already encoded; this models block order,
+    not provider cache policy. -/
+def statePrompt (header : String) (cells : List String) (tail : String) : List String :=
+  (header :: cells) ++ [tail]
 
-theorem state_prompt_prefix_survives_turn_changes
-    (schema id goal cells revision runtime nextRevision nextRuntime : String) :
-    (statePrompt schema id goal cells revision runtime).take 4 =
-      (statePrompt schema id goal cells nextRevision nextRuntime).take 4 := rfl
+theorem state_prompt_prefix_survives_appends_and_turn_changes
+    (header tail nextTail : String) (cells added : List String) :
+    (statePrompt header cells tail).dropLast <+:
+      statePrompt header (cells ++ added) nextTail := by
+  rw [statePrompt, statePrompt, List.dropLast_concat]
+  exact ⟨added ++ [nextTail], by simp⟩
 
-theorem state_prompt_retains_dynamic_fields
-    (schema id goal cells revision runtime : String) :
-    (statePrompt schema id goal cells revision runtime).drop 4 = [revision, runtime] := rfl
+theorem state_prompt_retains_dynamic_fields (header tail : String) (cells : List String) :
+    (statePrompt header cells tail).getLast? = some tail := by
+  rw [statePrompt, List.getLast?_concat]
 
 /-- Pydantic records retain whether a nullable field was supplied. JSON serialization
     with exclude_unset preserves absence separately from an explicit null. -/

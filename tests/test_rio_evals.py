@@ -103,6 +103,20 @@ def test_unknown_tokens_are_never_reported_as_zero() -> None:
     assert trace_metrics(trace)["tokens"] is None
 
 
+def test_prompt_tokens_are_split_by_cache_outcome() -> None:
+    def answered(input: int, read: int, write: int) -> str:
+        usage = {"input": input, "cacheRead": read, "cacheWrite": write}
+        return json.dumps(
+            {"type": "model_response", "changes": {"turns": {"t": {"response": {"usage": usage}}}}}
+        )
+
+    metrics = trace_metrics("\n".join([answered(10, 0, 90), answered(5, 90, 5)]))
+    assert (metrics["input_tokens"], metrics["cache_read_tokens"]) == (15, 90)
+    assert metrics["cache_write_tokens"] == 95
+    assert aggregate([{**row("001", 10), **metrics}])["001"]["cache_hit_rate"] == 0.45
+    assert aggregate([row("001", 10)])["001"]["cache_hit_rate"] is None
+
+
 def test_success_time_excludes_failed_attempts_but_latency_keeps_them() -> None:
     result = aggregate([row("001", 10), row("001", 1, False)])["001"]
     assert result["median_seconds"] == 5.5
