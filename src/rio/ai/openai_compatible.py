@@ -638,7 +638,7 @@ def _build_chat_payload(
         resolved_compat.get("maxTokensField"), default="max_completion_tokens"
     )
     user_messages: list[JSONValue] = [
-        {"role": "user", "content": message.content} for message in messages
+        {"role": "user", "content": message.text} for message in messages
     ]
     payload: dict[str, JSONValue] = {
         "model": model,
@@ -733,7 +733,7 @@ def _build_responses_payload(
         # zero-data-retention orgs, which reject ``store: true``.
         "store": False,
         "instructions": system,
-        "input": [{"role": "user", "content": message.content} for message in messages],
+        "input": [{"role": "user", "content": message.text} for message in messages],
     }
     if max_tokens is not None:
         payload["max_output_tokens"] = max_tokens

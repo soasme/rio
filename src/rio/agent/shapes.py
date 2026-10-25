@@ -118,7 +118,10 @@ class State(RecordModel):
     id: str
     revision: int
     goal: str
+    # Context order is append-only, so an edit keeps the cached prompt prefix.
     cells: list[Cell]
+    # Replaced or removed Cells still shown in cells until admission compacts them.
+    stale: list[int]
     runtime: Runtime
 
 

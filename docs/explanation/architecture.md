@@ -30,8 +30,10 @@ and a validator. The owner decides how a cell runs. `rio.coding.cells` adds `cod
 (a complete Python script) and `cmd` (a command) and maps each to argv for
 `ProcessOwner`; `rio run` uses both. The model calls one tool, `step`, with a
 list of ops: `add` a cell, or `replace` or `remove` a cell by ID. Rio assigns IDs
-and keeps positions. A replacement gets a new ID and links to the old cell. Old versions stay
-in history. Removing a cell from context does not cancel its work.
+and only appends: a replacement gets a new ID at the end and links to the old cell. Replaced
+and removed cells stay in place, listed in `stale`, until compaction drops them once they
+outweigh live cells. The cached prompt prefix through the last unchanged cell survives the
+edit. Old versions stay in history. Removing a cell from context does not cancel its work.
 
 Cells are memory; controls are actions. A `control` op requests an action and
 never becomes a cell:

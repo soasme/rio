@@ -5,15 +5,20 @@ from collections.abc import Iterable
 from rio.agent.shapes import State
 from rio.agent.state import CONTROL_FIELDS, CONTROLS, CellKind
 from rio.agent.store import encode
+from rio.ai.messages import TextContent, UserMessage
 from rio.ai.tools import AgentTool
 
 PROTOCOL = """You are Rio, an autonomous agent. Complete the goal in State.
 Your entire working context is the supplied State. Use exactly one `step` tool call per response.
-Cells are your memory. Use concise notes to retain facts; remove obsolete Cells and outputs
-to keep context small. The goal and runtime are read-only. A step is a list of ops.
+State arrives as JSON lines: schema, id and goal; then each Cell in context order; then
+stale, revision and runtime. Cells are your memory. Use concise notes to retain facts; remove
+obsolete Cells and outputs to keep context small. The goal and runtime are read-only.
+A step is a list of ops.
 Cell ops name Cells by id: {"op":"add","cell":CELL} appends; {"op":"replace","id":N,"cell":CELL}
-puts a new version in place; {"op":"remove","id":N} drops it from context. Use at most one op
-per existing Cell. The runtime assigns ids and previous_id. Never replace a queued or started Cell.
+appends a new version of Cell N; {"op":"remove","id":N} drops it from context. Use at most one op
+per live Cell. The runtime assigns ids and previous_id. Never replace a queued or started Cell.
+Cells listed in stale were replaced or removed: ignore them; they cannot take ops and are
+compacted away later.
 Controls are actions, not Cells: {"op":"control","control":CONTROL}. They never enter State.
 """
 
@@ -41,18 +46,16 @@ If no work, timer or external wake-up remains, conclude; an idle step is invalid
 """
 
 
-def encode_state(state: State) -> str:
-    """Keep stable content ahead of per-turn fields, including in resumed sessions."""
-    return encode(
-        {
-            "schema": state.schema_version,
-            "id": state.id,
-            "goal": state.goal,
-            "cells": state.cells,
-            "revision": state.revision,
-            "runtime": state.runtime,
-        }
-    )
+def state_messages(state: State) -> list[UserMessage]:
+    """State as cacheable blocks: the header and each Cell, then the per-turn fields.
+
+    Cells only append between compactions, so each turn's prefix through its last
+    unchanged Cell matches the previous request, and every Cell ends a block.
+    """
+    header = encode({"schema": state.schema_version, "id": state.id, "goal": state.goal})
+    blocks = [TextContent(text=text) for text in (header, *map(encode, state.cells))]
+    tail = encode({"stale": state.stale, "revision": state.revision, "runtime": state.runtime})
+    return [UserMessage(content=blocks, cache=True), UserMessage(content=tail)]
 
 
 def system(kinds: Iterable[CellKind]) -> str:

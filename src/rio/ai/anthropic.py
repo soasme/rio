@@ -265,15 +265,22 @@ def _build_messages_payload(
     if thinking_budget_tokens is not None:
         resolved_max_tokens = max(resolved_max_tokens, thinking_budget_tokens + 1024)
     cache_control = _cache_control(cache_retention)
-    payload_messages: list[dict[str, JSONValue]] = [
-        {"role": "user", "content": message.content} for message in messages
-    ]
-    # One breakpoint on the request tail; the system prompt and tools carry the others.
-    if cache_control is not None and payload_messages and payload_messages[-1]["content"]:
-        tail = payload_messages[-1]
-        tail["content"] = [
-            {"type": "text", "text": tail["content"], "cache_control": dict(cache_control)}
-        ]
+    payload_messages: list[dict[str, JSONValue]] = []
+    # The system prompt and tools carry two breakpoints; marked messages take the rest.
+    marked = {index for index, message in enumerate(messages) if message.cache} or {
+        len(messages) - 1
+    }
+    for index, message in enumerate(messages):
+        blocks: list[dict[str, JSONValue]] = (
+            [{"type": "text", "text": message.content}]
+            if isinstance(message.content, str)
+            else [{"type": "text", "text": block.text} for block in message.content]
+        )
+        # Anthropic rejects empty text blocks.
+        blocks = [block for block in blocks if block["text"]]
+        if cache_control is not None and index in marked and blocks:
+            blocks[-1]["cache_control"] = dict(cache_control)
+        payload_messages.append({"role": "user", "content": cast("JSONValue", blocks)})
     payload: dict[str, JSONValue] = {
         "model": model,
         "max_tokens": resolved_max_tokens,

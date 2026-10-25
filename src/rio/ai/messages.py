@@ -111,8 +111,18 @@ class UserMessage(WireModel):
     """One request message. Rio sends each turn as fresh user text, never a transcript."""
 
     role: Literal["user"] = "user"
-    content: str
+    # Text blocks keep a provider's cache boundaries; providers without them join the text.
+    content: str | list[TextContent]
+    # The request prefix through this message is stable across requests. Providers with
+    # explicit cache breakpoints mark it; when no message is marked, they mark the last.
+    cache: bool = False
     timestamp: int = Field(default_factory=current_timestamp_ms)
+
+    @property
+    def text(self) -> str:
+        if isinstance(self.content, str):
+            return self.content
+        return "\n".join(block.text for block in self.content)
 
 
 class AssistantDiagnosticError(WireModel):

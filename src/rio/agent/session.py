@@ -23,7 +23,7 @@ from rio.agent.store import Store, encode
 from rio.truncate import truncate_bytes_tail
 
 # Bump when the model-facing step protocol changes; saved turns hold the old prompt.
-STATE_SCHEMA = "rio.state/5"
+STATE_SCHEMA = "rio.state/6"
 # Longest wait between failed provider requests.
 PROVIDER_BACKOFF_SECONDS = 120
 
@@ -131,6 +131,7 @@ class Session(RuntimeLedger):
                 "revision": 0,
                 "goal": goal,
                 "cells": [],
+                "stale": [],
                 "runtime": {"next_cell_id": 1, "cells": {}, "inbox": [], "usage": zero_usage()},
             }
         )
@@ -198,7 +199,7 @@ class Session(RuntimeLedger):
         Returns the ids of the inbox messages delivered.
         """
         executions = self.data.executions
-        selected = {str(c.id) for c in state.cells}
+        selected = {str(c.id) for c in state.cells if c.id not in state.stale}
         unresolved = {str(cell_id) for cell_id in self.unresolved()}
         outstanding = [
             key for key, e in executions.items() if e.phase != "finished" or key in unresolved

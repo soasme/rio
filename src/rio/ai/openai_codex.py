@@ -144,7 +144,7 @@ def _build_codex_payload(
         "stream": True,
         "instructions": system or "You are a helpful assistant.",
         "input": [
-            {"role": "user", "content": [{"type": "input_text", "text": message.content}]}
+            {"role": "user", "content": [{"type": "input_text", "text": message.text}]}
             for message in messages
         ],
         "text": {"verbosity": "low"},

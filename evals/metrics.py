@@ -16,6 +16,8 @@ def trace_metrics(trace: str) -> dict:
     terminal = None
     provider_errors = resolutions = 0
     costs: list[float] = []
+    # Prompt tokens by cache outcome: uncached input, cache reads, and cache writes.
+    prompt = Counter[str]()
     unknown_costs = 0
     conclusions: list[str] = []
     truncated_observations = 0
@@ -54,7 +56,10 @@ def trace_metrics(trace: str) -> dict:
             usage = changes["meta"]["usage"]
         if kind == "model_response":
             for turn in changes.get("turns", {}).values():
-                cost = turn["response"].get("usage", {}).get("cost", {}).get("total")
+                reported = turn["response"].get("usage", {})
+                for key in ("input", "cacheRead", "cacheWrite"):
+                    prompt[key] += reported.get(key, 0)
+                cost = reported.get("cost", {}).get("total")
                 if isinstance(cost, int | float) and cost > 0:
                     costs.append(float(cost))
                 else:
@@ -80,7 +85,17 @@ def trace_metrics(trace: str) -> dict:
         "dollars": sum(costs)
         if costs and not unknown_costs and usage and not usage["unknown_usage"]
         else None,
+        "input_tokens": prompt["input"],
+        "cache_read_tokens": prompt["cacheRead"],
+        "cache_write_tokens": prompt["cacheWrite"],
     }
+
+
+def cache_hit_rate(rows: list[dict]) -> float | None:
+    """Share of prompt tokens read from cache; None without reported prompt tokens."""
+    read = sum(r.get("cache_read_tokens", 0) for r in rows)
+    total = read + sum(r.get("input_tokens", 0) + r.get("cache_write_tokens", 0) for r in rows)
+    return read / total if total else None
 
 
 def wilson(passed: int, trials: int) -> list[float]:
@@ -122,6 +137,7 @@ def aggregate(results: list[dict]) -> dict:
             "median_success_seconds": statistics.median(successful) if successful else None,
             "median_model_turns": statistics.median(turns),
             "median_context_bytes": statistics.median(r.get("context_bytes", 0) for r in rows),
+            "cache_hit_rate": cache_hit_rate(rows),
             "statuses": dict(
                 Counter(r.get("status", "passed" if r["passed"] else "incorrect") for r in rows)
             ),

@@ -166,7 +166,7 @@ def _build_mistral_payload(
     max_tokens: int | None,
 ) -> dict[str, JSONValue]:
     user_messages: list[JSONValue] = [
-        {"role": "user", "content": message.content} for message in messages
+        {"role": "user", "content": message.text} for message in messages
     ]
     payload: dict[str, JSONValue] = {
         "model": model,
