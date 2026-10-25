@@ -249,11 +249,21 @@ def admit(
     candidate.runtime = Runtime(
         next_cell_id=next_id + len(new), cells={}, inbox=[], usage=zero_usage()
     )
-    context = {**candidate.model_dump(by_alias=True, exclude_unset=True), "runtime": {}}
+    # Settled executions take the runtime share of context, not the Cells' share.
+    context = {
+        **candidate.model_dump(by_alias=True, exclude_unset=True),
+        "settled": [],
+        "runtime": {},
+    }
     if len(encode(context).encode()) > limit:
         raise InvalidPatch("State exceeds context budget; remove Cells before adding work")
-    # Keep stale Cells in place until they outweigh live ones or overflow the budget.
-    stale_bytes = len(encode([cell for cell in cells if cell.id in stale]).encode())
-    if len(encode(cells).encode()) <= limit and stale_bytes <= len(encode(live).encode()):
+    # Keep stale Cells and their executions in place until they outweigh live ones or the
+    # Cells overflow the budget.
+    old = [s for s in candidate.settled if s.cell.cell_id in stale]
+    kept = [s for s in candidate.settled if s.cell.cell_id not in stale]
+    stale_bytes = len(encode([[c for c in cells if c.id in stale], old]).encode())
+    if len(encode(cells).encode()) <= limit and stale_bytes <= len(encode([live, kept]).encode()):
         candidate.cells, candidate.stale = cells, stale
+    else:
+        candidate.settled = kept
     return candidate, new, controls

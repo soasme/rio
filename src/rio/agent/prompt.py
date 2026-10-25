@@ -10,21 +10,23 @@ from rio.ai.tools import AgentTool
 
 PROTOCOL = """You are Rio, an autonomous agent. Complete the goal in State.
 Your entire working context is the supplied State. Use exactly one `step` tool call per response.
-State arrives as JSON lines: schema, id and goal; then each Cell in context order; then
-stale, revision and runtime. Cells are your memory. Use concise notes to retain facts; remove
-obsolete Cells and outputs to keep context small. The goal and runtime are read-only.
+State arrives as JSON lines: schema, id and goal; then each Cell and settled execution in
+context order; then stale, revision and runtime. Cells are your memory. Use concise notes to
+retain facts; remove obsolete Cells and outputs to keep context small. The goal and runtime
+are read-only.
 A step is a list of ops.
 Cell ops name Cells by id: {"op":"add","cell":CELL} appends; {"op":"replace","id":N,"cell":CELL}
 appends a new version of Cell N; {"op":"remove","id":N} drops it from context. Use at most one op
 per live Cell. The runtime assigns ids and previous_id. Never replace a queued or started Cell.
-Cells listed in stale were replaced or removed: ignore them; they cannot take ops and are
-compacted away later.
+Cells listed in stale were replaced or removed: ignore them and their executions; they
+cannot take ops and are compacted away later.
 Controls are actions, not Cells: {"op":"control","control":CONTROL}. They never enter State.
 """
 
 EXECUTION = """Each new runnable Cell version runs ONCE, in accepted order.
-Inspect output streams in runtime.cells, plus completion notices in runtime.inbox.
-To fit context, a stream may show only its tail: runtime.cells[N].omitted counts the
+A finished execution appears once, as an {"execution":{...}} line after its Cell; queued,
+running and unresolved ones are in runtime.cells. Completion notices are in runtime.inbox.
+To fit context, a stream may show only its tail: the record's omitted counts the
 leading bytes left out per stream. The execution_finished event in result.evidence_refs
 keeps the recorded output. Remove Cells you no longer need; a "context" observation
 names Cells whose runtime records did not fit.
@@ -47,13 +49,20 @@ If no work, timer or external wake-up remains, conclude; an idle step is invalid
 
 
 def state_messages(state: State) -> list[UserMessage]:
-    """State as cacheable blocks: the header and each Cell, then the per-turn fields.
+    """State as cacheable blocks: the header, each Cell and settled execution, then the
+    per-turn fields.
 
-    Cells only append between compactions, so each turn's prefix through its last
-    unchanged Cell matches the previous request, and every Cell ends a block.
+    Cells and settled executions only append between compactions, so each turn's prefix
+    through its last unchanged block matches the previous request.
     """
     header = encode({"schema": state.schema_version, "id": state.id, "goal": state.goal})
-    blocks = [TextContent(text=text) for text in (header, *map(encode, state.cells))]
+    # A settled execution follows the Cells that existed when it settled.
+    entries = [((cell.id, 1), encode(cell)) for cell in state.cells] + [
+        ((settled.next_cell_id, 0), encode({"execution": settled.cell}))
+        for settled in state.settled
+    ]
+    entries.sort(key=lambda entry: entry[0])
+    blocks = [TextContent(text=text) for text in (header, *(text for _, text in entries))]
     tail = encode({"stale": state.stale, "revision": state.revision, "runtime": state.runtime})
     return [UserMessage(content=blocks, cache=True), UserMessage(content=tail)]
 

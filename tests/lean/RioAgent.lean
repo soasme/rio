@@ -694,6 +694,23 @@ theorem state_prompt_retains_dynamic_fields (header tail : String) (cells : List
     (statePrompt header cells tail).getLast? = some tail := by
   rw [statePrompt, List.getLast?_concat]
 
+/-- A settled execution's block sorts after the Cells that existed when it settled (ids
+    below its next_cell_id) and before every later Cell, so settling only appends. -/
+inductive Entry where
+  | cell (id : Nat) | settled (nextCellId : Nat)
+
+def Entry.key : Entry → Nat
+  | .cell id => 2 * id + 1
+  | .settled next => 2 * next
+
+theorem settled_follows_earlier_cells (id next : Nat) (h : id < next) :
+    (Entry.cell id).key < (Entry.settled next).key := by
+  simp [Entry.key]; omega
+
+theorem settled_precedes_later_cells (next k : Nat) :
+    (Entry.settled next).key < (Entry.cell (next + k)).key := by
+  simp [Entry.key]; omega
+
 /-- Pydantic records retain whether a nullable field was supplied. JSON serialization
     with exclude_unset preserves absence separately from an explicit null. -/
 inductive WireTextField where

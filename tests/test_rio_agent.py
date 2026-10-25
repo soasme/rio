@@ -20,7 +20,7 @@ import pytest
 from pydantic import ValidationError
 
 from rio.agent.ledger import RESERVED
-from rio.agent.prompt import CONCLUSION, PROTOCOL
+from rio.agent.prompt import CONCLUSION, PROTOCOL, state_messages
 from rio.agent.runner import Owner, RecoveryFailure, replay, run
 from rio.agent.session import RunStopped, Session
 from rio.agent.shapes import (
@@ -30,6 +30,8 @@ from rio.agent.shapes import (
     Observation,
     Receipt,
     RunResult,
+    RuntimeCell,
+    State,
     Turn,
 )
 from rio.agent.state import (
@@ -659,7 +661,7 @@ async def test_resolution_requires_evidence_and_keeps_original_unknown(session: 
     async with ProcessOwner(session):
         assert not session.unresolved()
     assert session.data.executions["1"] == original
-    assert prepare(session).state.runtime.cells["1"].resolved_by == 1
+    assert records(prepare(session).state)["1"].resolved_by == 1
 
 
 def folded(store: Store) -> dict[str, Any]:
@@ -682,7 +684,7 @@ async def test_runtime_cells_leave_the_live_projection_a_fold_of_events(
     async with Owner(session) as owner:
         await owner.handle_controls()
     turn = prepare(session)
-    assert turn.state.runtime.cells["1"].resolved_by == 1
+    assert records(turn.state)["1"].resolved_by == 1
     assert "resolved_by" not in session.data.executions["1"].model_fields_set
     assert session.store.data == folded(session.store)
     session.accept(turn.id, [control("cancel", target_cell_id=2)])
@@ -769,10 +771,18 @@ async def test_cancel_running_worker_and_children(session: Session) -> None:
     assert session.data.executions["1"].result.type == "UnknownExecution"
 
 
+def records(state: State) -> dict[str, RuntimeCell]:
+    """Execution records shown in a turn: settled ones, then outstanding ones."""
+    return {**{str(s.cell.cell_id): s.cell for s in state.settled}, **state.runtime.cells}
+
+
 def sent_state(messages: list[UserMessage]) -> dict[str, Any]:
-    """State as sent: header and Cells, one JSON line each, then the per-turn fields."""
-    header, *cells = map(json.loads, messages[0].text.split("\n"))
-    return {**header, "cells": cells, **json.loads(messages[1].text)}
+    """State as sent: header, Cells and settled executions, one JSON line each, then the
+    per-turn fields. Settled executions come back as their records."""
+    header, *lines = map(json.loads, messages[0].text.split("\n"))
+    cells = [line for line in lines if "execution" not in line]
+    settled = [line["execution"] for line in lines if "execution" in line]
+    return {**header, "cells": cells, "settled": settled, **json.loads(messages[1].text)}
 
 
 def response(operations: list[dict[str, Any]]) -> AssistantMessage:
@@ -824,6 +834,7 @@ async def test_model_state_keeps_stable_prefix_after_resume(tmp_path: Path) -> N
             "goal",
             "cells",
             "stale",
+            "settled",
             "runtime",
         ]
 
@@ -1524,7 +1535,7 @@ def test_context_keeps_each_output_whole(session: Session) -> None:
         session.finish(i, {"type": "success"})
     turn = prepare(session)
     for key in ("1", "2"):
-        output = turn.state.runtime.cells[key].output
+        output = records(turn.state)[key].output
         assert output == {"stdout": "x" * session.limits.output_bytes}
     session.accept(turn.id, [])
 
@@ -1546,7 +1557,7 @@ async def test_oversized_output_shows_marked_tails_and_replays(tmp_path: Path) -
         state = turn.state
         assert len(encode(state).encode()) <= session.limits.context_bytes
         for key in ("1", "2"):
-            cell, recorded = state.runtime.cells[key], executions[key].output
+            cell, recorded = records(state)[key], executions[key].output
             assert cell.omitted is not None
             assert set(cell.omitted) == {"stdout", "stderr"}
             for name, text in recorded.items():
@@ -1578,7 +1589,7 @@ def test_many_large_outputs_share_context(session: Session) -> None:
         session.finish(i, {"type": "success"})
     state = prepare(session).state
     assert len(encode(state).encode()) <= session.limits.context_bytes
-    cells = state.runtime.cells
+    cells = records(state)
     assert cells["12"].output == {"stdout": "small"}
     assert "omitted" not in cells["12"].model_fields_set
     # Equal tails of the recorded 50 KB; JSON escapes count toward the budget.
@@ -1588,6 +1599,44 @@ def test_many_large_outputs_share_context(session: Session) -> None:
     assert 10_000 < len(tail) < 20_000
     for i in range(1, 12):
         assert cells[str(i)].omitted == {"stdout": session.limits.output_bytes - len(tail)}
+
+
+def test_settled_output_stays_in_the_cached_prefix(session: Session) -> None:
+    accept(session, cmd("a"), cmd("b"))
+    session.authorize(1)
+    session.append_output(1, {"stdout": "first"})
+    session.finish(1, {"type": "success"})
+    turn = prepare(session)
+    assert [s.cell.cell_id for s in turn.state.settled] == [1]
+    assert list(turn.state.runtime.cells) == ["2"]
+    first = state_messages(turn.state)
+    session.accept(turn.id, [add(note("later"))])
+    session.authorize(2)
+    session.append_output(2, {"stdout": "x" * 40_000})
+    session.finish(2, {"type": "success"})
+    turn = prepare(session)
+    second = state_messages(turn.state)
+    assert isinstance(first[0].content, list) and isinstance(second[0].content, list)
+    # New output and Cells append; the settled record keeps its block and output.
+    assert second[0].content[: len(first[0].content)] == first[0].content
+    lines = [json.loads(block.text) for block in second[0].content[1:]]
+    assert [line.get("id") or line["execution"]["cell_id"] for line in lines] == [1, 2, 1, 3, 2]
+    assert lines[2]["execution"]["output"] == {"stdout": "first"}
+    assert turn.state.runtime.cells == {}
+
+
+def test_compaction_drops_settled_records_of_stale_cells(session: Session) -> None:
+    accept(session, cmd("a"), note("keep " * 100))
+    session.authorize(1)
+    session.append_output(1, {"stdout": "out"})
+    session.finish(1, {"type": "success"})
+    turn = prepare(session)
+    session.accept(turn.id, [remove(1)])
+    assert [s.cell.cell_id for s in session.state.settled] == [1]
+    assert session.state.stale == [1]
+    turn = prepare(session)
+    session.accept(turn.id, [remove(2)])
+    assert (session.state.cells, session.state.stale, session.state.settled) == ([], [], [])
 
 
 def test_output_shares_and_json_tails_respect_budget() -> None:
