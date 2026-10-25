@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from rio.ai import ProviderRetryEvent, ProviderToolCallDeltaEvent
+from rio.ai import ProviderToolCallDeltaEvent
 from rio.cli.render import PlainEventRenderer, StepDraft
 
 
@@ -172,7 +172,10 @@ def test_step_draft_reads_bodies_from_any_fragmentation() -> None:
         {"op": "add", "cell": {"kind": "note", "text": 'say "hi" é 😀\n'}},
         {"op": "replace", "id": 3, "cell": {"source": "print(1)\n", "kind": "code"}},
         {"op": "add", "cell": {"kind": "cmd", "argv": ["pytest", "a b"]}},
-        {"op": "control", "control": {"type": "conclusion", "text": "x", "reason": "done"}},
+        {
+            "op": "control",
+            "control": {"type": "resolution", "evidence_refs": ["e:1"], "reason": "ok"},
+        },
     ]
     for raw in (json.dumps({"ops": ops}), json.dumps({"ops": ops}, indent=1)):
         bodies: dict[int, str] = {}
@@ -207,8 +210,6 @@ def test_accepted_cells_that_differ_from_the_draft_are_shown(
 ) -> None:
     renderer = PlainEventRenderer()
     stream(renderer, [{"op": "add", "cell": {"kind": "note", "text": "draft"}}])
-    renderer.preview(ProviderRetryEvent(attempt=1, max_attempts=2, delay_seconds=0, message="x"))
-    stream(renderer, [{"op": "add", "cell": {"kind": "note", "text": "final"}}])
     emit(
         renderer,
         "patch_accepted",
