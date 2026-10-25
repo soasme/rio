@@ -50,6 +50,46 @@ theorem state_snapshots_do_not_repeat_cells (cells : List Cell) :
 
 theorem rejected_patch_has_no_cells : visibleCells .rejected = [] := by rfl
 
+-- Bodies streamed while the model writes are drafts. Acceptance prints only the
+-- accepted bodies that differ from the draft in the same position.
+def acceptedAfterDraft : List String → List String → List String
+  | d :: ds, b :: bs => (if d = b then [] else [b]) ++ acceptedAfterDraft ds bs
+  | [], bs => bs
+  | _ :: _, [] => []
+
+theorem undrafted_cells_are_all_shown (bodies : List String) :
+    acceptedAfterDraft [] bodies = bodies := by
+  cases bodies <;> rfl
+
+theorem matching_draft_is_not_repeated (bodies : List String) :
+    acceptedAfterDraft bodies bodies = [] := by
+  induction bodies with
+  | nil => rfl
+  | cons b bs ih => simp [acceptedAfterDraft, ih]
+
+theorem every_accepted_body_is_visible (drafts bodies : List String) :
+    ∀ b ∈ bodies, b ∈ drafts ++ acceptedAfterDraft drafts bodies := by
+  induction bodies generalizing drafts with
+  | nil => simp
+  | cons b bs ih =>
+    cases drafts with
+    | nil => simp [acceptedAfterDraft]
+    | cons d ds =>
+      intro x hx
+      have step := ih ds
+      by_cases h : d = b
+      · subst h
+        rcases List.mem_cons.mp hx with rfl | hx
+        · simp
+        · rcases List.mem_append.mp (step x hx) with hd | ha
+          · simp [hd]
+          · simp [acceptedAfterDraft, ha]
+      · rcases List.mem_cons.mp hx with rfl | hx
+        · simp [acceptedAfterDraft, h]
+        · rcases List.mem_append.mp (step x hx) with hd | ha
+          · simp [hd]
+          · simp [acceptedAfterDraft, h, ha]
+
 -- Each stream tracks its own previous length. Durable snapshots only append.
 def outputDelta (displayed : Nat) (snapshot : List Char) : List Char :=
   snapshot.drop displayed

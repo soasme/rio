@@ -30,6 +30,7 @@ from rio.ai._provider_events import (
     ProviderResponseEndEvent,
     ProviderTextDeltaEvent,
     ProviderThinkingDeltaEvent,
+    ProviderToolCallDeltaEvent,
     ProviderToolCallEvent,
 )
 from rio.ai.env import OpenAICompatibleConfig
@@ -293,7 +294,9 @@ class _ChatStreamParser:
             self.emitted_content = True
             index = int(tool_call_delta.get("index", 0))
             builder = self._tool_call_builders.setdefault(index, _ToolCallBuilder())
-            builder.add_delta(tool_call_delta)
+            arguments = builder.add_delta(tool_call_delta)
+            if arguments:
+                events.append(ProviderToolCallDeltaEvent(delta=arguments))
 
         return events, False
 
@@ -382,8 +385,11 @@ class _ResponsesStreamParser:
         elif chunk_type == "response.function_call_arguments.delta":
             builder = self._tool_builder(chunk)
             if builder is not None:
-                builder.add_arguments_delta(chunk.get("delta"))
                 self.emitted_content = True
+                arguments = chunk.get("delta")
+                if isinstance(arguments, str) and arguments:
+                    builder.arguments_parts.append(arguments)
+                    return [ProviderToolCallDeltaEvent(delta=arguments)], False
 
         elif chunk_type == "response.function_call_arguments.done":
             builder = self._tool_builder(chunk)
@@ -530,24 +536,27 @@ class _ToolCallBuilder:
         self.name = ""
         self.arguments_parts: list[str] = []
 
-    def add_delta(self, delta: Mapping[str, Any]) -> None:
+    def add_delta(self, delta: Mapping[str, Any]) -> str:
+        """Apply one streamed fragment; return the argument text it added."""
         call_id = delta.get("id")
         if isinstance(call_id, str) and call_id != "null":
             self.id = call_id
 
         function = delta.get("function")
         if not isinstance(function, Mapping):
-            return
+            return ""
 
         name = function.get("name")
         if isinstance(name, str):
             self.name = name
 
         arguments = function.get("arguments")
-        if isinstance(arguments, str):
-            self.arguments_parts.append(arguments)
-        elif isinstance(arguments, Mapping):
-            self.arguments_parts.append(dumps(arguments))
+        if isinstance(arguments, Mapping):
+            arguments = dumps(arguments)
+        if not isinstance(arguments, str):
+            return ""
+        self.arguments_parts.append(arguments)
+        return arguments
 
     def build(self, index: int) -> ToolCall:
         return ToolCall(
@@ -574,10 +583,6 @@ class _ResponsesToolCallBuilder:
         self.arguments_parts: list[str] = []
         self.arguments_final: str | None = None
         self.done = False
-
-    def add_arguments_delta(self, delta: object) -> None:
-        if isinstance(delta, str):
-            self.arguments_parts.append(delta)
 
     def set_final(
         self,

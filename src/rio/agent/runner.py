@@ -15,7 +15,7 @@ from rio.agent.shapes import ControlRequest, JournalEvent, Turn, ValidatorResult
 from rio.agent.state import CONTROLS, InvalidPatch
 from rio.agent.store import StorageFailure
 from rio.ai.messages import AssistantMessage, UserMessage, raw_tool_arguments
-from rio.ai.provider import ModelProvider
+from rio.ai.provider import ModelProvider, ProviderEvent
 from rio.ai.retry import is_transient_status
 
 
@@ -241,7 +241,9 @@ async def run(
     provider: ModelProvider,
     model: str,
     publish: Callable[[JournalEvent], None] | None = None,
+    preview: Callable[[ProviderEvent], None] | None = None,
 ) -> bool:
+    """Run to a terminal state; `preview` sees model stream events before they commit."""
     session = owner.session
     published = 0
 
@@ -271,7 +273,7 @@ async def run(
             try:
                 turn = session.prepare_turn()
                 try:
-                    ops = await _request_ops(owner, turn, provider, model, flush)
+                    ops = await _request_ops(owner, turn, provider, model, flush, preview)
                 except ProviderFailure as exc:
                     session.provider_failed(
                         turn.id, str(exc), retryable=exc.retryable, retry_after=exc.retry_after
@@ -322,6 +324,7 @@ async def _request_ops(
     provider: ModelProvider,
     model: str,
     flush: Callable[[], None],
+    preview: Callable[[ProviderEvent], None] | None,
 ) -> object:
     """Return the ops of one complete step call, reusing a saved response after restart."""
     session = owner.session
@@ -343,6 +346,7 @@ async def _request_ops(
                 system=turn.system,
                 messages=messages,
                 tools=[step_tool(turn.tool_schema)],
+                on_event=preview,
             )
         )
         try:

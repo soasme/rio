@@ -96,7 +96,11 @@ async def run_persistent_session(
                     },
                     instructions=instructions,
                 )
-            return await run(ProcessOwner(session), provider, model, publish), session_id
+            preview = renderer.preview if output_mode == "human" else None
+            return (
+                await run(ProcessOwner(session), provider, model, publish, preview),
+                session_id,
+            )
         finally:
             await provider.aclose()
 

@@ -13,13 +13,21 @@ Render accepted note text, command arguments, complete Python source
 number, kind, predecessor, or control metadata. IDs remain internal to ordering
 and output tracking. Show only new versions in allocation order, not every cell
 in the State snapshot. Removing a cell from current context does not erase its
-transcript history. Rejected or uncommitted cells are not shown.
+transcript history.
+
+Cell bodies also stream while the model writes its `step` call: code source and
+note text appear as they arrive, and a command once its argv is complete. A draft
+is a preview, not a commit. When the patch is accepted, a cell whose body matches
+the draft in the same position is not printed again; a differing cell is printed
+in full. A rejected draft is followed by its `Retry:` reason. Replay shows only
+committed cells, and `--output json` never includes drafts.
 
 Commands display their argv joined with shell quoting to preserve argument boundaries;
 this is presentation only, and execution still passes argv directly without a shell.
 
 Execution authorization does not add a separate entry. Output is visible as it
-commits, before execution finishes. Stdout follows `└` directly; stderr adds a
+commits, before execution finishes; Python runs unbuffered so `print` output is not
+held until exit. Stdout follows `└` directly; stderr adds a
 `stderr:` label. Completion shows the outcome without a cell label or number.
 
 ```text

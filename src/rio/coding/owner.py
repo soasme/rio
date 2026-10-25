@@ -382,6 +382,8 @@ class ProcessOwner(Owner):
             **os.environ,
             "RIO_TIMER_SOCKET": self.socket_path,
             "RIO_SESSION_URI": self.session.store.path.as_uri() + "?mode=ro",
+            # Python block-buffers piped stdout; unbuffered output streams as it is printed.
+            "PYTHONUNBUFFERED": "1",
             "PYTHONPATH": os.pathsep.join(
                 [str(Path(__file__).resolve().parents[2])]
                 + ([os.environ["PYTHONPATH"]] if "PYTHONPATH" in os.environ else [])

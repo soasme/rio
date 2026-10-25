@@ -103,13 +103,16 @@ class HTTPProvider[ConfigT: HTTPConfig]:
         system: str,
         messages: list[UserMessage],
         tools: list[AgentTool],
+        on_event: Callable[[ProviderEvent], None] | None = None,
     ) -> AssistantMessage:
         """Return one response as a final assistant message or error."""
         api, provider = self._labels()
         raw = self._stream_provider_events(
             model=model, system=system, messages=messages, tools=tools
         )
-        return await collect_response(raw, api=api, provider=provider, model=model)
+        return await collect_response(
+            raw, api=api, provider=provider, model=model, on_event=on_event
+        )
 
     def _labels(self) -> tuple[str, str]:
         raise NotImplementedError

@@ -7,6 +7,11 @@ import json
 import httpx
 import pytest
 
+from rio.ai._provider_events import (
+    ProviderEvent,
+    ProviderToolCallDeltaEvent,
+    ProviderToolCallEvent,
+)
 from rio.ai.anthropic import AnthropicProvider
 from rio.ai.env import AnthropicConfig, OpenAICompatibleConfig
 from rio.ai.google import GoogleGenerativeAIConfig, GoogleGenerativeAIProvider
@@ -163,3 +168,71 @@ async def test_mistral_requests_and_parses_trailing_usage() -> None:
     usage = message.usage
     assert (usage.input, usage.output, usage.total_tokens) == (100, 20, 120)
     assert json.loads(requests[0].content)["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.parametrize("kind", ["anthropic", "chat", "mistral", "responses"])
+async def test_tool_call_arguments_stream_before_the_final_call(kind: str) -> None:
+    parts = ['{"ops": [', "]}"]
+    if kind == "anthropic":
+        chunks: list[object] = [
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "id": "call-1", "name": "step"},
+            },
+            *(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": part},
+                }
+                for part in parts
+            ),
+            {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+        ]
+    elif kind == "responses":
+        item = {"type": "function_call", "id": "fc-1", "call_id": "call-1", "name": "step"}
+        chunks = [
+            {"type": "response.output_item.added", "output_index": 0, "item": item},
+            *(
+                {
+                    "type": "response.function_call_arguments.delta",
+                    "output_index": 0,
+                    "item_id": "fc-1",
+                    "delta": part,
+                }
+                for part in parts
+            ),
+            {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {**item, "arguments": "".join(parts)},
+            },
+            {"type": "response.completed", "response": {"status": "completed"}},
+        ]
+    else:
+        calls = [
+            {"index": 0, "id": "call-1", "function": {"name": "step", "arguments": parts[0]}},
+            {"index": 0, "function": {"arguments": parts[1]}},
+        ]
+        chunks = [
+            *({"choices": [{"delta": {"tool_calls": [call]}}]} for call in calls),
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            "[DONE]",
+        ]
+    events: list[ProviderEvent] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=sse(*chunks))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        message = await provider(kind, client).complete(
+            model="test-model", system="", messages=[], tools=[], on_event=events.append
+        )
+    deltas = [e.delta for e in events if isinstance(e, ProviderToolCallDeltaEvent)]
+    assert deltas == parts
+    final = [i for i, e in enumerate(events) if isinstance(e, ProviderToolCallEvent)]
+    assert final and final[0] > max(
+        i for i, e in enumerate(events) if isinstance(e, ProviderToolCallDeltaEvent)
+    )
+    assert message.tool_calls[0].arguments == {"ops": []}

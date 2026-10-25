@@ -52,6 +52,15 @@ class ProviderThinkingDeltaEvent(BaseModel):
     delta: str
 
 
+class ProviderToolCallDeltaEvent(BaseModel):
+    """A streamed fragment of a tool call's JSON arguments, in arrival order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["tool_call_delta"] = "tool_call_delta"
+    delta: str
+
+
 class ProviderToolCallEvent(BaseModel):
     """A complete tool call requested by the model."""
 
@@ -87,6 +96,7 @@ type ProviderEvent = (
     | ProviderRetryEvent
     | ProviderTextDeltaEvent
     | ProviderThinkingDeltaEvent
+    | ProviderToolCallDeltaEvent
     | ProviderToolCallEvent
     | ProviderResponseEndEvent
     | ProviderErrorEvent

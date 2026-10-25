@@ -9,6 +9,7 @@ repository root for the original license text.
 
 # ruff: noqa: F401 - this module intentionally defines the public facade
 
+from rio.ai._provider_events import ProviderEvent, ProviderRetryEvent, ProviderToolCallDeltaEvent
 from rio.ai.anthropic import AnthropicProvider
 from rio.ai.env import (
     DEFAULT_ANTHROPIC_BASE_URL,

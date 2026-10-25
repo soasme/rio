@@ -13,6 +13,7 @@ from rio.ai._provider_events import (
     ProviderResponseEndEvent,
     ProviderTextDeltaEvent,
     ProviderThinkingDeltaEvent,
+    ProviderToolCallDeltaEvent,
     ProviderToolCallEvent,
 )
 from rio.ai.env import HTTPConfig
@@ -126,7 +127,9 @@ class _MistralStreamParser:
             self.emitted_content = True
             index = int(tool_call_delta.get("index", 0))
             builder = self._tool_call_builders.setdefault(index, _ToolCallBuilder())
-            builder.add_delta(tool_call_delta)
+            arguments = builder.add_delta(tool_call_delta)
+            if arguments:
+                events.append(ProviderToolCallDeltaEvent(delta=arguments))
         return events, False
 
     def finalize(self) -> list[ProviderEvent]:
