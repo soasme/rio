@@ -105,6 +105,13 @@ class RuntimeCell(Execution):
     omitted: dict[str, int] | None = None
 
 
+class Settled(RecordModel):
+    # A finished, certain execution as first shown. Its view never changes, so later
+    # turns reuse its cached prompt block; it follows the Cells with lower ids.
+    next_cell_id: int
+    cell: RuntimeCell
+
+
 class Runtime(RecordModel):
     next_cell_id: int
     cells: dict[str, RuntimeCell]
@@ -122,6 +129,8 @@ class State(RecordModel):
     cells: list[Cell]
     # Replaced or removed Cells still shown in cells until admission compacts them.
     stale: list[int]
+    # Settled executions of Cells in cells, in the order they settled.
+    settled: list[Settled]
     runtime: Runtime
 
 

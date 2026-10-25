@@ -93,8 +93,12 @@ Each model turn fits runtime records into the context budget. Streams within an
 equal share of the remaining bytes stay whole; larger ones show a tail, and the
 record's `omitted` field counts the leading bytes left out per stream. The
 `execution_finished` event in the result's `evidence_refs` keeps the recorded
-output. If even the records without output do not fit, the turn shows only queued,
-running and unresolved work, then none, plus a `context` observation naming the
+output. A finished, certain record of a live Cell settles once: it moves to
+`settled` with its shown output fixed and is sent after the Cells that existed when it
+settled, so later turns read it from the provider's cache. Queued, running and
+unresolved records stay in `runtime.cells` and are refit every turn. If even the
+records without output do not fit, the turn defers new settlements, then drops settled
+records, then shows no outstanding work, plus a `context` observation naming the
 Cells left out. Rio stops the run only when the goal and Cells alone exceed the budget.
 
 ## Recovery

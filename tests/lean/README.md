@@ -12,7 +12,7 @@ Run `lake build` in this directory. CI builds all targets.
 These are independent behavior models, not proofs extracted from Python.
 `RioAgent.lean` also checks that model-facing State is a header block and one block per
 Cell before stale ids, revision, and runtime, and that replacements append and mark the old
-version stale, so the prefix survives edits and per-turn changes. This models block
+version stale, and that a settled execution sorts after the Cells that existed when it settled and before later ones, so the prefix survives edits, settled output, and per-turn changes. This models block
 ordering, not provider cache hits.
 They do not prove SQLite synchronization, OS process cleanup, transport behavior,
 or hardware durability. Python tests cover the implementation and its failure paths.

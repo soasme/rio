@@ -15,6 +15,7 @@ from rio.agent.shapes import (
     Observation,
     Receipt,
     RuntimeCell,
+    Settled,
     State,
     Turn,
 )
@@ -23,7 +24,7 @@ from rio.agent.store import Store, encode
 from rio.truncate import truncate_bytes_tail
 
 # Bump when the model-facing step protocol changes; saved turns hold the old prompt.
-STATE_SCHEMA = "rio.state/6"
+STATE_SCHEMA = "rio.state/7"
 # Longest wait between failed provider requests.
 PROVIDER_BACKOFF_SECONDS = 120
 
@@ -132,6 +133,7 @@ class Session(RuntimeLedger):
                 "goal": goal,
                 "cells": [],
                 "stale": [],
+                "settled": [],
                 "runtime": {"next_cell_id": 1, "cells": {}, "inbox": [], "usage": zero_usage()},
             }
         )
@@ -194,26 +196,43 @@ class Session(RuntimeLedger):
         return cell
 
     def _fit_runtime(self, state: State) -> list[str]:
-        """Fill state's runtime cells and inbox within the context budget.
+        """Fill state's execution records and inbox within the context budget.
 
-        Returns the ids of the inbox messages delivered.
+        A finished, certain execution of a live Cell settles once: it joins state.settled
+        with its output fixed, so later turns reuse its cached prompt block. Outstanding
+        records stay in runtime.cells and are refit every turn. Returns the ids of the
+        inbox messages delivered.
         """
         executions = self.data.executions
-        selected = {str(c.id) for c in state.cells if c.id not in state.stale}
+        live = {str(c.id) for c in state.cells if c.id not in state.stale}
         unresolved = {str(cell_id) for cell_id in self.unresolved()}
         outstanding = [
             key for key, e in executions.items() if e.phase != "finished" or key in unresolved
         ]
-        shown = [key for key in executions if key in selected or key in outstanding]
-        # Reserve each record with all output omitted, plus the oldest message so the inbox
-        # always drains. If that overflows, show only outstanding work, then none, with a
-        # notice naming the Cells left out.
+        shown = [key for key in executions if key in live or key in outstanding]
+        frozen = list(state.settled)
+        settled = {str(s.cell.cell_id) for s in frozen}
+        settling = [key for key in shown if key not in outstanding and key not in settled]
+        # Reserve each new record with all output omitted, plus the oldest message so the
+        # inbox always drains. If that overflows, defer new settlements, then drop settled
+        # records, then show no outstanding work, with a notice naming the Cells left out.
         limit = self.limits.context_bytes
         waiting = [inbox_view(m) for m in self.data.inbox.values() if not m.consumed]
-        for kept in (shown, outstanding, []):
-            outputs = {key: dict.fromkeys(executions[key].output, "") for key in kept}
+        marker = state.runtime.next_cell_id
+        for kept_settled, new, kept in (
+            (frozen, settling, outstanding),
+            (frozen, [], outstanding),
+            ([], [], outstanding),
+            ([], [], []),
+        ):
+            outputs = {key: dict.fromkeys(executions[key].output, "") for key in (*new, *kept)}
+            state.settled = kept_settled + [
+                Settled(next_cell_id=marker, cell=self._runtime_cell(key, outputs[key]))
+                for key in new
+            ]
             state.runtime.cells = {key: self._runtime_cell(key, outputs[key]) for key in kept}
-            missing = [int(key) for key in shown if key not in kept]
+            visible = {str(s.cell.cell_id) for s in state.settled} | set(kept)
+            missing = [int(key) for key in shown if key not in visible]
             state.runtime.inbox = (
                 [context_notice(self.store.sequence + 1, missing)] if missing else []
             )
@@ -233,11 +252,14 @@ class Session(RuntimeLedger):
             context_bytes += message_bytes
         # Output fills the rest: streams within an equal share stay whole, larger ones keep
         # a tail. The journal keeps the recorded output; see prompt.EXECUTION.
-        streams = [(key, name) for key in kept for name in executions[key].output]
+        streams = [(key, name) for key in (*new, *kept) for name in executions[key].output]
         texts = [executions[key].output[name] for key, name in streams]
         caps = shares([size(text) - 2 for text in texts], limit - context_bytes)
         for (key, name), text, cap in zip(streams, texts, caps, strict=True):
             outputs[key][name] = json_tail(text, cap)
+        state.settled = kept_settled + [
+            Settled(next_cell_id=marker, cell=self._runtime_cell(key, outputs[key])) for key in new
+        ]
         state.runtime.cells = {key: self._runtime_cell(key, outputs[key]) for key in kept}
         return delivered
 
