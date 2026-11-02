@@ -1,3 +1,17 @@
+# 0.10.0
+
+* fix(coding): tell the model /tmp is deleted after each code cell ([#201](https://github.com/soasme/rio/pull/201))
+* fix(evals): grade submissions that break test collection as incorrect ([#200](https://github.com/soasme/rio/pull/200))
+* feat(coding): support private_key_jwt for MCP client credentials ([#198](https://github.com/soasme/rio/pull/198))
+* fix(coding): steer imports in code cells to cmd scripts ([#199](https://github.com/soasme/rio/pull/199))
+* feat(coding): authenticate MCP servers with OAuth client credentials ([#197](https://github.com/soasme/rio/pull/197))
+* feat(coding): call MCP tools from code cells ([#196](https://github.com/soasme/rio/pull/196))
+* feat(coding): run code cells in small-python with builtins only ([#195](https://github.com/soasme/rio/pull/195))
+* fix(agent)!: keep the cached prompt prefix across Cell edits ([#193](https://github.com/soasme/rio/pull/193))
+* chore(deps): bump certifi from 2026.7.22 to 2026.10.19 ([#192](https://github.com/soasme/rio/pull/192))
+* fix(cli): stream cell code and Python output as they are produced ([#191](https://github.com/soasme/rio/pull/191))
+* chore(deps): bump pillow from 12.3.0 to 13.0.0 ([#190](https://github.com/soasme/rio/pull/190))
+
 # 0.9.2
 
 * fix(evals): isolate grading and expand validated scenario coverage ([#189](https://github.com/soasme/rio/pull/189))
