@@ -738,4 +738,24 @@ theorem strict_integer_rejects_boolean (value : Bool) :
 theorem strict_integer_rejects_string (value : String) :
     decodeInteger (.text value) = none := rfl
 
+/-- Code Cells reach only the mounted working directory and scratch /tmp, and import nothing. -/
+inductive CodeAccess where
+  | workspace | scratch | elsewhere
+  deriving DecidableEq
+
+def codeMayOpen : CodeAccess → Bool
+  | .workspace | .scratch => true
+  | .elsewhere => false
+
+def codeModules : List String := []
+
+theorem code_cannot_open_unmounted_paths : codeMayOpen .elsewhere = false := rfl
+
+theorem code_opens_mounted_paths (access : CodeAccess) (h : access ≠ .elsewhere) :
+    codeMayOpen access = true := by
+  cases access <;> simp_all [codeMayOpen]
+
+theorem code_imports_no_module (name : String) : name ∉ codeModules := by
+  simp [codeModules]
+
 end RioAgent

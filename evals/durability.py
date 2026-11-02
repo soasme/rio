@@ -38,9 +38,7 @@ async def measure(samples: int) -> dict:
                                 "cell": {
                                     "kind": "code",
                                     "runtime": "python",
-                                    "source": (
-                                        "# /// script\n# dependencies = []\n# ///\nprint('ready')\n"
-                                    ),
+                                    "source": "print('ready')\n",
                                 },
                             },
                         ],
@@ -73,9 +71,7 @@ async def measure(samples: int) -> dict:
                         "cell": {
                             "kind": "code",
                             "runtime": "python",
-                            "source": (
-                                "# /// script\n# dependencies = []\n# ///\nraise AssertionError()\n"
-                            ),
+                            "source": "raise AssertionError()\n",
                         },
                     },
                 ],
@@ -96,7 +92,7 @@ async def measure(samples: int) -> dict:
                 "commit_p95_seconds": sorted(commits)[int((len(commits) - 1) * 0.95)],
                 "rebuild_seconds": store.rebuild_seconds,
                 "worker_startup_p50_seconds": statistics.median(startup),
-                "uv_script_p50_seconds": statistics.median(script),
+                "script_p50_seconds": statistics.median(script),
                 "inbox_fold_p50_seconds": statistics.median(inbox),
                 "idle_owner_rss_bytes": idle_rss,
                 "idle_cell_processes": 0,

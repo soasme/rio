@@ -28,7 +28,7 @@ Follow these when changing or reviewing this package.
 
 | Kind | Execution |
 | --- | --- |
-| `code` | An independent Python script with PEP 723 metadata, run through `uv run --script`. |
+| `code` | A builtins-only script run by [codemode.py](codemode.py) in Small Python, with the working directory and a scratch `/tmp` mounted. |
 | `cmd` | An argument list executed directly, without a shell. |
 
 Pass `cells.KINDS` when creating or opening a coding session, and
@@ -43,7 +43,8 @@ journaling and recovery. See the
 | --- | --- |
 | [owner.py](owner.py) | `ProcessOwner` runs cells and argv validators in supervised process groups under `owner_config["cwd"]`, records worker identities in its `workers` collection, and stops leftover workers on recovery. |
 | [worker.py](worker.py) | Gated POSIX worker that starts user code only after the owner commits its identity. |
-| [api.py](api.py) | Let uv scripts read committed history and schedule timers. |
+| [codemode.py](codemode.py) | Run one code Cell in Small Python with `timer` and `records` as builtins. |
+| [api.py](api.py) | Read committed history and schedule timers. |
 
 ## Configuration and services
 

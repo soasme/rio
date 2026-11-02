@@ -26,7 +26,8 @@ Run an ad hoc task:
 rio run "Fix gh issue 123."
 ```
 
-Rio keeps its State in SQLite and executes independent Python scripts through `uv`.
+Rio keeps its State in SQLite and runs code cells in Small Python, a minimal interpreter
+with builtins only.
 Committed work survives restart; interrupted scripts return `UnknownExecution` for
 inspection. See [Architecture](docs/explanation/architecture.md).
 

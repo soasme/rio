@@ -2,49 +2,29 @@
 
 from __future__ import annotations
 
-import re
-import tomllib
+import sys
 from pathlib import Path
 
 from rio.agent.state import CellKind, InvalidPatch
 
 INSTRUCTIONS = """You are a coding agent. Your process working directory is the target project.
-Inspect its relative files first; use pathlib or rg scoped to this directory. Do not search /
-or /usr for project source. Repository code may differ from an installed package. Check local
-files and available project tests before choosing commands. Avoid running broad test suites
-when a focused regression test can verify the change.
+Inspect its relative files first; use open() in code or rg in cmd, scoped to this directory.
+Do not search / or /usr for project source. Repository code may differ from an installed
+package. Check local files and available project tests before choosing commands. Avoid running
+broad test suites when a focused regression test can verify the change.
 Read existing code before editing it. Make the smallest correct change and run relevant tests.
 """
-
-
-def script_metadata(source: str) -> dict:
-    blocks = re.findall(r"(?m)^# /// script\n((?:#(?: .*|)\n)*)# ///\s*$", source)
-    if len(blocks) != 1:
-        raise InvalidPatch("Code requires one PEP 723 script block with dependencies")
-    try:
-        metadata = tomllib.loads("\n".join(line[2:] for line in blocks[0].splitlines()))
-    except tomllib.TOMLDecodeError as exc:
-        raise InvalidPatch(str(exc)) from exc
-    if not isinstance(metadata.get("dependencies"), list) or not all(
-        isinstance(item, str) for item in metadata["dependencies"]
-    ):
-        raise InvalidPatch("PEP 723 dependencies must be an array of strings")
-    if "requires-python" in metadata and not isinstance(metadata["requires-python"], str):
-        raise InvalidPatch("requires-python must be a string")
-    return metadata
 
 
 def _validate_code(cell: dict) -> None:
     if cell.get("runtime") != "python" or not isinstance(cell.get("source"), str):
         raise InvalidPatch("Code requires runtime: python and a source string")
-    script_metadata(cell["source"])
 
 
 def _code_command(cell: dict, scratch: Path) -> list[str]:
     script = scratch / f"cell-{cell['id']}.py"
     script.write_text(cell["source"], encoding="utf-8")
-    # Quiet keeps uv's install chatter and UV_NO_SYNC's no-op warning out of output; errors remain.
-    return ["uv", "run", "-q", "--script", str(script)]
+    return [sys.executable, "-m", "rio.coding.codemode", str(script)]
 
 
 def _validate_cmd(cell: dict) -> None:
@@ -57,28 +37,19 @@ CODE = CellKind(
     name="code",
     fields={"runtime": {"type": "string", "enum": ["python"]}, "source": {"type": "string"}},
     prompt="""Code: {"kind":"code","runtime":"python","source":"..."}.
-Code runs via uv run in a fresh process; output has stdout and stderr streams.
-Each script MUST include PEP 723 metadata, even with no dependencies:
-# /// script
-# dependencies = []
-# ///
-from pathlib import Path
-print(Path('README.md').read_text())
-No shared variables, kernel, magics, top-level return, or cell imports. Use normal Python,
-pathlib, subprocess, and ordinary files.
-Check whether a workspace .venv/bin/python exists before using it for project tests.
-Run project tools in that active environment (python -m pytest); do not uv run, uv sync,
-or pip install against the project unless the task changes dependencies. Otherwise use
-PEP 723 dependencies for packages your script imports, or run a test command through
-uv run --with pytest python -m pytest. uv's script interpreter is separate from a
-project environment. When writing multiline files, prefer triple-quoted
-Python strings so newline escaping does not break the script.
-Scripts can use `from rio.coding.api import timer, records`. timer(request_id,
-unix_deadline, payload) durably registers one timer generation; it does not suspend or rerun
-the process. records(after=0) retrieves journal events as data; records(N - 1)[0] is
-session:event:N. records() returns Pydantic models with seq, kind, and changes attributes;
-include "pydantic>=2.11" in PEP 723 dependencies when reading records.
-Files and package caches are not durable State.
+Code runs in Small Python, a minimal Python interpreter, in a fresh process; output has
+stdout and stderr streams. Use builtins only: no import statements, standard library, or
+packages. open() reaches the working directory (relative paths) and a scratch /tmp; nothing
+else. Use cmd Cells to list files, search, run tests, or run other programs.
+print(open('README.md').read())
+No shared variables, kernel, magics, top-level return, or cell imports.
+When writing multiline files, prefer triple-quoted strings so newline escaping does not
+break the script.
+Builtins timer(request_id, unix_deadline, payload) and records(after=0) are available.
+timer durably registers one timer generation; it does not suspend or rerun the process.
+records retrieves journal events as dicts with seq, kind, and changes keys;
+records(N - 1)[0] is session:event:N.
+Files are not durable State.
 """,
     validate=_validate_code,
 )

@@ -33,10 +33,7 @@ held until exit. Stdout follows `└` directly; stderr adds a
 ```text
 • Check the calculation.
 
-• # /// script
-  # dependencies = []
-  # ///
-  print(1 + 1)
+• print(1 + 1)
   └ 2
   └ success (exit 0)
 

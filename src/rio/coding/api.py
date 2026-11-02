@@ -1,4 +1,4 @@
-"""Timer registration and validated history for independent uv scripts."""
+"""Timer registration and validated history, exposed to code Cells as builtins."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def timer(request_id: str, deadline: float, payload: dict | None = None) -> None
 
 
 def records(after: int = 0) -> list[HistoryRecord]:
-    """Return validated history; standalone scripts must declare a pydantic dependency."""
+    """Return validated history."""
     from rio.agent.shapes import HistoryRecord
 
     with contextlib.closing(sqlite3.connect(os.environ["RIO_SESSION_URI"], uri=True)) as db:

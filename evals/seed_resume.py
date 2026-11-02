@@ -17,8 +17,7 @@ def main() -> None:
     path = Path.home() / ".rio/sessions" / f"{session_id}.sqlite3"
     workspace = Path.cwd()
     source = (
-        "# /// script\n# dependencies = []\n# ///\n"
-        "from pathlib import Path\np=Path('ledger.txt')\np.write_text(p.read_text()+'charge-1\\n')"
+        "f=open('ledger.txt','a')\nf.write('charge-1\\n')\nf.close()"
     )
     with Store(path) as store:
         session = Session.create(
