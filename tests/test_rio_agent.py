@@ -615,14 +615,16 @@ async def test_code_sees_only_builtins_cwd_and_tmp(session: Session) -> None:
             "print(open('/tmp/scratch').read())\n"
             "try:\n    open('/etc/hosts')\nexcept OSError:\n    print('denied')"
         ),
+        code("try:\n    open('/tmp/scratch')\nexcept OSError:\n    print('gone')"),
         code("import os"),
     )
     async with ProcessOwner(session) as owner:
         await settle(owner)
     executions = session.data.executions
     assert executions["1"].output == {"stdout": "hi\ndenied\n"}
-    assert "No module named 'os'" in executions["2"].output["stderr"]
-    assert "run it in a cmd Cell" in executions["2"].output["stderr"]
+    assert executions["2"].output == {"stdout": "gone\n"}
+    assert "No module named 'os'" in executions["3"].output["stderr"]
+    assert "run it in a cmd Cell" in executions["3"].output["stderr"]
 
 
 async def test_error_pauses_queue_then_cancel_before_dispatch(session: Session) -> None:

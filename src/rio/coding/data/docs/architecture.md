@@ -68,8 +68,8 @@ One owner runs runnable cells in order. `rio.agent.runner.Owner` schedules them;
 `code` cell runs in [Small Python](https://github.com/soasme/small-python), a
 minimal Python interpreter, in its own process. Code may use builtins only: there
 are no imports. `open()` reaches the working directory and a per-cell scratch
-`/tmp`, nothing else. Files can pass data between scripts; variables do not carry
-over. For example:
+`/tmp`, nothing else. The scratch `/tmp` is deleted when the cell ends. Files in
+the working directory can pass data between scripts; variables do not carry over. For example:
 
 ```python
 print(open("README.md").read())

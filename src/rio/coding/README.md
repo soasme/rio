@@ -28,7 +28,7 @@ Follow these when changing or reviewing this package.
 
 | Kind | Execution |
 | --- | --- |
-| `code` | A builtins-only script run by [codemode.py](codemode.py) in Small Python, with the working directory and a scratch `/tmp` mounted. |
+| `code` | A builtins-only script run by [codemode.py](codemode.py) in Small Python, with the working directory and a scratch `/tmp` mounted and deleted when the Cell ends. |
 | `cmd` | An argument list executed directly, without a shell. |
 
 Pass `cells.KINDS` when creating or opening a coding session, and

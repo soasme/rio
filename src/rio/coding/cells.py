@@ -41,9 +41,11 @@ Code runs in Small Python, a minimal Python interpreter, in a fresh process; out
 stdout and stderr streams. Code Cells are for tool calls (MCP, timer, records) and reading
 or writing files. Use builtins only: import fails for every module, including decimal,
 json, os, sys, and project modules. open() reaches the working directory (relative paths)
-and a scratch /tmp; nothing else. Use cmd Cells to list files, search, run tests, or run
-other programs. To check code or run Python that needs imports, write a script file, then
-run it in a cmd Cell: ["python3","check.py"].
+and a scratch /tmp; nothing else. /tmp is private to one Cell and deleted when it ends:
+later Cells and cmd Cells cannot see it, so put files they need in the working directory.
+Use cmd Cells to list files, search, run tests, or run other programs. To check code or run
+Python that needs imports, write a script file in the working directory, then run it in a
+cmd Cell: ["python3","check.py"]. Delete such helper files before concluding.
 print(open('README.md').read())
 No shared variables, kernel, magics, top-level return, or cell imports.
 When writing multiline files, prefer triple-quoted strings so newline escaping does not

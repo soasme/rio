@@ -182,7 +182,7 @@ A fresh Cell ID permits a fresh execution, not a claim that external repetition 
 
 ## 8. Small Python and ordinary files
 
-Each code Cell is a complete Python script run by Small Python, a minimal interpreter. Code uses builtins only: no imports, standard library, or packages. `open()` reaches the working directory and a per-cell scratch `/tmp`; nothing else is mounted. Host functions `timer` and `records` are exposed as builtins.
+Each code Cell is a complete Python script run by Small Python, a minimal interpreter. Code uses builtins only: no imports, standard library, or packages. `open()` reaches the working directory and a per-cell scratch `/tmp`, deleted when the cell ends; nothing else is mounted. Host functions `timer` and `records` are exposed as builtins.
 
 ```python
 print(open("README.md").read())
