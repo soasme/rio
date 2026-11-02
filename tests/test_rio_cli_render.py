@@ -78,7 +78,7 @@ def test_interleaved_notes_and_stderr_keep_separate_entries(
     [
         ({"type": "success", "exit_code": 0}, "success (exit 0)"),
         ({"type": "error", "exit_code": 1}, "error (exit 1)"),
-        ({"type": "error", "reason": "uv unavailable"}, "error: uv unavailable"),
+        ({"type": "error", "reason": "worker unavailable"}, "error: worker unavailable"),
         ({"type": "cancelled"}, "cancelled"),
         ({"type": "UnknownExecution", "reason": "worker lost"}, "UnknownExecution: worker lost"),
     ],
@@ -190,7 +190,7 @@ def test_streamed_cells_show_as_written_and_are_not_repeated(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     renderer = PlainEventRenderer()
-    source = "# /// script\n# dependencies = []\n# ///\nprint(2)\n"
+    source = "x = 2\nprint(x)\n"
     renderer.preview(ProviderToolCallDeltaEvent(delta='{"ops": [{"op": "add", "cell": {"sou'))
     assert capsys.readouterr().out == ""
     renderer = PlainEventRenderer()
@@ -201,7 +201,7 @@ def test_streamed_cells_show_as_written_and_are_not_repeated(
     emit(renderer, "patch_accepted", cells={"5": {"id": 5, "kind": "code", "source": source}})
     emit(renderer, "execution_output", output_chunks={"5": execution("2\n")})
     assert capsys.readouterr().out == (
-        "• # /// script\n  # dependencies = []\n  # ///\n  print(2)\n  └ 2\n"
+        "• x = 2\n  print(x)\n  └ 2\n"
     )
 
 
@@ -226,11 +226,11 @@ def test_rejected_draft_is_followed_by_the_retry_reason(
 ) -> None:
     renderer = PlainEventRenderer()
     stream(renderer, [{"op": "add", "cell": {"kind": "code", "source": "print(1)"}}])
-    emit(renderer, "patch_rejected", turns={"1": {"error": "Code requires PEP 723"}})
+    emit(renderer, "patch_rejected", turns={"1": {"error": "Code requires a source string"}})
     stream(renderer, [{"op": "add", "cell": {"kind": "code", "source": "print(1)"}}])
     emit(renderer, "patch_accepted", cells={"2": {"id": 2, "kind": "code", "source": "print(1)"}})
     assert capsys.readouterr().out == (
-        "• print(1)\n\n• Retry: Code requires PEP 723\n\n• print(1)\n"
+        "• print(1)\n\n• Retry: Code requires a source string\n\n• print(1)\n"
     )
 
 

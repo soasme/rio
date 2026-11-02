@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -604,6 +604,7 @@ dependencies = [
     { name = "pillow" },
     { name = "psutil" },
     { name = "pydantic" },
+    { name = "small-python" },
 ]
 
 [package.dev-dependencies]
@@ -623,6 +624,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=11.0" },
     { name = "psutil", specifier = ">=7.0" },
     { name = "pydantic", specifier = ">=2.11" },
+    { name = "small-python", specifier = ">=0.4.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -657,6 +659,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/5e/e5/9e274e24eeb027640ffc7442f21239f16d17f47acec15ae34f32e03a5c79/ruff-0.16.6-py3-none-win32.whl", hash = "sha256:0b87d9d16fcb63e8018423ca1d50b7260f15cb2da33e30db4baad4183a948c25", size = 10049212, upload-time = "2026-09-03T16:57:20.55Z" },
     { url = "https://files.pythonhosted.org/packages/22/31/72472449414223ed1a2da236b992adbb1a2ae59e34794574810f60ce068e/ruff-0.16.6-py3-none-win_amd64.whl", hash = "sha256:10d21c51c3495d8eaea7b703a16592117ea6eb1d649e36335aa965ff1173eb39", size = 10556402, upload-time = "2026-09-03T16:57:23.501Z" },
     { url = "https://files.pythonhosted.org/packages/fc/07/d781f8f8e1ac24bef9f3269cf62ffb1407ca24c3a8f12e5e22874f90528c/ruff-0.16.6-py3-none-win_arm64.whl", hash = "sha256:7a976c79b958f94e50a022a19f0f8c87387448020935ec14fc74331bd0a7f2c5", size = 10412850, upload-time = "2026-09-03T16:57:26.416Z" },
+]
+
+[[package]]
+name = "small-python"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/64/d3/3000f64384fcab59ea3c7e6eb96ccd2c4d7829565ad9c449d5c48712b6a8/small_python-0.4.0.tar.gz", hash = "sha256:4d3a8dd0d700d026c7180dd7574263037b68da031e8bcb13c59b1212977afe54", size = 1950353, upload-time = "2026-10-31T07:23:19.319Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/37/69/f19b15057992f92e4a7adab00396ea32bf4e790b7c33db421088ebe89362/small_python-0.4.0-py3-none-macosx_10_13_x86_64.whl", hash = "sha256:d8f702829c63939c33f5d8e03aa8616b9efd79adee3b51bc182bb5ab6b71ed05", size = 769696, upload-time = "2026-10-31T07:23:07.697Z" },
+    { url = "https://files.pythonhosted.org/packages/68/2c/ce22ff5abbf5c9b5d050de7de13ea26398e7640fdffe08f2cbd989de53d1/small_python-0.4.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:2160c6543845777fe70a0a3625a90ae309dffdacd380dcd2456700dd7897dd9d", size = 722425, upload-time = "2026-10-31T07:23:09.233Z" },
+    { url = "https://files.pythonhosted.org/packages/34/14/c1062a10ce42871162bb3bd78142c8c50de18f438d368a0e6f210c094d13/small_python-0.4.0-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1a8725395906c89c3595d3734df0d4002458a0b79358ce48d13f20288d47e445", size = 1882948, upload-time = "2026-10-31T07:23:11.112Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/b1/8e8f455de91c076961544dd02248b768fe3a90af01d7273a05c05b3f1d49/small_python-0.4.0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3f62bba7d7520aae289d0075d8265ef3735e2c0186ca45eb01c214eb6b1c5f47", size = 1902063, upload-time = "2026-10-31T07:23:12.607Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/b1/3b0d7cb3cd81e01c0f1ee448a17411ac0d23ddf4a390162e1b81f6bfa007/small_python-0.4.0-py3-none-musllinux_1_2_aarch64.whl", hash = "sha256:25a36b2492a73db9969e8ae2648366375e2bfe6b4629886e8c8155db4c307a1c", size = 1898744, upload-time = "2026-10-31T07:23:14.173Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/ea/463eba32e0d37223972ffb956abbd71b1768384e596b951c4ac2cbc1941a/small_python-0.4.0-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:2a6e54e3e719cc5332e46718e6232188d4cdf4f618e705e872d666c47388ea4d", size = 1920365, upload-time = "2026-10-31T07:23:15.916Z" },
+    { url = "https://files.pythonhosted.org/packages/81/2b/2bb7f0e6cdbfdc4128de65d0d8270c997d183c5bdab0f7fb5efa8e6670b8/small_python-0.4.0-py3-none-win_amd64.whl", hash = "sha256:e2bce227452b36f7a70649d0683dcb27cf23afcccbc41768fa5ad365e8fbc35c", size = 731614, upload-time = "2026-10-31T07:23:17.61Z" },
 ]
 
 [[package]]

@@ -63,21 +63,18 @@ saved backoff.
 
 One owner runs runnable cells in order. `rio.agent.runner.Owner` schedules them;
 `rio.coding.owner.ProcessOwner` runs each in its own supervised process. A
-`code` cell runs with `uv run --script`. Each script has PEP 723
-metadata and its own process. Files can pass data between scripts; variables do
-not carry over. For example:
+`code` cell runs in [Small Python](https://github.com/soasme/small-python), a
+minimal Python interpreter, in its own process. Code may use builtins only: there
+are no imports. `open()` reaches the working directory and a per-cell scratch
+`/tmp`, nothing else. Files can pass data between scripts; variables do not carry
+over. For example:
 
 ```python
-# /// script
-# dependencies = []
-# ///
-from pathlib import Path
-
-print(Path("README.md").read_text())
+print(open("README.md").read())
 ```
 
 A `cmd` cell, such as `{"kind": "cmd", "argv": ["pytest", "-q"]}`, runs its argv
-directly, without a shell or uv. It shares the script queue and supervision.
+directly, without a shell. It shares the script queue and supervision.
 
 The owner commits launch permission and the supervisor's identity before allowing
 code to start. It commits output before printing it, normally every 100 ms.
@@ -139,8 +136,8 @@ observations that can wake an idle session; the default is `False`.
 `Session.receive` saves an external observation before acknowledging it. Stable
 IDs make duplicate delivery harmless; conflicting IDs are rejected. The prefixes
 `execution:`, `control:`, `timer:`, and `idle:` are reserved for runtime records.
-Scripts can read committed history with `rio.coding.api.records(after=...)` and
-schedule a timer with `timer(request_id, deadline, payload)`. A timer uses an
+Code cells can read committed history with the builtin `records(after=...)` and
+schedule a timer with the builtin `timer(request_id, deadline, payload)`. A timer uses an
 absolute Unix deadline and produces one event per request ID.
 
 ## Boundaries
@@ -149,7 +146,8 @@ Execution requires POSIX and local filesystem locks. Symbolic links share the
 owner lock; hard-linked databases are rejected. Rio stops if it cannot establish
 that a previous worker has stopped. The database records work; it does not restore
 project files or external services. Detached processes and remote effects need
-application-specific controls. Scripts are not sandboxed, and external effects
+application-specific controls. Code cells reach only their mounted directories;
+cmd cells are not sandboxed. External effects
 are not guaranteed to happen exactly once.
 
 Tests cover process crashes, lost commit receipts, replay, and child cleanup.

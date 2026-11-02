@@ -3,7 +3,7 @@
 Status: draft
 Date: 2026-10-06
 
-This document defines the agreed next Rio core. It describes intended behavior, not an implemented or tested durability guarantee. It incorporates the design interview decisions Q1–Q21. PEP 723 and `uv run` replace the earlier library-level uv requirement.
+This document defines the agreed next Rio core. It describes intended behavior, not an implemented or tested durability guarantee. It incorporates the design interview decisions Q1–Q21. Code Cells run in Small Python with builtins only; there is no dependency declaration.
 
 ## 1. Core contract
 
@@ -52,7 +52,7 @@ State has six top-level fields:
       "previous_id": null,
       "kind": "code",
       "runtime": "python",
-      "source": "# /// script\n# dependencies = []\n# ///\nfrom pathlib import Path\nprint(Path('app/routes.py').read_text())\n"
+      "source": "print(open('app/routes.py').read())\n"
     }
   ],
   "runtime": {
@@ -117,7 +117,7 @@ Use Python processes for code execution and async control work in the owner. Bor
 | `started` | Launch authorization committed; code may have run | Record UnknownExecution; never automatically rerun |
 | `finished` | Output, error, cancellation, or interruption committed | Retain the result |
 
-Commit `started` before launching `uv run`. A crash between authorization and actual launch can conservatively produce UnknownExecution. Treating this as uncertain avoids accidental duplicate execution. Environment setup failures return ordinary execution errors when their outcome is known; a new code version can request another attempt.
+Commit `started` before launching the code. A crash between authorization and actual launch can conservatively produce UnknownExecution. Treating this as uncertain avoids accidental duplicate execution. Environment setup failures return ordinary execution errors when their outcome is known; a new code version can request another attempt.
 
 Run queued Cells serially in accepted order, independent of their current array positions. A successful execution allows dispatch to continue. An error or interruption durably pauses dispatch until the model consumes that observation in its next accepted step. Apply cancellations before resuming the remaining queue. The model can cancel stale queued work before adding investigation Cells.
 
@@ -159,7 +159,7 @@ For an unaccepted request after restart, query a persisted provider handle if su
 
 ## 7. UnknownExecution and resolution
 
-Rio tracks work at Cell boundaries. Code can use ordinary file, network, and subprocess APIs within configured permissions. There is no mandatory intent/result protocol for each operation, automatic conflict detection, or deduplication of semantically equivalent programs. Deployment permissions are separate from the durability protocol; neither uv nor a prompt is a security boundary.
+Rio tracks work at Cell boundaries. Code Cells can use `open()` within mounted directories; cmd Cells use ordinary processes within configured permissions. There is no mandatory intent/result protocol for each operation, automatic conflict detection, or deduplication of semantically equivalent programs. Deployment permissions are separate from the durability protocol; a prompt is not a security boundary.
 
 If a worker is interrupted before a reliable final result commits, record an output such as:
 
@@ -180,24 +180,17 @@ To resolve uncertainty, issue a `resolution` control with a `target_cell_id`, re
 
 A fresh Cell ID permits a fresh execution, not a claim that external repetition is safe. Rio cannot mechanically prevent the LLM from repeating an action that already succeeded. This is an explicit limit of the design.
 
-## 8. PEP 723, uv, and ordinary files
+## 8. Small Python and ordinary files
 
-Each code Cell is a complete Python script. Its PEP 723 metadata declares dependencies and Python requirements. Execute it with `uv run`; uv supports this metadata and prepares the script environment. No new dependency schema or uv library interface is needed. [R5–R6]
+Each code Cell is a complete Python script run by Small Python, a minimal interpreter. Code uses builtins only: no imports, standard library, or packages. `open()` reaches the working directory and a per-cell scratch `/tmp`; nothing else is mounted. Host functions `timer` and `records` are exposed as builtins.
 
 ```python
-# /// script
-# requires-python = ">=3.12"
-# dependencies = ["httpx==0.28.1"]
-# ///
-import json
-import httpx
-
-print(json.dumps({"version": httpx.__version__}))
+print(open("README.md").read())
 ```
 
-Materialize the committed source as a script for execution. Capture stdout, stderr, and exit status. Scripts use normal Python syntax; there is no implicit top-level `return`. Include `dependencies = []` when no external packages are needed. Session retains the exact source and metadata. [R5–R6]
+Materialize the committed source as a script for execution. Capture stdout, stderr, and exit status. Scripts use normal Python syntax; there is no implicit top-level `return`. Session retains the exact source.
 
-Runtime credentials and host environment configuration stay outside source and model context. Record non-secret execution configuration and interpreter/package versions when available. PEP 723 declarations do not by themselves promise identical future dependency resolution. Environment directories and package caches are disposable; preparation can fail if required artifacts are unavailable.
+Runtime credentials and host environment configuration stay outside source and model context.
 
 Use ordinary files or temporary files for scratch scripts, notes, and intermediate data. Rio supplies no scratch namespace, versioned filesystem, or scratch garbage collector. A recorded path is not a backup. Missing or changed files are conditions for the model to inspect or recreate. Code can check expected hashes when exact bytes matter.
 
@@ -205,7 +198,7 @@ Record required recovery facts in SQLite, not solely in temporary files. Large o
 
 ### Commands
 
-A `cmd` Cell holds an argv array, such as `{"kind": "cmd", "argv": ["pytest", "-q"]}`. The worker executes it directly in the Session working directory, without a shell or uv. It follows the same execution, output, cancellation, and recovery rules as a code Cell. Use `["sh", "-c", "..."]` when shell syntax is needed.
+A `cmd` Cell holds an argv array, such as `{"kind": "cmd", "argv": ["pytest", "-q"]}`. The worker executes it directly in the Session working directory, without a shell. It follows the same execution, output, cancellation, and recovery rules as a code Cell. Use `["sh", "-c", "..."]` when shell syntax is needed.
 
 ## 9. Inbox, timers, and controls
 
@@ -285,7 +278,7 @@ Example: a Cell edits a Flask route and starts tests. Rio stops before final out
 | Restart a terminal run | No revival or budget reset |
 | Remove snapshots and derived indexes | Rebuild committed State without external I/O |
 
-Test process termination and host/power failure separately. A process-kill test does not prove power-loss durability. Measure commit latency, rebuild time, worker and uv startup, Inbox delay, idle memory, coding completion rate, and recovery quality. Durability remains a design claim until these tests pass.
+Test process termination and host/power failure separately. A process-kill test does not prove power-loss durability. Measure commit latency, rebuild time, worker and interpreter startup, Inbox delay, idle memory, coding completion rate, and recovery quality. Durability remains a design claim until these tests pass.
 
 ## 12. Scope and relation to earlier designs
 
@@ -304,8 +297,6 @@ The core excludes stack persistence, internal-call replay, mandatory effect adap
 - [R2: SQLite synchronization settings](https://sqlite.org/pragma.html#pragma_synchronous)
 - [R3: Erlang processes](https://www.erlang.org/doc/system/ref_man_processes.html)
 - [R4: OTP supervisor behavior](https://www.erlang.org/doc/system/sup_princ.html)
-- [R5: uv script dependencies and environments](https://docs.astral.sh/uv/guides/scripts/)
-- [R6: PEP 723 — Inline script metadata](https://peps.python.org/pep-0723/)
 - [R8: Rio v0.7.0](https://github.com/soasme/rio/tree/c760a9f9f6ea4b21b8ecf6adee026768253bdb3d)
 - [R9: Rio changes through v0.7.1](https://github.com/soasme/rio/compare/v0.7.0...v0.7.1)
 - [R10: Rio v0.7.1 Session records](https://github.com/soasme/rio/blob/v0.7.1/src/rio/coding/session_store/entries.py)

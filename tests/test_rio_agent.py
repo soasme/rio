@@ -1,4 +1,4 @@
-"""Durability boundaries and recovery behavior, using real SQLite and uv processes."""
+"""Durability boundaries and recovery behavior, using real SQLite and worker processes."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def code(source: str = "print('hello')", **extra: Any) -> dict[str, Any]:
     return {
         "kind": "code",
         "runtime": "python",
-        "source": "# /// script\n# dependencies = []\n# ///\n" + source + "\n",
+        "source": source + "\n",
         **extra,
     }
 
@@ -558,13 +558,13 @@ async def test_timer_rejects_invalid_requests_without_committing(
         assert not session.data.timers
 
 
-async def test_serial_uv_runs_and_independent_variables(session: Session) -> None:
+async def test_serial_code_runs_and_independent_variables(session: Session) -> None:
     accept(
         session,
-        code("from pathlib import Path\nx = 7\nPath('order').write_text('1')"),
+        code("x = 7\nf = open('order', 'w')\nf.write('1')\nf.close()"),
         code(
-            "from pathlib import Path\nassert 'x' not in globals()\n"
-            "p=Path('order')\np.write_text(p.read_text()+'2')\nprint('ok')",
+            "assert 'x' not in globals()\nold = open('order').read()\n"
+            "f = open('order', 'w')\nf.write(old + '2')\nf.close()\nprint('ok')",
         ),
     )
     async with ProcessOwner(session) as owner:
@@ -600,14 +600,28 @@ async def test_active_venv_keeps_uv_run_from_syncing_it(
     monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
     show = "import os; print(*map(os.environ.get, ['UV_NO_SYNC', 'UV_PROJECT_ENVIRONMENT']))"
     accept(session, cmd(sys.executable, "-c", show))
-    # A PEP 723 script still installs its own dependencies, without a no-op warning.
-    script = code("import iniconfig\nprint('ok')")
-    accept(session, {**script, "source": script["source"].replace("[]", '["iniconfig"]')})
     async with ProcessOwner(session) as owner:
         await settle(owner)
     executions = session.data.executions
     assert executions["1"].output["stdout"] == ("1 " + venv if venv else "None None") + "\n"
-    assert executions["2"].output == {"stdout": "ok\n"}
+
+
+async def test_code_sees_only_builtins_cwd_and_tmp(session: Session) -> None:
+    (Path(session.meta.owner_config["cwd"]) / "in.txt").write_text("hi")
+    accept(
+        session,
+        code(
+            "f = open('/tmp/scratch', 'w')\nf.write(open('in.txt').read())\nf.close()\n"
+            "print(open('/tmp/scratch').read())\n"
+            "try:\n    open('/etc/hosts')\nexcept OSError:\n    print('denied')"
+        ),
+        code("import os"),
+    )
+    async with ProcessOwner(session) as owner:
+        await settle(owner)
+    executions = session.data.executions
+    assert executions["1"].output == {"stdout": "hi\ndenied\n"}
+    assert "No module named 'os'" in executions["2"].output["stderr"]
 
 
 async def test_error_pauses_queue_then_cancel_before_dispatch(session: Session) -> None:
@@ -626,7 +640,7 @@ async def test_error_pauses_queue_then_cancel_before_dispatch(session: Session) 
 
 
 async def test_started_recovery_never_reexecutes(session: Session) -> None:
-    accept(session, code("from pathlib import Path\nPath('effect').touch()"))
+    accept(session, code("open('effect', 'w').close()"))
     session.authorize(1)
     session.record("workers", "cell:1", {"token": "not-a-real-worker"})
     async with ProcessOwner(session):
@@ -745,7 +759,9 @@ async def test_success_rejected_for_new_input_and_failure_is_terminal(session: S
 async def test_cancel_running_worker_and_children(session: Session) -> None:
     accept(
         session,
-        code(
+        cmd(
+            sys.executable,
+            "-c",
             "import subprocess,time\nfrom pathlib import Path\n"
             "p=subprocess.Popen(['sleep','60'])\nPath('child').write_text(str(p.pid))\ntime.sleep(60)",
         ),
@@ -1005,8 +1021,8 @@ async def test_caller_extends_agent_with_a_cell_kind(tmp_path: Path) -> None:
         assert session.data.executions["1"].output["stdout"] == "hi\n"
 
 
-async def test_uv_timer_api_acknowledges_committed_registration(session: Session) -> None:
-    accept(session, code("from rio.coding.api import timer\ntimer('wake:1', 0, {'done':True})"))
+async def test_timer_builtin_acknowledges_committed_registration(session: Session) -> None:
+    accept(session, code("timer('wake:1', 0, {'done':True})\nprint(records()[-1]['kind'])"))
     async with ProcessOwner(session) as owner:
         await settle(owner)
     assert session.data.timers["wake:1"].fired
@@ -1331,10 +1347,8 @@ async def main() -> None:
         s=Session.create(store, 'one effect', kinds=KINDS, owner_config={'cwd': str(root)})
         t=s.prepare_turn()
         s.accept(t.id, [{'op':'add','cell':{'kind':'code','runtime':'python','source':
-             "# /// script\\n# dependencies = []\\n# ///\\n"
-             "from pathlib import Path\\nimport time\\n"
-             "p=Path('effects'); p.write_text(p.read_text()+'x' if p.exists() else 'x')\\n"
-             "time.sleep(60)\\n"}}])
+             "f=open('effects','a')\\nf.write('x')\\nf.close()\\n"
+             "while True:\\n    pass\\n"}}])
         if boundary == 'authorized': s.authorize(1)
         if boundary == 'running':
             async with ProcessOwner(s) as owner:
@@ -1813,7 +1827,9 @@ async def test_uncertain_output_commit_stops_worker_before_more_effects(
 ) -> None:
     accept(
         session,
-        code(
+        cmd(
+            sys.executable,
+            "-c",
             "import time\nfrom pathlib import Path\n"
             "print('before', flush=True)\ntime.sleep(5)\n"
             "Path('late-effect').touch()",
@@ -1921,7 +1937,7 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
     monkeypatch.setattr(cli, "load_provider_settings", lambda: None)
     monkeypatch.setattr(cli, "resolve_provider_selection", lambda *a, **kw: selection)
     monkeypatch.setattr(cli, "resolve_startup_thinking_level", lambda *a, **kw: None)
-    source = "from pathlib import Path\nPath('effect').write_text('once')"
+    source = "f = open('effect', 'w')\nf.write('once')\nf.close()"
     work = code(source) if cell_kind == "code" else cmd(sys.executable, "-c", source)
     provider = FakeProvider(
         [
@@ -1955,8 +1971,8 @@ async def test_cli_persists_sqlite_and_resumes_without_repeating_work(
         assert events[-1]["changes"]["metrics"]["journal_bytes"] > 0
     else:
         if cell_kind == "code":
-            assert "• # /// script" in transcript
-            assert "  Path('effect').write_text('once')" in transcript
+            assert "• f = open('effect', 'w')" in transcript
+            assert "  f.write('once')" in transcript
         else:
             assert sys.executable in transcript
             assert " -c " in transcript
