@@ -3,29 +3,44 @@
 Follows the MCP authorization discovery (RFC 9728 protected resource metadata, then
 RFC 8414 or OpenID Connect authorization server metadata) and requests a token with
 ``grant_type=client_credentials`` and an RFC 8707 ``resource``. The client authenticates
-with a client secret; ``private_key_jwt`` is not supported.
+with an RFC 7523 ``private_key_jwt`` assertion or a client secret.
 """
 
 from __future__ import annotations
 
 import base64
+import json
 import re
+import time
+import uuid
+from pathlib import Path
 from urllib.parse import quote_plus, urlsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 _PARAM = re.compile(r'(\w+)=(?:"([^"]*)"|([^\s,]+))')
 
 
 class McpOAuth(BaseModel):
-    """Client credentials for one HTTP server."""
+    """Client credentials for one HTTP server: a private key or a client secret."""
 
     model_config = ConfigDict(extra="ignore")
 
     client_id: str = Field(alias="clientId")
-    client_secret: str = Field(alias="clientSecret")
+    client_secret: str | None = Field(default=None, alias="clientSecret")
+    private_key_file: str | None = Field(default=None, alias="privateKeyFile")
+    key_id: str | None = Field(default=None, alias="keyId")
     scope: str | None = None
+
+    @model_validator(mode="after")
+    def _one_credential(self) -> McpOAuth:
+        if (self.client_secret is None) == (self.private_key_file is None):
+            raise ValueError("oauth needs exactly one of clientSecret or privateKeyFile")
+        return self
 
 
 class McpAuthError(RuntimeError):
@@ -54,16 +69,24 @@ def client_credentials_token(server_url: str, oauth: McpOAuth, www_authenticate:
         if scope:
             form["scope"] = scope
         methods = metadata.get("token_endpoint_auth_methods_supported", ["client_secret_basic"])
+        endpoint = metadata.get("token_endpoint", "")
+        _require_secure(endpoint)
         headers = {}
-        if "client_secret_post" in methods:
-            form |= {"client_id": oauth.client_id, "client_secret": oauth.client_secret}
+        if oauth.private_key_file is not None:
+            if "private_key_jwt" not in methods:
+                raise McpAuthError(f"{servers[0]} does not support private_key_jwt")
+            algorithms = metadata.get("token_endpoint_auth_signing_alg_values_supported", [])
+            form |= {
+                "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                "client_assertion": assertion(oauth, endpoint, algorithms),
+            }
+        elif "client_secret_post" in methods:
+            form |= {"client_id": oauth.client_id, "client_secret": oauth.client_secret or ""}
         elif "client_secret_basic" in methods:
-            user = f"{quote_plus(oauth.client_id)}:{quote_plus(oauth.client_secret)}"
+            user = f"{quote_plus(oauth.client_id)}:{quote_plus(oauth.client_secret or '')}"
             headers["Authorization"] = "Basic " + base64.b64encode(user.encode()).decode()
         else:
             raise McpAuthError(f"{servers[0]} supports no client secret authentication")
-        endpoint = metadata.get("token_endpoint", "")
-        _require_secure(endpoint)
         response = http.post(endpoint, data=form, headers=headers)
         body = _json(response)
         if response.is_error or "access_token" not in body:
@@ -71,6 +94,54 @@ def client_credentials_token(server_url: str, oauth: McpOAuth, www_authenticate:
             raise McpAuthError(f"Token request to {endpoint} failed: {reason}")
         token: str = body["access_token"]
         return token
+
+
+def assertion(oauth: McpOAuth, audience: str, algorithms: list[str]) -> str:
+    """Return an RFC 7523 client assertion signed with ``oauth.private_key_file``."""
+    assert oauth.private_key_file is not None
+    path = Path(oauth.private_key_file).expanduser()
+    try:
+        key = serialization.load_pem_private_key(path.read_bytes(), password=None)
+    except (OSError, ValueError, TypeError) as exc:
+        raise McpAuthError(f"Cannot load private key {path}: {exc}") from exc
+    digest: hashes.HashAlgorithm
+    if isinstance(key, rsa.RSAPrivateKey):
+        algorithm, digest = "RS256", hashes.SHA256()
+    elif isinstance(key, ec.EllipticCurvePrivateKey) and key.curve.name in _CURVES:
+        algorithm, digest = _CURVES[key.curve.name]
+    else:
+        raise McpAuthError(f"Private key {path} must be RSA or EC P-256, P-384, P-521")
+    if algorithm not in algorithms:
+        raise McpAuthError(f"Authorization server does not accept {algorithm} assertions")
+    header = {"alg": algorithm, "typ": "JWT"} | ({"kid": oauth.key_id} if oauth.key_id else {})
+    now = int(time.time())
+    claims = {
+        "iss": oauth.client_id,
+        "sub": oauth.client_id,
+        "aud": audience,
+        "iat": now,
+        "exp": now + 300,
+        "jti": str(uuid.uuid4()),
+    }
+    signing_input = f"{_b64(json.dumps(header).encode())}.{_b64(json.dumps(claims).encode())}"
+    if isinstance(key, rsa.RSAPrivateKey):
+        signature = key.sign(signing_input.encode(), padding.PKCS1v15(), digest)
+    else:
+        r, s = decode_dss_signature(key.sign(signing_input.encode(), ec.ECDSA(digest)))
+        size = (key.curve.key_size + 7) // 8
+        signature = r.to_bytes(size, "big") + s.to_bytes(size, "big")
+    return f"{signing_input}.{_b64(signature)}"
+
+
+_CURVES: dict[str, tuple[str, hashes.HashAlgorithm]] = {
+    "secp256r1": ("ES256", hashes.SHA256()),
+    "secp384r1": ("ES384", hashes.SHA384()),
+    "secp521r1": ("ES512", hashes.SHA512()),
+}
+
+
+def _b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
 def _protected_resource(http: httpx.Client, server_url: str, metadata_url: str | None) -> dict:

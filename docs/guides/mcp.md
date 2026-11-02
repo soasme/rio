@@ -22,7 +22,7 @@ Rio reads `~/.rio/mcp.json` and the project's `.mcp.json`. Both use the common
 | --- | --- | --- |
 | `command`, `args`, `env` | stdio | Process to start in the project directory. |
 | `url`, `headers` | Streamable HTTP | Endpoint and request headers. |
-| `oauth` | Streamable HTTP | `clientId`, `clientSecret`, optional `scope`, for OAuth client credentials. |
+| `oauth` | Streamable HTTP | `clientId`, one of `privateKeyFile` or `clientSecret`, optional `keyId` and `scope`, for OAuth client credentials. |
 
 `$NAME` and `${NAME}` expand from the environment. Other keys are ignored.
 Browser OAuth sign-in and the legacy SSE transport are not supported.
@@ -46,12 +46,28 @@ When the server answers 401, Rio:
    and OpenID Connect well-known URLs, in the MCP priority order, and checks its `issuer`.
 3. Posts `grant_type=client_credentials` with `resource` (RFC 8707) and a scope:
    `oauth.scope`, else the challenge scope, else `scopes_supported`.
-   The secret goes in the body when the server lists `client_secret_post`, else in
-   HTTP Basic auth.
+   The client authenticates as described below.
 4. Retries once with the bearer token.
 
-Authorization URLs must use https, except on localhost. `private_key_jwt` is not
-supported. A static `Authorization` header in `headers` still works.
+Authorization URLs must use https, except on localhost. A static `Authorization`
+header in `headers` still works.
+
+### Client authentication
+
+The extension recommends a private key over a shared secret:
+
+```json
+"oauth": {"clientId": "rio", "privateKeyFile": "~/.rio/keys/api.pem", "keyId": "22"}
+```
+
+With `privateKeyFile`, Rio sends an RFC 7523 `private_key_jwt` assertion instead of
+`client_id`. The key is an unencrypted PEM RSA (RS256) or EC P-256, P-384, P-521
+(ES256, ES384, ES512) key. The server must list `private_key_jwt` and the algorithm in
+its metadata. The assertion has `iss` and `sub` set to `clientId`, `aud` set to the token
+endpoint, a five-minute `exp`, a random `jti`, and `kid` from `keyId` when set.
+
+With `clientSecret`, the secret goes in the body when the server lists
+`client_secret_post`, else in HTTP Basic auth.
 
 A project `.mcp.json` starts processes when a Cell uses MCP. Rio already runs
 project commands without asking, so treat it like any other project script.

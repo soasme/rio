@@ -791,8 +791,9 @@ theorem mcp_structured_before_text (allText : Bool) :
 theorem mcp_text_before_blocks : mcpOutcome false false true = .text := rfl
 
 /-- MCP OAuth client credentials: an HTTP 401 triggers at most one token request per
-connection, the secret goes in the body when the server lists `client_secret_post`, else in
-Basic auth, and the configured scope wins over the challenge scope, then supported scopes. -/
+connection; a configured private key uses `private_key_jwt` only when the server lists it,
+else the secret goes in the body when the server lists `client_secret_post`, else in Basic
+auth; and the configured scope wins over the challenge scope, then supported scopes. -/
 def mcpRequestsToken (alreadyAuthorized hasOAuth : Bool) : Bool :=
   !alreadyAuthorized && hasOAuth
 
@@ -800,18 +801,26 @@ theorem mcp_token_requested_once (hasOAuth : Bool) : mcpRequestsToken true hasOA
 
 theorem mcp_no_token_without_oauth : mcpRequestsToken false false = false := rfl
 
-inductive McpSecretAuth where
-  | post | basic | unsupported
+inductive McpClientAuth where
+  | jwt | post | basic | unsupported
   deriving DecidableEq
 
-def mcpSecretAuth (post basic : Bool) : McpSecretAuth :=
-  cond post .post (cond basic .basic .unsupported)
+def mcpClientAuth (hasKey jwt post basic : Bool) : McpClientAuth :=
+  cond hasKey (cond jwt .jwt .unsupported) (cond post .post (cond basic .basic .unsupported))
 
-theorem mcp_secret_post_first (basic : Bool) : mcpSecretAuth true basic = .post := rfl
+theorem mcp_key_uses_jwt (post basic : Bool) : mcpClientAuth true true post basic = .jwt := rfl
 
-theorem mcp_secret_basic_otherwise : mcpSecretAuth false true = .basic := rfl
+theorem mcp_key_never_falls_back_to_secret (post basic : Bool) :
+    mcpClientAuth true false post basic = .unsupported := rfl
 
-theorem mcp_secret_needs_a_method : mcpSecretAuth false false = .unsupported := rfl
+theorem mcp_secret_post_first (jwt basic : Bool) : mcpClientAuth false jwt true basic = .post :=
+  rfl
+
+theorem mcp_secret_basic_otherwise (jwt : Bool) : mcpClientAuth false jwt false true = .basic :=
+  rfl
+
+theorem mcp_secret_needs_a_method (jwt : Bool) :
+    mcpClientAuth false jwt false false = .unsupported := rfl
 
 def mcpScope (configured challenged : Option String) (supported : String) : String :=
   configured.getD (challenged.getD supported)

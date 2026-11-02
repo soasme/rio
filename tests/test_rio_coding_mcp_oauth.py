@@ -3,13 +3,25 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
+from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+from pydantic import ValidationError
 
 from rio.coding.mcp import Mcp, McpServer
-from rio.coding.mcp_oauth import McpAuthError, McpOAuth, challenge, client_credentials_token
+from rio.coding.mcp_oauth import (
+    McpAuthError,
+    McpOAuth,
+    assertion,
+    challenge,
+    client_credentials_token,
+)
 
 SERVER = "https://mcp.test/mcp"
 ISSUER = "https://auth.test/tenant"
@@ -183,3 +195,105 @@ def test_config_reads_oauth_aliases() -> None:
         {"url": SERVER, "oauth": {"clientId": "a", "clientSecret": "b", "scope": "c"}}
     )
     assert server.oauth == McpOAuth(clientId="a", clientSecret="b", scope="c")
+
+
+def _key_file(tmp_path: Path, key: PrivateKeyTypes) -> str:
+    path = tmp_path / "key.pem"
+    path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    return str(path)
+
+
+def _decode(part: str) -> dict:
+    decoded: dict = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    return decoded
+
+
+def _signature(part: str) -> bytes:
+    return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
+
+
+def test_private_key_jwt_posts_a_signed_assertion(
+    requests: list[httpx.Request], tmp_path: Path
+) -> None:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    oauth = McpOAuth(clientId="rio", privateKeyFile=_key_file(tmp_path, key), keyId="22")
+    _protected_resource()
+    metadata = {
+        "issuer": ISSUER,
+        "token_endpoint": "https://auth.test/token",
+        "token_endpoint_auth_methods_supported": ["private_key_jwt", "client_secret_post"],
+        "token_endpoint_auth_signing_alg_values_supported": ["RS256"],
+    }
+    routes["https://auth.test/.well-known/openid-configuration/tenant"] = _json(metadata)
+    routes["https://auth.test/token"] = _json({"access_token": "tok"})
+
+    assert client_credentials_token(SERVER, oauth, "Bearer") == "tok"
+
+    form = _form(requests[-1])
+    assert "client_id" not in form and "client_secret" not in form
+    assert form["client_assertion_type"] == "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+    header, claims, signature = form["client_assertion"].split(".")
+    assert _decode(header) == {"alg": "RS256", "typ": "JWT", "kid": "22"}
+    payload = _decode(claims)
+    assert payload["iss"] == payload["sub"] == "rio"
+    assert payload["aud"] == "https://auth.test/token"
+    assert payload["exp"] - payload["iat"] == 300 and payload["jti"]
+    key.public_key().verify(
+        _signature(signature), f"{header}.{claims}".encode(), padding.PKCS1v15(), hashes.SHA256()
+    )
+
+
+def test_ec_assertion_uses_a_raw_jose_signature(tmp_path: Path) -> None:
+    key = ec.generate_private_key(ec.SECP256R1())
+    oauth = McpOAuth(clientId="rio", privateKeyFile=_key_file(tmp_path, key))
+
+    header, claims, signature = assertion(oauth, "https://auth.test/token", ["ES256"]).split(".")
+
+    assert _decode(header) == {"alg": "ES256", "typ": "JWT"}
+    raw = _signature(signature)
+    assert len(raw) == 64
+    der = encode_dss_signature(int.from_bytes(raw[:32]), int.from_bytes(raw[32:]))
+    key.public_key().verify(der, f"{header}.{claims}".encode(), ec.ECDSA(hashes.SHA256()))
+
+
+@pytest.mark.parametrize(
+    ("key", "algorithms", "message"),
+    [
+        (ec.generate_private_key(ec.SECP256R1()), ["RS256"], "does not accept ES256"),
+        (ed25519.Ed25519PrivateKey.generate(), ["EdDSA"], "must be RSA or EC"),
+    ],
+)
+def test_assertion_rejects_unusable_keys(
+    tmp_path: Path, key: PrivateKeyTypes, algorithms: list[str], message: str
+) -> None:
+    oauth = McpOAuth(clientId="rio", privateKeyFile=_key_file(tmp_path, key))
+    with pytest.raises(McpAuthError, match=message):
+        assertion(oauth, "https://auth.test/token", algorithms)
+
+
+def test_missing_key_file_is_an_auth_error(tmp_path: Path) -> None:
+    oauth = McpOAuth(clientId="rio", privateKeyFile=str(tmp_path / "missing.pem"))
+    with pytest.raises(McpAuthError, match="Cannot load private key"):
+        assertion(oauth, "https://auth.test/token", ["RS256"])
+
+
+def test_private_key_requires_server_support(requests: list[httpx.Request], tmp_path: Path) -> None:
+    key = ec.generate_private_key(ec.SECP256R1())
+    _both(["client_secret_post"])
+    oauth = McpOAuth(clientId="rio", privateKeyFile=_key_file(tmp_path, key))
+    with pytest.raises(McpAuthError, match="private_key_jwt"):
+        client_credentials_token(SERVER, oauth, "Bearer")
+
+
+@pytest.mark.parametrize(
+    "extra", [{}, {"clientSecret": "s", "privateKeyFile": "k.pem"}], ids=["none", "both"]
+)
+def test_oauth_needs_exactly_one_credential(extra: dict) -> None:
+    with pytest.raises(ValidationError, match="exactly one"):
+        McpOAuth.model_validate({"clientId": "rio", **extra})
