@@ -1,4 +1,4 @@
-"""Run one code Cell in Small Python: builtins only, the working directory and /tmp mounted."""
+"""Run one code Cell in Small Python: builtins only, cwd and a per-Cell /tmp mounted."""
 
 from __future__ import annotations
 
