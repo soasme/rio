@@ -17,6 +17,8 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict
 
+from rio.coding.mcp_oauth import McpOAuth, client_credentials_token
+
 PROTOCOL_VERSION = "2025-06-18"
 
 
@@ -30,6 +32,7 @@ class McpServer(BaseModel):
     env: dict[str, str] = {}
     url: str | None = None
     headers: dict[str, str] = {}
+    oauth: McpOAuth | None = None
 
 
 def load_servers(cwd: Path, home: Path) -> dict[str, McpServer]:
@@ -72,6 +75,7 @@ class _Connection:
         self.process: subprocess.Popen[bytes] | None = None
         self.http: httpx.Client | None = None
         self.session_id: str | None = None
+        self.authorized = False
         if server.command:
             self.process = subprocess.Popen(
                 [server.command, *server.args],
@@ -116,6 +120,13 @@ class _Connection:
             headers["Mcp-Session-Id"] = self.session_id
         headers["Content-Type"] = "application/json"
         response = self.http.post(self.server.url, content=data, headers=headers)
+        if response.status_code == 401 and self.server.oauth and not self.authorized:
+            self.authorized = True
+            token = client_credentials_token(
+                self.server.url, self.server.oauth, response.headers.get("www-authenticate", "")
+            )
+            self.http.headers["Authorization"] = f"Bearer {token}"
+            response = self.http.post(self.server.url, content=data, headers=headers)
         if response.is_error:
             raise McpError(f"{self.name}: HTTP {response.status_code}")
         self.session_id = response.headers.get("mcp-session-id", self.session_id)
