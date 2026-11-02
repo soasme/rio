@@ -9,6 +9,7 @@ from typing import Any
 
 collected: list[str] = []
 results: dict[str, str] = {}
+collection_errors: list[str] = []
 
 
 def nodeid(value: str) -> str:
@@ -17,6 +18,11 @@ def nodeid(value: str) -> str:
 
 def pytest_collection_finish(session: Any) -> None:
     collected.extend(nodeid(item.nodeid) for item in session.items)
+
+
+def pytest_collectreport(report: Any) -> None:
+    if report.failed:
+        collection_errors.append(report.nodeid)
 
 
 def pytest_runtest_logreport(report: Any) -> None:
@@ -31,5 +37,12 @@ def pytest_runtest_logreport(report: Any) -> None:
 
 def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
     Path(os.environ["RIO_EVAL_REPORT"]).write_text(
-        json.dumps({"collected": collected, "tests": results, "exitstatus": exitstatus})
+        json.dumps(
+            {
+                "collected": collected,
+                "tests": results,
+                "collection_errors": collection_errors,
+                "exitstatus": exitstatus,
+            }
+        )
     )

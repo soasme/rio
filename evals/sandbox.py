@@ -327,6 +327,11 @@ def assess_grade(process: ProcessResult, report: Path, expected: list[str]) -> G
         payload = json.loads(report.read_text())
         observed = payload["tests"]
         collected = payload["collected"]
+        if payload.get("collection_errors") and process.returncode in (1, 2):
+            # Calibration proved the reference collects, so the submission broke collection.
+            return GradeResult(
+                status="incorrect", process=process, detail="submission broke test collection"
+            )
         if (
             not isinstance(observed, dict)
             or set(collected) != set(expected)
