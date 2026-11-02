@@ -45,6 +45,7 @@ journaling and recovery. See the
 | [worker.py](worker.py) | Gated POSIX worker that starts user code only after the owner commits its identity. |
 | [codemode.py](codemode.py) | Run one code Cell in Small Python with `timer`, `records`, `mcp_tools` and `mcp_call` as builtins. |
 | [mcp.py](mcp.py) | Read `mcpServers` configuration and call MCP tools over stdio or streamable HTTP. |
+| [mcp_oauth.py](mcp_oauth.py) | Get MCP tokens with the OAuth Client Credentials extension. |
 | [api.py](api.py) | Read committed history and schedule timers. |
 
 ## Configuration and services

@@ -790,4 +790,36 @@ theorem mcp_structured_before_text (allText : Bool) :
 
 theorem mcp_text_before_blocks : mcpOutcome false false true = .text := rfl
 
+/-- MCP OAuth client credentials: an HTTP 401 triggers at most one token request per
+connection, the secret goes in the body when the server lists `client_secret_post`, else in
+Basic auth, and the configured scope wins over the challenge scope, then supported scopes. -/
+def mcpRequestsToken (alreadyAuthorized hasOAuth : Bool) : Bool :=
+  !alreadyAuthorized && hasOAuth
+
+theorem mcp_token_requested_once (hasOAuth : Bool) : mcpRequestsToken true hasOAuth = false := rfl
+
+theorem mcp_no_token_without_oauth : mcpRequestsToken false false = false := rfl
+
+inductive McpSecretAuth where
+  | post | basic | unsupported
+  deriving DecidableEq
+
+def mcpSecretAuth (post basic : Bool) : McpSecretAuth :=
+  cond post .post (cond basic .basic .unsupported)
+
+theorem mcp_secret_post_first (basic : Bool) : mcpSecretAuth true basic = .post := rfl
+
+theorem mcp_secret_basic_otherwise : mcpSecretAuth false true = .basic := rfl
+
+theorem mcp_secret_needs_a_method : mcpSecretAuth false false = .unsupported := rfl
+
+def mcpScope (configured challenged : Option String) (supported : String) : String :=
+  configured.getD (challenged.getD supported)
+
+theorem mcp_configured_scope_wins (scope : String) (challenged : Option String)
+    (supported : String) : mcpScope (some scope) challenged supported = scope := rfl
+
+theorem mcp_challenge_scope_next (scope supported : String) :
+    mcpScope none (some scope) supported = scope := rfl
+
 end RioAgent
