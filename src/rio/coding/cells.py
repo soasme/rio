@@ -38,9 +38,12 @@ CODE = CellKind(
     fields={"runtime": {"type": "string", "enum": ["python"]}, "source": {"type": "string"}},
     prompt="""Code: {"kind":"code","runtime":"python","source":"..."}.
 Code runs in Small Python, a minimal Python interpreter, in a fresh process; output has
-stdout and stderr streams. Use builtins only: no import statements, standard library, or
-packages. open() reaches the working directory (relative paths) and a scratch /tmp; nothing
-else. Use cmd Cells to list files, search, run tests, or run other programs.
+stdout and stderr streams. Code Cells are for tool calls (MCP, timer, records) and reading
+or writing files. Use builtins only: import fails for every module, including decimal,
+json, os, sys, and project modules. open() reaches the working directory (relative paths)
+and a scratch /tmp; nothing else. Use cmd Cells to list files, search, run tests, or run
+other programs. To check code or run Python that needs imports, write a script file, then
+run it in a cmd Cell: ["python3","check.py"].
 print(open('README.md').read())
 No shared variables, kernel, magics, top-level return, or cell imports.
 When writing multiline files, prefer triple-quoted strings so newline escaping does not

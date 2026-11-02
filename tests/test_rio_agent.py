@@ -622,6 +622,7 @@ async def test_code_sees_only_builtins_cwd_and_tmp(session: Session) -> None:
     executions = session.data.executions
     assert executions["1"].output == {"stdout": "hi\ndenied\n"}
     assert "No module named 'os'" in executions["2"].output["stderr"]
+    assert "run it in a cmd Cell" in executions["2"].output["stderr"]
 
 
 async def test_error_pauses_queue_then_cancel_before_dispatch(session: Session) -> None:

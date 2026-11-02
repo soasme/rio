@@ -47,6 +47,9 @@ class _LazyMcp:
             self.mcp.close()
 
 
+IMPORT_HINT = "Code Cells have no imports. Write a script file and run it in a cmd Cell."
+
+
 def run(source: str, filename: str) -> int:
     """Execute source and return the process exit code."""
     mcp = _LazyMcp()
@@ -68,6 +71,8 @@ def run(source: str, filename: str) -> int:
                 code = exc.exception.code if isinstance(exc.exception, SystemExit) else 1
                 return code if isinstance(code, int) else 0 if code is None else 1
             print(f'File "{exc.filename}", line {exc.lineno}\n{exc}', file=sys.stderr)
+            if exc.type in ("ImportError", "ModuleNotFoundError"):
+                print(IMPORT_HINT, file=sys.stderr)
             return 1
     return 0
 
