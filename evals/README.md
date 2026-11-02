@@ -59,8 +59,10 @@ The agent sees the same allowed-file restriction in its task.
 
 A trusted pytest plugin checks the exact collected test IDs and final outcomes, including
 teardown. Every required test must execute and pass: skips, xfails, missing results, and
-zero exits without a complete report fail. This is defense against accidental or simple
-bypasses, not a proof that arbitrary malicious Python cannot attack its own test process.
+zero exits without a complete report fail. Calibration proves the reference collects, so a
+submission that breaks test collection, such as with an import error, is incorrect. Other
+incomplete reports are grader errors and invalidate the run. This is defense against
+accidental or simple bypasses, not a proof that arbitrary malicious Python cannot attack its own test process.
 Review traces and patches, including sampled passes.
 
 Git artifacts compare original and final file trees using a private index. Staging,

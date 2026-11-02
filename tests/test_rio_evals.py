@@ -303,6 +303,32 @@ def test_real_pytest_bypasses_do_not_pass(tmp_path: Path, body: str) -> None:
     assert assess_grade(result, report, ["grade.py::test_check"]).status != "passed"
 
 
+def test_submission_that_breaks_collection_is_incorrect(tmp_path: Path) -> None:
+    import os
+
+    plugin = Path(__file__).resolve().parents[1] / "evals/pytest_report.py"
+    shutil.copy2(plugin, tmp_path / "rio_eval_report.py")
+    (tmp_path / "legacy.py").write_text("from public_api import add as add\n")
+    (tmp_path / "public_api.py").write_text("from legacy import add as _add\n")
+    (tmp_path / "grade.py").write_text(
+        "from legacy import add\n\ndef test_check() -> None:\n    assert add\n"
+    )
+    report = tmp_path / "tests.json"
+    result = command(
+        [sys.executable, "-m", "pytest", "-q", "-p", "rio_eval_report", "grade.py"],
+        cwd=tmp_path,
+        timeout=10,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(tmp_path),
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "RIO_EVAL_REPORT": str(report),
+        },
+    )
+    assert result.returncode == 2
+    assert assess_grade(result, report, ["grade.py::test_check"]).status == "incorrect"
+
+
 def test_process_timeout_is_bounded() -> None:
     result = command([sys.executable, "-c", "import time; time.sleep(60)"], timeout=0.05)
     assert result.timed_out and result.returncode is None
