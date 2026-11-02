@@ -758,4 +758,36 @@ theorem code_opens_mounted_paths (access : CodeAccess) (h : access ≠ .elsewher
 theorem code_imports_no_module (name : String) : name ∉ codeModules := by
   simp [codeModules]
 
+/-- MCP builtins in code Cells: a project `.mcp.json` entry replaces a global entry with
+the same name, and an unknown server has no entry. -/
+def mcpLookup (global project : String → Option Nat) (name : String) : Option Nat :=
+  match project name with
+  | some entry => some entry
+  | none => global name
+
+theorem mcp_project_entry_wins (global project : String → Option Nat) (name : String)
+    (entry : Nat) (h : project name = some entry) :
+    mcpLookup global project name = some entry := by
+  simp [mcpLookup, h]
+
+theorem mcp_global_entry_otherwise (global project : String → Option Nat) (name : String)
+    (h : project name = none) : mcpLookup global project name = global name := by
+  simp [mcpLookup, h]
+
+/-- A tool result raises on error, else returns structured content, joined text, or blocks. -/
+inductive McpOutcome where
+  | raised | structured | text | blocks
+  deriving DecidableEq
+
+def mcpOutcome (isError hasStructured allText : Bool) : McpOutcome :=
+  cond isError .raised (cond hasStructured .structured (cond allText .text .blocks))
+
+theorem mcp_error_raises (hasStructured allText : Bool) :
+    mcpOutcome true hasStructured allText = .raised := rfl
+
+theorem mcp_structured_before_text (allText : Bool) :
+    mcpOutcome false true allText = .structured := rfl
+
+theorem mcp_text_before_blocks : mcpOutcome false false true = .text := rfl
+
 end RioAgent

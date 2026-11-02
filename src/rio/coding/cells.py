@@ -49,6 +49,11 @@ Builtins timer(request_id, unix_deadline, payload) and records(after=0) are avai
 timer durably registers one timer generation; it does not suspend or rerun the process.
 records retrieves journal events as dicts with seq, kind, and changes keys;
 records(N - 1)[0] is session:event:N.
+Builtins mcp_tools(query="") and mcp_call(name, args) reach MCP servers configured in
+~/.rio/mcp.json and ./.mcp.json. mcp_tools returns dicts with name ("server.tool"),
+description, and input_schema for tools matching every query word. mcp_call returns
+structured content, text, or content blocks, and raises RuntimeError on tool errors.
+Search first, then call: print(mcp_call("github.get_issue", {"number": 1}))
 Files are not durable State.
 """,
     validate=_validate_code,
