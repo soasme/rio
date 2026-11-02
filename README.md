@@ -31,6 +31,9 @@ with builtins only.
 Committed work survives restart; interrupted scripts return `UnknownExecution` for
 inspection. See [Architecture](docs/explanation/architecture.md).
 
+Code cells can search and call MCP server tools configured in `~/.rio/mcp.json` or
+`.mcp.json`. See [Use MCP tools](docs/guides/mcp.md).
+
 Run a predefined workflow:
 
 ```

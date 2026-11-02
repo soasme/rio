@@ -43,7 +43,8 @@ journaling and recovery. See the
 | --- | --- |
 | [owner.py](owner.py) | `ProcessOwner` runs cells and argv validators in supervised process groups under `owner_config["cwd"]`, records worker identities in its `workers` collection, and stops leftover workers on recovery. |
 | [worker.py](worker.py) | Gated POSIX worker that starts user code only after the owner commits its identity. |
-| [codemode.py](codemode.py) | Run one code Cell in Small Python with `timer` and `records` as builtins. |
+| [codemode.py](codemode.py) | Run one code Cell in Small Python with `timer`, `records`, `mcp_tools` and `mcp_call` as builtins. |
+| [mcp.py](mcp.py) | Read `mcpServers` configuration and call MCP tools over stdio or streamable HTTP. |
 | [api.py](api.py) | Read committed history and schedule timers. |
 
 ## Configuration and services
